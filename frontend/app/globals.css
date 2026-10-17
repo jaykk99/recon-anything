@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { background: #0b0e14; color: #e6e6e6; }
+.card { background: #11161f; border: 1px solid #1f2937; border-radius: 0.75rem; }
+.input { background: #0f1420; border: 1px solid #243044; border-radius: 0.5rem; }
+.input:focus { outline: none; border-color: #7dd3fc; }
+.btn { background: #7dd3fc; color: #0b0e14; font-weight: 600; border-radius: 0.5rem; }
+.btn:hover { background: #a5e3ff; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.chip { border: 1px solid #243044; border-radius: 9999px; }
+table.grid { border-collapse: collapse; width: 100%; }
+table.grid td, table.grid th { border: 1px solid #243044; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.85rem; }
+.confbar { height: 6px; border-radius: 3px; background: #1f2937; }
+.confbar > div { height: 100%; border-radius: 3px; background: #7dd3fc; }
+.pill-ok { background: #14532d; color: #bbf7d0; }
+.pill-err { background: #7f1d1d; color: #fecaca; }
+.pill-warn { background: #78350f; color: #fde68a; }
+.pill-info { background: #1e3a5f; color: #bfdbfe; }
