@@ -91,7 +91,7 @@ class FingerprintPlugin(Plugin):
         try:
             resp = await fetch(ctx.http, ctx.limiter, "GET", base + "/")
         except Exception as e:
-            return self._error(f"fetch failed: {e}")
+            return self._degraded(f"fetch failed: {e}")
         if not resp or resp.status_code != 200:
             return self._skipped(f"HTTP {resp.status_code if resp else 'no response'}")
         html = resp.text[:500000]

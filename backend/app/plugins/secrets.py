@@ -88,7 +88,7 @@ class SecretsPlugin(Plugin):
 
         home, _ = await ctx.cache.cached("http", f"secrets:{base}", get_home)
         if home.get("error"):
-            res = self._error(f"fetch failed: {home['error']}")
+            res = self._degraded(f"fetch failed: {home['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 

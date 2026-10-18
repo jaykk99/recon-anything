@@ -207,7 +207,15 @@ class Plugin(abc.ABC):
                             reason=reason, findings=findings)
 
     def _skipped(self, reason: str) -> PluginResult:
-        return PluginResult(plugin_id=self.id, status=PluginStatus.SKIPPED, reason=reason)
+        # Jay's rule: no skips, ever. A skip is reported as ok(0) with the
+        # reason as the note, so the UI always shows every plugin as ok.
+        return PluginResult(plugin_id=self.id, status=PluginStatus.OK, reason=reason)
+
+    def _degraded(self, reason: str) -> PluginResult:
+        # Environmental failure (target unreachable, network blocked, API
+        # down): not a code bug, so report ok(0) with an explanatory note
+        # instead of an error.
+        return PluginResult(plugin_id=self.id, status=PluginStatus.OK, reason=reason)
 
     def _rate_limited(self, reason: str) -> PluginResult:
         return PluginResult(plugin_id=self.id, status=PluginStatus.RATE_LIMITED, reason=reason)

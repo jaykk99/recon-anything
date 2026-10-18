@@ -4,9 +4,9 @@ Honors 429 Retry-After. Configurable requests-per-second per host.
 For authorized testing only: evasion helpers here exist to complete an
 authorized scan without being blocked, not to attack.
 
-Proxy support: the shared httpx client is created with trust_env enabled,
-so HTTP_PROXY and HTTPS_PROXY environment variables are honored
-automatically. No extra code is needed for env-based proxying.
+Proxy support: HTTP clients are built through app.net, which honors
+HTTP_PROXY and HTTPS_PROXY environment variables automatically.
+No extra code is needed for env-based proxying.
 """
 from __future__ import annotations
 

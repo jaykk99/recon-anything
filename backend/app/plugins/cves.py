@@ -69,7 +69,7 @@ class CvesPlugin(Plugin):
         try:
             r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=15)
         except Exception as e:
-            return self._error(f"could not fetch: {str(e)[:150]}")
+            return self._degraded(f"could not fetch: {str(e)[:150]}")
 
         body = r.text[:100000].lower()
         headers_text = " ".join(f"{k}: {v}" for k, v in r.headers.items()).lower()

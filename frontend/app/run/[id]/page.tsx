@@ -91,6 +91,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // progress + ETA
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
+  const [etaS, setEtaS] = useState<number | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   // file viewer
@@ -120,6 +121,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
     on("progress", (e) => {
       const d = JSON.parse(e.data);
       setProgress({ done: d.done || 0, total: d.total || 0 });
+      if (typeof d.eta_s === "number") setEtaS(d.eta_s);
     });
     on("plugin_start", (e) => {
       const d = JSON.parse(e.data);
@@ -243,6 +245,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const remaining = estimatedS > 0 && status === "running" ? Math.max(estimatedS - elapsed, 0) : 0;
+  // Live ETA from the backend (adapts to actual plugin speed); falls back to
+  // the static pre-run estimate until the first progress event arrives.
+  const etaLeft = etaS !== null ? Math.max(etaS, 0) : remaining;
+  const pluginsLeft = Math.max(progress.total - progress.done, 0);
 
   return (
     <div className="space-y-4 max-w-full">
@@ -257,8 +263,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
         {status === "running" && (
           <div className="mt-3">
             <div className="flex justify-between text-xs text-slate-400 mb-1">
-              <span>{progress.done}/{progress.total} plugins</span>
-              <span>{fmtTime(elapsed)} elapsed{estimatedS > 0 && ` ~${fmtTime(remaining)} left`}</span>
+              <span>{progress.done}/{progress.total} plugins · {pluginsLeft} left</span>
+              <span>{fmtTime(elapsed)} elapsed · ~{fmtTime(etaLeft)} left</span>
             </div>
             <div className="w-full bg-slate-800 rounded-full h-2.5">
               <div className="bg-sky-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />

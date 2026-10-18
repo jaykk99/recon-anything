@@ -6,8 +6,9 @@ browser fingerprints, add timing jitter, and encode payloads so defensive
 servers do not flag the scan as bot traffic. Never try to solve JS
 challenges or captchas: detect them and report back instead.
 
-Proxy support: the shared httpx client honors HTTP_PROXY and HTTPS_PROXY
-environment variables via trust_env, so no code is needed here for proxies.
+Proxy support: every HTTP client is built through app.net, which honors
+HTTP_PROXY and HTTPS_PROXY environment variables, so no code is needed
+here for proxies.
 """
 from __future__ import annotations
 
