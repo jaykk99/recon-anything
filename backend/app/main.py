@@ -39,7 +39,8 @@ from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
 from .models import ApiKey, Finding, Run, RunEvent, Schedule, Target, get_session, init_db
 from .plugins.registry import describe
-from .reporting import executive_summary, findings_dump, to_csv, to_html, to_markdown
+from .reporting import (executive_summary, findings_dump, run_progress,
+                         to_csv, to_html, to_markdown)
 from .runner import launch_run, subscribe
 
 app = FastAPI(title="ReconAnything", version="0.1.0")
@@ -211,6 +212,9 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
                          "normalized": t.normalized} for t in targets],
             "findings": rows,
             "executive_summary": executive_summary(rows),
+            # Live progress for the UI poll fallback (SSE may be down):
+            # done/total, eta_s, and currently-running plugin names.
+            "progress": run_progress(session, run_id),
         }
     finally:
         session.close()

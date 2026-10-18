@@ -194,6 +194,23 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
                 {"plugin": plugin.id, "status": result.status.value,
                  "reason": result.reason, "findings": len(result.findings),
                  "ms": result.duration_ms})
+    # WAF visibility (Task 4): if the target host has served 3+ protection
+    # pages, tell Jay once per run instead of silently burning requests on
+    # challenge pages. Does not change plugin behavior - findings still win.
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _host = _urlparse(target.normalized).netloc or target.normalized
+        _lim = getattr(ctx, "limiter", None)
+        if _lim and _lim.protection_hits(_host) >= 3 \
+                and not ctx.shared.get("_waf_announced"):
+            ctx.shared["_waf_announced"] = True
+            await _emit(ctx.run_id, "waf_detected",
+                        {"host": _host, "hits": _lim.protection_hits(_host),
+                         "note": "target is behind WAF/challenge protection - "
+                                 "active probes may return challenge pages; "
+                                 "passive findings are unaffected"})
+    except Exception:
+        pass
     return result
 
 

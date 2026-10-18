@@ -48,6 +48,28 @@ class Finding:
 RISK_LEVELS = ("low", "medium", "high")
 
 
+# Exploitability: how weaponizable a finding is, independent of severity.
+# weaponized   = public RCE / auth-bypass exploit exists (Metasploit,
+#                nuclei template, or exploit-db entry). Patch NOW.
+# public_poc   = public proof-of-concept exists; weaponization is likely.
+# theoretical  = real weakness but needs chaining or manual work.
+# unknown      = not assessed.
+EXPLOITABILITY_LEVELS = ("unknown", "theoretical", "public_poc", "weaponized")
+
+
+def normalize_exploitability(value: str) -> str:
+    """Map any exploitability string to one of the 4 levels."""
+    v = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if v in EXPLOITABILITY_LEVELS:
+        return v
+    # common aliases
+    if v in ("exploit_public", "rce_public", "metasploit", "nuclei"):
+        return "weaponized"
+    if v in ("poc", "proof_of_concept", "poc_public"):
+        return "public_poc"
+    return "unknown"
+
+
 def normalize_risk(severity: str) -> str:
     """Map any severity string to low|medium|high."""
     s = (severity or "").strip().lower()
@@ -310,7 +332,8 @@ class Plugin(abc.ABC):
     def _f(self, category: str, key: str, value: str, source: str,
            source_url: Optional[str] = None, confidence: int = 80,
            evidence: Optional[Dict[str, Any]] = None, raw: Optional[Any] = None,
-           passive: bool = True, bounty_value: Optional[str] = None) -> Finding:
+           passive: bool = True, bounty_value: Optional[str] = None,
+           exploitability: str = "unknown") -> Finding:
         bv = bounty_value
         ev: Dict[str, Any] = dict(evidence) if evidence else {}
         # Quality gate: normalize risk to low|medium|high (3 levels only).
@@ -318,6 +341,10 @@ class Plugin(abc.ABC):
         risk = normalize_risk(raw_sev)
         ev["severity"] = risk
         ev["risk"] = risk
+        # Exploitability: how weaponizable this is (independent of severity).
+        # Lets Jay sort "real crazy vulnerabilities" above theoretical noise.
+        ev["exploitability"] = normalize_exploitability(
+            ev.get("exploitability") or exploitability)
         # Quality gate: every finding is actionable. If the plugin didn't
         # set a specific remediation, apply the category default so the
         # finding always says what to do about it.

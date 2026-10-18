@@ -581,10 +581,99 @@ print("BODY REFLECTS HOST:", "evil.example" in r.text)
             [hh],
         )
 
+    # -- 21. Backup files ------------------------------------------------------------
+    backup = _find(findings, key="artifact_exposed", value_contains=".zip") \
+        or _find(findings, key="artifact_exposed", value_contains=".sql") \
+        or _find(findings, value_contains="backup.zip")
+    if backup:
+        add(
+            "backup-files", "Downloadable backup archive / DB dump",
+            "high", 80,
+            "Your scan found backup-looking files. A 200 with zip/SQL magic bytes "
+            "means the whole site or database is downloadable.",
+            f"""import requests
+base = "{base}"
+for n in ["/backup.zip", "/www.zip", "/site.zip", "/db.sql", "/backup.sql"]:
+    r = requests.get(base + n, timeout=10)
+    magic = r.content[:2]
+    if r.status_code == 200 and (magic == b"PK" or len(r.content) > 100):
+        print("BACKUP DOWNLOADABLE:", n, len(r.content), "bytes")
+        break""",
+            "py",
+            [
+                "GET common backup names (read-only, check headers only).",
+                "A 200 with PK zip magic or SQL text = full backup downloadable.",
+                "Do not download the full archive on a bounty target; report it.",
+            ],
+            "Remove backups from web root. Store them off-server with restricted access.",
+            backup[:2],
+        )
+
+    # -- 22. phpinfo ----------------------------------------------------------------
+    phpinfo = _first(findings, key="phpinfo_exposed") or _first(findings, value_contains="phpinfo")
+    if phpinfo:
+        add(
+            "phpinfo", "phpinfo() exposed (version + config disclosure)",
+            "high", 88,
+            "Your scan found a live phpinfo page. It hands attackers the exact PHP "
+            "version, loaded modules, and environment - perfect CVE targeting fuel.",
+            f"""# Safe detection only: read-only GET
+curl -s {base}/phpinfo.php | grep -i "PHP Version"
+# Match the version: PHP < 8.1.29/8.2.21/8.3.8 = CVE-2024-4577 RCE""",
+            "sh",
+            [
+                "GET /phpinfo.php (read-only).",
+                "Extract the PHP Version line.",
+                "Match it against known CVEs (e.g. CVE-2024-4577 for PHP-CGI).",
+            ],
+            "Delete phpinfo.php from production. Never ship debug pages.",
+            [phpinfo],
+        )
+
+    # -- 23. Server status -------------------------------------------------------------
+    sstat = _first(findings, key="server_status_exposed") or _first(findings, value_contains="server-status")
+    if sstat:
+        add(
+            "server-status", "Apache /server-status exposed (internals visible)",
+            "medium", 85,
+            "Your scan found Apache's status page. It leaks request details, "
+            "worker states, and sometimes client IPs.",
+            f"""# Safe detection only: read-only GET
+curl -s {base}/server-status | head -10""",
+            "sh",
+            [
+                "GET /server-status (read-only).",
+                "'Apache Status' in the body = exposed.",
+            ],
+            "Restrict /server-status to localhost.",
+            [sstat],
+        )
+
+    # -- 24. Spring actuator ---------------------------------------------------------------
+    act = _first(findings, key="actuator_env_exposed") or _first(findings, value_contains="/actuator/env")
+    if act:
+        add(
+            "actuator-env", "Spring /actuator/env exposed (secrets in environment)",
+            "high", 88,
+            "Your scan found Spring's env endpoint. It often discloses passwords, "
+            "API keys, and connection strings in plain JSON.",
+            f"""# Safe detection only: read-only GET, print first bytes only
+curl -s {base}/actuator/env | head -c 300
+# Do NOT print or retain any secrets found. Report and rotate.""",
+            "sh",
+            [
+                "GET /actuator/env (read-only).",
+                "'propertySources' in JSON = exposed.",
+                "Never print or keep disclosed secrets; report immediately.",
+            ],
+            "Lock down actuator endpoints. Never expose /actuator/env publicly.",
+            [act],
+        )
+
     # Rank: severity first, then confidence
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     cands.sort(key=lambda c: (rank.get(c["severity"], 4), -c["confidence"]))
-    return cands[:5]
+    return cands[:8]
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +807,66 @@ def dry_run(candidate_id: str, base: str) -> List[str]:
             "[>] Would send: 1 GET with Host: evil.example, no redirect follow",
             "[>] Would check: evil.example in Location or body links",
             "[>] Would NOT: trigger reset emails to real users",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "svn-exposed": [
+            "[>] Would send: 1 GET to /.svn/entries (read-only)",
+            "[>] Would check: status 200 + svn markers",
+            "[>] Would NOT: download repository data",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "ds-store": [
+            "[>] Would send: 1 GET to /.DS_Store (read-only)",
+            "[>] Would check: status 200 + Bud1 magic bytes",
+            "[>] Would NOT: parse the full file listing",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "backup-files": [
+            "[>] Would send: 5 GETs to common backup names (read-only)",
+            "[>] Would check: status 200 + PK zip magic or SQL text",
+            "[>] Would NOT: download full archives on bounty targets",
+            "[ok] Dry run complete. 5 read-only requests planned.",
+        ],
+        "phpinfo": [
+            "[>] Would send: 1 GET to /phpinfo.php (read-only)",
+            "[>] Would check: 'PHP Version' string in body",
+            "[>] Would NOT: exploit any disclosed version",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "server-status": [
+            "[>] Would send: 1 GET to /server-status (read-only)",
+            "[>] Would check: 'Apache Status' in body",
+            "[>] Would NOT: change any server config",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "admin-panels": [
+            "[>] Would send: 4 GETs to known admin panels (read-only)",
+            "[>] Would check: 200 + admin markers, no login attempt",
+            "[>] Would NOT: attempt any credentials",
+            "[ok] Dry run complete. 4 read-only requests planned.",
+        ],
+        "cookie-flags": [
+            "[>] Would send: 1 GET to base (read-only)",
+            "[>] Would check: Set-Cookie headers for HttpOnly/Secure/SameSite",
+            "[>] Would NOT: steal or use any session",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "jwt-live": [
+            "[>] Would send: 1 GET to base (read-only)",
+            "[>] Would check: JWTs in page, decode header offline for alg",
+            "[>] Would NOT: forge tokens or brute force secrets",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "debug-pprof": [
+            "[>] Would send: 1 GET to /debug/pprof/ (read-only)",
+            "[>] Would check: pprof profiles index in body",
+            "[>] Would NOT: pull heap profiles",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "actuator-env": [
+            "[>] Would send: 1 GET to /actuator/env (read-only)",
+            "[>] Would check: propertySources JSON in body",
+            "[>] Would NOT: print, retain, or use any disclosed secret",
             "[ok] Dry run complete. 1 read-only request planned.",
         ],
     }

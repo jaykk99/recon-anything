@@ -93,6 +93,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
   const [etaS, setEtaS] = useState<number | null>(null);
+  const [wafNotice, setWafNotice] = useState<string | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   // finding dedupe: SSE replays history on reconnect, so skip repeats.
@@ -145,6 +146,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
       const d = JSON.parse(e.data);
       setPlugins((p) => ({ ...p, [d.plugin]: { plugin: d.plugin, status: "skipped", reason: d.reason } }));
     });
+    on("waf_detected", (e) => {
+      const d = JSON.parse(e.data);
+      setWafNotice(d.note || `WAF/challenge protection detected on ${d.host || "target"}`);
+    });
     on("finding", (e) => {
       const d = JSON.parse(e.data);
       // Dedupe: reconnects replay history, and the 4s poll can overlap.
@@ -170,6 +175,21 @@ export default function RunPage({ params }: { params: { id: string } }) {
     const poll = setInterval(async () => {
       try {
         const d = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } }).then((r) => r.json());
+        // Poll fallback keeps progress + ETA alive when SSE is down.
+        if (d.run?.status === "running" && d.progress) {
+          const p = d.progress;
+          if (typeof p.total === "number" && p.total > 0)
+            setProgress({ done: p.done || 0, total: p.total });
+          if (typeof p.eta_s === "number") setEtaS(p.eta_s);
+          if (Array.isArray(p.running) && p.running.length > 0)
+            setPlugins((prev) => {
+              const next = { ...prev };
+              for (const name of p.running)
+                if (!next[name] || next[name].status !== "running")
+                  next[name] = { plugin: name, status: "running", reason: "", findings: 0 };
+              return next;
+            });
+        }
         if (d.run?.status === "done" || d.run?.status === "failed") {
           setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
           setTargets(d.targets || []);
@@ -302,6 +322,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
                 ? <> · running now ({runningNow.length}): <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
                 : " · starting next 5..."}
             </p>
+          </div>
+        )}
+        {/* WAF notice: target is fighting back */}
+        {wafNotice && status === "running" && (
+          <div className="mt-3 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-xs text-amber-200">
+            <span className="font-bold">WAF DETECTED:</span> {wafNotice}
           </div>
         )}
         {/* progress bar */}

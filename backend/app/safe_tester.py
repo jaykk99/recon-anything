@@ -427,6 +427,206 @@ def probe_host_header(base: str) -> Tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Second wave: info-disclosure and config probes (all GET/HEAD, read-only).
+# Each detail carries the exact curl command that proves the finding,
+# so Jay sees real commands and real output.
+# ---------------------------------------------------------------------------
+
+def probe_svn(base: str) -> Tuple[bool, str]:
+    """GET /.svn/entries - check for Subversion metadata exposure."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/.svn/entries"))
+        if r.status_code == 200 and ("dir" in r.text[:200].lower() or "svn" in r.text[:200].lower()):
+            return True, (f"Live test: /.svn/entries returned 200. SVN metadata exposed. "
+                           f"Proved with: curl -s {base}/.svn/entries | head -5")
+        return False, f"Live test: /.svn/entries returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_ds_store(base: str) -> Tuple[bool, str]:
+    """GET /.DS_Store - check for macOS metadata exposure (lists filenames)."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/.DS_Store"))
+        if r.status_code == 200 and r.content[:4] == b"Bud1":
+            return True, (f"Live test: /.DS_Store returned 200 with Bud1 magic. "
+                           f"Directory listing of filenames recoverable. "
+                           f"Proved with: curl -s {base}/.DS_Store | xxd | head -3")
+        return False, f"Live test: /.DS_Store returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_backup_files(base: str) -> Tuple[bool, str]:
+    """GET common backup names - check for downloadable archives/dumps."""
+    names = ["/backup.zip", "/www.zip", "/site.zip", "/db.sql", "/backup.sql"]
+    try:
+        with _client() as c:
+            for n in names:
+                r = c.get(urljoin(base, n))
+                _sleep()
+                if r.status_code == 200 and len(r.content) > 100:
+                    is_zip = r.content[:2] == b"PK"
+                    is_sql = r.text[:200].lower().lstrip().startswith(("--", "insert", "create"))
+                    if is_zip or is_sql or "backup" in n:
+                        kind = "zip archive" if is_zip else ("SQL dump" if is_sql else "backup file")
+                        return True, (f"Live test: {n} returned 200 ({kind}, "
+                                       f"{len(r.content)} bytes). Downloadable backup. "
+                                       f"Proved with: curl -sI {base}{n}")
+        return False, f"Live test: checked {len(names)} backup names, none downloadable."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_phpinfo(base: str) -> Tuple[bool, str]:
+    """GET /phpinfo.php - check for phpinfo disclosure."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/phpinfo.php"))
+        if r.status_code == 200 and ("phpinfo()" in r.text or "PHP Version" in r.text):
+            m = re.search(r"PHP Version ([\d.]+)", r.text)
+            ver = m.group(1) if m else "unknown"
+            return True, (f"Live test: /phpinfo.php returned 200 (PHP {ver}). "
+                           f"Full config disclosed - feeds CVE targeting. "
+                           f"Proved with: curl -s {base}/phpinfo.php | grep -i 'PHP Version'")
+        return False, f"Live test: /phpinfo.php returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_server_status(base: str) -> Tuple[bool, str]:
+    """GET /server-status - check for Apache status disclosure."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/server-status"))
+        if r.status_code == 200 and "Apache Status" in r.text:
+            return True, (f"Live test: /server-status returned 200 with 'Apache Status'. "
+                           f"Internal worker/request details visible. "
+                           f"Proved with: curl -s {base}/server-status | head -10")
+        return False, f"Live test: /server-status returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_admin_panels(base: str) -> Tuple[bool, str]:
+    """GET known admin panels - detection only, no login attempts."""
+    panels = [
+        ("/phpmyadmin/", "phpMyAdmin"),
+        ("/adminer.php", "Adminer"),
+        ("/wp-login.php", "wp-login.php"),
+        ("/wp-admin/", "wp-admin"),
+    ]
+    try:
+        found = []
+        with _client() as c:
+            for path, label in panels:
+                r = c.get(urljoin(base, path))
+                _sleep()
+                low = r.text.lower()
+                if r.status_code == 200 and (
+                        "phpmyadmin" in low or "adminer" in low or
+                        'type="password"' in low or "wp-login" in low):
+                    found.append(f"{label} ({path})")
+        if found:
+            return True, (f"Live test: admin panels reachable (detection only, no login "
+                           f"attempted): {', '.join(found)}. "
+                           f"Proved with: curl -s -o /dev/null -w '%{{http_code}}' {base}/phpmyadmin/")
+        return False, f"Live test: checked {len(panels)} admin panels, none reachable."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_cookie_flags(base: str) -> Tuple[bool, str]:
+    """GET base - check Set-Cookie flags (read-only)."""
+    try:
+        with _client() as c:
+            r = c.get(base)
+        cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") \
+            else [v for k, v in r.headers.items() if k.lower() == "set-cookie"]
+        if not cookies:
+            return False, "Live test: no Set-Cookie headers. Nothing to flag."
+        weak = []
+        for ck in cookies:
+            low = ck.lower()
+            name = ck.split("=")[0][:30]
+            missing = []
+            if "httponly" not in low:
+                missing.append("HttpOnly")
+            if "secure" not in low:
+                missing.append("Secure")
+            if "samesite" not in low:
+                missing.append("SameSite")
+            if missing:
+                weak.append(f"{name} missing {', '.join(missing)}")
+        if weak:
+            return True, (f"Live test: {len(weak)} cookie(s) missing flags: "
+                           f"{'; '.join(weak[:3])}. "
+                           f"Proved with: curl -sI {base} | grep -i set-cookie")
+        return False, f"Live test: {len(cookies)} cookie(s), all flags set."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_jwt_live(base: str) -> Tuple[bool, str]:
+    """GET base - extract JWTs from the page and check alg offline (read-only)."""
+    try:
+        with _client() as c:
+            r = c.get(base)
+        tokens = re.findall(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", r.text)
+        if not tokens:
+            return False, "Live test: no JWTs found in the page. Nothing to check."
+        for tok in tokens[:3]:
+            header_b64 = tok.split(".")[0]
+            header_b64 += "=" * (-len(header_b64) % 4)
+            try:
+                header = json.loads(base64.urlsafe_b64decode(header_b64).decode("utf-8", "replace"))
+            except Exception:
+                continue
+            alg = str(header.get("alg", "")).lower()
+            if alg == "none":
+                return True, (f"Live test: JWT with alg:none found in page. "
+                               f"Signature validation bypass likely. "
+                               f"Proved with: curl -s {base} | grep -o 'eyJ[^\"'\"' ]*' | head -1")
+            if alg in ("hs256", "hs384", "hs512"):
+                return True, (f"Live test: JWT uses {alg} (symmetric). If the secret is weak "
+                               f"or leaked, tokens can be forged - check for secret exposure. "
+                               f"Proved with: curl -s {base} | grep -o 'eyJ[^\"'\"' ]*' | head -1")
+        return False, f"Live test: {len(tokens)} JWT(s) found, algs look sane (checked header only)."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_debug_pprof(base: str) -> Tuple[bool, str]:
+    """GET /debug/pprof/ - check for Go pprof exposure."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/debug/pprof/"))
+        if r.status_code == 200 and ("pprof" in r.text.lower() or "profiles:" in r.text):
+            return True, (f"Live test: /debug/pprof/ returned 200. Go runtime profiles "
+                           f"exposed (goroutine stacks, heap). "
+                           f"Proved with: curl -s {base}/debug/pprof/ | head -10")
+        return False, f"Live test: /debug/pprof/ returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_actuator(base: str) -> Tuple[bool, str]:
+    """GET /actuator/env - check for Spring actuator exposure."""
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/actuator/env"))
+        if r.status_code == 200 and ("propertySources" in r.text or "profiles" in r.text):
+            return True, (f"Live test: /actuator/env returned 200 with propertySources. "
+                           f"Spring environment (often secrets) disclosed. "
+                           f"Proved with: curl -s {base}/actuator/env | head -c 300")
+        return False, f"Live test: /actuator/env returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator: run every candidate's real probe, return what worked.
 # ---------------------------------------------------------------------------
 
@@ -451,6 +651,16 @@ PROBE_MAP = {
     "ssti": lambda base, c: probe_ssti(base),
     "crlf": lambda base, c: probe_crlf(base),
     "host-header": lambda base, c: probe_host_header(base),
+    "svn-exposed": lambda base, c: probe_svn(base),
+    "ds-store": lambda base, c: probe_ds_store(base),
+    "backup-files": lambda base, c: probe_backup_files(base),
+    "phpinfo": lambda base, c: probe_phpinfo(base),
+    "server-status": lambda base, c: probe_server_status(base),
+    "admin-panels": lambda base, c: probe_admin_panels(base),
+    "cookie-flags": lambda base, c: probe_cookie_flags(base),
+    "jwt-live": lambda base, c: probe_jwt_live(base),
+    "debug-pprof": lambda base, c: probe_debug_pprof(base),
+    "actuator-env": lambda base, c: probe_actuator(base),
 }
 
 

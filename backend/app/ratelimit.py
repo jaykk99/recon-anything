@@ -24,6 +24,17 @@ class RateLimiter:
         self._rps: Dict[str, float] = {}
         self._next: Dict[str, float] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
+        # WAF/challenge visibility: how many times each host served a
+        # protection page. Lets the runner warn Jay instead of silently
+        # burning requests on challenge pages.
+        self._protection_hits: Dict[str, int] = {}
+
+    def note_protection(self, host: str) -> int:
+        self._protection_hits[host] = self._protection_hits.get(host, 0) + 1
+        return self._protection_hits[host]
+
+    def protection_hits(self, host: str) -> int:
+        return self._protection_hits.get(host, 0)
 
     def set_rps(self, host: str, rps: float) -> None:
         self._rps[host] = rps
@@ -76,6 +87,14 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
         await limiter.wait(host)
         try:
             resp = await client.request(method, url, **kwargs)
+            # Cheap WAF/challenge accounting: only inspect bodies on
+            # statuses that can carry a challenge page.
+            if resp.status_code in (403, 429, 503):
+                try:
+                    if detect_protection(resp):
+                        limiter.note_protection(host)
+                except Exception:
+                    pass
             if resp.status_code == 429:
                 ra = resp.headers.get("retry-after")
                 try:
