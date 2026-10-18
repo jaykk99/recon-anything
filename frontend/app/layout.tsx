@@ -1,6 +1,5 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import Gate from "./gate";
 
 export const metadata: Metadata = {
   title: "ReconAnything",
@@ -11,7 +10,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen">
-        <Gate>
         <header className="border-b border-slate-800 px-6 py-3 flex items-center gap-3">
           <a href="/" className="text-xl font-bold text-sky-300">ReconAnything</a>
           <span className="text-xs text-slate-500">universal recon, passive by default</span>
@@ -22,7 +20,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </nav>
         </header>
         <main className="max-w-6xl mx-auto px-4 py-6">{children}</main>
-        </Gate>
       </body>
     </html>
   );

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, getCode, setCode, PluginInfo, ClassifyResult } from "../lib/api";
+import { api, getCode, setCode, clearCode, verifyCode, PluginInfo, ClassifyResult } from "../lib/api";
 
 const GROUPS: Record<string, string> = {
   network: "Network / DNS", web: "Web / Frontend", api: "API / Backend",
@@ -17,11 +17,17 @@ export default function Home() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [code, setCodeState] = useState("");
+  const [codeSaved, setCodeSaved] = useState(false);
+  const [showCode, setShowCode] = useState(false);
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeMsg, setCodeMsg] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    setCodeState(getCode());
+    const saved = getCode();
+    setCodeState(saved);
+    setCodeSaved(!!saved);
     api<{ plugins: PluginInfo[] }>("/api/plugins")
       .then((d) => {
         setPlugins(d.plugins);
@@ -43,9 +49,30 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [text]);
 
+  async function saveCode() {
+    const v = code.trim();
+    if (!v || codeBusy) return;
+    setCodeBusy(true); setCodeMsg("");
+    const ok = await verifyCode(v);
+    setCodeBusy(false);
+    if (ok) {
+      setCode(v);
+      setCodeSaved(true);
+      setCodeMsg("Code saved, you will not have to enter it again.");
+    } else {
+      setCodeMsg("Wrong code, not saved.");
+    }
+  }
+
+  function forgetCode() {
+    clearCode();
+    setCodeState("");
+    setCodeSaved(false);
+    setCodeMsg("");
+  }
+
   async function start() {
     setError(""); setRunning(true);
-    setCode(code);
     try {
       const ids = Object.keys(enabled).filter((k) => enabled[k]);
       const d = await api<{ run_id: string }>("/api/runs", {
@@ -53,6 +80,7 @@ export default function Home() {
         body: JSON.stringify({ targets: text, mode, plugins: ids }),
       });
       if (!d.run_id) throw new Error("no run id returned");
+      if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
       router.push(`/run/${d.run_id}`);
     } catch (e: any) {
       setError(e.message); setRunning(false);
@@ -67,12 +95,38 @@ export default function Home() {
       <div className="card p-5 space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-lg font-semibold">New recon run</h1>
-          <label className="ml-auto text-xs text-slate-400 flex items-center gap-2">
-            Access code
-            <input className="input px-2 py-1 text-xs w-36" type="password"
-              value={code} onChange={(e) => setCodeState(e.target.value)} placeholder="optional" />
-          </label>
+          <div className="ml-auto flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-slate-400">Access code</span>
+            <div className="relative">
+              <input className="input px-2 py-1 text-xs w-52 pr-12"
+                type={showCode ? "text" : "password"}
+                value={code}
+                onChange={(e) => { setCodeState(e.target.value); setCodeMsg(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") saveCode(); }}
+                placeholder="paste your code"
+                autoComplete="off" spellCheck={false} />
+              <button type="button" onClick={() => setShowCode(!showCode)}
+                className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 hover:text-slate-300 px-1">
+                {showCode ? "hide" : "show"}
+              </button>
+            </div>
+            {!codeSaved ? (
+              <button type="button" onClick={saveCode} disabled={!code.trim() || codeBusy}
+                className="chip px-3 py-1 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-40">
+                {codeBusy ? "Checking..." : "Save"}
+              </button>
+            ) : (
+              <>
+                <span className="text-[11px] text-green-400">saved</span>
+                <button type="button" onClick={forgetCode}
+                  className="chip px-3 py-1 text-xs text-slate-400 hover:text-red-300 hover:bg-slate-800">
+                  Forget
+                </button>
+              </>
+            )}
+          </div>
         </div>
+        {codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
         <textarea className="input w-full p-3 font-mono text-sm" rows={3}
           placeholder={"example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"}
           value={text} onChange={(e) => setText(e.target.value)} />
