@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { getCode } from "../../../lib/api";
+import { getCode, api } from "../../../lib/api";
 
 interface Finding {
   plugin: string; category: string; key: string; value: string;
@@ -78,6 +78,7 @@ function fmtTime(s: number): string {
 export default function RunPage({ params }: { params: { id: string } }) {
   const id = params.id;
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [targets, setTargets] = useState<{ raw: string; normalized: string; type: string }[]>([]);
   const [plugins, setPlugins] = useState<Record<string, PluginState>>({});
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
@@ -155,6 +156,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
         const d = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } }).then((r) => r.json());
         if (d.run?.status === "done" || d.run?.status === "failed") {
           setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
+          setTargets(d.targets || []);
           clearInterval(poll); es.close();
           if (d.run.status === "done") {
             const h = { "X-Access-Code": getCode() };
@@ -292,7 +294,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -390,7 +392,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
       {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "aihunter" && <AIHunterView runId={id} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
-      {tab === "subdomains" && <SubdomainsView findings={findings} />}
+      {tab === "subdomains" && <SubdomainsView runId={id} findings={findings} />}
+      {tab === "ports" && <PortsView runId={id} findings={findings} targets={targets} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
       {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
       {tab === "creds" && <CredsView findings={findings} />}
@@ -471,20 +474,51 @@ export default function RunPage({ params }: { params: { id: string } }) {
   );
 }
 
-function SubdomainsView({ findings }: { findings: Finding[] }) {
+interface SubStatus { live: boolean; status: number; url: string; server: string; title: string; }
+
+function SubdomainsView({ runId, findings }: { runId: string; findings: Finding[] }) {
   const subs = findings.filter((f) => f.key === "subdomain");
   const notes = findings.filter((f) => f.key === "subdomain_enum_note");
+  const [status, setStatus] = useState<Record<string, SubStatus>>({});
+  const [verifying, setVerifying] = useState(false);
+  const [verifyMsg, setVerifyMsg] = useState("");
+  function hostOf(v: string) { return v.split(/\s/)[0].trim().toLowerCase().replace(/\.$/, ""); }
   function copyAll() {
-    navigator.clipboard.writeText(subs.map((s) => s.value).join("\n")).catch(() => {});
+    navigator.clipboard.writeText(subs.map((s) => hostOf(s.value)).join("\n")).catch(() => {});
   }
+  async function verify() {
+    setVerifying(true); setVerifyMsg("");
+    try {
+      const d = await api<{ hosts: Record<string, SubStatus>; live: number; count: number }>(
+        `/api/runs/${runId}/subdomains/verify`, { method: "POST", body: JSON.stringify({}) });
+      setStatus(d.hosts || {});
+      setVerifyMsg(`${d.live} of ${d.count} responding`);
+    } catch (e: any) { setVerifyMsg("verify failed: " + e.message); }
+    setVerifying(false);
+  }
+  async function scanSub(host: string) {
+    try {
+      const d = await api<{ run_id: string }>("/api/runs", {
+        method: "POST", body: JSON.stringify({ targets: host, mode: "active" }) });
+      if (d.run_id) window.location.href = `/run/${d.run_id}`;
+    } catch (e: any) { setVerifyMsg("scan failed: " + e.message); }
+  }
+  const liveCount = Object.values(status).filter((s) => s.live).length;
   return (
     <div className="card p-4">
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <h2 className="font-semibold text-sky-300">Subdomains <span className="text-slate-500 text-xs">({subs.length})</span></h2>
+        {liveCount > 0 && <span className="text-xs text-green-400">{liveCount} live</span>}
         {subs.length > 0 && (
-          <button className="chip px-3 py-2.5 min-h-[44px] text-xs text-sky-400 ml-auto" onClick={copyAll}>copy all</button>
+          <div className="ml-auto flex gap-2">
+            <button className="chip px-3 py-2.5 min-h-[44px] text-xs text-emerald-400" onClick={verify} disabled={verifying}>
+              {verifying ? "checking..." : "verify live"}
+            </button>
+            <button className="chip px-3 py-2.5 min-h-[44px] text-xs text-sky-400" onClick={copyAll}>copy all</button>
+          </div>
         )}
       </div>
+      {verifyMsg && <p className="text-xs text-slate-400 mb-2">{verifyMsg}</p>}
       {notes.map((n, i) => (
         <p key={i} className="text-xs text-amber-300/80 mb-2 break-words">{n.value} <span className="text-slate-500">({n.source})</span></p>
       ))}
@@ -492,12 +526,112 @@ function SubdomainsView({ findings }: { findings: Finding[] }) {
         <p className="text-sm text-slate-500">No subdomains found yet.</p>
       ) : (
         <div className="space-y-1">
-          {subs.map((s, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm font-mono px-3 py-2.5 min-h-[44px] rounded-lg bg-slate-800/50">
-              <span className="text-green-300 break-all">{s.value}</span>
-              <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{s.confidence}%</span>
-            </div>
-          ))}
+          {subs.map((s, i) => {
+            const host = hostOf(s.value);
+            const st = status[host];
+            const dot = !st ? "bg-slate-600" : st.live ? "bg-green-400" : "bg-red-400/60";
+            const link = st?.live && st.url ? st.url : `https://${host}`;
+            return (
+              <div key={i} className="flex items-center gap-2 text-sm px-3 py-2.5 min-h-[44px] rounded-lg bg-slate-800/50">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} title={!st ? "not checked" : st.live ? `live (${st.status})` : "no response"} />
+                <a href={link} target="_blank" rel="noreferrer"
+                  className="text-green-300 break-all font-mono hover:underline flex-1">{host}</a>
+                {st?.live && st.title && <span className="text-[10px] text-slate-500 truncate max-w-[140px] hidden sm:inline">{st.title}</span>}
+                <button onClick={() => scanSub(host)}
+                  className="chip px-2.5 py-2 min-h-[40px] text-[11px] text-amber-300 whitespace-nowrap">scan</button>
+                <span className="text-[10px] text-slate-500 whitespace-nowrap">{s.confidence}%</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PortProbe { host: string; port: number; open: boolean; banner: string; http: { status?: number; server?: string; title?: string; url?: string; error?: string } | null; error?: string }
+
+function PortsView({ runId, findings, targets }: { runId: string; findings: Finding[]; targets: { raw: string; normalized: string; type: string }[] }) {
+  const ports = findings.filter((f) => f.key === "port_open" || f.key === "port_suggestion");
+  const [probes, setProbes] = useState<Record<string, PortProbe>>({});
+  const [probing, setProbing] = useState<string | null>(null);
+  function parsePort(f: Finding) {
+    const m = /port (\d+)\s*\(([^)]+)\)/i.exec(f.value);
+    return { port: m ? parseInt(m[1]) : 0, service: m ? m[2] : "unknown" };
+  }
+  function baseHost() {
+    const t = targets[0];
+    if (!t) return "";
+    const n = (t.normalized || t.raw || "").toLowerCase();
+    const m = /([a-z0-9]([a-z0-9.\-]*[a-z0-9])?)/.exec(n);
+    return m ? m[1] : "";
+  }
+  function webUrl(host: string, port: number) {
+    if (port === 443 || port === 8443) return `https://${host}:${port}/`;
+    if ([80, 8000, 8080, 3000, 5000, 9000, 9200, 5601].includes(port)) return `http://${host}:${port}/`;
+    return "";
+  }
+  async function probe(host: string, port: number) {
+    const key = `${host}:${port}`;
+    setProbing(key);
+    try {
+      const d = await api<PortProbe>(`/api/runs/${runId}/probe/port?host=${encodeURIComponent(host)}&port=${port}`);
+      setProbes((p) => ({ ...p, [key]: d }));
+    } catch (e: any) { setProbes((p) => ({ ...p, [key]: { host, port, open: false, banner: "", http: null, error: e.message } })); }
+    setProbing(null);
+  }
+  const host = baseHost();
+  const openPorts = ports.filter((f) => f.key === "port_open");
+  const sugPorts = ports.filter((f) => f.key === "port_suggestion");
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <h2 className="font-semibold text-sky-300">Ports <span className="text-slate-500 text-xs">({openPorts.length} open, {sugPorts.length} suggested)</span></h2>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Tap a port to open it in your browser. Probe grabs the live banner.</p>
+      {ports.length === 0 ? (
+        <p className="text-sm text-slate-500">No port findings yet. Run an active scan for real results.</p>
+      ) : (
+        <div className="space-y-1">
+          {ports.map((f, i) => {
+            const { port, service } = parsePort(f);
+            const url = webUrl(host, port);
+            const key = `${host}:${port}`;
+            const pr = probes[key];
+            const banner = (f.evidence as any)?.banner || pr?.banner || "";
+            const isOpen = f.key === "port_open";
+            return (
+              <div key={i} className="px-3 py-2.5 min-h-[44px] rounded-lg bg-slate-800/50">
+                <div className="flex items-center gap-2 text-sm flex-wrap">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${isOpen ? "bg-green-400" : "bg-slate-600"}`} />
+                  {url ? (
+                    <a href={url} target="_blank" rel="noreferrer" className="font-mono text-sky-300 hover:underline">
+                      {host}:{port} <span className="text-slate-400">({service})</span>
+                    </a>
+                  ) : (
+                    <span className="font-mono text-slate-300">{port} <span className="text-slate-500">({service})</span></span>
+                  )}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap ${isOpen ? "pill-err" : "pill-info"}`}>
+                    {isOpen ? "OPEN" : "SUGGESTED"}
+                  </span>
+                  <div className="ml-auto flex gap-2">
+                    {isOpen && host && (
+                      <button onClick={() => probe(host, port)} disabled={probing === key}
+                        className="chip px-2.5 py-2 min-h-[40px] text-[11px] text-emerald-300 whitespace-nowrap">
+                        {probing === key ? "..." : "probe"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {(banner || pr?.http?.title) && (
+                  <p className="text-[11px] text-slate-500 font-mono mt-1 break-all">
+                    {banner}{pr?.http?.title ? ` | ${pr.http.title}` : ""}
+                  </p>
+                )}
+                {pr?.error && <p className="text-[11px] text-red-400/80 mt-1">{pr.error}</p>}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

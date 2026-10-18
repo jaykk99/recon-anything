@@ -1,18 +1,21 @@
 """Reflected + DOM XSS detector (critical findings).
 
-Three detection methods:
+Four detection methods:
 1. Reflected: inject inert canary into params, check unencoded reflection
 2. Context analysis: identify if reflection is in HTML/attribute/JS context
 3. DOM sinks: scan JS for dangerous sinks (innerHTML, eval, document.write)
+4. Context probes: SVG, event handler, javascript: URI, double URL encode,
+   and HTML entity encoded canaries for filter-bypass contexts
 No script execution, no stored payloads. Authorized testing only.
 """
 from __future__ import annotations
 
+import html
 import re
 import time
 import uuid
 from typing import List
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
@@ -37,6 +40,20 @@ DOM_SINKS = [
     (r"location\.hash", "location.hash read (DOM XSS source)"),
     (r"location\.search", "location.search read (DOM XSS source)"),
     (r"\$\(.*\)\.html\s*\(", "jQuery .html()"),
+]
+
+# Context probes: inert canary wrapped for specific reflection contexts.
+# Each entry: (wrapper template with {C} placeholder, context label,
+# encoding form: "raw" | "url2x" | "entity")
+XSS_CONTEXT_PROBES = [
+    ("<svg><desc>{C}</desc></svg>", "SVG context", "raw"),
+    ('"><svg onload={C}>', "event handler breakout (inert)", "raw"),
+    ('" onfocus="{C}" autofocus="', "onfocus event context (inert)", "raw"),
+    ("javascript:{C}", "javascript: URI context (inert)", "raw"),
+    ("<a href=\"javascript:{C}\">x</a>", "href javascript: context", "raw"),
+    ("{C}", "plain context, URL double-encoded", "url2x"),
+    ("{C}", "plain context, HTML entity encoded", "entity"),
+    ("<script>var x='{C}';</script>", "script string context (inert)", "raw"),
 ]
 
 
@@ -204,6 +221,47 @@ class XssPlugin(Plugin):
                                   "scope_note": "Authorized testing only. "
                                                 "Canary was inert; no script executed."}))
                     break
+
+                # --- Method 4: context + encoding probes ---
+                for tmpl, ctx_label, enc in XSS_CONTEXT_PROBES:
+                    tested += 1
+                    cval = "exss" + uuid.uuid4().hex[:8]
+                    payload = tmpl.replace("{C}", cval)
+                    if enc == "url2x":
+                        payload = quote(quote(payload, safe=""), safe="")
+                    elif enc == "entity":
+                        payload = html.escape(payload)
+                    cprobe = [(n, payload if n == name else v)
+                              for n, v in params]
+                    cpurl = urlunparse(parts._replace(
+                        query=urlencode(cprobe)))
+                    try:
+                        cpr = await fetch(ctx.http, ctx.limiter, "GET", cpurl,
+                                          timeout=15)
+                        cbody = cpr.text[:200000]
+                    except Exception:
+                        continue
+                    check = tmpl.replace("{C}", cval)
+                    if enc == "entity":
+                        check = html.escape(check)
+                    if check in cbody and "&lt;" not in check:
+                        findings.append(self._f(
+                            "leak", "xss_context_probe",
+                            f"HIGH: filter-bypass context in parameter "
+                            f"'{name}' at {parts.path or '/'} ({ctx_label}).",
+                            source="xss context probe", source_url=cpurl,
+                            confidence=70, passive=False,
+                            evidence={"severity": "high",
+                                      "parameter": name,
+                                      "context": ctx_label,
+                                      "encoding": enc,
+                                      "remediation": REMEDIATION,
+                                      "scope_note": "Authorized testing only. "
+                                                    "Inert canary; no script executed."}))
+                        break
+                else:
+                    continue
+                break
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested} params, "

@@ -8,6 +8,7 @@ Custom-built, no API keys needed for suggestions.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import List
 
@@ -62,28 +63,64 @@ class PortsPlugin(Plugin):
                     f"Port {port} ({service}) - commonly open, verify manually",
                     source="port suggester", confidence=30, passive=True))
         else:
-            # Active: real TCP connects with short timeout
-            async def check_port(port: int) -> tuple:
+            # Active: real TCP connects with short timeout, plus banner grab
+            HTTP_PORTS = {80, 443, 8000, 8080, 8443, 3000, 5000, 9000, 9200, 5601}
+
+            async def check_port(port: int, service: str) -> tuple:
                 try:
-                    _, writer = await asyncio.wait_for(
+                    reader, writer = await asyncio.wait_for(
                         asyncio.open_connection(host, port), timeout=3)
+                    banner = ""
+                    try:
+                        if port in HTTP_PORTS:
+                            scheme = "https" if port in (443, 8443) else "http"
+                            req = (f"GET / HTTP/1.0\r\nHost: {host}\r\n"
+                                   f"User-Agent: ReconAnything/1.0\r\n\r\n")
+                            writer.write(req.encode())
+                            await writer.drain()
+                            data = await asyncio.wait_for(reader.read(512), timeout=3)
+                            text = data.decode("utf-8", "replace")
+                            server = ""
+                            title = ""
+                            for line in text.split("\r\n"):
+                                if line.lower().startswith("server:"):
+                                    server = line.split(":", 1)[1].strip()[:60]
+                                    break
+                            m = re.search(r"<title[^>]*>(.*?)</title>", text,
+                                          re.I | re.S)
+                            if m:
+                                title = re.sub(r"\s+", " ", m.group(1)).strip()[:60]
+                            banner = f"HTTP {server}".strip()
+                            if title:
+                                banner += f" - {title}"
+                        else:
+                            data = await asyncio.wait_for(reader.read(128), timeout=2)
+                            banner = data.decode("utf-8", "replace").strip()[:120]
+                    except Exception:
+                        pass
                     writer.close()
                     try:
                         await writer.wait_closed()
                     except Exception:
                         pass
-                    return port, True
+                    return port, service, True, banner
                 except Exception:
-                    return port, False
+                    return port, service, False, ""
 
             results = await asyncio.gather(
-                *[check_port(p) for p, _ in COMMON_PORTS])
-            for (port, service), (_, is_open) in zip(COMMON_PORTS, results):
+                *[check_port(p, s) for p, s in COMMON_PORTS])
+            for port, service, is_open, banner in results:
                 if is_open:
+                    val = f"Port {port} ({service}) is OPEN"
+                    if banner:
+                        val += f" - {banner}"
                     findings.append(self._f(
-                        "infra", "port_open",
-                        f"Port {port} ({service}) is OPEN",
-                        source="port scan", confidence=95, passive=False))
+                        "infra", "port_open", val,
+                        source="port scan", confidence=95, passive=False,
+                        evidence={"port": port, "service": service,
+                                  "banner": banner,
+                                  "severity": "medium" if port not in (22, 3389, 5900, 23)
+                                  else "high"}))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"checked {len(COMMON_PORTS)} ports ({mode})")

