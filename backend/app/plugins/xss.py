@@ -120,7 +120,7 @@ class XssPlugin(Plugin):
         findings: List[Finding] = []
 
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
+            r = await fetch(ctx.http, ctx.limiter, "GET", base, rotate_ua=True, timeout=25,
                             follow_redirects=True)
             html = r.text[:300000]
             page_url = str(r.url)
@@ -136,7 +136,7 @@ class XssPlugin(Plugin):
             full = urljoin(page_url, sm.group(1))
             if urlparse(full).netloc.endswith(domain):
                 try:
-                    jr = await fetch(ctx.http, ctx.limiter, "GET", full,
+                    jr = await fetch(ctx.http, ctx.limiter, "GET", full, rotate_ua=True,
                                      timeout=15)
                     if jr.status_code == 200:
                         js_texts.append(jr.text[:500000])
@@ -187,7 +187,7 @@ class XssPlugin(Plugin):
                 probe = [(n, canary if n == name else v) for n, v in params]
                 purl = urlunparse(parts._replace(query=urlencode(probe)))
                 try:
-                    pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                    pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
                                      timeout=15)
                     body = pr.text[:200000]
                 except Exception:
@@ -236,7 +236,7 @@ class XssPlugin(Plugin):
                     cpurl = urlunparse(parts._replace(
                         query=urlencode(cprobe)))
                     try:
-                        cpr = await fetch(ctx.http, ctx.limiter, "GET", cpurl,
+                        cpr = await fetch(ctx.http, ctx.limiter, "GET", cpurl, rotate_ua=True,
                                           timeout=15)
                         cbody = cpr.text[:200000]
                     except Exception:
