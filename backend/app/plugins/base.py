@@ -13,6 +13,12 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+# Valid plugin groups. The UI groups plugins by this value; the health
+# check and tests reject anything outside it.
+PLUGIN_GROUPS = ("network", "web", "api", "mobile", "identity",
+                 "infra", "web3", "financial", "graph")
+
+
 class PluginStatus(str, Enum):
     OK = "ok"
     SKIPPED = "skipped"
@@ -291,7 +297,7 @@ class Plugin(abc.ABC):
     requires_keys: List[str] = []
     passive: bool = True
     cost: Cost = Cost.FREE
-    group: str = "network"  # network | web | api | mobile | identity
+    group: str = "network"  # one of PLUGIN_GROUPS
     description: str = ""
     # Execution phase. Phase 1 plugins run first; phase 2 "chain" plugins
     # run after, consuming the discovery bus (ctx.shared) populated by

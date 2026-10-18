@@ -71,28 +71,46 @@ class BackupPlugin(Plugin):
             return f" Contains secret markers: {', '.join(hits[:4])}." if hits else ""
 
         if passive:
-            for path in candidates:
+            # Wayback lookup per path: zero packets to the target.
+            # Concurrent (12 at a time): the old sequential loop took
+            # 227 x retry-backoff on a dead network, blowing past the
+            # 180s timeout. Same checks, same findings, bounded time.
+            sem = asyncio.Semaphore(12)
+
+            async def wprobe(path: str):
                 full = base + path
                 url = ("https://web.archive.org/cdx/search/cdx?url="
                        + quote(full, safe="") + "&output=json&fl=timestamp&limit=1")
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                    timeout=12, max_retries=1)
-                    if r.status_code == 200:
+                async with sem:
+                    try:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                        timeout=12, max_retries=1)
+                    except Exception:
+                        return None
+                if r.status_code == 200:
+                    try:
                         data = r.json()
-                        if isinstance(data, list) and len(data) > 1:
-                            ts = data[1][0] if data[1] else ""
-                            findings.append(self._f(
-                                "leak", "backup_archived",
-                                f"HIGH: backup file {path} was archived ({ts}).",
-                                source="Wayback CDX",
-                                source_url=f"https://web.archive.org/web/{ts}/{full}",
-                                confidence=65, passive=True,
-                                evidence={"severity": "high",
-                                          "remediation": "Remove backup files from web roots. "
-                                                         "Block backup extensions at the web server."}))
-                except Exception:
+                    except Exception:
+                        return None
+                    if isinstance(data, list) and len(data) > 1:
+                        ts = data[1][0] if data[1] else ""
+                        return (path, full, ts)
+                return None
+
+            probed = await asyncio.gather(*[wprobe(p) for p in candidates])
+            for item in probed:
+                if not item:
                     continue
+                path, full, ts = item
+                findings.append(self._f(
+                    "leak", "backup_archived",
+                    f"HIGH: backup file {path} was archived ({ts}).",
+                    source="Wayback CDX",
+                    source_url=f"https://web.archive.org/web/{ts}/{full}",
+                    confidence=65, passive=True,
+                    evidence={"severity": "high",
+                              "remediation": "Remove backup files from web roots. "
+                                             "Block backup extensions at the web server."}))
         else:
             # Concurrent sweep: 228 candidates at ~10 RPS = ~25s.
             # Short timeout + single retry: a blackholed path on a WAF
