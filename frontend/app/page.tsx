@@ -13,7 +13,7 @@ export default function Home() {
   const [text, setText] = useState("");
   const [classified, setClassified] = useState<(ClassifyResult & { raw: string })[]>([]);
   const [override, setOverride] = useState("");
-  const [mode, setMode] = useState<"passive" | "active">("passive");
+  const [mode, setMode] = useState<"passive" | "active">("active");
   const [sourceType, setSourceType] = useState<"website" | "bank" | "atm">("website");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
@@ -173,18 +173,18 @@ export default function Home() {
           )}
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Mode:</span>
+            <button onClick={() => setMode("active")}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "active" ? "bg-amber-900 text-amber-200" : "text-slate-400"}`}>
+              ACTIVE (default)
+            </button>
             <button onClick={() => setMode("passive")}
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "passive" ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
               PASSIVE
             </button>
-            <button onClick={() => setMode("active")}
-              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "active" ? "bg-amber-900 text-amber-200" : "text-slate-400"}`}>
-              ACTIVE
-            </button>
           </div>
           <span className="text-xs text-slate-500 w-full sm:w-auto">
             {mode === "passive" ? "third-party APIs and public datasets only, no packets to the target"
-              : "direct DNS, HTTP, probes and scans against the target - be polite, rate-limited"}
+              : "full recon: direct DNS, HTTP requests, port and vuln probes against the target - rate-limited and polite"}
           </span>
           <button className="btn px-6 py-3 min-h-[48px] w-full sm:w-auto sm:ml-auto text-base" disabled={!text.trim() || running} onClick={start}>
             {running ? "Starting..." : "Run recon"}

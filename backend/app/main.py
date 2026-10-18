@@ -37,7 +37,7 @@ from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
-from .models import ApiKey, Finding, Run, Schedule, Target, get_session, init_db
+from .models import ApiKey, Finding, Run, RunEvent, Schedule, Target, get_session, init_db
 from .plugins.registry import describe
 from .reporting import executive_summary, findings_dump, to_csv, to_html, to_markdown
 from .runner import launch_run, subscribe
@@ -81,6 +81,17 @@ def _startup():
             session.close()
     except Exception:
         pass
+    # Prune the SSE event log so run_events does not grow forever.
+    try:
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)
+        s2 = get_session()
+        try:
+            s2.query(RunEvent).filter(RunEvent.created_at < cutoff).delete()
+            s2.commit()
+        finally:
+            s2.close()
+    except Exception:
+        pass
 
 
 @app.get("/api/health")
@@ -118,7 +129,7 @@ def api_plugins():
 # -- runs -----------------------------------------------------------------
 class RunIn(BaseModel):
     targets: str
-    mode: str = "passive"
+    mode: str = "active"
     plugins: Optional[List[str]] = None
     module_overrides: Optional[Dict[str, str]] = None
     source_type: str = "website"  # website | bank | atm
