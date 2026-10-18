@@ -41,6 +41,7 @@ DRIFT_RATIO = 0.25
 
 class LogicInjectionPlugin(Plugin):
     id = "logici"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "API Logic Injection"
     accepts = ["domain", "url"]
     passive = False

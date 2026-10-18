@@ -110,6 +110,7 @@ SQLI_TIME_PAYLOADS = [
 
 class SqliPlugin(Plugin):
     id = "sqli"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "SQLi Probe"
     accepts = ["domain", "url"]
     passive = False

@@ -39,6 +39,7 @@ server-status server-info
 
 class HiddenPathsPlugin(Plugin):
     id = "hiddenpaths"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Hidden Endpoint Finder"
     accepts = ["domain", "url"]
     passive = False  # active probing

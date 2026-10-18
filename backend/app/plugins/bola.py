@@ -31,6 +31,7 @@ REMEDIATION = ("Enforce object-level authorization on every API endpoint: "
 
 class BolaPlugin(Plugin):
     id = "bola"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "BOLA API Tester"
     accepts = ["domain", "url"]
     passive = True

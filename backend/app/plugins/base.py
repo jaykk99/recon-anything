@@ -297,6 +297,12 @@ class Plugin(abc.ABC):
     # run after, consuming the discovery bus (ctx.shared) populated by
     # phase 1. Lets findings lead to more findings.
     phase: int = 1
+    # Aggressive: sends attack payloads or brute-forces paths/endpoints.
+    # When the rate limiter has a host in WAF graceful mode, aggressive
+    # plugins are suppressed for that host (ok with a note) so the scan
+    # budget isn't burned on blocked endpoints. Lightweight checks keep
+    # running. No effect on non-WAF hosts.
+    aggressive: bool = False
     # Per-plugin timeout ceiling (seconds). This is hang protection, NOT a
     # speed target: plugins are never killed to hit a time budget, only to
     # stop a genuinely stuck plugin. Findings always win over speed.

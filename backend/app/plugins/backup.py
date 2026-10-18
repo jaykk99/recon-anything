@@ -41,6 +41,7 @@ SECRET_MARKERS = ["password", "secret", "api_key", "apikey", "private key",
 class BackupPlugin(Plugin):
     timeout_s = 180  # slow enumerator: needs headroom
     id = "backup"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Backup File Sweeper"
     accepts = ["domain", "url"]
     passive = True

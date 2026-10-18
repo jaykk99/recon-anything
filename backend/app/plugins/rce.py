@@ -51,6 +51,7 @@ ERROR_PATTERNS = [
 
 class RcePlugin(Plugin):
     id = "rce"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "RCE Time Probe"
     accepts = ["domain", "url"]
     passive = False

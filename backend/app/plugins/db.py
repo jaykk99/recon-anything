@@ -40,6 +40,7 @@ DBS = [
 
 class DbPlugin(Plugin):
     id = "db"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Exposed Databases"
     accepts = ["domain", "url", "ip"]
     passive = False

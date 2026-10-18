@@ -51,6 +51,7 @@ SSTI_ERRORS = [
 
 class SstiPlugin(Plugin):
     id = "ssti"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "SSTI Probe"
     accepts = ["domain", "url"]
     passive = False
