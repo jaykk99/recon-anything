@@ -62,8 +62,8 @@ CODE_PATTERNS = [
 
 
 class GiftCardsPlugin(Plugin):
-    id = "giftcards"
-    label = "Gift Card Infrastructure"
+    id = "giftinfra"
+    label = "Gift Card Infrastructure Map"
     accepts = ["domain", "url"]
     passive = True
     cost = Cost.FREE
