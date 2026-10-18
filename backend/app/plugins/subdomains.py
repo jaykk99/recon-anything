@@ -101,6 +101,31 @@ MEDIUM_SUBS = {
 }
 
 
+# Staleness signals: old tech versions that indicate unmaintained hosts
+STALE_SERVER_PATTERNS = [
+    (r"apache/2\.2", "Apache 2.2 (EOL since 2017)"),
+    (r"apache/2\.0", "Apache 2.0 (EOL since 2013)"),
+    (r"nginx/1\.[0-9]\.", "old nginx 1.x"),
+    (r"nginx/0\.", "nginx 0.x (ancient)"),
+    (r"iis/6\.0", "IIS 6.0 (EOL since 2015)"),
+    (r"iis/7\.0", "IIS 7.0 (EOL)"),
+    (r"php/5\.", "PHP 5.x (EOL since 2018)"),
+    (r"php/7\.0", "PHP 7.0 (EOL since 2019)"),
+    (r"php/7\.1", "PHP 7.1 (EOL since 2019)"),
+    (r"python/2\.", "Python 2.x (EOL since 2020)"),
+    (r"django/1\.", "Django 1.x (EOL)"),
+    (r"wordpress", None),  # version checked separately
+]
+
+STALE_TITLE_PATTERNS = [
+    (r"under construction", "under construction page"),
+    (r"coming soon", "coming soon page"),
+    (r"welcome to nginx", "default nginx page (unconfigured)"),
+    (r"apache2 debian default", "default Apache page (unconfigured)"),
+    (r"it works!", "default Apache test page"),
+]
+
+
 def classify_subdomain(sub: str, domain: str):
     """Return (severity, why) if the subdomain looks interesting."""
     first = sub.split(".")[0].lower()
@@ -113,6 +138,46 @@ def classify_subdomain(sub: str, domain: str):
         if key in MEDIUM_SUBS:
             return ("medium", MEDIUM_SUBS[key])
     return (None, None)
+
+
+async def check_staleness(sub: str, ctx: Ctx) -> List[str]:
+    """Probe a subdomain for staleness signals. Returns list of signals."""
+    signals = []
+    for scheme in ("https", "http"):
+        url = f"{scheme}://{sub}/"
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10,
+                            follow_redirects=True)
+            # Check server header for old tech
+            server = r.headers.get("server", "")
+            for pat, label in STALE_SERVER_PATTERNS:
+                import re as _re
+                if _re.search(pat, server, _re.I):
+                    if label:
+                        signals.append(f"stale server header: {label}")
+                    break
+            # Check title for default/stale pages
+            title_m = _re.search(r"<title[^>]*>([^<]{0,200})</title>", r.text[:50000], _re.I)
+            if title_m:
+                title = title_m.group(1).lower()
+                for pat, label in STALE_TITLE_PATTERNS:
+                    if _re.search(pat, title):
+                        signals.append(f"stale page: {label}")
+                        break
+            # Check for old WordPress version
+            wp_m = _re.search(r'content=["\']WordPress (\d+\.\d+)', r.text[:50000])
+            if wp_m:
+                ver = wp_m.group(1)
+                try:
+                    major = float(ver)
+                    if major < 6.0:
+                        signals.append(f"old WordPress {ver}")
+                except ValueError:
+                    pass
+            break  # got a response, no need to try http
+        except Exception:
+            continue
+    return signals
 
 
 class SubdomainsPlugin(Plugin):
@@ -293,13 +358,19 @@ class SubdomainsPlugin(Plugin):
                                     confidence=85, passive=True))
             sev, why = classify_subdomain(sub, domain)
             if sev:
+                # Check for staleness on interesting subdomains
+                stale_signals = await check_staleness(sub, ctx)
+                stale_note = ""
+                if stale_signals:
+                    stale_note = f" STALENESS: {'; '.join(stale_signals)}. This host looks abandoned."
                 findings.append(self._f(
                     "dns", "interesting_subdomain",
-                    f"{sev.upper()}: {sub} looks interesting: {why}.",
+                    f"{sev.upper()}: {sub} looks interesting: {why}.{stale_note}",
                     source="subdomain classifier",
                     source_url=f"https://crt.sh/?q=%25.{domain}",
                     confidence=75, passive=True,
                     evidence={"severity": sev, "subdomain": sub, "why": why,
+                              "stale_signals": stale_signals,
                               "remediation": "Verify this host is intentional, patched, "
                                              "and not exposing more than the main site."}))
 

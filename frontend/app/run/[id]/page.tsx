@@ -5,11 +5,27 @@ import { getCode } from "../../../lib/api";
 interface Finding {
   plugin: string; category: string; key: string; value: string;
   source: string; source_url?: string; confidence: number; passive: boolean;
-  evidence?: Record<string, any>;
+  evidence?: Record<string, any>; bounty_value?: string;
 }
 interface PluginState { plugin: string; label?: string; status: string; reason: string; findings: number }
 
 const CATS = ["dns", "web", "api", "mobile", "identity", "infra", "leak", "graph"];
+
+const BOUNTY_RANGES: Record<string, string> = {
+  critical: "$5k+", high: "$1k-5k", medium: "$100-1k", low: "$0-100",
+};
+const BOUNTY_ORDER: Record<string, number> = {
+  critical: 0, high: 1, medium: 2, low: 3,
+};
+function bountyOf(f: Finding): string {
+  return (f.bounty_value || "low").toLowerCase();
+}
+function bountyColor(b: string): string {
+  if (b === "critical") return "text-red-400 border-red-500/40 bg-red-500/10";
+  if (b === "high") return "text-orange-400 border-orange-500/40 bg-orange-500/10";
+  if (b === "medium") return "text-yellow-300 border-yellow-500/30 bg-yellow-500/10";
+  return "text-slate-500 border-slate-700 bg-slate-800/50";
+}
 
 function sevOf(f: Finding): string {
   return (f.evidence?.severity || "").toLowerCase();
@@ -86,6 +102,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [apiMap, setApiMap] = useState<any>(null);
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState("severity");
   // progress + ETA
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
@@ -228,6 +245,11 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // expanded finding cards: key = category + index
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   function sortFindings(list: Finding[]): Finding[] {
+    if (sortBy === "bounty") {
+      return [...list].sort((a, b) =>
+        (BOUNTY_ORDER[bountyOf(a)] ?? 3) - (BOUNTY_ORDER[bountyOf(b)] ?? 3) ||
+        b.confidence - a.confidence);
+    }
     const rank = (f: Finding) => {
       const s = sevOf(f);
       return s === "critical" ? 0 : s === "high" ? 1 : s === "medium" ? 2 : 3;
@@ -302,6 +324,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
           {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]" placeholder="filter..." value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="severity">sort: severity</option>
+          <option value="bounty">sort: bounty value</option>
+        </select>
       </div>
 
       {/* findings as expandable cards (mobile friendly, nothing truncated) */}
@@ -331,6 +357,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
                   onClick={() => setExpanded((e) => ({ ...e, [ek]: !e[ek] }))}>
                   <div className="flex items-center gap-2 flex-wrap">
                     {sev && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev)}`}>{sev.toUpperCase()}</span>}
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${bountyColor(bountyOf(f))}`}>${BOUNTY_RANGES[bountyOf(f)] || "$0-100"}</span>
                     <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
                     <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
                     <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>

@@ -75,6 +75,7 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
         key=f.key, value=f.value, source=f.source, source_url=f.source_url,
         confidence=f.confidence, evidence=f.evidence, passive=f.passive,
         first_seen=dt.datetime.now(dt.timezone.utc), raw=f.raw,
+        bounty_value=getattr(f, "bounty_value", "low"),
     )
 
 
@@ -116,6 +117,8 @@ PLUGIN_TIME_ESTIMATES = {
     "cookies": 8, "forms": 10, "breach": 15, "favicon": 8,
     "adminfinder": 20, "authbypass": 25, "acl": 15, "jwt": 12,
     "session": 15, "crawler": 45, "paramdiscover": 30, "apifuzz": 25,
+    "rce": 40, "s3": 20,
+    "smartcontract": 15, "cryptoconfig": 25, "walletcheck": 20,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 1800  # 30 min hard cap, never leave a run stuck

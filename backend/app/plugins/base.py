@@ -39,6 +39,60 @@ class Finding:
     first_seen: str = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc).isoformat())
     raw: Optional[Any] = None
     passive: bool = True  # badge: which mode produced it
+    bounty_value: str = "low"  # critical | high | medium | low
+
+
+# Bug bounty payout tiers. Maps finding keys to their value tier.
+# critical = $5k+, high = $1k-5k, medium = $100-1k, low = $0-100
+BOUNTY_VALUE_TIERS = {
+    "critical": {"label": "CRITICAL", "range": "$5k+", "color": "#ff4444"},
+    "high": {"label": "HIGH", "range": "$1k-5k", "color": "#ff8800"},
+    "medium": {"label": "MEDIUM", "range": "$100-1k", "color": "#ffbb33"},
+    "low": {"label": "LOW", "range": "$0-100", "color": "#888888"},
+}
+
+# Finding key -> bounty tier. Used to auto-assign value to findings.
+BOUNTY_KEY_TIERS = {
+    # CRITICAL ($5k+)
+    "rce_time_based": "critical",
+    "sqli_error_based": "critical",
+    "ssrf_cloud_metadata": "critical",
+    "exposed_aws_key": "critical",
+    "exposed_github_token": "critical",
+    "exposed_stripe_key": "critical",
+    "wallet_private_key": "critical",
+    "s3_public_write": "critical",
+    "git_exposed": "high",
+    # HIGH ($1k-5k)
+    "idor_candidate": "high",
+    "s3_public_read": "high",
+    "exposed_env": "high",
+    "hardcoded_password": "high",
+    "subdomain_takeover": "high",
+    "interesting_subdomain": "high",
+    # MEDIUM ($100-1k)
+    "xss_reflected": "medium",
+    "open_redirect": "medium",
+    "cors_misconfig": "medium",
+    "clickjacking": "medium",
+    "missing_security_header": "medium",
+    # LOW ($0-100) - default
+}
+
+
+def bounty_tier_for(key: str, severity: str = "") -> str:
+    """Get the bounty value tier for a finding key."""
+    if key in BOUNTY_KEY_TIERS:
+        return BOUNTY_KEY_TIERS[key]
+    # Fall back to severity mapping
+    sev = severity.lower() if severity else ""
+    if sev == "critical":
+        return "critical"
+    if sev == "high":
+        return "high"
+    if sev == "medium":
+        return "medium"
+    return "low"
 
 
 @dataclass
@@ -129,10 +183,17 @@ class Plugin(abc.ABC):
     def _f(self, category: str, key: str, value: str, source: str,
            source_url: Optional[str] = None, confidence: int = 80,
            evidence: Optional[Dict[str, Any]] = None, raw: Optional[Any] = None,
-           passive: bool = True) -> Finding:
+           passive: bool = True, bounty_value: Optional[str] = None) -> Finding:
+        bv = bounty_value
+        if bv is None:
+            sev = ""
+            if evidence and isinstance(evidence, dict):
+                sev = str(evidence.get("severity", ""))
+            bv = bounty_tier_for(key, sev)
         return Finding(plugin_id=self.id, category=category, key=key, value=value,
                        source=source, source_url=source_url, confidence=confidence,
-                       evidence=evidence, raw=raw, passive=passive)
+                       evidence=evidence, raw=raw, passive=passive,
+                       bounty_value=bv)
 
     def module_mode(self, ctx: Ctx) -> str:
         """Per-module override wins over the global mode."""
