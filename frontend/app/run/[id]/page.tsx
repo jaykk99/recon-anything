@@ -82,6 +82,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [plugins, setPlugins] = useState<Record<string, PluginState>>({});
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
+  const [sourceType, setSourceType] = useState("website");
   const [summary, setSummary] = useState<any>(null);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
@@ -94,9 +95,6 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [etaS, setEtaS] = useState<number | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
-  // source type from run_start: website | bank | atm. ATM/Bank are picked
-  // on the start page, never findings, so hide the atm tab on website runs.
-  const [sourceType, setSourceType] = useState<string | null>(null);
   // finding dedupe: SSE replays history on reconnect, so skip repeats.
   const seenFids = useRef<Set<string>>(new Set());
   // file viewer
@@ -115,11 +113,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
     return () => clearInterval(t);
   }, [status, startTime]);
 
+  // the atm tab only exists on ATM source-type runs; never leave it selected elsewhere
+  useEffect(() => {
+    if (tab === "atm" && sourceType !== "atm") setTab("findings");
+  }, [tab, sourceType]);
+
   useEffect(() => {
     const es = new EventSource(`/api/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
     const on = (ev: string, fn: (e: MessageEvent) => void) => es.addEventListener(ev, fn as EventListener);
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
+      if (d.source_type) setSourceType(d.source_type);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
       if (d.source_type) setSourceType(d.source_type);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
@@ -173,6 +177,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
           (d.findings || []).forEach((f: any) => {
             seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
           });
+          if (d.run?.source_type) setSourceType(d.run.source_type);
           clearInterval(poll); es.close();
           if (d.run.status === "done") {
             const h = { "X-Access-Code": getCode() };
@@ -269,12 +274,6 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const batches = Math.ceil(progress.total / BATCH);
   const batch = progress.total > 0 ? Math.min(Math.floor(progress.done / BATCH) + 1, Math.max(batches, 1)) : 0;
   const runningNames = runningNow.slice(0, 8).map((p) => p.plugin).join(", ");
-  // ATM/Bank are source types picked on the start page, never findings.
-  const showAtmTab = sourceType !== "website";
-  const tabList = (["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const);
-  const visibleTabs: readonly string[] = showAtmTab
-    ? (["findings", "vulns", "aihunter", "atm", ...tabList.slice(3)] as const)
-    : tabList;
 
   return (
     <div className="space-y-4 max-w-full">
@@ -344,9 +343,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
-      {/* tabs - thumb reachable, 44px targets */}
+      {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
+          ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {visibleTabs.map((t) => (
+        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).filter((t) => t !== "atm" || sourceType === "atm").map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}

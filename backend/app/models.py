@@ -27,6 +27,7 @@ class Run(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     mode = Column(String, default="passive")  # passive | active
+    source_type = Column(String, default="website")  # website | bank | atm
     status = Column(String, default="running")  # running | done | error
     summary = Column(JSON, default=dict)
     targets = relationship("Target", back_populates="run", cascade="all, delete-orphan")
@@ -163,6 +164,17 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    # Lightweight migration for pre-existing DBs: create_all does not add
+    # columns to tables that already exist, so backfill source_type when missing.
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(runs)")]
+            if "source_type" not in cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE runs ADD COLUMN source_type VARCHAR DEFAULT 'website'")
+                conn.commit()
+    except Exception:
+        pass  # non-sqlite backend or fresh table; create_all already handled it
 
 
 def get_session():
