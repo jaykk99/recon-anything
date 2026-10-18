@@ -1,5 +1,4 @@
 const CODE_KEY = "recon_access_code";
-const PIN_KEY = "recon_pin_unlocked";
 
 export function getCode(): string {
   if (typeof window === "undefined") return "";
@@ -10,29 +9,19 @@ export function setCode(v: string) {
   localStorage.setItem(CODE_KEY, v);
 }
 
-export function isPinUnlocked(): boolean {
-  if (typeof window === "undefined") return false;
-  return sessionStorage.getItem(PIN_KEY) === "1";
+export function clearCode() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(CODE_KEY);
 }
 
-export function setPinUnlocked() {
-  sessionStorage.setItem(PIN_KEY, "1");
-}
-
-export async function pinRequired(): Promise<boolean> {
-  const r = await fetch("/api/pin-required");
-  if (!r.ok) return false;
-  const d = await r.json();
-  return !!d.required;
-}
-
-export async function verifyPin(pin: string): Promise<boolean> {
-  const r = await fetch("/api/pin-verify", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pin }),
-  });
-  return r.ok;
+// Verify an access code against the server without saving it.
+export async function verifyCode(code: string): Promise<boolean> {
+  try {
+    const r = await fetch("/api/plugins", { headers: { "X-Access-Code": code } });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function headers(): HeadersInit {
