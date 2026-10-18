@@ -44,10 +44,10 @@ class WaybackPlugin(Plugin):
                     return {"error": f"HTTP {resp.status_code}"}
                 return resp.json()
             except Exception as e:
-                return {"error": str(e)[:200]}
+                return {"error": str(e)[:200] or type(e).__name__}
 
         rows, _ = await ctx.cache.cached("wayback", domain, cdx)
-        if isinstance(rows, dict) and rows.get("error"):
+        if isinstance(rows, dict) and "error" in rows:
             res = self._degraded(f"Wayback: {rows['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res

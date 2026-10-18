@@ -128,10 +128,10 @@ class WebTechPlugin(Plugin):
                 return {"status": r.status_code, "headers": dict(r.headers),
                         "html": r.text[:500000], "url": str(r.url)}
             except Exception as e:
-                return {"error": str(e)[:200]}
+                return {"error": str(e)[:200] or type(e).__name__}
 
         home, _ = await ctx.cache.cached("http", f"home:{base}", get_home)
-        if home.get("error"):
+        if "error" in home:
             res = self._degraded(f"fetch failed: {home['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res

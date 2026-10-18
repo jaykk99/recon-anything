@@ -20,7 +20,8 @@ from urllib.parse import quote
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   safe_json_list)
 from .secretutils import evidence_block
 
 HIBP_V3 = "https://haveibeenpwned.com/api/v3"
@@ -67,14 +68,36 @@ class EmailBreachPlugin(Plugin):
         # 2) Domain-wide: which breaches ever touched this domain
         #    (unauthenticated /breaches endpoint, works without a key).
         domain = domain_from_target(target.type, target.normalized)
+        domain_checked = False
         if domain:
-            await self._domain_breaches(domain, ctx, findings)
+            domain_checked = await self._domain_breaches(domain, ctx, findings)
 
         # 3) Also check harvested emails from the discovery bus (bounded).
         emails = [e for e in ctx.consume("emails")][:5]
         if key and emails and target.type != "email":
             for email in emails:
                 await self._breached_account(email, ctx, key, findings)
+
+        # Never silent: a zero must always explain what was checked and
+        # what was missing, so Jay never sees an empty plugin again.
+        if not findings:
+            if not key and not domain_checked:
+                detail = ("no HIBP_API_KEY configured, and the keyless HIBP "
+                          "domain lookup could not be reached")
+            elif not key:
+                detail = ("no HIBP_API_KEY configured; the keyless HIBP "
+                          "domain lookup ran and this domain appears in no "
+                          "known breach")
+            elif not domain_checked:
+                detail = "HIBP could not be reached for the domain lookup"
+            else:
+                detail = "HIBP reported no breaches for this target"
+            findings.append(self._f(
+                "leak", "hibp_note",
+                f"Breach check complete, nothing found ({detail}).",
+                source="haveibeenpwned", confidence=60, passive=True,
+                evidence=evidence_block("", "hibp_no_result", "credential",
+                                        "low")))
 
         dur = int((time.monotonic() - t0) * 1000)
         note = (f"{len(findings)} breach findings"
@@ -127,15 +150,20 @@ class EmailBreachPlugin(Plugin):
                 evidence=evidence_block(email, "hibp_http", "credential",
                                         "low")))
             return
-        try:
-            breaches = r.json()
-        except Exception:
-            return
+        # Malformed payloads (error object instead of array, bad JSON)
+        # degrade to "no data", never raise.
+        breaches = safe_json_list(r)
         for b in breaches:
             name = b.get("Name", "?")
             date = b.get("BreachDate", "?")
             classes = b.get("DataClasses") or []
-            pwned = b.get("PwnCount", 0)
+            if not isinstance(classes, list):
+                classes = []
+            classes = [str(c) for c in classes]
+            try:
+                pwned = int(b.get("PwnCount", 0) or 0)
+            except (ValueError, TypeError):
+                pwned = 0
             hot = any(c.lower() in SENSITIVE_CLASSES for c in classes)
             sev = "high" if hot else "medium"
             value = (f"{email} found in breach '{name}' ({date}, "
@@ -151,24 +179,28 @@ class EmailBreachPlugin(Plugin):
                 passive=True, evidence=ev))
 
     async def _domain_breaches(self, domain: str, ctx: Ctx,
-                               findings: List[Finding]) -> None:
+                               findings: List[Finding]) -> bool:
+        """Keyless domain breach lookup. Returns True when HIBP answered
+        (even with zero breaches); False when unreachable. Never fails
+        the plugin."""
         url = f"{HIBP_V3}/breaches?domain={quote(domain)}"
         try:
             r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25,
                             headers={"User-Agent": UA})
         except Exception:
-            return  # unauthenticated helper; never fail the plugin on it
+            return False  # unauthenticated helper; never fail the plugin on it
         if r.status_code != 200:
-            return
-        try:
-            breaches = r.json()
-        except Exception:
-            return
+            return False
+        breaches = safe_json_list(r)
         for b in breaches[:20]:
             name = b.get("Name", "?")
             date = b.get("BreachDate", "?")
             classes = b.get("DataClasses") or []
-            sev = ("high" if any(c.lower() in SENSITIVE_CLASSES for c in classes)
+            if not isinstance(classes, list):
+                classes = []
+            classes = [str(c) for c in classes]
+            sev = ("high" if any(c.lower() in SENSITIVE_CLASSES
+                                 for c in classes)
                    else "low")
             value = (f"Domain breach '{name}' ({date}) exposed data tied to "
                      f"{domain}: {', '.join(classes[:8])}")
@@ -179,3 +211,4 @@ class EmailBreachPlugin(Plugin):
                 "leak", "breach_domain", value, source="haveibeenpwned",
                 source_url="https://haveibeenpwned.com/", confidence=85,
                 passive=True, evidence=ev))
+        return True

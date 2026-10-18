@@ -138,6 +138,25 @@ class CredentialStrengthPlugin(Plugin):
             await self._scan_hashes(text, url, ctx, findings, seen, passive)
             self._scan_plaintexts(text, url, findings, seen, passive)
 
+        # Never silent: the page fetch failing, or a clean scan, must say
+        # so as a finding, not as an empty result.
+        if not texts:
+            findings.append(self._f(
+                "leak", "credential_note",
+                f"Credential scan skipped: could not fetch {base} "
+                f"(target unreachable or blocked)",
+                source="credential scan", confidence=50, passive=passive,
+                evidence=evidence_block("", "cred_no_page", "credential",
+                                        "low")))
+        elif not findings:
+            findings.append(self._f(
+                "leak", "credential_note",
+                f"No hashes or plaintext passwords found in "
+                f"{len(texts)} public sources on {domain}",
+                source="credential scan", confidence=70, passive=passive,
+                evidence=evidence_block("", "cred_clean", "credential",
+                                        "low")))
+
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
                        f"scanned {len(texts)} sources, "

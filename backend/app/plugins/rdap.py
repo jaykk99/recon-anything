@@ -50,10 +50,10 @@ class RdapPlugin(Plugin):
                     return {"error": f"HTTP {resp.status_code}"}
                 return resp.json()
             except Exception as e:
-                return {"error": str(e)[:200]}
+                return {"error": str(e)[:200] or type(e).__name__}
 
         data, _ = await ctx.cache.cached("rdap", q, do_rdap)
-        if isinstance(data, dict) and data.get("error"):
+        if isinstance(data, dict) and "error" in data:
             res = self._degraded(f"RDAP: {data['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res

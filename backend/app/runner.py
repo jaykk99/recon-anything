@@ -652,38 +652,72 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                 factor = min(max(eta_done_actual / eta_done_est, 0.5), 3.0)
             return max(remaining * factor / max(concurrency, 1), 0.0)
 
-        # Simpler: wrap each job with progress counting
+        # Simpler: wrap each job with progress counting.
+        # Global exception guard (belt and suspenders): NOTHING inside a
+        # job may propagate out of wrap() except cancellation. _run_plugin
+        # already guards the plugin body, but the bookkeeping below
+        # (finding conversion, DB writes, event emission, ETA math) also
+        # runs per-job: if any of it throws, asyncio.gather would abort
+        # the whole phase and kill the scan. Instead the one job degrades
+        # to an error note and the scan marches on. No single plugin
+        # failure may ever kill a scan.
         async def wrap(plugin, target):
             nonlocal completed_jobs, eta_done_est, eta_done_actual
-            async with sem:
-                result = await _run_plugin(plugin, target, ctx)
-            completed_jobs += 1
-            est = job_est.get((plugin.id, target.id), DEFAULT_PLUGIN_ESTIMATE_S)
-            eta_done_est += est
-            eta_done_actual += (result.duration_ms or 0) / 1000.0
-            # Persist + stream findings the moment the plugin finishes:
-            # results appear in real time, not in one burst at run end.
-            rows = [_row_to_finding(f, run_id, target.id) for f in result.findings]
-            for r in rows:
-                session.add(r)
-            if rows:
+            try:
+                async with sem:
+                    result = await _run_plugin(plugin, target, ctx)
+            except asyncio.CancelledError:
+                raise  # phase timeout must propagate
+            except BaseException as e:  # _run_plugin should never raise; guard anyway
+                result = plugin._error(
+                    f"runner guard: {type(e).__name__}: {str(e)[:150]}")
+                result.duration_ms = 0
+            try:
+                completed_jobs += 1
+                est = job_est.get((plugin.id, target.id), DEFAULT_PLUGIN_ESTIMATE_S)
+                eta_done_est += est
+                eta_done_actual += (result.duration_ms or 0) / 1000.0
+                # Persist + stream findings the moment the plugin finishes:
+                # results appear in real time, not in one burst at run end.
+                rows = [_row_to_finding(f, run_id, target.id) for f in result.findings]
+                for r in rows:
+                    session.add(r)
+                if rows:
+                    try:
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                for f, r in zip(result.findings, rows):
+                    await _emit(run_id, "finding",
+                                {"fid": r.id,
+                                 "plugin": f.plugin_id, "category": f.category,
+                                 "key": f.key, "value": f.value,
+                                 "source": f.source, "source_url": f.source_url,
+                                 "evidence": f.evidence,
+                                 "confidence": f.confidence,
+                                 "passive": f.passive, "target": target.normalized})
+            except asyncio.CancelledError:
+                raise  # phase timeout must propagate
+            except BaseException as e:
+                # Bookkeeping failed for this one job: note it, keep going.
                 try:
-                    session.commit()
+                    await _emit(run_id, "plugin_done",
+                                {"plugin": plugin.id, "status": "error",
+                                 "reason": "result handling failed: "
+                                           f"{type(e).__name__}: {str(e)[:150]}",
+                                 "findings": 0, "ms": result.duration_ms or 0})
                 except Exception:
-                    session.rollback()
-            for f, r in zip(result.findings, rows):
-                await _emit(run_id, "finding",
-                            {"fid": r.id,
-                             "plugin": f.plugin_id, "category": f.category,
-                             "key": f.key, "value": f.value,
-                             "source": f.source, "source_url": f.source_url,
-                             "evidence": f.evidence,
-                             "confidence": f.confidence,
-                             "passive": f.passive, "target": target.normalized})
-            await _emit(run_id, "progress",
-                        {"done": completed_jobs, "total": total_jobs,
-                         "eta_s": round(_eta_s(), 1),
-                         "plugin": plugin.id, "target": target.normalized})
+                    pass
+                result = plugin._error(
+                    "result handling failed: "
+                    f"{type(e).__name__}: {str(e)[:150]}")
+            try:
+                await _emit(run_id, "progress",
+                            {"done": completed_jobs, "total": total_jobs,
+                             "eta_s": round(_eta_s(), 1),
+                             "plugin": plugin.id, "target": target.normalized})
+            except Exception:
+                pass  # progress must never kill a job; poll fallback covers it
             return plugin, target, result
 
         async def wrap_na(plugin, target):

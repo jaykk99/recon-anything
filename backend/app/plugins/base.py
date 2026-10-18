@@ -86,6 +86,35 @@ def normalize_risk(severity: str) -> str:
     return "low"
 
 
+def safe_json_list(resp) -> List[Dict[str, Any]]:
+    """Parse an httpx response as JSON, returning a list of dicts.
+
+    External APIs change shape, return error objects instead of arrays,
+    or send garbage. Callers iterate the result directly: on ANY failure
+    (bad JSON, wrong shape, non-dict items) this returns []. A malformed
+    payload must degrade to "no data", never raise.
+    """
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+    if isinstance(data, list):
+        return [d for d in data if isinstance(d, dict)]
+    return []
+
+
+def safe_json_dict(resp) -> Dict[str, Any]:
+    """Parse an httpx response as JSON, returning a dict ({} on failure).
+
+    Same contract as safe_json_list for object-shaped payloads.
+    """
+    try:
+        data = resp.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 # Default "what to do about it" per finding category. Every finding must
 # be actionable: if a plugin doesn't set a specific remediation, the
 # category default applies so nothing is ever just "X exists".

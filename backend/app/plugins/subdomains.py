@@ -208,7 +208,7 @@ class SubdomainsPlugin(Plugin):
                     return {"error": f"HTTP {resp.status_code}"}
                 return resp.json()
             except Exception as e:
-                return {"error": str(e)[:200]}
+                return {"error": str(e)[:200] or type(e).__name__}
 
         rows, _ = await ctx.cache.cached("ct", domain, crtsh)
         seen = set()
@@ -221,7 +221,7 @@ class SubdomainsPlugin(Plugin):
                     sub = sub.strip().lstrip("*.")
                     if sub and sub.endswith(domain) and sub not in seen:
                         seen.add(sub)
-        elif isinstance(rows, dict) and rows.get("error"):
+        elif isinstance(rows, dict) and "error" in rows:
             findings.append(self._f("dns", "subdomain_enum_note",
                                     f"crt.sh unavailable: {rows['error']}",
                                     source="crt.sh", confidence=40, passive=True))
@@ -236,7 +236,7 @@ class SubdomainsPlugin(Plugin):
                         return {"error": f"HTTP {resp.status_code}"}
                     return {"text": resp.text}
                 except Exception as e:
-                    return {"error": str(e)[:200]}
+                    return {"error": str(e)[:200] or type(e).__name__}
 
             ht, _ = await ctx.cache.cached("ht", domain, htarget)
             if isinstance(ht, dict) and ht.get("text"):
