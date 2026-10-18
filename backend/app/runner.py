@@ -12,16 +12,15 @@ import asyncio
 import datetime as dt
 import json
 import time
-import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 import httpx
 
 from . import config
 from .cache import Cache
-from .classifier import classify_batch, domain_from_target
-from .models import Edge, Finding as FindingRow, Node, Run, Target as TargetRow, get_session, init_db
-from .plugins.base import Ctx, PluginResult, PluginStatus, Target
+from .classifier import classify_batch
+from .models import Finding as FindingRow, Run, Target as TargetRow, get_session, init_db
+from .plugins.base import Ctx, PluginResult, Target
 from .plugins.registry import all_plugins, discover
 from .ratelimit import RateLimiter
 

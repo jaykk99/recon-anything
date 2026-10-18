@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer,
-                        JSON, String, Text, UniqueConstraint, create_engine)
+from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
+                        JSON, String, Text, create_engine)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from .config import DATABASE_URL

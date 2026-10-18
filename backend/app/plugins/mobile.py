@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 import re
-import tempfile
 import time
 import zipfile
 from typing import List

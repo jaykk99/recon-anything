@@ -12,9 +12,8 @@ import json
 import re
 import time
 from typing import Dict, List
-from urllib.parse import urljoin
 
-from ..classifier import classify, domain_from_target
+from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 

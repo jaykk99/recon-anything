@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 import html
 import io
-import json
 from typing import Dict, List
 
 from .models import Finding, Run, Target
@@ -54,7 +53,7 @@ def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
     by_cat: Dict[str, List[Dict]] = {}
     for r in rows:
         by_cat.setdefault(r["category"], []).append(r)
-    L = [f"# ReconAnything report", "",
+    L = ["# ReconAnything report", "",
          f"Run: {run.id} | mode: {run.mode} | status: {run.status}",
          f"Targets: {', '.join(t.normalized for t in targets)}", "",
          "## Executive summary",

@@ -7,11 +7,9 @@ humans.txt, manifest.json, ads.txt. Computes favicon hash for pivoting.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 from typing import List
-from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

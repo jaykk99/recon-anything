@@ -1,11 +1,11 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-sqlalchemy==2.0.36
-pydantic==2.10.4
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+sqlalchemy==2.1.5
+pydantic==2.14.1
 httpx==0.28.1
-dnspython==2.7.0
-cryptography==44.0.0
+dnspython==2.9.0
+cryptography==50.0.2
 # optional: redis (cache backend when REDIS_URL is set)
-redis==5.2.1
+redis==8.1.0
 # optional: postgres driver (only needed when DATABASE_URL is postgres)
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.13
