@@ -49,7 +49,7 @@ AUTH_MSG = "Bank module requires explicit authorization (module_overrides bank=a
 class BankPlugin(Plugin):
     id = "bank"
     label = "Bank Security Assessment"
-    accepts = ["domain", "url"]
+    accepts = ["domain", "url", "poi"]
     passive = True
     cost = Cost.FREE
     group = "financial"
@@ -60,12 +60,51 @@ class BankPlugin(Plugin):
         t0 = time.monotonic()
         if ctx.module_overrides.get("bank") != "authorized":
             return self._skipped(AUTH_MSG)
+        findings: List[Finding] = []
         domain = domain_from_target(target.type, target.normalized)
+        # POI targets: use the operator website if present, else record
+        # the location and stop (no host to assess).
+        poi = getattr(target, "poi", None)
+        base = None
+        if target.type == "poi":
+            if poi:
+                findings.append(self._f(
+                    "financial", "bank_poi",
+                    f"Bank location: {poi.get('name', 'unknown')} - "
+                    f"{poi.get('address', 'no address')} "
+                    f"({poi.get('lat')},{poi.get('lon')})",
+                    source="OpenStreetMap", confidence=100, passive=True,
+                    evidence={"severity": "info", "lat": poi.get("lat"),
+                              "lon": poi.get("lon"),
+                              "operator": poi.get("operator", ""),
+                              "website": poi.get("website", ""),
+                              "phone": poi.get("phone", "")}))
+                website = (poi.get("website") or "").strip()
+                if website:
+                    # Assess the operator website instead.
+                    domain = domain_from_target("url", website) or \
+                        domain_from_target("domain", website)
+                    if domain:
+                        base = website if website.startswith("http") \
+                            else f"https://{website}"
+                    else:
+                        res = self._ok(
+                            findings, "bank POI recorded, no website to assess")
+                        res.duration_ms = int(
+                            (time.monotonic() - t0) * 1000)
+                        return res
+                else:
+                    res = self._ok(
+                        findings, "bank POI recorded, no website to assess")
+                    res.duration_ms = int((time.monotonic() - t0) * 1000)
+                    return res
+            else:
+                return self._skipped("no host for this target type")
         if not domain:
             return self._skipped("no host for this target type")
-        base = (target.normalized if target.type == "url"
-                else f"https://{domain}/")
-        findings: List[Finding] = []
+        if base is None:
+            base = (target.normalized if target.type == "url"
+                    else f"https://{domain}/")
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
         findings.append(self._f("financial", "bank_auth_claim",
                                 f"Authorization claimed for bank assessment "

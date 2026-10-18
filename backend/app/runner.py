@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import ssl
 import time
+import uuid
 from typing import AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -155,14 +156,15 @@ RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
 async def execute_run(run_id: str, targets_raw: str, mode: str,
                       plugin_ids: Optional[List[str]] = None,
                       module_overrides: Optional[Dict[str, str]] = None,
-                      keys: Optional[Dict[str, str]] = None):
+                      keys: Optional[Dict[str, str]] = None,
+                      source_type: str = "website"):
     """Execute a full recon run, fanning SSE events to the run's bus."""
     init_db()
     RUN_EVENT_BUFFER[run_id] = []
     session = get_session()
     try:
         await _execute_run_inner(run_id, targets_raw, mode, plugin_ids,
-                                 module_overrides, keys, session)
+                                 module_overrides, keys, session, source_type)
     except Exception as e:
         # Never leave a run stuck in "running". Mark it failed.
         try:
@@ -186,14 +188,190 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
             pass
 
 
+async def _execute_poi_run(run_id: str, location_raw: str, mode: str,
+                           plugin_ids: Optional[List[str]],
+                           module_overrides: Optional[Dict[str, str]],
+                           keys: Optional[Dict[str, str]],
+                           session, source_type: str):
+    """Bank/ATM run: location -> geocode -> POI lookup -> assess each POI.
+
+    The location string becomes a set of POI sub-targets (type "poi").
+    Each POI gets the atm/bank assessment plugins run against it.
+    """
+    import datetime as _dt
+    from . import geo as _geo
+    from .models import Finding as FindingRow
+
+    location = (location_raw or "").strip().splitlines()[0].strip()
+    await _emit(run_id, "run_start",
+                {"run_id": run_id, "targets": [location],
+                 "mode": mode, "source_type": source_type,
+                 "plugins": plugin_ids or [], "plugin_count": 0,
+                 "target_count": 0, "note": f"geocoding '{location}'..."})
+
+    coords = await _geo.geocode(location)
+    if not coords:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if run:
+            run.status = "failed"
+            run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+            run.summary = {"error": f"could not geocode location: {location}",
+                           "findings": 0}
+            session.commit()
+        await _emit(run_id, "run_done",
+                    {"run_id": run_id, "findings": 0,
+                     "error": f"could not geocode: {location}"})
+        return
+
+    pois = await _geo.find_pois(coords["lat"], coords["lon"], source_type)
+    await _emit(run_id, "progress",
+                {"done": 0, "total": max(len(pois), 1),
+                 "note": f"found {len(pois)} {source_type}(s) near "
+                         f"{coords['display_name']}"})
+
+    if not pois:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if run:
+            run.status = "done"
+            run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+            run.summary = {"findings": 0, "pois": 0,
+                           "location": coords["display_name"]}
+            session.commit()
+        await _emit(run_id, "run_done",
+                    {"run_id": run_id, "findings": 0,
+                     "note": f"no {source_type}s found near "
+                             f"{coords['display_name']}"})
+        return
+
+    # Persist each POI as a target row (type "poi") so findings attach.
+    from .models import Target as TargetRow
+    from .plugins.base import Target as PluginTarget
+    trobj = []
+    for poi in pois:
+        label = f"{poi['name']} ({poi['lat']:.5f},{poi['lon']:.5f})"
+        t = PluginTarget(raw=label, type="poi",
+                         normalized=f"{poi['lat']},{poi['lon']}")
+        # stash POI metadata on the target for plugins to use
+        t.poi = poi  # type: ignore[attr-defined]
+        t.poi_type = source_type  # type: ignore[attr-defined]
+        trobj.append(t)
+        session.add(TargetRow(id=t.id, run_id=run_id, raw=label,
+                              type="poi",
+                              normalized=f"{poi['lat']},{poi['lon']}"))
+    session.commit()
+
+    # Run the assessment plugins against each POI.
+    discover()
+    plugins = all_plugins()
+    if plugin_ids:
+        plugins = [p for p in plugins if p.id in plugin_ids]
+    # Default: the source-type assessment plugin plus infra recon that
+    # accepts poi targets. Keep it focused: atm/bank + ports + banners.
+    wanted = {source_type, "ports", "banners", "dns", "tls", "headers"}
+    plugins = [p for p in plugins if p.id in wanted or not plugin_ids]
+
+    await _emit(run_id, "run_start",
+                {"run_id": run_id,
+                 "targets": [t.raw for t in trobj],
+                 "mode": mode, "source_type": source_type,
+                 "plugins": [p.id for p in plugins],
+                 "plugin_count": len(plugins),
+                 "target_count": len(trobj),
+                 "location": coords["display_name"]})
+
+    async with net.async_client(
+            headers={"User-Agent": config.USER_AGENT},
+            timeout=config.DEFAULT_TIMEOUT,
+            follow_redirects=True) as http:
+        ctx = Ctx(run_id=run_id, mode=mode, http=http, cache=_cache,
+                  keys=keys or {}, limiter=_limiter,
+                  module_overrides=module_overrides or {},
+                  evidence_dir=config.EVIDENCE_DIR)
+        sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+        total_jobs = len(trobj) * len(plugins)
+        completed = 0
+        total_findings = 0
+
+        async def run_one(plugin, target):
+            nonlocal completed, total_findings
+            async with sem:
+                result = await _run_plugin(plugin, target, ctx)
+            completed += 1
+            await _emit(run_id, "progress",
+                        {"done": completed, "total": total_jobs,
+                         "plugin": plugin.id, "target": target.raw})
+            for f in result.findings:
+                session.add(_row_to_finding(f, run_id, target.id))
+                total_findings += 1
+                await _emit(run_id, "finding",
+                            {"plugin": f.plugin_id, "category": f.category,
+                             "key": f.key, "value": f.value,
+                             "source": f.source,
+                             "source_url": f.source_url,
+                             "evidence": f.evidence,
+                             "confidence": f.confidence,
+                             "passive": f.passive, "target": target.raw})
+            # Emit a POI-level finding so the UI can list each location.
+            if getattr(target, "poi", None):
+                poi = target.poi
+                session.add(FindingRow(
+                    id=uuid.uuid4().hex[:12], run_id=run_id,
+                    target_id=target.id, plugin_id="geo",
+                    category="location", key="poi",
+                    value=f"{poi['name']} - {poi.get('address', '')}",
+                    source="OpenStreetMap",
+                    source_url="",
+                    evidence={"severity": "info", "lat": poi["lat"],
+                              "lon": poi["lon"], "name": poi["name"],
+                              "address": poi.get("address", ""),
+                              "operator": poi.get("operator", ""),
+                              "website": poi.get("website", ""),
+                              "phone": poi.get("phone", ""),
+                              "poi_type": source_type},
+                    confidence=100, passive=True))
+                total_findings += 1
+            session.commit()
+            return result
+
+        jobs = [run_one(p, t) for t in trobj for p in plugins
+                if not p.accepts or "poi" in p.accepts
+                or "domain" in p.accepts or "ip" in p.accepts]
+        if jobs:
+            await asyncio.gather(*jobs)
+
+    from .graph import build_graph
+    n_nodes, n_edges = build_graph(session, run_id)
+    session.commit()
+    run = session.query(Run).filter_by(id=run_id).first()
+    if run:
+        run.status = "done"
+        run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+        run.summary = {"findings": total_findings, "nodes": n_nodes,
+                       "edges": n_edges, "targets": len(trobj),
+                       "pois": len(pois),
+                       "location": coords["display_name"],
+                       "source_type": source_type}
+        session.commit()
+    await _emit(run_id, "run_done",
+                {"run_id": run_id, "findings": total_findings,
+                 "nodes": n_nodes, "edges": n_edges,
+                 "pois": len(pois), "source_type": source_type})
+
+
 async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                              plugin_ids: Optional[List[str]],
                              module_overrides: Optional[Dict[str, str]],
                              keys: Optional[Dict[str, str]],
-                             session):
+                             session, source_type: str = "website"):
     run = session.query(Run).filter_by(id=run_id).first()
     if not run:
         session.close()
+        return
+    # Bank/ATM source types: the "target" is a location. Geocode it, find
+    # nearby POIs via OpenStreetMap, then assess each one as a sub-target.
+    if source_type in ("bank", "atm"):
+        await _execute_poi_run(run_id, targets_raw, mode, plugin_ids,
+                               module_overrides, keys, session, source_type)
         return
     discover()
     classified = classify_batch(targets_raw)
@@ -385,7 +563,9 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
 async def launch_run(run_id: str, targets_raw: str, mode: str,
                    plugin_ids: Optional[List[str]] = None,
                    module_overrides: Optional[Dict[str, str]] = None,
-                   keys: Optional[Dict[str, str]] = None) -> asyncio.Task:
+                   keys: Optional[Dict[str, str]] = None,
+                   source_type: str = "website") -> asyncio.Task:
     """Fire-and-forget: start execute_run as a background task."""
     return asyncio.create_task(
-        execute_run(run_id, targets_raw, mode, plugin_ids, module_overrides, keys))
+        execute_run(run_id, targets_raw, mode, plugin_ids, module_overrides,
+                    keys, source_type))

@@ -101,6 +101,7 @@ class RunIn(BaseModel):
     mode: str = "passive"
     plugins: Optional[List[str]] = None
     module_overrides: Optional[Dict[str, str]] = None
+    source_type: str = "website"  # website | bank | atm
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
@@ -109,6 +110,8 @@ async def api_start_run(body: RunIn):
         raise HTTPException(400, "targets required")
     if body.mode not in ("passive", "active"):
         raise HTTPException(400, "mode must be passive|active")
+    if body.source_type not in ("website", "bank", "atm"):
+        raise HTTPException(400, "source_type must be website|bank|atm")
     run_id = uuid.uuid4().hex[:12]
     session = get_session()
     try:
@@ -117,8 +120,16 @@ async def api_start_run(body: RunIn):
         keys = load_all(session)
     finally:
         session.close()
+    # Bank/ATM source types imply explicit authorization: the user picked
+    # the mode on purpose. Record it as an audit finding in the run.
+    overrides = dict(body.module_overrides or {})
+    if body.source_type == "bank":
+        overrides["bank"] = "authorized"
+    elif body.source_type == "atm":
+        overrides["atm"] = "authorized"
     await launch_run(run_id, body.targets, body.mode,
-                     body.plugins, body.module_overrides, keys)
+                     body.plugins, overrides, keys,
+                     source_type=body.source_type)
     return {"run_id": run_id}
 
 

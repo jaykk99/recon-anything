@@ -14,6 +14,7 @@ export default function Home() {
   const [classified, setClassified] = useState<(ClassifyResult & { raw: string })[]>([]);
   const [override, setOverride] = useState("");
   const [mode, setMode] = useState<"passive" | "active">("passive");
+  const [sourceType, setSourceType] = useState<"website" | "bank" | "atm">("website");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [code, setCodeState] = useState("");
@@ -77,7 +78,7 @@ export default function Home() {
       const ids = Object.keys(enabled).filter((k) => enabled[k]);
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ targets: text, mode, plugins: ids }),
+        body: JSON.stringify({ targets: text, mode, plugins: ids, source_type: sourceType }),
       });
       if (!d.run_id) throw new Error("no run id returned");
       if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
@@ -128,7 +129,9 @@ export default function Home() {
         </div>
         {codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
         <textarea className="input w-full p-3 font-mono text-base min-h-[88px]" rows={3}
-          placeholder={"example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"}
+          placeholder={sourceType === "website"
+            ? "example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"
+            : "Winnipeg, MB\n123 Main St, Winnipeg\n49.8951,-97.1384"}
           value={text} onChange={(e) => setText(e.target.value)} />
         {classified.length > 0 && (
           <div className="flex gap-2 flex-wrap items-center">
@@ -148,6 +151,26 @@ export default function Home() {
           </div>
         )}
         <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-slate-400">Scan:</span>
+            <button onClick={() => setSourceType("website")}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "website" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
+              WEBSITE
+            </button>
+            <button onClick={() => setSourceType("bank")}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "bank" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
+              BANK
+            </button>
+            <button onClick={() => setSourceType("atm")}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "atm" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
+              ATM
+            </button>
+          </div>
+          {sourceType !== "website" && (
+            <span className="text-xs text-amber-300 w-full sm:w-auto">
+              Enter a location above. The app finds every {sourceType === "bank" ? "bank" : "ATM"} nearby via OpenStreetMap, then assesses each one. Authorized engagements only.
+            </span>
+          )}
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Mode:</span>
             <button onClick={() => setMode("passive")}
