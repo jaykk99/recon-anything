@@ -15,10 +15,15 @@ from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 PRICE_PATTERNS = [
-    (r"[?&](price|amount|total|cost|fee)=(\d+)", "client-side price parameter"),
-    (r"[?&](discount|coupon|promo|voucher|referral)=([^&\s\"']+)", "coupon/referral parameter"),
-    (r"/(checkout|cart|payment|billing)", "checkout flow page"),
-    (r"(paywall|premium|subscribe|upgrade)", "paywall/premium gate"),
+    (r"[?&](price|amount|total|cost|fee|subtotal|grand_total)=(\d+)", "client-side price parameter"),
+    (r"[?&](discount|coupon|promo|voucher|referral|promo_code|discount_code)=([^&\s\"']+)", "coupon/referral parameter"),
+    (r"[?&](quantity|qty|count|units|amount_items)=(\d+)", "quantity parameter (test negative/zero/large)"),
+    (r"/(checkout|cart|payment|billing|order)", "checkout flow page"),
+    (r"(paywall|premium|subscribe|upgrade|pro_plan)", "paywall/premium gate"),
+    (r"[?&](currency|cur)=([A-Z]{3})", "currency parameter (test mismatch)"),
+    (r"[?&](trial|free_trial|promo_period)=(true|1|yes)", "free trial parameter"),
+    (r"[?&](user_id|customer_id|account_id)=(\d+)", "user ID in transaction (test swap)"),
+    (r"(add_to_cart|apply_coupon|redeem)", "cart/coupon action endpoint"),
 ]
 
 REMEDIATION = ("Never trust client-supplied prices or discounts. Validate "

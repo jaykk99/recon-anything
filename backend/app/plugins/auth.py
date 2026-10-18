@@ -121,6 +121,55 @@ class AuthPlugin(Plugin):
                  55, "medium",
                  "Use single-use, short-lived, high-entropy reset tokens sent out-of-band.")
 
+        # 5. exposed admin panels (no auth check)
+        admin_paths = ["/admin", "/admin/", "/administrator", "/wp-admin",
+                       "/dashboard", "/manager", "/console", "/panel"]
+        for apath in admin_paths:
+            try:
+                ar = await fetch(ctx.http, ctx.limiter, "GET",
+                                 base.rstrip("/") + apath, timeout=10,
+                                 follow_redirects=False)
+                # 200 without redirect to login = potentially exposed
+                if ar.status_code == 200:
+                    body_sample = ar.text[:5000].lower()
+                    if "login" not in body_sample and "sign in" not in body_sample \
+                            and "password" not in body_sample:
+                        emit("exposed_admin_panel",
+                             f"Admin panel at {apath} returns 200 without "
+                             f"login redirect - may lack authentication.",
+                             70, "high",
+                             "Require authentication on all admin paths. "
+                             "Do not rely on obscurity.",
+                             url=base.rstrip("/") + apath)
+                        break
+            except Exception:
+                continue
+
+        # 6. HTTP method override headers (auth bypass vector)
+        # Check if server respects X-HTTP-Method-Override
+        try:
+            mr = await fetch(ctx.http, ctx.limiter, "GET", page_url,
+                             timeout=10,
+                             headers={"X-HTTP-Method-Override": "DELETE"})
+            # If response differs from normal GET, method override may work
+            if mr.status_code not in (200, 301, 302, 404):
+                emit("method_override",
+                     "Server responds unusually to X-HTTP-Method-Override "
+                     "header - may allow HTTP verb tampering for auth bypass.",
+                     50, "medium",
+                     "Ignore X-HTTP-Method-Override or validate strictly.")
+        except Exception:
+            pass
+
+        # 7. role parameter pollution hints
+        if re.search(r"(?i)(role|is_admin|isadmin|privilege|access_level)\s*[=:]", html[:200000]):
+            emit("role_param_hint",
+                 "Role/privilege parameter found in page - test for "
+                 "parameter pollution (role=admin) on authorized targets.",
+                 55, "medium",
+                 "Never trust client-supplied role values. Enforce "
+                 "authorization server-side from session data.")
+
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(findings)} auth findings")
         res.duration_ms = dur

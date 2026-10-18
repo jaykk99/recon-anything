@@ -26,7 +26,24 @@ SSRF_PARAMS = {"url", "redirect", "redirect_url", "next", "return",
 METADATA_PATTERNS = [
     (r"169\.254\.169\.254", "AWS/GCP cloud metadata IP"),
     (r"metadata\.google\.internal", "GCP metadata hostname"),
+    (r"metadata\.google\.com", "GCP metadata alt hostname"),
     (r"100\.100\.100\.200", "Alibaba metadata IP"),
+    (r"169\.254\.169\.123", "Oracle Cloud metadata IP"),
+    (r"169\.254\.170\.2", "AWS ECS metadata endpoint"),
+    (r"fd00:ec2::254", "AWS IPv6 metadata"),
+    (r"instance\.metadata\.azure\.com", "Azure metadata hostname"),
+    (r"169\.254\.169\.254/metadata", "Generic cloud metadata path"),
+]
+
+# Cloud metadata URLs for bounty reference
+CLOUD_METADATA_URLS = [
+    "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "http://169.254.169.254/computeMetadata/v1/ (GCP, needs Metadata-Flavor header)",
+    "http://metadata.google.internal/computeMetadata/v1/",
+    "http://100.100.100.200/latest/meta-data/ (Alibaba)",
+    "http://169.254.169.254/metadata/instance?api-version=2021-02-01 (Azure, needs Metadata:true header)",
+    "http://169.254.169.123/opc/v1/instance/ (Oracle)",
+    "http://169.254.170.2/v2/credentials/ (AWS ECS)",
 ]
 
 REMEDIATION = ("Allowlist fetch destinations, block cloud metadata IPs "
@@ -72,18 +89,15 @@ class SsrfPlugin(Plugin):
                 findings.append(self._f(
                     "web", "ssrf_prone_param",
                     f"HIGH: SSRF-prone parameter '{m.group(1)}' found on site. "
-                    f"CRITICAL if it can reach cloud metadata: try "
-                    f"http://169.254.169.254/latest/meta-data/ (AWS), "
-                    f"http://metadata.google.internal/ (GCP), "
-                    f"http://100.100.100.200/ (Alibaba). "
+                    f"CRITICAL if it can reach cloud metadata. Test targets: "
+                    f"AWS 169.254.169.254, GCP metadata.google.internal, "
+                    f"Azure 169.254.169.254/metadata, Alibaba 100.100.100.200, "
+                    f"Oracle 169.254.169.123. "
                     f"Cloud credential theft via SSRF pays $5k+.",
                     source="HTML param mining", source_url=page_url,
                     confidence=60, passive=passive,
                     evidence={"severity": "high", "parameter": m.group(1),
-                              "cloud_targets": [
-                                  "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-                                  "http://metadata.google.internal/computeMetadata/v1/",
-                                  "http://100.100.100.200/latest/meta-data/"],
+                              "cloud_targets": CLOUD_METADATA_URLS,
                               "bounty_note": "SSRF to cloud metadata = $5k+ payout. Test with your own callback first.",
                               "remediation": REMEDIATION,
                               "scope_note": "Candidate only: confirm with your own callback server on an authorized target."}))

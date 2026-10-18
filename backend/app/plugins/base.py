@@ -147,6 +147,36 @@ class Ctx:
         """Read everything published under a discovery kind."""
         return list(self.shared.get(kind, []))
 
+    async def fetch_page(self, url: str, timeout: int = 10) -> Any | None:
+        """Fetch a page with cross-plugin caching.
+
+        Multiple plugins fetch the same homepage. This caches the
+        httpx response by URL so only the first plugin pays the cost.
+        Returns the response or None on failure.
+        """
+        from ..ratelimit import fetch as _fetch
+        cache_key = f"page:{url}"
+        cached = self.cache.get("http", cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resp = await _fetch(self.http, self.limiter, "GET", url,
+                                timeout=timeout, follow_redirects=True)
+            # Cache lightweight response data (not the full response object)
+            data = {
+                "status_code": resp.status_code,
+                "headers": dict(resp.headers),
+                "text": resp.text[:500000],
+                "url": str(resp.url),
+            }
+            try:
+                self.cache.set("http", cache_key, data, ttl=300)
+            except Exception:
+                pass
+            return data
+        except Exception:
+            return None
+
 
 class Plugin(abc.ABC):
     id: str = "base"
