@@ -75,6 +75,7 @@ class EmailsPlugin(Plugin):
                         f"{email}{note} found on {path}",
                         source="email harvester", source_url=url,
                         confidence=conf, passive=True))
+                    ctx.publish("emails", email)
             except Exception:
                 continue
 

@@ -110,7 +110,12 @@ PLUGIN_TIME_ESTIMATES = {
     "clickjack": 8, "cors": 12, "pastes": 10, "phones": 2, "social": 12,
     "secrets": 25, "wallets": 20, "creds": 20, "sqli": 30, "xss": 30,
     "ssrf": 15, "idor": 10, "auth": 12, "db": 20, "backup": 60, "git": 15,
-    "hashid": 8, "exif": 15, "crypto": 12,
+    "hashid": 8, "exif": 15, "crypto": 12, "keyleak": 15,
+    "xxe": 20, "ssti": 30, "lfi": 30, "rce": 40, "redirect": 15,
+    "hostheader": 10, "cache": 20, "asn": 10, "cert": 8, "http2": 8,
+    "cookies": 8, "forms": 10, "breach": 15, "favicon": 8,
+    "adminfinder": 20, "authbypass": 25, "acl": 15, "jwt": 12,
+    "session": 15, "crawler": 45, "paramdiscover": 30, "apifuzz": 25,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 1800  # 30 min hard cap, never leave a run stuck
@@ -197,6 +202,11 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                   evidence_dir=config.EVIDENCE_DIR)
         sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
 
+        # Split plugins by phase: phase 1 runs first, then phase 2 chain
+        # plugins consume the discovery bus populated by phase 1.
+        phase1 = [p for p in plugins if getattr(p, "phase", 1) == 1]
+        phase2 = [p for p in plugins if getattr(p, "phase", 1) == 2]
+
         total_jobs = 0
         for t in trobj:
             for p in plugins:
@@ -219,19 +229,31 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                          "plugin": plugin.id, "target": target.normalized})
             return plugin, target, result
 
-        wrapped = []
-        for t in trobj:
-            for p in plugins:
-                if not p.accepts or t.type in p.accepts:
-                    wrapped.append(wrap(p, t))
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(*wrapped), timeout=RUN_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            await _emit(run_id, "progress",
-                        {"done": completed_jobs, "total": total_jobs,
-                         "note": "run timed out"})
-            results = []
+        async def run_phase(plist, phase_num):
+            wrapped = []
+            for t in trobj:
+                for p in plist:
+                    if not p.accepts or t.type in p.accepts:
+                        wrapped.append(wrap(p, t))
+            if not wrapped:
+                return []
+            if phase_num == 2:
+                await _emit(run_id, "phase",
+                            {"phase": 2,
+                             "note": "chain phase: deeper probes on "
+                                     "discovered assets",
+                             "plugins": [p.id for p in plist]})
+            try:
+                return await asyncio.wait_for(
+                    asyncio.gather(*wrapped), timeout=RUN_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                await _emit(run_id, "progress",
+                            {"done": completed_jobs, "total": total_jobs,
+                             "note": f"phase {phase_num} timed out"})
+                return []
+
+        results = await run_phase(phase1, 1)
+        results = list(results) + await run_phase(phase2, 2)
 
     # persist findings
     total = 0

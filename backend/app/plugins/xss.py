@@ -60,6 +60,11 @@ class XssPlugin(Plugin):
                 u = f"{p.scheme}://{p.netloc}{u}"
             if domain in urlparse(u).netloc:
                 urls.add(u)
+        # chain: URLs discovered by crawler/forms/jsminer
+        for eu in ctx.consume("endpoints"):
+            if isinstance(eu, str) and "?" in eu and \
+                    domain in urlparse(eu).netloc:
+                urls.add(eu)
 
         tested = 0
         for u in list(urls)[:10]:
