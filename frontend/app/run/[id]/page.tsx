@@ -292,7 +292,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -388,6 +388,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       })}
 
       {tab === "vulns" && <VulnsView runId={id} />}
+      {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
       {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
@@ -848,6 +849,123 @@ function CredsView({ findings }: { findings: Finding[] }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any }) {
+  const [filter, setFilter] = useState("all");
+  const conns = findings.filter((f) =>
+    f.key === "connected_device" || f.key === "connected_service" ||
+    f.key === "connected_account" || f.key === "connected_financial" ||
+    f.key === "connection_summary" ||
+    f.key === "payment_processor" || f.key === "billing_endpoint" ||
+    f.key.startsWith("bank_") || f.key.startsWith("crypto_"));
+
+  const byType: Record<string, Finding[]> = { device: [], service: [], account: [], financial: [] };
+  conns.forEach((f) => {
+    const t = f.evidence?.type as string;
+    if (t && byType[t]) byType[t].push(f);
+    else if (f.key === "payment_processor" || f.key.startsWith("bank_") || f.key.startsWith("crypto_") || f.key === "billing_endpoint") byType.financial.push(f);
+  });
+
+  const typeColor = (t: string) =>
+    t === "device" ? "text-sky-300 border-sky-500/40 bg-sky-500/10" :
+    t === "service" ? "text-violet-300 border-violet-500/40 bg-violet-500/10" :
+    t === "account" ? "text-amber-300 border-amber-500/40 bg-amber-500/10" :
+    t === "financial" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" :
+    "text-slate-400 border-slate-700 bg-slate-800/50";
+
+  const shown = filter === "all" ? conns.filter((f) => f.key !== "connection_summary")
+    : filter === "summary" ? conns.filter((f) => f.key === "connection_summary")
+    : byType[filter] || [];
+
+  // Mini graph for connections only
+  const connKinds = ["device", "service", "account", "financial"];
+  const gNodes = (graph?.nodes || []).filter((n: any) =>
+    connKinds.includes(n.kind) || n.kind === "target");
+  const gIds = new Set(gNodes.map((n: any) => n.id));
+  const gEdges = (graph?.edges || []).filter((e: any) => gIds.has(e.src) && gIds.has(e.dst));
+
+  return (
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h2 className="font-semibold text-sky-300">Connections</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Everything connected to everything: devices, services, accounts, financial.
+          Click a type to filter.
+        </p>
+        <div className="flex gap-2 flex-wrap mt-3">
+          {(["all", "device", "service", "account", "financial"] as const).map((t) => (
+            <button key={t} onClick={() => setFilter(t)}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${filter === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
+              {t} ({t === "all" ? shown.length : (byType[t] || []).length})
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* relationship mini-graph */}
+      {gNodes.length > 0 && (
+        <div className="card p-4 overflow-x-auto">
+          <h3 className="text-xs uppercase text-slate-500 mb-2">Relationship map</h3>
+          <div className="min-w-[500px]">
+            <svg viewBox="0 0 900 420" className="w-full" style={{ maxHeight: 420 }}>
+              {gEdges.map((e: any, i: number) => {
+                const a = gNodes.findIndex((n: any) => n.id === e.src);
+                const b = gNodes.findIndex((n: any) => n.id === e.dst);
+                if (a < 0 || b < 0) return null;
+                const pa = { x: 450 + 180 * Math.cos(2 * Math.PI * a / Math.max(gNodes.length, 1)), y: 210 + 150 * Math.sin(2 * Math.PI * a / Math.max(gNodes.length, 1)) };
+                const pb = { x: 450 + 180 * Math.cos(2 * Math.PI * b / Math.max(gNodes.length, 1)), y: 210 + 150 * Math.sin(2 * Math.PI * b / Math.max(gNodes.length, 1)) };
+                return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#243044" strokeWidth={1}>
+                  <title>{e.relation}</title></line>;
+              })}
+              {gNodes.slice(0, 40).map((n: any, i: number) => {
+                const p = { x: 450 + 180 * Math.cos(2 * Math.PI * i / Math.max(Math.min(gNodes.length, 40), 1)), y: 210 + 150 * Math.sin(2 * Math.PI * i / Math.max(Math.min(gNodes.length, 40), 1)) };
+                const col = n.kind === "device" ? "#7dd3fc" : n.kind === "service" ? "#c4b5fd" : n.kind === "account" ? "#fbbf24" : n.kind === "financial" ? "#6ee7b7" : "#e6e6e6";
+                return (
+                  <g key={n.id}>
+                    <circle cx={p.x} cy={p.y} r={n.kind === "target" ? 12 : 7} fill={col} opacity={0.9}>
+                      <title>{n.kind}: {n.label}</title>
+                    </circle>
+                    {(n.kind === "target" || n.interesting) && (
+                      <text x={p.x} y={p.y - 12} textAnchor="middle" fill="#e6e6e6" fontSize={10}>{n.label.slice(0, 24)}</text>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+          <div className="flex gap-3 text-[11px] text-slate-500 mt-2 flex-wrap">
+            <span><span className="text-sky-300">●</span> device</span>
+            <span><span className="text-violet-300">●</span> service</span>
+            <span><span className="text-amber-300">●</span> account</span>
+            <span><span className="text-emerald-300">●</span> financial</span>
+          </div>
+        </div>
+      )}
+
+      {/* connection list */}
+      <div className="card p-4">
+        <div className="space-y-2">
+          {shown.length === 0 && <p className="text-sm text-slate-500">No connections found yet.</p>}
+          {shown.map((f, i) => {
+            const t = (f.evidence?.type as string) || "info";
+            return (
+              <div key={i} className="bg-slate-800/50 rounded-lg p-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${typeColor(t)}`}>{t.toUpperCase()}</span>
+                  <code className="text-xs font-mono text-slate-200 break-all flex-1">{f.value}</code>
+                </div>
+                <p className="text-xs text-slate-500 mt-1 break-words">{f.source}</p>
+                {f.evidence?.relation && (
+                  <p className="text-[11px] text-slate-600">relation: {f.evidence.relation}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

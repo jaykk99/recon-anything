@@ -25,11 +25,25 @@ NODE_KIND = {
     "a": "ip", "aaaa": "ip", "ptr": "ip",
     "api_endpoint": "endpoint", "endpoint": "endpoint",
     "graphql_path": "endpoint", "apk_url": "endpoint", "mobile_url": "endpoint",
-    "tech": "tech", "server_header": "tech",
+    "tech": "tech", "server_header": "tech", "tech_deep": "tech",
     "ga_id": "tracking_id", "gtm_id": "tracking_id", "adsense_id": "tracking_id",
     "favicon_mmh3": "favicon_hash",
     "registrant_org": "org",
     "app_title": "app", "bundle_id": "app",
+    # connection mapper node types
+    "connected_device": "device",
+    "connected_service": "service",
+    "connected_account": "account",
+    "connected_financial": "financial",
+    # financial plugin node types
+    "payment_processor": "financial",
+    "billing_endpoint": "financial",
+    "bank_bank_account": "financial", "bank_routing_number": "financial",
+    "bank_iban": "financial", "bank_swift_code": "financial",
+    "bank_credit_card": "financial", "bank_billing_endpoint": "financial",
+    "crypto_btc_address": "financial", "crypto_eth_address": "financial",
+    "crypto_exchange_api": "financial", "crypto_web3_provider": "financial",
+    "crypto_smart_contract": "financial",
 }
 
 
