@@ -260,11 +260,14 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
         async with httpx.AsyncClient(timeout=20, follow_redirects=True,
                                      trust_env=False) as client:
             resp = await client.get(url, headers={"User-Agent": "ReconAnything/1.0"})
-        body = resp.text[:50000]
+        body = resp.text[:200000]
         return {"url": url, "status": resp.status_code,
                 "content_type": resp.headers.get("content-type", ""),
-                "size": len(resp.content), "body": body,
-                "truncated": len(resp.content) > 50000}
+                "size": len(resp.content),
+                "last_modified": resp.headers.get("last-modified", ""),
+                "headers": dict(resp.headers),
+                "body": body,
+                "truncated": len(resp.content) > 200000}
     except Exception as e:
         raise HTTPException(502, f"fetch failed: {str(e)[:200]}")
 
