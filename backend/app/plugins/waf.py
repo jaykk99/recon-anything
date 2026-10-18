@@ -11,6 +11,7 @@ from typing import List
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # WAF fingerprints: (header_or_cookie_name, match_value, waf_name)
@@ -77,7 +78,7 @@ class WafPlugin(Plugin):
         domain = domain_from_target(target.type, target.normalized)
         if not domain:
             return self._skipped("no domain for this target type")
-        url = f"https://{domain}" if target.type == "domain" else target.normalized
+        url = await web_base(ctx, target, domain)
         findings: List[Finding] = []
         detected = set()
 

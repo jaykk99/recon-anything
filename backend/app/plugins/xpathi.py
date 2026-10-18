@@ -14,8 +14,9 @@ from urllib.parse import parse_qsl, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls
 
 REMEDIATION = ("Never build XPath expressions by string concatenation. "
                "Use parameterized XPath queries (variable binding), "
@@ -66,7 +67,7 @@ class XpathInjectionPlugin(Plugin):
         mode = self.module_mode(ctx)
         if mode == "passive":
             return self._skipped("needs active mode (sends probe requests)")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         try:
@@ -78,7 +79,7 @@ class XpathInjectionPlugin(Plugin):
         urls = param_urls(html, page_url, domain, ctx)
 
         tested = 0
-        for u in list(urls)[:8]:
+        for u in sample_urls(urls, 8):
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:

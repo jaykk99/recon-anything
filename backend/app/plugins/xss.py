@@ -11,7 +11,7 @@ No script execution, no stored payloads. Authorized testing only.
 from __future__ import annotations
 
 import asyncio
-import html
+import html as _htmllib  # aliased: run() uses local `html` for page text
 import re
 import time
 import uuid
@@ -20,7 +20,9 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .injutil import sample_urls
 
 REMEDIATION = ("Encode all user input on output (context-aware encoding), "
                "set a strict Content-Security-Policy, and validate input "
@@ -117,7 +119,7 @@ class XssPlugin(Plugin):
         mode = self.module_mode(ctx)
         if mode == "passive":
             return self._skipped("needs active mode (sends probe requests)")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         try:
@@ -130,32 +132,61 @@ class XssPlugin(Plugin):
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 
-        # --- Method 3: DOM sink analysis (passive, on homepage + JS) ---
-        js_texts = [html]
-        for sm in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
-            from urllib.parse import urljoin
-            full = urljoin(page_url, sm.group(1))
-            if urlparse(full).netloc.endswith(domain):
-                try:
-                    jr = await fetch(ctx.http, ctx.limiter, "GET", full, rotate_ua=True,
-                                     timeout=15)
-                    if jr.status_code == 200:
-                        js_texts.append(jr.text[:500000])
-                except Exception:
-                    continue
-            if len(js_texts) > 8:
+        # --- Method 3: DOM sink analysis (passive, homepage + linked pages + JS) ---
+        # Sinks often live on non-homepage pages (P0 false-negative fix:
+        # previously only the homepage was analyzed, so sinks elsewhere
+        # were silently missed). Fetch a small sample of same-domain
+        # linked pages plus their scripts; GET only.
+        from urllib.parse import urljoin
+        page_texts = [(html, page_url)]  # (text, source_url)
+        linked_pages = set()
+        for lm in re.finditer(r'href=["\']([^"\']+)["\']', html, re.I):
+            lu = urljoin(page_url, lm.group(1).split("#")[0].strip())
+            lp = urlparse(lu)
+            if lp.scheme in ("http", "https") and domain in lp.netloc \
+                    and lu != page_url:
+                linked_pages.add(lu)
+        # fetch cap (not collection cap): collect all, fetch most relevant
+        for lu in sorted(linked_pages)[:12]:
+            try:
+                lr = await fetch(ctx.http, ctx.limiter, "GET", lu, rotate_ua=True,
+                                 timeout=15, follow_redirects=True)
+                if lr.status_code == 200 and "text/html" in \
+                        lr.headers.get("content-type", ""):
+                    page_texts.append((lr.text[:300000], str(lr.url)))
+            except Exception:
+                continue
+
+        js_texts = []  # (text, source_url)
+        for page_html, purl in page_texts:
+            js_texts.append((page_html, purl))
+            for sm in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']',
+                                  page_html, re.I):
+                full = urljoin(purl, sm.group(1))
+                if urlparse(full).netloc.endswith(domain):
+                    try:
+                        jr = await fetch(ctx.http, ctx.limiter, "GET", full,
+                                         rotate_ua=True, timeout=15)
+                        if jr.status_code == 200:
+                            js_texts.append((jr.text[:500000], full))
+                    except Exception:
+                        continue
+                if len(js_texts) > 12:
+                    break
+            if len(js_texts) > 12:
                 break
 
         seen_sinks = set()
-        for js in js_texts:
+        for js, js_url in js_texts:
             for pat, label in DOM_SINKS:
                 if re.search(pat, js) and label not in seen_sinks:
                     seen_sinks.add(label)
                     findings.append(self._f(
                         "web", "xss_dom_sink",
-                        f"MEDIUM: DOM XSS sink '{label}' found in JavaScript. "
+                        f"MEDIUM: DOM XSS sink '{label}' found in JavaScript "
+                        f"at {js_url}. "
                         f"If user input reaches this sink, DOM XSS is possible.",
-                        source="DOM sink analysis", source_url=page_url,
+                        source="DOM sink analysis", source_url=js_url,
                         confidence=55, passive=False,
                         evidence={"severity": "medium",
                                   "sink": label,
@@ -235,7 +266,7 @@ class XssPlugin(Plugin):
                     if enc == "url2x":
                         payload = quote(quote(payload, safe=""), safe="")
                     elif enc == "entity":
-                        payload = html.escape(payload)
+                        payload = _htmllib.escape(payload)
                     cprobe = [(n, payload if n == name else v)
                               for n, v in params]
                     cpurl = urlunparse(parts._replace(
@@ -248,7 +279,7 @@ class XssPlugin(Plugin):
                         continue
                     check = tmpl.replace("{C}", cval)
                     if enc == "entity":
-                        check = html.escape(check)
+                        check = _htmllib.escape(check)
                     if check in cbody and "&lt;" not in check:
                         findings.append(self._f(
                             "leak", "xss_context_probe",
@@ -272,7 +303,7 @@ class XssPlugin(Plugin):
             async with sem:
                 await test_url(u)
 
-        await asyncio.gather(*[test_url_sem(u) for u in list(urls)[:10]])
+        await asyncio.gather(*[test_url_sem(u) for u in sample_urls(urls, 12)])
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested[0]} params, "

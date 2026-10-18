@@ -15,7 +15,9 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .injutil import sample_urls
 
 REMEDIATION = ("Never pass user input to shell commands. Use argument "
                "arrays instead of shell strings, apply strict allowlists, "
@@ -65,7 +67,7 @@ class RcePlugin(Plugin):
             return self._skipped("no domain for this target type")
         if self.module_mode(ctx) == "passive":
             return self._skipped("needs active mode (sends probe requests)")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         try:
@@ -95,7 +97,7 @@ class RcePlugin(Plugin):
         SLEEP_S = 6
         tested = 0
         error_tested = 0
-        for u in list(urls)[:8]:
+        for u in sample_urls(urls, 12):
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             interesting = [(n, v) for n, v in params

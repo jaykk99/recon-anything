@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .injutil import fetch_homepage, param_urls, probe_url
 
@@ -56,7 +57,7 @@ class LogicInjectionPlugin(Plugin):
         mode = self.module_mode(ctx)
         if mode == "passive":
             return self._skipped("needs active mode (sends probe requests)")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         try:

@@ -13,6 +13,7 @@ from typing import List
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 
@@ -30,7 +31,7 @@ class CorsPlugin(Plugin):
         domain = domain_from_target(target.type, target.normalized)
         if not domain:
             return self._skipped("no domain for this target type")
-        url = f"https://{domain}" if target.type == "domain" else target.normalized
+        url = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         test_origins = [
@@ -42,6 +43,7 @@ class CorsPlugin(Plugin):
         ]
 
         _cors_sem = asyncio.Semaphore(5)
+        _responded = [0]  # probes that got any HTTP response (vs network failure)
 
         async def _cors_probe(origin: str):
             async with _cors_sem:
@@ -50,6 +52,7 @@ class CorsPlugin(Plugin):
                                     headers={"Origin": origin})
                 except Exception:
                     return None
+            _responded[0] += 1
             acao = r.headers.get("access-control-allow-origin", "")
             acac = r.headers.get("access-control-allow-credentials", "").lower()
 
@@ -93,6 +96,13 @@ class CorsPlugin(Plugin):
             pass
 
         if not findings:
+            if _responded[0] == 0:
+                # No probe got a response: claiming "properly configured"
+                # would be a false negative. Degrade instead.
+                res = self._degraded("no CORS probe received a response; "
+                                     "CORS posture unknown")
+                res.duration_ms = int((time.monotonic() - t0) * 1000)
+                return res
             findings.append(self._f(
                 "web", "cors_ok",
                 f"CORS properly configured - no misconfigurations in {len(test_origins)} origin tests",
