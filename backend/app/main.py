@@ -20,6 +20,9 @@ Single-user gate: if RECON_ACCESS_CODE is set, every /api route except
 """
 from __future__ import annotations
 
+import datetime as dt
+import os
+import re
 import uuid
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -610,6 +613,118 @@ def api_diff(a: str, b: str):
         return diff_runs(session, a, b)
     finally:
         session.close()
+
+
+# -- ATM ---------------------------------------------------------------------
+class AtmLocateIn(BaseModel):
+    query: str
+    authorized: bool = False
+
+
+_ATM_AUTH_LOG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "atm_auth.log")
+_ATM_LATLON_RE = re.compile(
+    r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*(?:,\s*(\d+(?:\.\d+)?))?\s*$")
+_OSM_UA = "ReconAnything/1.0 (ATM security assessment module; contact: owner)"
+
+
+def _atm_log_auth(run_id: str, query: str) -> None:
+    ts = dt.datetime.now(dt.timezone.utc).isoformat()
+    try:
+        with open(_ATM_AUTH_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{ts}\trun={run_id}\tquery={query}\tauthorized=true\n")
+    except Exception:
+        pass
+
+
+def _atm_geocode(text: str):
+    """Text -> (lat, lon) via public Nominatim (no key)."""
+    import httpx
+    try:
+        r = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": text, "format": "json", "limit": 1,
+                    "email": "recon-atm@example.com"},
+            headers={"User-Agent": _OSM_UA}, timeout=15)
+        if r.status_code != 200:
+            return None, f"geocode failed (HTTP {r.status_code})"
+        items = r.json()
+        if not items:
+            return None, "geocode found nothing for that query"
+        return (float(items[0]["lat"]), float(items[0]["lon"])), None
+    except Exception as e:
+        return None, f"geocode error: {e}"
+
+
+def _atm_overpass(lat: float, lon: float, radius_m: float):
+    """amenity=atm nodes near (lat, lon) via public Overpass API."""
+    import httpx
+    ql = (f'[out:json][timeout:25];'
+          f'node["amenity"="atm"](around:{int(radius_m)},{lat},{lon});'
+          f'out center 50;')
+    try:
+        r = httpx.post("https://overpass-api.de/api/interpreter",
+                       data={"data": ql},
+                       headers={"User-Agent": _OSM_UA}, timeout=15)
+        if r.status_code != 200:
+            return None, f"Overpass failed (HTTP {r.status_code})"
+        out = []
+        for el in (r.json().get("elements") or [])[:50]:
+            tags = el.get("tags") or {}
+            out.append({
+                "name": tags.get("name", ""),
+                "operator": tags.get("operator") or tags.get("brand") or
+                            tags.get("network") or "",
+                "lat": el.get("lat"),
+                "lon": el.get("lon"),
+            })
+        return out, None
+    except Exception as e:
+        return None, f"Overpass error: {e}"
+
+
+@app.post("/api/runs/{run_id}/atm/locate", dependencies=[Depends(gate)])
+def api_atm_locate(run_id: str, body: AtmLocateIn):
+    """Public ATM locations via OpenStreetMap (read-only).
+
+    Hard gate: body.authorized must be true, else 403. The claim is
+    logged server-side for the audit trail.
+    """
+    if not body.authorized:
+        raise HTTPException(
+            status_code=403,
+            detail="ATM location lookup requires explicit written "
+                   "authorization (authorized=true)")
+    session = get_session()
+    try:
+        if not session.query(Run).filter_by(id=run_id).first():
+            raise HTTPException(404, "run not found")
+    finally:
+        session.close()
+
+    _atm_log_auth(run_id, body.query)
+
+    q = (body.query or "").strip()
+    if not q:
+        raise HTTPException(400, "query required")
+    m = _ATM_LATLON_RE.match(q)
+    if m:
+        lat, lon = float(m.group(1)), float(m.group(2))
+        radius = float(m.group(3)) if m.group(3) else 2000
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise HTTPException(400, "latitude/longitude out of range")
+        radius = max(100, min(radius, 20000))
+    else:
+        (lat, lon), err = _atm_geocode(q)
+        if err:
+            raise HTTPException(502, err)
+        radius = 2000
+
+    results, err = _atm_overpass(lat, lon, radius)
+    if err:
+        raise HTTPException(502, err)
+    return {"run_id": run_id, "lat": lat, "lon": lon,
+            "radius_m": int(radius), "atms": results}
 
 
 # -- api key vault ----------------------------------------------------------
