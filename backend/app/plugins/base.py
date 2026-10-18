@@ -6,6 +6,7 @@ fatally: it returns partial findings plus a per-plugin status.
 from __future__ import annotations
 
 import abc
+import asyncio
 import datetime as dt
 import uuid
 from dataclasses import dataclass, field
@@ -224,13 +225,33 @@ class Ctx:
 
         Multiple plugins fetch the same homepage. This caches the
         httpx response by URL so only the first plugin pays the cost.
+        Singleflight: concurrent callers for the same URL share one
+        in-flight request instead of thundering-herding the target.
         Returns the response or None on failure.
         """
         from ..ratelimit import fetch as _fetch
-        cache_key = f"page:{url}"
+        # Normalize the key: "https://host" and "https://host/" are the same
+        # page, so every plugin's homepage read hits one shared cache entry
+        # no matter how it spelled the base URL.
+        cache_key = f"page:{url.rstrip('/')}"
         cached = self.cache.get("http", cache_key)
         if cached is not None:
             return cached
+        inflight = self.shared.setdefault("_fetch_page_inflight", {})
+        task = inflight.get(cache_key)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(
+                self._fetch_page_once(url, timeout))
+            inflight[cache_key] = task
+            task.add_done_callback(lambda _t: inflight.pop(cache_key, None))
+        try:
+            return await asyncio.shield(task)
+        except Exception:
+            return None
+
+    async def _fetch_page_once(self, url: str, timeout: int) -> Any | None:
+        from ..ratelimit import fetch as _fetch
+        cache_key = f"page:{url.rstrip('/')}"
         try:
             resp = await _fetch(self.http, self.limiter, "GET", url,
                                 timeout=timeout, follow_redirects=True)
@@ -297,11 +318,12 @@ class Plugin(abc.ABC):
     # run after, consuming the discovery bus (ctx.shared) populated by
     # phase 1. Lets findings lead to more findings.
     phase: int = 1
-    # Per-plugin timeout ceiling (seconds). This is hang protection, NOT a
-    # speed target: plugins are never killed to hit a time budget, only to
-    # stop a genuinely stuck plugin. Findings always win over speed.
-    # Slow enumerators (subdomain enum, crawlers) override this higher.
-    timeout_s: int = 90
+    # Per-plugin timeout ceiling (seconds). Hard-capped at 30s by the
+    # runner (MAX_PLUGIN_TIMEOUT_S): if a plugin hasn't produced anything
+    # in 30s it is killed gracefully (Jay's order 2026-10-18 - speed is
+    # top priority). The scan's global 80s budget can shrink this further
+    # when the clock is running out.
+    timeout_s: int = 30
 
     @abc.abstractmethod
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:

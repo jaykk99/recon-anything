@@ -9,6 +9,7 @@ but is private is still worth noting (name confirmed for further testing).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Optional, Tuple
@@ -99,34 +100,52 @@ class CloudBucketsPlugin(Plugin):
         name = _short_name(domain)
 
         candidates = [name + s for s in BUCKET_SUFFIXES[:10]] + [name]
-        checked = 0
-        for bucket in candidates:
-            for provider, checker in (("aws", _check_s3), ("gcp", _check_gcs),
-                                      ("azure", _check_azure)):
-                status, url = await checker(ctx, bucket)
-                checked += 1
-                if status == "open":
-                    findings.append(self._f(
-                        "leak", "bucket_public_list",
-                        f"HIGH: {provider.upper()} bucket '{bucket}' is PUBLICLY LISTABLE - "
-                        f"anyone can enumerate its objects. Proved with: curl -s {url} | head -5",
-                        source="bucket probe", source_url=url,
-                        confidence=95, passive=False,
-                        exploitability="public_poc",
-                        evidence={"severity": "high", "remediation": REMEDIATION,
-                                  "provider": provider, "bucket": bucket,
-                                  "poc_command": f"curl -s '{url}' | head -c 500"}))
-                elif status == "private":
-                    findings.append(self._f(
-                        "infra", "bucket_exists_private",
-                        f"Bucket '{bucket}' exists on {provider.upper()} but is private - "
-                        f"name confirmed for further authorized testing",
-                        source="bucket probe", source_url=url,
-                        confidence=80, passive=False,
-                        evidence={"severity": "low",
-                                  "remediation": "Confirm the bucket policy blocks public access."}))
+        # Probe all bucket/provider combos concurrently (was sequential:
+        # 33 x 10s timeouts could stall this plugin for 5+ minutes).
+        # Same probes, same findings - just in parallel.
+        checks = [(bucket, provider, checker)
+                  for bucket in candidates
+                  for provider, checker in (("aws", _check_s3), ("gcp", _check_gcs),
+                                            ("azure", _check_azure))]
+        bucket_sem = asyncio.Semaphore(8)
+
+        async def check_one(bucket, provider, checker):
+            async with bucket_sem:
+                try:
+                    status, url = await checker(ctx, bucket)
+                except Exception:
+                    return None
+                return (bucket, provider, status, url)
+
+        results = await asyncio.gather(
+            *(check_one(b, p, c) for b, p, c in checks))
+        checked = sum(1 for r in results if r is not None)
+        for item in results:
+            if not item:
+                continue
+            bucket, provider, status, url = item
             if len(findings) >= 12:
                 break  # enough signal; stay fast
+            if status == "open":
+                findings.append(self._f(
+                    "leak", "bucket_public_list",
+                    f"HIGH: {provider.upper()} bucket '{bucket}' is PUBLICLY LISTABLE - "
+                    f"anyone can enumerate its objects. Proved with: curl -s {url} | head -5",
+                    source="bucket probe", source_url=url,
+                    confidence=95, passive=False,
+                    exploitability="public_poc",
+                    evidence={"severity": "high", "remediation": REMEDIATION,
+                              "provider": provider, "bucket": bucket,
+                              "poc_command": f"curl -s '{url}' | head -c 500"}))
+            elif status == "private":
+                findings.append(self._f(
+                    "infra", "bucket_exists_private",
+                    f"Bucket '{bucket}' exists on {provider.upper()} but is private - "
+                    f"name confirmed for further authorized testing",
+                    source="bucket probe", source_url=url,
+                    confidence=80, passive=False,
+                    evidence={"severity": "low",
+                              "remediation": "Confirm the bucket policy blocks public access."}))
 
         dur = int((time.monotonic() - t0) * 1000)
         note = f"probed {checked} bucket endpoints"

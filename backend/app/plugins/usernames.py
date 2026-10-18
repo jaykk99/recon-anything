@@ -71,9 +71,11 @@ class UsernamesPlugin(Plugin):
                 return self._skipped("no domain for this target type")
             base = f"https://{domain}" if target.type == "domain" else target.normalized
             try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
-                                follow_redirects=True)
-                html = r.text[:400000]
+                # Shared homepage cache: first plugin pays, the rest read from cache.
+                page = await ctx.fetch_page(base, timeout=25)
+                if page is None:
+                    raise RuntimeError("homepage fetch failed")
+                html = page["text"][:400000]
             except Exception as e:
                 res = self._degraded(f"fetch failed: {str(e)[:200]}")
                 res.duration_ms = int((time.monotonic() - t0) * 1000)

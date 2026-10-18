@@ -65,10 +65,12 @@ class IdorPlugin(Plugin):
         passive = (mode == "passive")
 
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
-                            follow_redirects=True)
-            html = r.text[:400000]
-            page_url = str(r.url)
+            # Shared homepage cache: first plugin pays, the rest read from cache.
+            page = await ctx.fetch_page(base, timeout=25)
+            if page is None:
+                raise RuntimeError("homepage fetch failed")
+            html = page["text"][:400000]
+            page_url = page["url"]
             ctype = r.headers.get("content-type", "")
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")

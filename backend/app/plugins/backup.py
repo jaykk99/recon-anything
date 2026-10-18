@@ -13,11 +13,12 @@ import asyncio
 import re
 import time
 from typing import List
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .wayback import fetch_cdx
 
 EXTENSIONS = [".bak", ".backup", ".old", ".orig", ".save", ".swp",
               ".tmp", "~", ".bkp", ".bac", ".copy", ".orig.bak"]
@@ -39,7 +40,7 @@ SECRET_MARKERS = ["password", "secret", "api_key", "apikey", "private key",
 
 
 class BackupPlugin(Plugin):
-    timeout_s = 180  # slow enumerator: needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "backup"
     label = "Backup File Sweeper"
     accepts = ["domain", "url"]
@@ -71,28 +72,36 @@ class BackupPlugin(Plugin):
             return f" Contains secret markers: {', '.join(hits[:4])}." if hits else ""
 
         if passive:
+            # Wayback lookup per candidate: zero packets to the target.
+            # Reuses wayback.py's single wildcard CDX snapshot (cached
+            # per-domain) instead of one CDX query per candidate: same
+            # archive data, ~228 fewer requests to web.archive.org.
+            rows = await fetch_cdx(ctx, domain)
+            archived = {}  # path -> timestamp
+            if isinstance(rows, list) and len(rows) > 1:
+                header, data = rows[0], rows[1:]
+                ts_i = header.index("timestamp") if "timestamp" in header else 0
+                url_i = header.index("original") if "original" in header else 1
+                for r in data:
+                    if len(r) <= max(ts_i, url_i):
+                        continue
+                    p = urlparse(r[url_i]).path or "/"
+                    if p not in archived or r[ts_i] < archived[p]:
+                        archived[p] = r[ts_i]
             for path in candidates:
-                full = base + path
-                url = ("https://web.archive.org/cdx/search/cdx?url="
-                       + quote(full, safe="") + "&output=json&fl=timestamp&limit=1")
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                    timeout=12, max_retries=1)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, list) and len(data) > 1:
-                            ts = data[1][0] if data[1] else ""
-                            findings.append(self._f(
-                                "leak", "backup_archived",
-                                f"HIGH: backup file {path} was archived ({ts}).",
-                                source="Wayback CDX",
-                                source_url=f"https://web.archive.org/web/{ts}/{full}",
-                                confidence=65, passive=True,
-                                evidence={"severity": "high",
-                                          "remediation": "Remove backup files from web roots. "
-                                                         "Block backup extensions at the web server."}))
-                except Exception:
+                ts = archived.get(path)
+                if not ts:
                     continue
+                full = base + path
+                findings.append(self._f(
+                    "leak", "backup_archived",
+                    f"HIGH: backup file {path} was archived ({ts}).",
+                    source="Wayback CDX",
+                    source_url=f"https://web.archive.org/web/{ts}/{full}",
+                    confidence=65, passive=True,
+                    evidence={"severity": "high",
+                              "remediation": "Remove backup files from web roots. "
+                                             "Block backup extensions at the web server."}))
         else:
             # Concurrent sweep: 228 candidates at ~10 RPS = ~25s.
             # Short timeout + single retry: a blackholed path on a WAF

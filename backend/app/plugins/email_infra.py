@@ -18,6 +18,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import dns.asyncresolver
+import asyncio
 import dns.resolver
 
 from ..classifier import domain_from_target
@@ -112,10 +113,15 @@ class EmailInfraPlugin(Plugin):
             "spf": None, "dmarc_policy": None, "dkim": None, "mx": None,
         }
 
-        await self._check_spf(domain, findings, state)
-        await self._check_dmarc(domain, findings, state)
-        await self._check_dkim(domain, findings, state)
-        await self._check_mx(domain, findings, state)
+        # SPF/DMARC/DKIM/MX checks are independent DNS lookups: run them
+        # concurrently instead of sequentially. Same checks, same
+        # findings - just in parallel.
+        await asyncio.gather(
+            self._check_spf(domain, findings, state),
+            self._check_dmarc(domain, findings, state),
+            self._check_dkim(domain, findings, state),
+            self._check_mx(domain, findings, state),
+        )
         self._spoofing_risk(domain, findings, state)
 
         dur = int((time.monotonic() - t0) * 1000)

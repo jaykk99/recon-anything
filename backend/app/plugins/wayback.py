@@ -14,8 +14,34 @@ from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 
+async def fetch_cdx(ctx: Ctx, domain: str):
+    """Single wildcard CDX query for a domain, shared across plugins.
+
+    artifacts.py reuses this (via ctx.cache) instead of firing one CDX
+    query per sensitive path: same archive data, ~160 fewer requests.
+    Returns the parsed JSON rows (header + data) or {"error": ...}.
+    """
+    async def cdx():
+        url = ("https://web.archive.org/cdx/search/cdx?url="
+               + quote(domain) + "/*&output=json&fl=timestamp,original,statuscode"
+                 "&collapse=urlkey&limit=2000")
+        try:
+            # Single informational call: tight timeout, one retry max.
+            # A slow CDX API must not stall the whole plugin.
+            resp = await fetch(ctx.http, ctx.limiter, "GET", url,
+                               timeout=25, max_retries=1)
+            if resp.status_code != 200:
+                return {"error": f"HTTP {resp.status_code}"}
+            return resp.json()
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    rows, _ = await ctx.cache.cached("wayback", domain, cdx)
+    return rows
+
+
 class WaybackPlugin(Plugin):
-    timeout_s = 150  # slow enumerator: needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "wayback"
     label = "Wayback History"
     accepts = ["domain", "url"]
@@ -31,22 +57,7 @@ class WaybackPlugin(Plugin):
             return self._skipped("no domain for this target type")
         findings: List[Finding] = []
 
-        async def cdx():
-            url = ("https://web.archive.org/cdx/search/cdx?url="
-                   + quote(domain) + "/*&output=json&fl=timestamp,original,statuscode"
-                     "&collapse=urlkey&limit=2000")
-            try:
-                # Single informational call: tight timeout, one retry max.
-                # A slow CDX API must not stall the whole plugin.
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                   timeout=25, max_retries=1)
-                if resp.status_code != 200:
-                    return {"error": f"HTTP {resp.status_code}"}
-                return resp.json()
-            except Exception as e:
-                return {"error": str(e)[:200]}
-
-        rows, _ = await ctx.cache.cached("wayback", domain, cdx)
+        rows = await fetch_cdx(ctx, domain)
         if isinstance(rows, dict) and rows.get("error"):
             res = self._degraded(f"Wayback: {rows['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)

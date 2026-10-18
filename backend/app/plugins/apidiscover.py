@@ -111,16 +111,23 @@ class ApiDiscoverPlugin(Plugin):
         async def check_doc(path: str):
             url = base + path
             async with sem:
+                # Shared probe cache: backup.py / artifacts.py /
+                # hiddenpaths.py probing the same URL reuse this response.
+                probed = await ctx.probe(url, timeout=12)
+            ctype = probed["headers"].get("content-type", "")
+            head = probed["text"]
+            if probed["status"] == 200 and ("json" in ctype or "graphql" in path.lower()
+                                            or head.lstrip().startswith(("{", "["))):
+                # Docs found: fetch the full body for OpenAPI parsing
+                # (the probe cache only keeps a 4k head).
                 try:
                     r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
+                    body = r.text
                 except Exception:
-                    return None
-            ctype = r.headers.get("content-type", "")
-            if r.status_code == 200 and ("json" in ctype or "graphql" in path.lower()
-                                         or r.text.lstrip().startswith(("{", "["))):
-                return ("docs", path, url, r.text)
-            elif "graphql" in path and r.status_code in (200, 400, 405):
-                return ("gql", path, url, r.status_code)
+                    body = head
+                return ("docs", path, url, body)
+            elif "graphql" in path and probed["status"] in (200, 400, 405):
+                return ("gql", path, url, probed["status"])
             return None
 
         for item in await asyncio.gather(*[check_doc(p) for p in DOC_PATHS]):
@@ -154,16 +161,16 @@ class ApiDiscoverPlugin(Plugin):
         async def probe_path(path: str):
             url = base + path
             async with sem:
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
-                except Exception:
-                    return None
-            if r.status_code in (200, 201, 301, 302, 401, 403, 405):
-                note = f"{path} -> {r.status_code}"
-                auth = self._detect_auth(r)
+                # Shared probe cache: same URL probed by the sweep plugins
+                # is fetched once per run.
+                probed = await ctx.probe(url, timeout=10)
+            status = probed["status"]
+            if status in (200, 201, 301, 302, 401, 403, 405):
+                note = f"{path} -> {status}"
+                auth = self._detect_auth(probed["headers"])
                 if auth:
                     note += f" [{auth}]"
-                return (path, url, r.status_code, auth, note)
+                return (path, url, status, auth, note)
             return None
 
         for item in await asyncio.gather(*[probe_path(p) for p in probe_paths]):
@@ -218,13 +225,13 @@ class ApiDiscoverPlugin(Plugin):
         res.duration_ms = dur
         return res
 
-    def _detect_auth(self, r) -> str | None:
-        www = r.headers.get("www-authenticate", "").lower()
+    def _detect_auth(self, headers) -> str | None:
+        www = headers.get("www-authenticate", "").lower()
         if "bearer" in www:
             return "bearer"
         if "basic" in www:
             return "basic"
-        sc = r.headers.get("set-cookie", "").lower()
+        sc = headers.get("set-cookie", "").lower()
         if "session" in sc or "token" in sc:
             return "cookie"
         return None

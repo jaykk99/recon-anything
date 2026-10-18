@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import List
-from urllib.parse import quote
+from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .wayback import fetch_cdx
 
 PATHS = [
     # version control
@@ -196,7 +197,7 @@ PATHS = [
 
 
 class ArtifactsPlugin(Plugin):
-    timeout_s = 180  # slow enumerator: 165-path bulk sweep needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "artifacts"
     label = "Exposed Artifacts"
     accepts = ["domain", "url"]
@@ -216,35 +217,27 @@ class ArtifactsPlugin(Plugin):
 
         if mode == "passive":
             # Wayback lookup per path: zero packets to the target.
-            # Concurrent: 165 paths at archive.org's pace.
-            sem = asyncio.Semaphore(12)
-
-            async def wprobe(item):
-                path, label, conf = item
-                full = base + path
-                url = ("https://web.archive.org/cdx/search/cdx?url="
-                       + quote(full, safe="") + "&output=json&fl=timestamp,statuscode&limit=1")
-                async with sem:
-                    try:
-                        r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                        timeout=12, max_retries=1)
-                    except Exception:
-                        return None
-                if r.status_code == 200:
-                    try:
-                        data = r.json()
-                    except Exception:
-                        return None
-                    if isinstance(data, list) and len(data) > 1:
-                        ts = data[1][0] if len(data[1]) > 0 else ""
-                        return (path, label, conf, ts, full)
-                return None
-
-            wprobed = await asyncio.gather(*[wprobe(p) for p in PATHS])
-            for item in wprobed:
-                if not item:
+            # Reuses wayback.py's single wildcard CDX snapshot (cached
+            # per-domain) instead of one CDX query per path: same archive
+            # data, ~160 fewer requests to web.archive.org.
+            rows = await fetch_cdx(ctx, domain)
+            archived = {}  # path -> timestamp
+            if isinstance(rows, list) and len(rows) > 1:
+                header, data = rows[0], rows[1:]
+                ts_i = header.index("timestamp") if "timestamp" in header else 0
+                url_i = header.index("original") if "original" in header else 1
+                for r in data:
+                    if len(r) <= max(ts_i, url_i):
+                        continue
+                    p = urlparse(r[url_i]).path or "/"
+                    # keep the earliest snapshot per path
+                    if p not in archived or r[ts_i] < archived[p]:
+                        archived[p] = r[ts_i]
+            for path, label, conf in PATHS:
+                ts = archived.get(path)
+                if not ts:
                     continue
-                path, label, conf, ts, full = item
+                full = base + path
                 findings.append(self._f(
                     "leak", "artifact_archived",
                     f"{path} was archived ({ts}) - {label}",

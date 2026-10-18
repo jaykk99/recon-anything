@@ -103,9 +103,11 @@ class CardsPlugin(Plugin):
 
         async def get_home():
             try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
-                                follow_redirects=True)
-                return {"html": r.text[:500000], "url": str(r.url)}
+                # Shared homepage cache: first plugin pays, the rest read from cache.
+                page = await ctx.fetch_page(base, timeout=25)
+                if page is None:
+                    raise RuntimeError("homepage fetch failed")
+                return {"html": page["text"][:500000], "url": page["url"]}
             except Exception as e:
                 return {"error": str(e)[:200]}
 

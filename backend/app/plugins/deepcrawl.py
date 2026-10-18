@@ -30,7 +30,7 @@ COMMENT_PATH_RE = re.compile(r'<!--.*?((?:/[a-zA-Z0-9_\-.]+){2,}).*?-->', re.S)
 
 
 class DeepCrawlPlugin(Plugin):
-    timeout_s = 180  # slow enumerator: needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "deepcrawl"
     label = "Deep Source Analyzer"
     accepts = ["domain", "url"]

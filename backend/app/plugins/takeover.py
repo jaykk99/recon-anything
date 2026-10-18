@@ -5,6 +5,8 @@ unclaimed third-party services. Custom-built, no API keys needed.
 """
 from __future__ import annotations
 
+import asyncio
+
 import time
 from typing import List
 
@@ -63,28 +65,46 @@ class TakeoverPlugin(Plugin):
             resolver = dns.asyncresolver.Resolver()
             resolver.lifetime = 8
 
-            # Get subdomains from cache (populated by subdomains plugin if it ran)
-            # Otherwise check common ones directly
-            test_subs = ["www", "blog", "dev", "staging", "test", "api", "cdn",
-                         "static", "assets", "docs", "help", "support", "status"]
+            # Subdomains enumerated by the subdomains plugin are shared via
+            # the discovery bus: check those first instead of
+            # re-enumerating, plus the common takeover-prone names.
+            # All CNAME checks run concurrently (was sequential).
+            bus_subs = [s for s in ctx.consume("subdomains")
+                        if isinstance(s, str) and s.endswith("." + domain)]
+            common = [f"{sub}.{domain}" for sub in
+                      ["www", "blog", "dev", "staging", "test", "api", "cdn",
+                       "static", "assets", "docs", "help", "support", "status"]]
+            seen = set()
+            test_subs = [s for s in bus_subs + common
+                         if not (s in seen or seen.add(s))]
 
-            for sub in test_subs:
-                fqdn = f"{sub}.{domain}"
-                try:
-                    answers = await resolver.resolve(fqdn, "CNAME")
+            dns_sem = asyncio.Semaphore(10)
+
+            async def check_one(fqdn):
+                async with dns_sem:
+                    try:
+                        answers = await resolver.resolve(fqdn, "CNAME")
+                    except Exception:
+                        return None
+                    hits = []
                     for rr in answers:
                         cname = str(rr.target).rstrip(".").lower()
                         for pattern, service, fingerprint in TAKEOVER_FINGERPRINTS:
                             if pattern in cname:
-                                findings.append(self._f(
-                                    "infra", "takeover_possible",
-                                    f"{fqdn} CNAMEs to {cname} ({service}) - "
-                                    f"check if claimable. Fingerprint: '{fingerprint}'",
-                                    source="takeover checker",
-                                    confidence=70, passive=True))
+                                hits.append((fqdn, cname, service, fingerprint))
                                 break
-                except Exception:
+                    return hits or None
+
+            for hits in await asyncio.gather(*(check_one(s) for s in test_subs)):
+                if not hits:
                     continue
+                for fqdn, cname, service, fingerprint in hits:
+                    findings.append(self._f(
+                        "infra", "takeover_possible",
+                        f"{fqdn} CNAMEs to {cname} ({service}) - "
+                        f"check if claimable. Fingerprint: '{fingerprint}'",
+                        source="takeover checker",
+                        confidence=70, passive=True))
         except ImportError:
             return self._skipped("dnspython not available")
 
