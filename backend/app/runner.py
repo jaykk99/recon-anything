@@ -238,6 +238,7 @@ PLUGIN_TIME_ESTIMATES = {
     "supplychain": 20, "enterprise": 15, "iot": 15, "k8s": 12,
     "docker": 12, "hypervisor": 12, "cloud": 15, "fingerprint": 15,
     "hiddenpaths": 25, "bola": 15, "blogic": 15,
+    "race_detect": 20, "stealth_crawler": 45, "jwt_audit": 12,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
