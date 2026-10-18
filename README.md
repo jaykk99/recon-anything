@@ -175,12 +175,6 @@ TypeScript strict. Python typed. Prefer free data sources; mark paid
 ones optional. Every external call goes through the cache layer.
 No em dashes in user-facing text.
 
-## Live URLs
+## Live URL
 
-- Uncensored Harness: https://uncensored-harness-production.up.railway.app
-- Error Inbox: https://error-inbox.onrender.com
-- Bro Agent: https://bro-agent.onrender.com
-- ReconAnything: https://recon-anything.onrender.com
-- Kaggle Runner: https://kaggle-colab-runner.jayomer1234.workers.dev
-- Linux Remote App: https://linux-remote-app.onrender.com
-- Linux Remote Repo: https://github.com/jaykk99/linux-remote
+https://recon-anything.onrender.com
