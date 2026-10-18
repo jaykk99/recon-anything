@@ -142,6 +142,20 @@ class AIHunter(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class RunEvent(Base):
+    # Durable SSE event log per run. The in-memory bus (RUN_EVENT_BUFFER)
+    # is per-process and dies on restart/deploy, which silently broke live
+    # UI updates. Persisting events here makes /stream replay + follow
+    # work across worker processes and restarts.
+    __tablename__ = "run_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, index=True)
+    seq = Column(Integer, index=True)  # per-run ordering
+    event = Column(String)  # run_start | plugin_start | plugin_done | progress | finding | run_done ...
+    data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

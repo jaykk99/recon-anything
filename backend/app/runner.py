@@ -22,7 +22,7 @@ from . import config
 from . import net
 from .cache import Cache
 from .classifier import classify_batch
-from .models import Finding as FindingRow, Run, Target as TargetRow, get_session, init_db
+from .models import Finding as FindingRow, Run, RunEvent, Target as TargetRow, get_session, init_db
 from .plugins.base import Ctx, PluginResult, Target
 from .plugins.registry import all_plugins, discover
 from .ratelimit import RateLimiter
@@ -32,9 +32,13 @@ _limiter = RateLimiter()
 
 # In-memory event bus: run_id -> buffered SSE strings + live subscriber queues.
 # Lets GET /api/runs/{id}/stream replay history then follow live events.
+# NOTE: this is per-process. The durable copy lives in the run_events table
+# (see _emit); subscribe() replays from the DB so live updates survive
+# multi-worker deploys and restarts.
 RUN_EVENT_BUFFER: Dict[str, List[str]] = {}
 RUN_SUBSCRIBERS: Dict[str, List[asyncio.Queue]] = {}
 RUN_DONE = "run_done"
+RUN_SEQ: Dict[str, int] = {}  # per-run event sequence numbers
 
 
 def _sse(event: str, data: Dict) -> str:
@@ -45,31 +49,70 @@ async def _emit(run_id: str, event: str, data: Dict):
     msg = _sse(event, data)
     RUN_EVENT_BUFFER.setdefault(run_id, []).append(msg)
     for q in list(RUN_SUBSCRIBERS.get(run_id, [])):
-        await q.put(msg)
+        try:
+            q.put_nowait(msg)
+        except Exception:
+            pass
+    # Durable copy in run_events: the in-memory bus is invisible to other
+    # worker processes and vanishes on restart, which is what silently
+    # broke live UI updates. A DB failure must never break a scan.
+    try:
+        RUN_SEQ[run_id] = RUN_SEQ.get(run_id, 0) + 1
+        safe_data = json.loads(json.dumps(data, default=str))
+        session = get_session()
+        try:
+            session.add(RunEvent(run_id=run_id, seq=RUN_SEQ[run_id],
+                                 event=event, data=safe_data))
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
 
 
 async def subscribe(run_id: str) -> AsyncIterator[str]:
-    """Replay buffered events, then yield live ones until run_done."""
-    queue: asyncio.Queue = asyncio.Queue()
-    RUN_SUBSCRIBERS.setdefault(run_id, []).append(queue)
+    """Replay persisted events, then follow live ones until run_done.
+
+    Reads from the run_events table (not the in-memory bus) so the stream
+    works across worker processes, restarts, and reconnects.
+    """
+    last_seq = 0
+    session = get_session()
     try:
-        for msg in RUN_EVENT_BUFFER.get(run_id, []):
-            yield msg
-            if msg.startswith(f"event: {RUN_DONE}"):
+        rows = (session.query(RunEvent).filter_by(run_id=run_id)
+                .order_by(RunEvent.seq).all())
+        for r in rows:
+            last_seq = r.seq
+            yield _sse(r.event, r.data or {})
+            if r.event == RUN_DONE:
                 return
-        while True:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=30)
-                yield msg
-                if msg.startswith(f"event: {RUN_DONE}"):
-                    return
-            except asyncio.TimeoutError:
-                yield ": ping\n\n"
     finally:
+        session.close()
+    # Follow live: poll for new rows. 1s granularity is plenty "live"
+    # for the UI and is correct across processes.
+    idle = 0
+    while True:
+        await asyncio.sleep(1)
+        session = get_session()
         try:
-            RUN_SUBSCRIBERS.get(run_id, []).remove(queue)
-        except ValueError:
-            pass
+            rows = (session.query(RunEvent)
+                    .filter(RunEvent.run_id == run_id,
+                            RunEvent.seq > last_seq)
+                    .order_by(RunEvent.seq).all())
+        finally:
+            session.close()
+        if rows:
+            idle = 0
+            for r in rows:
+                last_seq = r.seq
+                yield _sse(r.event, r.data or {})
+                if r.event == RUN_DONE:
+                    return
+        else:
+            idle += 1
+            if idle >= 15:
+                idle = 0
+                yield ": ping\n\n"
 
 
 def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
@@ -301,11 +344,19 @@ async def _execute_poi_run(run_id: str, location_raw: str, mode: str,
             await _emit(run_id, "progress",
                         {"done": completed, "total": total_jobs,
                          "plugin": plugin.id, "target": target.raw})
-            for f in result.findings:
-                session.add(_row_to_finding(f, run_id, target.id))
+            poi_rows = [_row_to_finding(f, run_id, target.id) for f in result.findings]
+            for r in poi_rows:
+                session.add(r)
+            if poi_rows:
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+            for f, r in zip(result.findings, poi_rows):
                 total_findings += 1
                 await _emit(run_id, "finding",
-                            {"plugin": f.plugin_id, "category": f.category,
+                            {"fid": r.id,
+                             "plugin": f.plugin_id, "category": f.category,
                              "key": f.key, "value": f.value,
                              "source": f.source,
                              "source_url": f.source_url,
@@ -402,7 +453,8 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
 
     await _emit(run_id, "run_start",
                 {"run_id": run_id, "targets": [c["normalized"] for c in classified],
-                 "mode": mode, "plugins": [p.id for p in plugins],
+                 "mode": mode, "source_type": source_type,
+                 "plugins": [p.id for p in plugins],
                  "estimated_s": estimated_s,
                  "plugin_count": len(plugins), "target_count": n_targets})
 
@@ -460,16 +512,18 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
             eta_done_actual += (result.duration_ms or 0) / 1000.0
             # Persist + stream findings the moment the plugin finishes:
             # results appear in real time, not in one burst at run end.
-            for f in result.findings:
-                session.add(_row_to_finding(f, run_id, target.id))
-            if result.findings:
+            rows = [_row_to_finding(f, run_id, target.id) for f in result.findings]
+            for r in rows:
+                session.add(r)
+            if rows:
                 try:
                     session.commit()
                 except Exception:
                     session.rollback()
-            for f in result.findings:
+            for f, r in zip(result.findings, rows):
                 await _emit(run_id, "finding",
-                            {"plugin": f.plugin_id, "category": f.category,
+                            {"fid": r.id,
+                             "plugin": f.plugin_id, "category": f.category,
                              "key": f.key, "value": f.value,
                              "source": f.source, "source_url": f.source_url,
                              "evidence": f.evidence,

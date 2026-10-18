@@ -94,6 +94,11 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [etaS, setEtaS] = useState<number | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
+  // source type from run_start: website | bank | atm. ATM/Bank are picked
+  // on the start page, never findings, so hide the atm tab on website runs.
+  const [sourceType, setSourceType] = useState<string | null>(null);
+  // finding dedupe: SSE replays history on reconnect, so skip repeats.
+  const seenFids = useRef<Set<string>>(new Set());
   // file viewer
   const [viewing, setViewing] = useState<{
     url: string; body: string; loading: boolean;
@@ -116,6 +121,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
+      if (d.source_type) setSourceType(d.source_type);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
     });
     on("progress", (e) => {
@@ -137,6 +143,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
     });
     on("finding", (e) => {
       const d = JSON.parse(e.data);
+      // Dedupe: reconnects replay history, and the 4s poll can overlap.
+      const key = d.fid != null ? `fid:${d.fid}` : `c:${d.plugin}|${d.key}|${d.value}`;
+      if (seenFids.current.has(key)) return;
+      seenFids.current.add(key);
       setFindings((f) => [...f, d]);
     });
     on("run_done", async (e) => {
@@ -159,6 +169,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
         if (d.run?.status === "done" || d.run?.status === "failed") {
           setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
           setTargets(d.targets || []);
+          // keep the dedupe set in sync so late SSE events do not duplicate
+          (d.findings || []).forEach((f: any) => {
+            seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
+          });
           clearInterval(poll); es.close();
           if (d.run.status === "done") {
             const h = { "X-Access-Code": getCode() };
@@ -249,6 +263,18 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // the static pre-run estimate until the first progress event arrives.
   const etaLeft = etaS !== null ? Math.max(etaS, 0) : remaining;
   const pluginsLeft = Math.max(progress.total - progress.done, 0);
+  // Live batch view: 5 plugins run at a time, show which batch is active.
+  const BATCH = 5;
+  const runningNow = Object.values(plugins).filter((p) => p.status === "running");
+  const batches = Math.ceil(progress.total / BATCH);
+  const batch = progress.total > 0 ? Math.min(Math.floor(progress.done / BATCH) + 1, Math.max(batches, 1)) : 0;
+  const runningNames = runningNow.slice(0, 8).map((p) => p.plugin).join(", ");
+  // ATM/Bank are source types picked on the start page, never findings.
+  const showAtmTab = sourceType !== "website";
+  const tabList = (["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const);
+  const visibleTabs: readonly string[] = showAtmTab
+    ? (["findings", "vulns", "aihunter", "atm", ...tabList.slice(3)] as const)
+    : tabList;
 
   return (
     <div className="space-y-4 max-w-full">
@@ -259,6 +285,26 @@ export default function RunPage({ params }: { params: { id: string } }) {
           <span className={`text-xs px-2 py-1 rounded min-h-[28px] flex items-center ${status === "done" ? "pill-ok" : status === "failed" ? "pill-err" : "pill-info"}`}>{status}</span>
           <span className="text-xs text-slate-500">{findings.length} findings</span>
         </div>
+        {/* live batch panel: 5 at a time, visible batches */}
+        {status === "running" && progress.total > 0 && (
+          <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/30 p-3">
+            <div className="flex items-center gap-2 text-sm flex-wrap">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span>
+              </span>
+              <span className="font-bold text-emerald-300">LIVE</span>
+              <span className="text-slate-200">Batch {batch} of {batches} · 5 at a time</span>
+              <span className="ml-auto text-xs text-slate-400">{findings.length} findings so far</span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1.5">
+              {progress.done} done · {pluginsLeft} left
+              {runningNow.length > 0
+                ? <> · running now ({runningNow.length}): <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
+                : " · starting next 5..."}
+            </p>
+          </div>
+        )}
         {/* progress bar */}
         {status === "running" && (
           <div className="mt-3">
@@ -300,7 +346,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {visibleTabs.map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
