@@ -28,10 +28,10 @@ TIMEOUT = 15
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(
+    from .net import sync_client
+    return sync_client(
         timeout=TIMEOUT,
         follow_redirects=True,
-        trust_env=False,
         headers={"User-Agent": USER_AGENT},
     )
 
@@ -186,10 +186,10 @@ def probe_shadow_it(subdomain: str) -> Tuple[bool, str]:
 
 
 def _no_follow_client() -> httpx.Client:
-    return httpx.Client(
+    from .net import sync_client
+    return sync_client(
         timeout=TIMEOUT,
         follow_redirects=False,
-        trust_env=False,
         headers={"User-Agent": USER_AGENT},
     )
 

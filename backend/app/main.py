@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional
 
 from . import config
+from . import net
 from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
@@ -260,8 +261,7 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
         raise HTTPException(400, "only http/https allowed")
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True,
-                                     trust_env=False) as client:
+        async with net.async_client(timeout=20, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "ReconAnything/1.0"})
         body = resp.text[:200000]
         return {"url": url, "status": resp.status_code,
@@ -405,8 +405,8 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
                         "server": "", "title": "", "ts": now}
         for scheme in ("https", "http"):
             try:
-                async with httpx.AsyncClient(
-                        timeout=8, follow_redirects=True, trust_env=False,
+                async with net.async_client(
+                        timeout=8, follow_redirects=True,
                         headers={"User-Agent": "ReconAnything/1.0"}) as client:
                     resp = await client.get(f"{scheme}://{host}")
                 title = ""
@@ -522,8 +522,8 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
     if port in (80, 443, 8000, 8080, 8443, 3000, 5000, 9000, 9200, 5601):
         scheme = "https" if port in (443, 8443) else "http"
         try:
-            async with httpx.AsyncClient(
-                    timeout=8, follow_redirects=True, trust_env=False,
+            async with net.async_client(
+                    timeout=8, follow_redirects=True,
                     headers={"User-Agent": "ReconAnything/1.0"}) as client:
                 resp = await client.get(f"{scheme}://{host}:{port}/")
             title = ""

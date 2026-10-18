@@ -60,26 +60,15 @@ AI_MAX_TOKENS = 3000
 
 
 def _proxy() -> str | None:
-    """Egress proxy from env. Same pattern as the uncensored harness."""
-    import os
-    from urllib.parse import urlparse
-    p = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-         or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or None)
-    if p:
-        try:
-            if (urlparse(p).hostname or "") in ("localhost", "127.0.0.1", "::1"):
-                return None
-        except Exception:
-            return None
-    return p
+    """Egress proxy from env. Delegates to the shared net module."""
+    from .net import egress_proxy
+    return egress_proxy()
 
 
 def _verify():
-    """System CA bundle: the sandbox egress proxy re-signs TLS and
-    certifi lacks its CA. Falls back to default verification."""
-    import os
-    p = "/etc/ssl/certs/ca-certificates.crt"
-    return p if os.path.isfile(p) else True
+    """System CA bundle via the shared net module."""
+    from .net import ca_bundle
+    return ca_bundle()
 
 SYSTEM_PROMPT = (
     "You are an expert bug bounty hunter assistant helping with AUTHORIZED security testing. "
@@ -170,8 +159,8 @@ async def ai_chat(messages: List[Dict]) -> tuple[str, str]:
     Raises RuntimeError if every provider fails.
     """
     last_err: Optional[Exception] = None
-    async with httpx.AsyncClient(timeout=AI_TIMEOUT_S, proxy=_proxy(),
-                                 trust_env=False, verify=_verify()) as client:
+    from .net import async_client
+    async with async_client(timeout=AI_TIMEOUT_S) as client:
         for p in PROVIDERS:
             try:
                 r = await client.post(

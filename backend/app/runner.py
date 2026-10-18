@@ -18,6 +18,7 @@ from typing import AsyncIterator, Dict, List, Optional
 import httpx
 
 from . import config
+from . import net
 from .cache import Cache
 from .classifier import classify_batch
 from .models import Finding as FindingRow, Run, Target as TargetRow, get_session, init_db
@@ -222,10 +223,9 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                  "estimated_s": estimated_s,
                  "plugin_count": len(plugins), "target_count": n_targets})
 
-    async with httpx.AsyncClient(
+    async with net.async_client(
             headers={"User-Agent": config.USER_AGENT},
-            timeout=config.DEFAULT_TIMEOUT, follow_redirects=True,
-            trust_env=False) as http:
+            timeout=config.DEFAULT_TIMEOUT, follow_redirects=True) as http:
         ctx = Ctx(run_id=run_id, mode=mode, http=http, cache=_cache,
                   keys=keys or {}, limiter=_limiter,
                   module_overrides=module_overrides or {},
