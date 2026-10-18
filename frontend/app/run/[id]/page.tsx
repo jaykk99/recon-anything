@@ -623,7 +623,9 @@ function VulnsView({ runId }: { runId: string }) {
       <div className="card p-4">
         <h2 className="font-semibold text-sky-300">Possible vulnerabilities</h2>
         <p className="text-xs text-slate-500 mt-1">
-          Ranked by viability from YOUR scan results. PoCs are detection-only and non-destructive.
+          <span className="text-amber-300 font-semibold">HYPOTHESES, not confirmed findings.</span>{" "}
+          Ranked by viability from YOUR scan results. These are educated guesses about what
+          MIGHT be vulnerable. Use the test button below to verify with real (safe) probes.
           Only test targets you are authorized to test.
         </p>
         {/* background testing: real safe probes, only successes shown */}
@@ -643,9 +645,12 @@ function VulnsView({ runId }: { runId: string }) {
       {sim && (
         <div className="card p-4 border border-emerald-800/40">
           <h2 className="font-semibold text-emerald-300">
-            Confirmed <span className="text-slate-500 text-xs">({sim.working_count}/{sim.total_tested} tested against {sim.target})</span>
+            Confirmed by live test <span className="text-slate-500 text-xs">({sim.working_count}/{sim.total_tested} tested against {sim.target})</span>
           </h2>
-          <p className="text-[11px] text-slate-500 mt-1">{sim.disclaimer}</p>
+          <p className="text-[11px] text-slate-500 mt-1">
+            <span className="text-emerald-300 font-semibold">VERIFIED REAL.</span>{" "}
+            These vulnerabilities were confirmed by actual (safe, non-destructive) probes sent to the target. {sim.disclaimer}
+          </p>
           {sim.working.length === 0 ? (
             <p className="text-sm text-slate-500 mt-2">
               No vulnerabilities confirmed by live testing. The scan findings did not hold up
