@@ -84,7 +84,7 @@ class LdapInjectionPlugin(Plugin):
                 found = False
                 for payload in LDAP_PAYLOADS:
                     tested += 1
-                    purl = probe_url(parts, params, name, v + payload)
+                    purl = probe_url(parts, params, name, val + payload)
                     try:
                         pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
                                          timeout=15)
