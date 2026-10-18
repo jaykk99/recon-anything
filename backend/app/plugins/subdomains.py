@@ -75,22 +75,70 @@ class SubdomainsPlugin(Plugin):
 
         rows, _ = await ctx.cache.cached("ct", domain, crtsh)
         seen = set()
+        crt_ok = False
         if isinstance(rows, list):
+            crt_ok = True
             for r in rows:
                 name = (r.get("name_value") or "").strip().lower()
                 for sub in name.splitlines():
                     sub = sub.strip().lstrip("*.")
                     if sub and sub.endswith(domain) and sub not in seen:
                         seen.add(sub)
-            for sub in sorted(seen):
-                findings.append(self._f("dns", "subdomain", sub,
-                                        source="crt.sh certificate transparency",
-                                        source_url=f"https://crt.sh/?q=%25.{domain}",
-                                        confidence=90, passive=True))
         elif isinstance(rows, dict) and rows.get("error"):
             findings.append(self._f("dns", "subdomain_enum_note",
                                     f"crt.sh unavailable: {rows['error']}",
                                     source="crt.sh", confidence=40, passive=True))
+
+        # --- fallback: hackertarget hostsearch (free, no key) ---
+        if not crt_ok:
+            async def htarget():
+                url = f"https://api.hackertarget.com/hostsearch/?q={quote(domain)}"
+                try:
+                    resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                    if resp.status_code != 200:
+                        return {"error": f"HTTP {resp.status_code}"}
+                    return {"text": resp.text}
+                except Exception as e:
+                    return {"error": str(e)[:200]}
+
+            ht, _ = await ctx.cache.cached("ht", domain, htarget)
+            if isinstance(ht, dict) and ht.get("text"):
+                for line in ht["text"].strip().splitlines():
+                    parts = line.split(",")
+                    if parts:
+                        sub = parts[0].strip().lower()
+                        if sub and sub.endswith(domain) and sub not in seen:
+                            seen.add(sub)
+                if seen:
+                    findings.append(self._f("dns", "subdomain_enum_note",
+                                            "used hackertarget fallback (crt.sh failed)",
+                                            source="api.hackertarget.com",
+                                            confidence=50, passive=True))
+
+        # --- fallback: anubis (jldc.me, free, no key) ---
+        if not seen:
+            async def anubis():
+                url = f"https://jldc.me/anubis/subdomains/{quote(domain)}"
+                try:
+                    resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                    if resp.status_code != 200:
+                        return {"error": f"HTTP {resp.status_code}"}
+                    return resp.json()
+                except Exception as e:
+                    return {"error": str(e)[:200]}
+
+            an, _ = await ctx.cache.cached("anubis", domain, anubis)
+            if isinstance(an, list):
+                for sub in an:
+                    sub = str(sub).strip().lower().lstrip("*.")
+                    if sub and sub.endswith(domain) and sub not in seen:
+                        seen.add(sub)
+
+        for sub in sorted(seen):
+            findings.append(self._f("dns", "subdomain", sub,
+                                    source="certificate transparency / hostsearch",
+                                    source_url=f"https://crt.sh/?q=%25.{domain}",
+                                    confidence=85, passive=True))
 
         # --- active DNS brute force ---
         if mode == "active":
