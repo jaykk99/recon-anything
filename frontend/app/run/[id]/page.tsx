@@ -94,6 +94,9 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [estimatedS, setEstimatedS] = useState(0);
   const [etaS, setEtaS] = useState<number | null>(null);
   const [wafNotice, setWafNotice] = useState<string | null>(null);
+  // Set when the API 404s this run: the row was wiped by a restart/redeploy
+  // (ephemeral SQLite). Show the API's explanation instead of a blank page.
+  const [goneMsg, setGoneMsg] = useState<string | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   // finding dedupe: SSE replays history on reconnect, so skip repeats.
@@ -175,6 +178,15 @@ export default function RunPage({ params }: { params: { id: string } }) {
     const poll = setInterval(async () => {
       try {
         const d = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } }).then((r) => r.json());
+        // Run row is gone (restart/redeploy wiped the ephemeral SQLite DB):
+        // show the API's explanation and stop polling/SSE.
+        if (d.detail && !d.run) {
+          setGoneMsg(d.detail);
+          done.current = true;
+          es.close();
+          clearInterval(poll);
+          return;
+        }
         // Poll fallback keeps progress + ETA alive when SSE is down.
         if (d.run?.status === "running" && d.progress) {
           const p = d.progress;
@@ -297,6 +309,13 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
   return (
     <div className="space-y-4 max-w-full">
+      {/* run wiped by restart/redeploy: show why instead of a blank page */}
+      {goneMsg && (
+        <div className="rounded-lg border border-red-800/60 bg-red-950/40 p-4">
+          <p className="font-bold text-red-300 text-sm">This run is gone</p>
+          <p className="text-xs text-red-200/80 mt-1.5">{goneMsg}</p>
+        </div>
+      )}
       {/* header */}
       <div className="card p-4">
         <div className="flex items-center gap-3 flex-wrap">

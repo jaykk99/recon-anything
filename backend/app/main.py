@@ -21,6 +21,7 @@ Single-user gate: if RECON_ACCESS_CODE is set, every /api route except
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import re
 import uuid
@@ -38,10 +39,31 @@ from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
 from .models import ApiKey, Finding, Run, RunEvent, Schedule, Target, get_session, init_db
+from .models import check_db, DATABASE_URL, IS_SQLITE
 from .plugins.registry import describe
 from .reporting import (executive_summary, findings_dump, run_progress,
                          to_csv, to_html, to_markdown)
 from .runner import launch_run, subscribe
+
+log = logging.getLogger("recon-anything")
+
+
+def missing_run(run_id: str) -> HTTPException:
+    """404 with an actionable message.
+
+    On Render's free tier the default SQLite database lives on an ephemeral
+    disk, so a redeploy silently wipes every run and the UI would otherwise
+    show a bare "run not found". Point the user at the real fix instead.
+    """
+    return HTTPException(
+        status_code=404,
+        detail=(
+            f"run {run_id} not found. It may have been wiped by a restart or "
+            "redeploy (the default SQLite database on Render's free tier is "
+            "ephemeral). Set DATABASE_URL to a persistent Postgres "
+            "(Neon or Supabase free tier) so scans survive restarts."
+        ),
+    )
 
 app = FastAPI(title="ReconAnything", version="0.1.0")
 app.add_middleware(
@@ -61,6 +83,14 @@ def gate(x_access_code: Optional[str] = Header(default=None),
 
 @app.on_event("startup")
 def _startup():
+    # Fail fast on an unreachable database: a bad DATABASE_URL must crash
+    # the deploy with a clear error, not surface later as empty scans.
+    check_db()
+    if IS_SQLITE:
+        log.warning(
+            "using ephemeral SQLite (%s): all runs are wiped on redeploy. "
+            "Set DATABASE_URL to a persistent Postgres (Neon/Supabase free "
+            "tier) to keep scans across restarts.", DATABASE_URL)
     init_db()
     # Reap runs stuck in "running": a restart (deploy) kills the in-memory
     # asyncio task, leaving the SQLite row behind forever. Mark them failed
@@ -171,7 +201,7 @@ async def api_run_stream(run_id: str):
     session = get_session()
     try:
         if not session.query(Run).filter_by(id=run_id).first():
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
     finally:
         session.close()
     return StreamingResponse(subscribe(run_id), media_type="text/event-stream",
@@ -199,7 +229,7 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
         return {
@@ -258,7 +288,7 @@ def api_export(run_id: str, format: str = "json", show_secrets: bool = False):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
     finally:
@@ -290,7 +320,7 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
     finally:
         session.close()
@@ -335,7 +365,7 @@ def api_vulns(run_id: str):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -366,7 +396,7 @@ def api_vuln_test(run_id: str):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -395,7 +425,7 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
     finally:
         session.close()
     base = body.base or "TARGET"
@@ -429,7 +459,7 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
         summary = dict(run.summary or {})
     finally:
@@ -519,7 +549,7 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
     finally:
@@ -604,7 +634,7 @@ def api_ai_hunter_start(run_id: str):
     session = get_session()
     try:
         if not session.query(Run).filter_by(id=run_id).first():
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
     finally:
         session.close()
     state = get_ai_status(run_id)
@@ -624,7 +654,7 @@ def api_ai_hunter_status(run_id: str):
     session = get_session()
     try:
         if not session.query(Run).filter_by(id=run_id).first():
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
     finally:
         session.close()
     state = get_ai_status(run_id)
@@ -643,7 +673,7 @@ def api_ai_hunter_waf_bypass(run_id: str, payload: str = Query(..., max_length=2
     session = get_session()
     try:
         if not session.query(Run).filter_by(id=run_id).first():
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
         rows = findings_dump(session, run_id)
     finally:
         session.close()
@@ -761,7 +791,7 @@ def api_atm_locate(run_id: str, body: AtmLocateIn):
     session = get_session()
     try:
         if not session.query(Run).filter_by(id=run_id).first():
-            raise HTTPException(404, "run not found")
+            raise missing_run(run_id)
     finally:
         session.close()
 

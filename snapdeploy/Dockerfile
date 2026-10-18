@@ -27,8 +27,11 @@ COPY --from=frontend-build /build/.next/static ./frontend/.next/static
 
 ENV PYTHONUNBUFFERED=1 \
     PORT=3000 \
-    RECON_API_URL=http://127.0.0.1:8000 \
-    DATABASE_URL=sqlite:///./recon.db
+    RECON_API_URL=http://127.0.0.1:8000
+# NOTE: DATABASE_URL is intentionally NOT set here. The backend defaults to
+# sqlite:///./recon.db, which is ephemeral on Render's free tier (wiped on
+# every redeploy). Set DATABASE_URL on the Render dashboard to a persistent
+# Postgres (Neon/Supabase free tier) to keep scans across deploys.
 
 EXPOSE 3000
 
