@@ -2,6 +2,8 @@
 
 Routes:
   GET  /api/health
+  GET  /api/pin-required          whether a screen-lock PIN is configured
+  POST /api/pin-verify            check a PIN (constant-time compare)
   POST /api/classify            single + batch input classification
   GET  /api/plugins             plugin registry with key status
   POST /api/runs                start a run (returns run_id)
@@ -62,6 +64,37 @@ def _startup():
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "recon-anything"}
+
+
+# -- PIN gate ------------------------------------------------------------
+# Screen-lock PIN (RECON_PIN). Separate from the access code: the access code
+# guards every /api route, the PIN just locks the UI. Both endpoints are
+# public on purpose, they are the login step itself.
+
+class PinIn(BaseModel):
+    pin: str
+
+
+def _valid_pin_format(pin: str) -> bool:
+    return bool(pin) and pin.isdigit() and 4 <= len(pin) <= 8
+
+
+@app.get("/api/pin-required")
+def pin_required():
+    return {"required": bool(config.PIN)}
+
+
+@app.post("/api/pin-verify")
+def pin_verify(body: PinIn):
+    import hmac
+    if not config.PIN:
+        return {"ok": True, "detail": "no PIN configured"}
+    pin = (body.pin or "").strip()
+    if not _valid_pin_format(pin):
+        raise HTTPException(status_code=401, detail="bad PIN")
+    if not hmac.compare_digest(pin, config.PIN):
+        raise HTTPException(status_code=401, detail="bad PIN")
+    return {"ok": True}
 
 
 # -- classify ------------------------------------------------------------
