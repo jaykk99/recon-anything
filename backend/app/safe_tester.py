@@ -185,6 +185,247 @@ def probe_shadow_it(subdomain: str) -> Tuple[bool, str]:
         return False, f"Live test failed: {str(e)[:100]}"
 
 
+def _no_follow_client() -> httpx.Client:
+    return httpx.Client(
+        timeout=TIMEOUT,
+        follow_redirects=False,
+        trust_env=False,
+        headers={"User-Agent": USER_AGENT},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Expanded detection probes (all GET/HEAD, non-destructive, detection-only).
+# Each returns (works: bool, detail: str). works=True only on strong signals.
+# ---------------------------------------------------------------------------
+
+def probe_xss(base: str) -> Tuple[bool, str]:
+    """GET with a unique canary in query params - check for raw reflection."""
+    canary = 'qx7Z\'"<>'
+    try:
+        with _client() as c:
+            r = c.get(base)
+            # Pull up to 3 real form input names from the page
+            names = re.findall(r'name=["\']([A-Za-z0-9_\-]+)["\']', r.text)[:3]
+        seen = set()
+        params = ["q", "search", "s", "keyword", "name"] + names
+        tested = 0
+        with _client() as c:
+            for p in params:
+                if p in seen:
+                    continue
+                seen.add(p)
+                tested += 1
+                r = c.get(base, params={p: canary})
+                _sleep()
+                # Raw canary with unencoded < reflected = strong XSS signal
+                if canary in r.text:
+                    return True, (f"Live test: raw canary reflected via ?{p}=. "
+                                   "Reflected XSS is real on this page.")
+        return False, (f"Live test: canary not raw-reflected in {tested} params "
+                        "(q, search, s, keyword, name + form fields). Not vulnerable to this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_open_redirect(base: str) -> Tuple[bool, str]:
+    """GET with external URL in redirect-ish params - check for 3xx to evil host."""
+    try:
+        params = ["next", "redirect", "url", "return", "dest", "target", "continue", "r"]
+        with _no_follow_client() as c:
+            for p in params:
+                r = c.get(base, params={p: "https://example.com/"})
+                _sleep()
+                loc = r.headers.get("location", "")
+                if r.status_code in (301, 302, 303, 307, 308) and "example.com" in loc:
+                    return True, (f"Live test: ?{p}=https://example.com/ returned "
+                                   f"{r.status_code} with Location: {loc[:80]}. Open redirect confirmed.")
+        return False, (f"Live test: no 3xx redirect to example.com from {len(params)} "
+                        "params. Not vulnerable to this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_ssrf(base: str) -> Tuple[bool, str]:
+    """GET with cloud metadata IP in URL-ish params - check for internal fetch."""
+    try:
+        params = ["url", "uri", "path", "file", "dest", "target", "redirect", "u"]
+        probe = "http://169.254.169.254/latest/meta-data/ami-id"
+        with _client() as c:
+            for p in params:
+                r = c.get(base, params={p: probe})
+                _sleep()
+                body = r.text.lower()
+                if "ami-id" in body or "instance-id" in body:
+                    return True, (f"Live test: ?{p}=<metadata-ip> leaked cloud metadata "
+                                   "markers. SSRF CONFIRMED. If the response contains "
+                                   "credentials, report immediately and do not retain them.")
+        return False, (f"Live test: metadata IP not fetched via {len(params)} params. "
+                        "No SSRF signal from this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_idor(base: str) -> Tuple[bool, str]:
+    """GET id+1 and id-1 of discovered numeric IDs - check for direct object access."""
+    try:
+        with _client() as c:
+            r = c.get(base)
+            ids = re.findall(r"/users/(\d+)", r.text) + re.findall(r"[?&]id=(\d+)", r.text)
+            if not ids:
+                return False, ("Live test: no numeric object IDs found on the base page. "
+                                "Needs manual testing with an authenticated session.")
+            oid = int(ids[0])
+            results = []
+            for n in (oid + 1, oid - 1):
+                if n < 1:
+                    continue
+                rn = c.get(base, params={"id": str(n)})
+                _sleep()
+                results.append((n, rn))
+        # Strong signal only: both 200, substantial JSON, DIFFERENT id values
+        if len(results) == 2 and all(rn.status_code == 200 for _, rn in results):
+            bodies = [rn.text for _, rn in results]
+            if all(len(b) > 50 for b in bodies):
+                ids_in = []
+                ok = True
+                for b in bodies:
+                    try:
+                        data = json.loads(b)
+                        s = json.dumps(data)
+                        m = re.search(r'"id"\s*:\s*"?(\d+)"?', s)
+                        if not m:
+                            ok = False
+                            break
+                        ids_in.append(m.group(1))
+                    except Exception:
+                        ok = False
+                        break
+                if ok and len(set(ids_in)) == 2:
+                    return True, (f"Live test: ids {results[0][0]} and {results[1][0]} both returned "
+                                   "200 with different JSON object data. IDOR likely.")
+        return False, ("Live test: no strong IDOR signal. "
+                        "Needs manual testing with an authenticated session.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_auth_bypass(base: str) -> Tuple[bool, str]:
+    """GET common admin paths - check for 200 without a login gate (read-only)."""
+    try:
+        paths = ["/admin", "/admin/", "/administrator", "/wp-admin", "/dashboard", "/manager/html"]
+        login_markers = ['type="password"', 'name="password"', "sign in", "log in", "/login"]
+        with _client() as c:
+            for p in paths:
+                r = c.get(urljoin(base + "/", p.lstrip("/")))
+                _sleep()
+                if r.status_code == 200:
+                    low = r.text.lower()
+                    if not any(m in low for m in login_markers):
+                        return True, (f"Live test: {p} returned 200 with no login form markers. "
+                                       "Admin area may be reachable without auth.")
+        return False, (f"Live test: checked {len(paths)} admin paths, all gated or missing. "
+                        "No bypass found.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_dir_traversal(base: str) -> Tuple[bool, str]:
+    """GET with traversal payload in file-ish params - check for /etc/passwd leak (read-only)."""
+    try:
+        params = ["file", "path", "page", "include", "template", "name", "f"]
+        payload = "....//....//....//etc/passwd"
+        with _client() as c:
+            for p in params:
+                r = c.get(base, params={p: payload})
+                _sleep()
+                if "root:x:0:0" in r.text:
+                    return True, (f"Live test: ?{p}={payload} leaked /etc/passwd contents. "
+                                   "Path traversal CONFIRMED (read-only check).")
+        return False, (f"Live test: traversal payload not reflected via {len(params)} "
+                        "params. Not vulnerable to this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_xxe(base: str) -> Tuple[bool, str]:
+    """GET with internal-entity XML in ?xml= - check if the entity expands."""
+    try:
+        payload = '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe "xxeProbe9">]><r>&xxe;</r>'
+        with _client() as c:
+            r = c.get(base, params={"xml": payload})
+        if "xxeProbe9" in r.text:
+            return True, ("Live test: internal entity 'xxeProbe9' was expanded and reflected. "
+                           "XXE CONFIRMED via GET param.")
+        return False, ("Live test: entity not expanded. Inconclusive over GET, "
+                        "test manually with POST if an XML endpoint exists.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_ssti(base: str) -> Tuple[bool, str]:
+    """GET with math payloads in template-ish params - check for evaluation."""
+    try:
+        params = ["name", "q", "search", "template", "view"]
+        tested = 0
+        with _client() as c:
+            base_body = c.get(base).text
+            _sleep()
+            if "9352" in base_body:
+                return False, ("Live test: baseline page already contains '9352'. "
+                                "Cannot distinguish evaluation. Needs manual testing.")
+            for p in params:
+                for payload in ("{{1336*7}}", "${1336*7}"):
+                    r = c.get(base, params={p: payload})
+                    _sleep()
+                    tested += 1
+                    if "9352" in r.text:
+                        return True, (f"Live test: payload {payload} evaluated to 9352 via ?{p}=. "
+                                       "SSTI CONFIRMED.")
+        return False, (f"Live test: {tested} payload deliveries, no template evaluation. "
+                        "Not vulnerable to this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_crlf(base: str) -> Tuple[bool, str]:
+    """GET with CRLF payload - check if the injected header lands in the response (GET only)."""
+    try:
+        params = ["next", "url", "redirect", "q"]
+        for p in params:
+            # Literal %0d%0a passed in the raw URL so it is not double-encoded
+            url = base + "/?" + p + "=test%0d%0aX-Injected-Probe9:%20yes"
+            with _client() as c:
+                r = c.get(url)
+            _sleep()
+            header_names = [k.lower() for k in r.headers.keys()]
+            if "x-injected-probe9" in header_names:
+                return True, (f"Live test: CRLF payload via ?{p}= injected X-Injected-Probe9 "
+                               "into response headers. CRLF injection CONFIRMED.")
+        return False, (f"Live test: no injected header from {len(params)} params. "
+                        "Not vulnerable to this probe.")
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_host_header(base: str) -> Tuple[bool, str]:
+    """GET with a forged Host header - check for reflection in Location or body."""
+    try:
+        with _no_follow_client() as c:
+            r = c.get(base, headers={"Host": "evil.example"})
+        loc = r.headers.get("location", "")
+        body = r.text
+        if "evil.example" in loc:
+            return True, (f"Live test: forged Host reflected in Location header: {loc[:80]}. "
+                           "Password-reset poisoning risk: reset links may point at evil.example.")
+        if "evil.example" in body:
+            return True, ("Live test: forged Host 'evil.example' reflected in response body links. "
+                           "Password-reset poisoning risk: reset links may point at evil.example.")
+        return False, "Live test: forged Host header not reflected. Not vulnerable to this probe."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator: run every candidate's real probe, return what worked.
 # ---------------------------------------------------------------------------
@@ -200,6 +441,16 @@ PROBE_MAP = {
     "bola": lambda base, c: probe_bola(base),
     "jwt": lambda base, c: probe_jwt_offline(),
     "shadow-it": lambda base, c: probe_shadow_it(_shadow_host(c) or base),
+    "xss-reflected": lambda base, c: probe_xss(base),
+    "open-redirect": lambda base, c: probe_open_redirect(base),
+    "ssrf": lambda base, c: probe_ssrf(base),
+    "idor": lambda base, c: probe_idor(base),
+    "auth-bypass": lambda base, c: probe_auth_bypass(base),
+    "dir-traversal": lambda base, c: probe_dir_traversal(base),
+    "xxe": lambda base, c: probe_xxe(base),
+    "ssti": lambda base, c: probe_ssti(base),
+    "crlf": lambda base, c: probe_crlf(base),
+    "host-header": lambda base, c: probe_host_header(base),
 }
 
 
