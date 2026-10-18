@@ -59,7 +59,7 @@ WIRELESS_HINTS = ("bluetooth", "wifi", "wi-fi", "802.11", "nfc",
 class AtmPlugin(Plugin):
     id = "atm"
     label = "ATM Security Assessment"
-    accepts = ["domain", "url", "ip"]
+    accepts = ["domain", "url", "ip", "poi"]
     passive = True
     cost = Cost.FREE
     group = "infra"
@@ -84,6 +84,27 @@ class AtmPlugin(Plugin):
 
         domain = domain_from_target(target.type, target.normalized)
         host = domain or (target.normalized if target.type == "ip" else "")
+        # POI targets carry lat/lon + OSM metadata instead of a host.
+        poi = getattr(target, "poi", None)
+        if poi:
+            findings.append(self._f(
+                "infra", "atm_poi",
+                f"ATM location: {poi.get('name', 'unknown')} - "
+                f"{poi.get('address', 'no address')} "
+                f"({poi.get('lat')},{poi.get('lon')})",
+                source="OpenStreetMap", confidence=100, passive=True,
+                evidence={"severity": "info", "lat": poi.get("lat"),
+                          "lon": poi.get("lon"),
+                          "operator": poi.get("operator", ""),
+                          "website": poi.get("website", ""),
+                          "phone": poi.get("phone", "")}))
+            # If the POI has a website, note it for follow-up web assessment.
+            if poi.get("website"):
+                findings.append(self._f(
+                    "infra", "atm_website",
+                    f"ATM operator website: {poi['website']} - "
+                    f"run a website scan on it for full assessment",
+                    source="atm plugin", confidence=90, passive=True))
         if host:
             findings.extend(await self._check_mgmt_ports(host))
 
