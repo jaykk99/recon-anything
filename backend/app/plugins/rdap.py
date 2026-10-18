@@ -54,7 +54,7 @@ class RdapPlugin(Plugin):
 
         data, _ = await ctx.cache.cached("rdap", q, do_rdap)
         if isinstance(data, dict) and data.get("error"):
-            res = self._error(f"RDAP: {data['error']}")
+            res = self._degraded(f"RDAP: {data['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 

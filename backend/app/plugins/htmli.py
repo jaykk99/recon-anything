@@ -48,7 +48,7 @@ class HtmlInjectionPlugin(Plugin):
         try:
             html, page_url = await fetch_homepage(ctx, base)
         except Exception as e:
-            res = self._error(f"fetch failed: {str(e)[:200]}")
+            res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
         urls = param_urls(html, page_url, domain, ctx)

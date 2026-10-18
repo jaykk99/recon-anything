@@ -45,7 +45,7 @@ class WaybackPlugin(Plugin):
 
         rows, _ = await ctx.cache.cached("wayback", domain, cdx)
         if isinstance(rows, dict) and rows.get("error"):
-            res = self._error(f"Wayback: {rows['error']}")
+            res = self._degraded(f"Wayback: {rows['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
         if not isinstance(rows, list) or len(rows) < 2:

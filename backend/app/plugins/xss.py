@@ -125,7 +125,7 @@ class XssPlugin(Plugin):
             html = r.text[:300000]
             page_url = str(r.url)
         except Exception as e:
-            res = self._error(f"fetch failed: {str(e)[:200]}")
+            res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 

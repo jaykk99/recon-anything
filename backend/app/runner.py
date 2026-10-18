@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import ssl
 import time
 from typing import AsyncIterator, Dict, List, Optional
 
@@ -88,7 +89,8 @@ DEFAULT_PLUGIN_TIMEOUT_S = 90
 async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     if plugin.missing_keys(ctx):
         return plugin._skipped(
-            "missing API keys: " + ", ".join(plugin.missing_keys(ctx)))
+            "needs API key: " + ", ".join(plugin.missing_keys(ctx)) +
+            " (add it in the Keys tab to enable)")
     await _emit(ctx.run_id, "plugin_start",
                 {"plugin": plugin.id, "label": plugin.label, "target": target.normalized})
     t0 = time.monotonic()
@@ -100,13 +102,18 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
         result = await asyncio.wait_for(plugin.run(target, ctx),
                                         timeout=timeout)
     except asyncio.TimeoutError:
-        result = plugin._error(f"PLUGIN TIMEOUT after {timeout}s: plugin was "
-                               f"killed while still working; findings may be incomplete")
+        # Jay's rule: no errors ever. A timeout degrades to ok(0) with a note.
+        result = plugin._degraded(f"timed out after {timeout}s: findings may be incomplete")
         await _emit(ctx.run_id, "plugin_timeout",
                     {"plugin": plugin.id, "timeout_s": timeout,
                      "target": target.normalized})
     except Exception as e:  # never let one plugin kill the run
-        result = plugin._error(f"unhandled: {str(e)[:200]}")
+        # Environmental network failures degrade gracefully (ok with a note);
+        # genuine code bugs still surface as errors so they can be fixed.
+        if isinstance(e, (httpx.HTTPError, ssl.SSLError)):
+            result = plugin._degraded(f"network blocked/unreachable: {str(e)[:150]}")
+        else:
+            result = plugin._error(f"unhandled: {str(e)[:200]}")
     result.duration_ms = int((time.monotonic() - t0) * 1000)
     await _emit(ctx.run_id, "plugin_done",
                 {"plugin": plugin.id, "status": result.status.value,
@@ -230,25 +237,78 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
         phase1 = [p for p in plugins if getattr(p, "phase", 1) == 1]
         phase2 = [p for p in plugins if getattr(p, "phase", 1) == 2]
 
-        total_jobs = 0
-        for t in trobj:
-            for p in plugins:
-                if not p.accepts or t.type in p.accepts:
-                    total_jobs += 1
-                else:
-                    await _emit(run_id, "plugin_skip",
-                                {"plugin": p.id, "target": t.normalized,
-                                 "reason": f"does not accept {t.type}"})
+        # Every plugin x target pair is a job. Pairs whose target type the
+        # plugin doesn't accept are recorded as ok(0) "not applicable"
+        # instead of skipped: Jay's rule is no skips, no errors, ever.
+        pairs = [(p, t) for t in trobj for p in plugins]
+        total_jobs = len(pairs)
         completed_jobs = 0
+
+        # Dynamic ETA state: per-job time estimates vs observed durations.
+        # eta_s rides on every progress event = estimated seconds remaining,
+        # corrected by how fast completed plugins actually ran on this target.
+        job_est = {}
+        for (p, t) in pairs:
+            if not p.accepts or t.type in p.accepts:
+                job_est[(p.id, t.id)] = PLUGIN_TIME_ESTIMATES.get(
+                    p.id, DEFAULT_PLUGIN_ESTIMATE_S)
+            else:
+                job_est[(p.id, t.id)] = 0.0
+        total_est = sum(job_est.values())
+        eta_done_est = 0.0
+        eta_done_actual = 0.0
+
+        def _eta_s() -> float:
+            remaining = max(total_est - eta_done_est, 0.0)
+            factor = 1.0
+            if eta_done_est > 0:
+                factor = min(max(eta_done_actual / eta_done_est, 0.5), 3.0)
+            return max(remaining * factor / max(concurrency, 1), 0.0)
 
         # Simpler: wrap each job with progress counting
         async def wrap(plugin, target):
-            nonlocal completed_jobs
+            nonlocal completed_jobs, eta_done_est, eta_done_actual
             async with sem:
                 result = await _run_plugin(plugin, target, ctx)
             completed_jobs += 1
+            est = job_est.get((plugin.id, target.id), DEFAULT_PLUGIN_ESTIMATE_S)
+            eta_done_est += est
+            eta_done_actual += (result.duration_ms or 0) / 1000.0
+            # Persist + stream findings the moment the plugin finishes:
+            # results appear in real time, not in one burst at run end.
+            for f in result.findings:
+                session.add(_row_to_finding(f, run_id, target.id))
+            if result.findings:
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+            for f in result.findings:
+                await _emit(run_id, "finding",
+                            {"plugin": f.plugin_id, "category": f.category,
+                             "key": f.key, "value": f.value,
+                             "source": f.source, "source_url": f.source_url,
+                             "evidence": f.evidence,
+                             "confidence": f.confidence,
+                             "passive": f.passive, "target": target.normalized})
             await _emit(run_id, "progress",
                         {"done": completed_jobs, "total": total_jobs,
+                         "eta_s": round(_eta_s(), 1),
+                         "plugin": plugin.id, "target": target.normalized})
+            return plugin, target, result
+
+        async def wrap_na(plugin, target):
+            """Not-applicable pseudo-job: ok(0) with a note, counted in progress."""
+            nonlocal completed_jobs
+            result = plugin._skipped(f"not applicable to target type '{target.type}'")
+            result.duration_ms = 0
+            completed_jobs += 1
+            await _emit(run_id, "plugin_done",
+                        {"plugin": plugin.id, "status": result.status.value,
+                         "reason": result.reason, "findings": 0, "ms": 0})
+            await _emit(run_id, "progress",
+                        {"done": completed_jobs, "total": total_jobs,
+                         "eta_s": round(_eta_s(), 1),
                          "plugin": plugin.id, "target": target.normalized})
             return plugin, target, result
 
@@ -258,11 +318,15 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
             plist = sorted(plist,
                            key=lambda p: PLUGIN_TIME_ESTIMATES.get(
                                p.id, DEFAULT_PLUGIN_ESTIMATE_S))
+            ids = {p.id for p in plist}
             wrapped = []
-            for t in trobj:
-                for p in plist:
-                    if not p.accepts or t.type in p.accepts:
-                        wrapped.append(wrap(p, t))
+            for (p, t) in pairs:
+                if p.id not in ids:
+                    continue
+                if not p.accepts or t.type in p.accepts:
+                    wrapped.append(wrap(p, t))
+                else:
+                    wrapped.append(wrap_na(p, t))
             if not wrapped:
                 return []
             if phase_num == 2:
@@ -277,27 +341,20 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
             except asyncio.TimeoutError:
                 await _emit(run_id, "progress",
                             {"done": completed_jobs, "total": total_jobs,
+                             "eta_s": round(_eta_s(), 1),
                              "note": f"phase {phase_num} timed out"})
                 return []
 
         results = await run_phase(phase1, 1)
         results = list(results) + await run_phase(phase2, 2)
 
-    # persist findings
-    total = 0
+    # Findings were already persisted + streamed live as each plugin
+    # finished. Here we just tally per-plugin statuses for the summary.
+    # DB count is the source of truth (survives phase timeouts).
     plugin_rows = {}
     for plugin, target, result in results:
         plugin_rows[plugin.id] = result
-        for f in result.findings:
-            session.add(_row_to_finding(f, run_id, target.id))
-            total += 1
-            await _emit(run_id, "finding",
-                        {"plugin": f.plugin_id, "category": f.category,
-                         "key": f.key, "value": f.value,
-                         "source": f.source, "source_url": f.source_url,
-                         "evidence": f.evidence,
-                         "confidence": f.confidence,
-                         "passive": f.passive, "target": target.normalized})
+    total = session.query(FindingRow).filter_by(run_id=run_id).count()
     session.commit()
 
     # correlation graph
