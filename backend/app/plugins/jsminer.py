@@ -105,6 +105,7 @@ class JsMinerPlugin(Plugin):
 
         for src in srcs:
             full = urljoin(page_url, src)
+            ctx.publish("js_files", full)
             # skip third-party CDNs for deep mining (still note them)
             host = urlparse(full).netloc
             third = host and not host.endswith(domain)
@@ -133,6 +134,43 @@ class JsMinerPlugin(Plugin):
                 for m in re.finditer(pat, js):
                     emit(kind, m.group(1) if m.groups() else m.group(0),
                          f"JS bundle {host or 'inline'}", conf, full)
+
+            # deeper: JS comments often contain TODOs, paths, disabled code
+            for cm in re.finditer(r"/\*(.*?)\*/", js, re.S):
+                c = cm.group(1).strip()
+                if 10 < len(c) < 500 and re.search(
+                        r"(todo|fixme|hack|secret|key|password|url|http|/api)",
+                        c, re.I):
+                    emit("js_comment", c[:200], f"JS bundle {host or 'inline'}",
+                         60, full)
+            for cm in re.finditer(r"^\s*//(.+)$", js, re.M):
+                c = cm.group(1).strip()
+                if 10 < len(c) < 300 and re.search(
+                        r"(todo|fixme|hack|secret|key|password|http|/api)",
+                        c, re.I):
+                    emit("js_comment", c[:200], f"JS bundle {host or 'inline'}",
+                         55, full)
+
+            # deeper: all hardcoded absolute URLs (internal hosts are gold)
+            for m in re.finditer(
+                    r"https?://[a-zA-Z0-9.-]+\.[a-z]{2,24}(?:/[A-Za-z0-9/_.?=&%-]*)?",
+                    js):
+                u = m.group(0)
+                h = urlparse(u).netloc
+                if h and (h.endswith(domain) or h == domain):
+                    emit("internal_url", u[:200],
+                         f"JS bundle {host or 'inline'}", 70, full)
+                    ctx.publish("endpoints", u)
+
+            # deeper: interesting string literals (paths, keys, debug flags)
+            for m in re.finditer(
+                    r"['\"`]([A-Za-z0-9_.\-/]{3,80})['\"`]", js):
+                s = m.group(1)
+                if re.match(r"^(?:/[A-Za-z0-9_.\-/]+|DEBUG|TEST_MODE|"
+                            r"STAGING|API_KEY|SECRET)(?:[A-Za-z0-9_.\-/]*)$",
+                            s) and len(s) > 6:
+                    emit("js_string", s[:120],
+                         f"JS bundle {host or 'inline'}", 45, full)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"mined {len(srcs)} bundles, {len(findings)} findings")

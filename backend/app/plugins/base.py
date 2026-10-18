@@ -74,6 +74,24 @@ class Ctx:
     emit: Any = None  # optional async callback(event dict)
     module_overrides: Dict[str, str] = field(default_factory=dict)
     evidence_dir: str = "./evidence"
+    # Discovery bus: plugins publish assets here so phase-2 chain
+    # plugins can consume them. Keys: subdomains, js_files, endpoints,
+    # tech, forms, params, emails, cert_sans.
+    shared: Dict[str, List[Any]] = field(default_factory=dict)
+
+    def publish(self, kind: str, item: Any) -> None:
+        """Publish a discovered asset to the shared discovery bus."""
+        bucket = self.shared.setdefault(kind, [])
+        # light dedup for strings
+        if isinstance(item, str):
+            if item not in bucket:
+                bucket.append(item)
+        else:
+            bucket.append(item)
+
+    def consume(self, kind: str) -> List[Any]:
+        """Read everything published under a discovery kind."""
+        return list(self.shared.get(kind, []))
 
 
 class Plugin(abc.ABC):
@@ -85,6 +103,10 @@ class Plugin(abc.ABC):
     cost: Cost = Cost.FREE
     group: str = "network"  # network | web | api | mobile | identity
     description: str = ""
+    # Execution phase. Phase 1 plugins run first; phase 2 "chain" plugins
+    # run after, consuming the discovery bus (ctx.shared) populated by
+    # phase 1. Lets findings lead to more findings.
+    phase: int = 1
 
     @abc.abstractmethod
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:

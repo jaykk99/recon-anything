@@ -188,9 +188,105 @@ class SubdomainsPlugin(Plugin):
         # (anubis jldc.me fallback removed 2026-10-17: the service moved to
         # jonlu.ca behind a Cloudflare challenge that server-side calls cannot
         # pass, so it could never return results; hackertarget above covers
+
+        # --- more sources: AlienVault OTX, urlscan, ThreatCrowd (all keyless) ---
+        async def otx():
+            url = (f"https://otx.alienvault.com/api/v1/indicators/domain/"
+                   f"{quote(domain)}/passive_dns")
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        otx_data, _ = await ctx.cache.cached("otx", domain, otx)
+        if isinstance(otx_data, dict):
+            n_before = len(seen)
+            for rec in otx_data.get("passive_dns", []):
+                sub = (rec.get("hostname") or "").strip().lower().lstrip("*.")
+                if sub and sub.endswith(domain) and sub not in seen:
+                    seen.add(sub)
+            if len(seen) > n_before:
+                findings.append(self._f("dns", "subdomain_enum_note",
+                                        f"OTX passive DNS added "
+                                        f"{len(seen) - n_before} subdomains",
+                                        source="otx.alienvault.com",
+                                        confidence=70, passive=True))
+
+        async def urlscan():
+            url = (f"https://urlscan.io/api/v1/search/?q=domain:{quote(domain)}"
+                   f"&size=100")
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        us_data, _ = await ctx.cache.cached("urlscan", domain, urlscan)
+        if isinstance(us_data, dict):
+            n_before = len(seen)
+            for res in us_data.get("results", []):
+                sub = (res.get("page", {}).get("domain") or "").strip().lower()
+                if sub and sub.endswith(domain) and sub not in seen:
+                    seen.add(sub)
+            if len(seen) > n_before:
+                findings.append(self._f("dns", "subdomain_enum_note",
+                                        f"urlscan.io added "
+                                        f"{len(seen) - n_before} subdomains",
+                                        source="urlscan.io",
+                                        confidence=70, passive=True))
+
+        async def threatcrowd():
+            url = (f"https://www.threatcrowd.org/searchApi/v2/domain/report/"
+                   f"?domain={quote(domain)}")
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        tc_data, _ = await ctx.cache.cached("tc", domain, threatcrowd)
+        if isinstance(tc_data, dict):
+            n_before = len(seen)
+            for sub in tc_data.get("subdomains", []):
+                s = str(sub).strip().lower().lstrip("*.")
+                if s and s.endswith(domain) and s not in seen:
+                    seen.add(s)
+            if len(seen) > n_before:
+                findings.append(self._f("dns", "subdomain_enum_note",
+                                        f"ThreatCrowd added "
+                                        f"{len(seen) - n_before} subdomains",
+                                        source="threatcrowd.org",
+                                        confidence=65, passive=True))
+
+        # --- subdomain permutations: common prefixes on found subs ---
+        perm_prefixes = ["www2", "m2", "api2", "old", "new", "beta",
+                         "test", "dev", "staging"]
+        n_before = len(seen)
+        for sub in list(seen)[:50]:
+            first = sub.split(".")[0]
+            rest = ".".join(sub.split(".")[1:])
+            for pre in perm_prefixes:
+                cand = f"{pre}.{rest}" if first == "www" else f"{pre}-{first}.{rest}"
+                if cand not in seen and cand.endswith(domain):
+                    # passive only: just note as candidate, don't resolve
+                    seen.add(cand)
+        if len(seen) > n_before:
+            findings.append(self._f("dns", "subdomain_enum_note",
+                                    f"permutation engine added "
+                                    f"{len(seen) - n_before} candidates",
+                                    source="permutation", confidence=40,
+                                    passive=True))
         # the crt.sh-failure case.)
 
         for sub in sorted(seen):
+            ctx.publish("subdomains", sub)
             findings.append(self._f("dns", "subdomain", sub,
                                     source="certificate transparency / hostsearch",
                                     source_url=f"https://crt.sh/?q=%25.{domain}",
@@ -219,6 +315,7 @@ class SubdomainsPlugin(Plugin):
                 try:
                     ans = await resolver.resolve(cand, "A")
                     ips = ", ".join(str(r) for r in ans)
+                    ctx.publish("subdomains", cand)
                     findings.append(self._f("dns", "subdomain",
                                             f"{cand} -> {ips}",
                                             source="DNS brute force",

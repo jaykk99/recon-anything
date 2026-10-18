@@ -171,6 +171,35 @@ export default function Home() {
       </div>
 
       <div className="card p-5">
+        <h2 className="font-semibold mb-1 text-amber-300">Key Leak Checker</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Paste a wallet address or public key to check if it appears in public leaks.
+          Cannot crack or derive keys, only finds exposures.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <input
+            className="input flex-1 min-w-[200px] p-3 font-mono text-sm min-h-[48px]"
+            placeholder="bc1q... or 0x..."
+            id="keyleak-input"
+          />
+          <button
+            className="btn px-6 py-3 min-h-[48px] text-base"
+            onClick={() => {
+              const el = document.getElementById("keyleak-input") as HTMLInputElement;
+              if (el && el.value.trim()) {
+                setText(el.value.trim());
+                setOverride("crypto_wallet");
+                el.value = "";
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }
+            }}
+          >
+            Check leaks
+          </button>
+        </div>
+      </div>
+
+      <div className="card p-5">
         <h2 className="font-semibold mb-3">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>
         {Object.keys(GROUPS).map((g) => (
           <div key={g} className="mb-4">

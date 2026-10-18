@@ -291,7 +291,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -385,6 +385,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
+      {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
+      {tab === "creds" && <CredsView findings={findings} />}
       {tab === "graph" && <GraphView graph={graph} />}
       {tab === "apimap" && <ApiMapView data={apiMap} />}
       {tab === "raw" && (
@@ -528,6 +530,82 @@ function FilesView({ findings, onView }: { findings: Finding[]; onView: (url: st
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: string) => void }) {
+  const [typeFilter, setTypeFilter] = useState("all");
+  const secrets = findings.filter((f) =>
+    f.key.startsWith("exposed_") || f.key.startsWith("wallet_"));
+  const types = Array.from(new Set(secrets.map((s) =>
+    s.key.replace("exposed_", "").replace("wallet_", "").split("_")[0])));
+  const shown = typeFilter === "all" ? secrets :
+    secrets.filter((s) => s.key.includes(typeFilter));
+  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+  return (
+    <div className="card p-4">
+      <h2 className="font-semibold text-red-300 mb-1">Secrets <span className="text-slate-500 text-xs">({secrets.length})</span></h2>
+      <p className="text-xs text-slate-500 mb-3">API keys, tokens, wallet keys found. Tap to view source. Rotate immediately.</p>
+      <div className="flex gap-2 flex-wrap mb-3">
+        <button onClick={() => setTypeFilter("all")}
+          className={`chip px-3 py-2 min-h-[44px] text-xs ${typeFilter === "all" ? "bg-red-900 text-red-200" : "text-slate-400"}`}>all</button>
+        {types.map((t) => (
+          <button key={t} onClick={() => setTypeFilter(t)}
+            className={`chip px-3 py-2 min-h-[44px] text-xs ${typeFilter === t ? "bg-red-900 text-red-200" : "text-slate-400"}`}>{t}</button>
+        ))}
+      </div>
+      {shown.length === 0 ? (
+        <p className="text-sm text-slate-500">No secrets found yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {shown.map((f, i) => (
+            <div key={i} className="bg-slate-800/50 rounded-lg p-3 border-l-2 border-red-500">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 whitespace-nowrap">
+                  {f.key.replace("exposed_", "").replace("wallet_", "").replace(/_/g, " ").toUpperCase()}
+                </span>
+                <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
+              </div>
+              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              {f.source_url && (
+                <button onClick={() => onView(f.source_url!)}
+                  className="text-xs text-sky-400 mt-2 min-h-[44px]">tap to view source</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CredsView({ findings }: { findings: Finding[] }) {
+  const creds = findings.filter((f) => f.key.startsWith("cred_"));
+  return (
+    <div className="card p-4">
+      <h2 className="font-semibold text-amber-300 mb-1">Credentials <span className="text-slate-500 text-xs">({creds.length})</span></h2>
+      <p className="text-xs text-slate-500 mb-3">Hardcoded logins, passwords, DB strings. Rotate immediately.</p>
+      {creds.length === 0 ? (
+        <p className="text-sm text-slate-500">No credentials found yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {creds.map((f, i) => (
+            <div key={i} className="bg-slate-800/50 rounded-lg p-3 border-l-2 border-amber-500">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 whitespace-nowrap">
+                  {f.key.replace("cred_", "").replace(/_/g, " ").toUpperCase()}
+                </span>
+                <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
+              </div>
+              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              {f.source_url && (
+                <p className="text-xs text-slate-500 mt-1 break-all">{f.source_url}</p>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
