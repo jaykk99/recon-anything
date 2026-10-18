@@ -9,6 +9,7 @@ Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List
@@ -75,7 +76,8 @@ class BackupPlugin(Plugin):
                 url = ("https://web.archive.org/cdx/search/cdx?url="
                        + quote(full, safe="") + "&output=json&fl=timestamp&limit=1")
                 try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=15)
+                    r = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                    timeout=12, max_retries=1)
                     if r.status_code == 200:
                         data = r.json()
                         if isinstance(data, list) and len(data) > 1:
@@ -92,29 +94,44 @@ class BackupPlugin(Plugin):
                 except Exception:
                     continue
         else:
-            for path in candidates:
+            # Concurrent sweep: 228 candidates at ~10 RPS = ~25s.
+            # Short timeout + single retry: a blackholed path on a WAF
+            # means "blocked", retrying just burns the time budget.
+            sem = asyncio.Semaphore(12)
+
+            async def probe(path: str):
                 full = base + path
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=10)
-                except Exception:
-                    continue
+                async with sem:
+                    try:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", full,
+                                        timeout=8, max_retries=1)
+                    except Exception:
+                        return None
                 if r.status_code == 200 and len(r.text.strip()) > 50:
                     ctype = r.headers.get("content-type", "")
                     if "text/html" in ctype and len(r.text) > 2000:
                         # probably a soft-404 page; check for backup markers
                         if not any(e in path for e in (".sql", ".zip", ".gz", ".tgz")):
-                            continue
-                    note = sniff(r.text)
-                    findings.append(self._f(
-                        "leak", "backup_exposed",
-                        f"CRITICAL: backup file {path} is downloadable ({len(r.text)} bytes)."
-                        + note,
-                        source="backup sweep", source_url=full,
-                        confidence=90, passive=False,
-                        evidence={"severity": "critical",
-                                  "size": len(r.text),
-                                  "remediation": "Remove backup files from web roots immediately. "
-                                                 "Block backup extensions at the web server and audit what was exposed."}))
+                            return None
+                    return (path, full, r.text)
+                return None
+
+            probed = await asyncio.gather(*[probe(p) for p in candidates])
+            for item in probed:
+                if not item:
+                    continue
+                path, full, body = item
+                note = sniff(body)
+                findings.append(self._f(
+                    "leak", "backup_exposed",
+                    f"CRITICAL: backup file {path} is downloadable ({len(body)} bytes)."
+                    + note,
+                    source="backup sweep", source_url=full,
+                    confidence=90, passive=False,
+                    evidence={"severity": "critical",
+                              "size": len(body),
+                              "remediation": "Remove backup files from web roots immediately. "
+                                             "Block backup extensions at the web server and audit what was exposed."}))
                 if len(findings) >= 30:
                     break
 

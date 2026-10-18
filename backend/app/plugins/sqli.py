@@ -8,6 +8,7 @@ No data extraction, no stacked queries. Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List
@@ -158,24 +159,29 @@ class SqliPlugin(Plugin):
                     domain in urlparse(eu).netloc:
                 urls.add(eu)
 
-        tested = 0
-        for u in list(urls)[:8]:
+        # Test URLs concurrently (sem 4): on a WAF-blackholed target the
+        # sequential version burns minutes; parallel keeps it to the
+        # slowest URL's sequence. Early-exit per param is preserved.
+        sem = asyncio.Semaphore(4)
+        tested = [0]
+
+        async def test_url(u: str):
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
-                continue
+                return
             for name, val in params[:3]:
                 found = False
 
                 # --- Method 1: Error-based ---
                 for payload in SQLI_ERROR_PAYLOADS:
-                    tested += 1
+                    tested[0] += 1
                     probe = [(n, (v + payload) if n == name else v)
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
                         pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
-                                         timeout=15)
+                                         timeout=15, max_retries=1)
                         body = pr.text[:200000]
                     except Exception:
                         continue
@@ -205,13 +211,13 @@ class SqliPlugin(Plugin):
 
                 # --- Method 2: UNION-based ---
                 for payload in SQLI_UNION_PAYLOADS:
-                    tested += 1
+                    tested[0] += 1
                     probe = [(n, (v + payload) if n == name else v)
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
                         pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
-                                         timeout=15)
+                                         timeout=15, max_retries=1)
                         body = pr.text[:200000]
                     except Exception:
                         continue
@@ -241,14 +247,14 @@ class SqliPlugin(Plugin):
 
                 # --- Method 3: Time-based blind ---
                 for payload, db in SQLI_TIME_PAYLOADS:
-                    tested += 1
+                    tested[0] += 1
                     probe = [(n, (v + payload) if n == name else v)
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
                         p0 = time.monotonic()
                         await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
-                                    timeout=20)
+                                    timeout=20, max_retries=1)
                         delta = time.monotonic() - p0
                     except Exception:
                         continue
@@ -274,7 +280,7 @@ class SqliPlugin(Plugin):
 
                 # --- Method 4: Boolean-based blind ---
                 # Compare AND 1=1 (true) vs AND 1=2 (false) response lengths
-                tested += 2
+                tested[0] += 2
                 try:
                     true_probe = [(n, (v + "' AND '1'='1") if n == name else v)
                                   for n, v in params]
@@ -285,9 +291,9 @@ class SqliPlugin(Plugin):
                     false_url = urlunparse(parts._replace(
                         query=urlencode(false_probe)))
                     tr = await fetch(ctx.http, ctx.limiter, "GET", true_url, rotate_ua=True,
-                                     timeout=15)
+                                     timeout=15, max_retries=1)
                     fr = await fetch(ctx.http, ctx.limiter, "GET", false_url, rotate_ua=True,
-                                     timeout=15)
+                                     timeout=15, max_retries=1)
                     true_len = len(tr.text)
                     false_len = len(fr.text)
                     # Significant difference suggests boolean-based SQLi
@@ -313,8 +319,14 @@ class SqliPlugin(Plugin):
                 except Exception:
                     pass
 
+        async def test_url_sem(u: str):
+            async with sem:
+                await test_url(u)
+
+        await asyncio.gather(*[test_url_sem(u) for u in list(urls)[:8]])
+
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"probed {tested} payloads across "
+        res = self._ok(findings, f"probed {tested[0]} payloads across "
                                  f"{len(urls)} URLs, {len(findings)} SQLi signals")
         res.duration_ms = dur
         return res

@@ -58,7 +58,10 @@ class HiddenPathsPlugin(Plugin):
         async def check(path: str):
             url = urljoin(base + "/", path)
             try:
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url)
+                # Short timeout, one retry: bulk sweep, a blackholed
+                # path means blocked, not worth waiting on.
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                   timeout=8, max_retries=1)
                 if resp and resp.status_code in (200, 301, 302, 401, 403):
                     return (path, resp.status_code)
             except Exception:

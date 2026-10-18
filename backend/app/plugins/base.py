@@ -42,7 +42,47 @@ class Finding:
     bounty_value: str = "low"  # critical | high | medium | low
 
 
-# Bug bounty payout tiers. Maps finding keys to their value tier.
+# Risk levels: Jay's quality gate. Every finding is Low, Medium, or High.
+# No "critical", no "info" - just 3 levels. If Jay sees a finding he
+# immediately knows how important it is.
+RISK_LEVELS = ("low", "medium", "high")
+
+
+def normalize_risk(severity: str) -> str:
+    """Map any severity string to low|medium|high."""
+    s = (severity or "").strip().lower()
+    if s in ("critical", "high"):
+        return "high"
+    if s in ("medium", "med"):
+        return "medium"
+    return "low"
+
+
+# Default "what to do about it" per finding category. Every finding must
+# be actionable: if a plugin doesn't set a specific remediation, the
+# category default applies so nothing is ever just "X exists".
+CATEGORY_ACTIONS = {
+    "dns": ("Review this DNS record. Remove stale or unclaimed records "
+            "(subdomain takeover risk) and enable DNSSEC."),
+    "web": ("Review this web finding. If something is exposed, remove it or "
+            "restrict access. If it's a misconfiguration, apply the fix and "
+            "re-scan to verify."),
+    "api": ("Audit this endpoint for authorization. It must require "
+            "authentication and enforce object-level access control - test "
+            "with a second account to confirm."),
+    "mobile": ("Review this mobile finding. Remove hardcoded secrets, "
+               "enable certificate pinning, and encrypt local storage."),
+    "identity": ("Investigate this identity exposure. Rotate any exposed "
+                 "credential immediately and check access logs."),
+    "infra": ("Review this infrastructure finding. Close unneeded ports, "
+              "patch the service, and restrict management interfaces to "
+              "trusted IPs."),
+    "leak": ("Treat as data exposure. Remove the exposed file or secret, "
+             "rotate the credential, and audit who may have accessed it."),
+    "graph": ("Review this connection for unintended exposure between assets."),
+}
+
+# Bug bounty payout tiers (backend only; not shown in UI per Jay's order).
 # critical = $5k+, high = $1k-5k, medium = $100-1k, low = $0-100
 BOUNTY_VALUE_TIERS = {
     "critical": {"label": "CRITICAL", "range": "$5k+", "color": "#ff4444"},
@@ -238,14 +278,25 @@ class Plugin(abc.ABC):
            evidence: Optional[Dict[str, Any]] = None, raw: Optional[Any] = None,
            passive: bool = True, bounty_value: Optional[str] = None) -> Finding:
         bv = bounty_value
+        ev: Dict[str, Any] = dict(evidence) if evidence else {}
+        # Quality gate: normalize risk to low|medium|high (3 levels only).
+        raw_sev = str(ev.get("severity", ""))
+        risk = normalize_risk(raw_sev)
+        ev["severity"] = risk
+        ev["risk"] = risk
+        # Quality gate: every finding is actionable. If the plugin didn't
+        # set a specific remediation, apply the category default so the
+        # finding always says what to do about it.
+        if not ev.get("remediation"):
+            ev["remediation"] = CATEGORY_ACTIONS.get(
+                category,
+                "Review this finding and address the underlying issue, "
+                "then re-scan to verify.")
         if bv is None:
-            sev = ""
-            if evidence and isinstance(evidence, dict):
-                sev = str(evidence.get("severity", ""))
-            bv = bounty_tier_for(key, sev)
+            bv = bounty_tier_for(key, raw_sev)
         return Finding(plugin_id=self.id, category=category, key=key, value=value,
                        source=source, source_url=source_url, confidence=confidence,
-                       evidence=evidence, raw=raw, passive=passive,
+                       evidence=ev, raw=raw, passive=passive,
                        bounty_value=bv)
 
     def module_mode(self, ctx: Ctx) -> str:

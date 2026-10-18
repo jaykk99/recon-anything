@@ -15,15 +15,15 @@ function sevOf(f: Finding): string {
   return (f.evidence?.severity || "").toLowerCase();
 }
 function sevColor(s: string): string {
-  if (s === "critical") return "text-red-400 border-red-500/40 bg-red-500/10";
-  if (s === "high") return "text-orange-400 border-orange-500/40 bg-orange-500/10";
-  if (s === "medium") return "text-yellow-300 border-yellow-500/30 bg-yellow-500/10";
+  // 3 risk levels only: high / medium / low (critical maps to high).
+  if (s === "high" || s === "critical") return "text-red-400 border-red-500/40 bg-red-500/10";
+  if (s === "medium") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
   return "text-slate-400 border-slate-700 bg-slate-800/50";
 }
 function findingMarkdown(f: Finding): string {
   const sev = sevOf(f);
   let md = `## ${f.key}\n\n`;
-  md += `- **Severity:** ${sev || "info"}\n`;
+  md += `- **Risk:** ${sev || "low"}\n`;
   md += `- **Plugin:** ${f.plugin}\n`;
   md += `- **Category:** ${f.category}\n`;
   md += `- **Confidence:** ${f.confidence}%\n`;
@@ -235,7 +235,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   function sortFindings(list: Finding[]): Finding[] {
     const rank = (f: Finding) => {
       const s = sevOf(f);
-      return s === "critical" ? 0 : s === "high" ? 1 : s === "medium" ? 2 : 3;
+      return (s === "critical" || s === "high") ? 0 : s === "medium" ? 1 : 2;
     };
     return [...list].sort((a, b) => rank(a) - rank(b) || b.confidence - a.confidence);
   }
@@ -321,7 +321,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
         const sorted = sortFindings(byCat[c]);
         const shown = shownCount[c] || PAGE;
         const sevCounts: Record<string, number> = {};
-        sorted.forEach((f) => { const s = sevOf(f) || "info"; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+        sorted.forEach((f) => { const s = sevOf(f) || "low"; sevCounts[s] = (sevCounts[s] || 0) + 1; });
         return (
         <div key={c} className="card p-4">
           <div className="flex items-center gap-2 flex-wrap mb-3">
@@ -1225,7 +1225,6 @@ function CredsView({ findings }: { findings: Finding[] }) {
 function AtmView({ runId, findings }: { runId: string; findings: Finding[] }) {
   const [checked, setChecked] = useState(false);
   const [query, setQuery] = useState("");
-  const [targets, setTargets] = useState("");
   const [atms, setAtms] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -1253,12 +1252,13 @@ function AtmView({ runId, findings }: { runId: string; findings: Finding[] }) {
 
   async function startRun() {
     if (!checked) { setErr("Check the authorization box first."); return; }
-    if (!targets.trim()) { setErr("Enter the network target(s) for the ATM(s), e.g. an IP or hostname."); return; }
+    if (!query.trim()) { setErr("Enter a location in the box above first (address, city, or lat,lon)."); return; }
     setStarting(true); setErr("");
     try {
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ targets: targets.trim(), mode: "passive", module_overrides: { atm: "authorized" } }),
+        // ATM is a source type now: location -> nearby ATMs -> assess each.
+        body: JSON.stringify({ targets: query.trim(), mode: "passive", source_type: "atm" }),
       });
       window.location.href = `/run/${d.run_id}`;
     } catch (e: any) {
@@ -1299,10 +1299,9 @@ function AtmView({ runId, findings }: { runId: string; findings: Finding[] }) {
 
       <div className="card p-4 space-y-3">
         <h2 className="font-semibold text-sky-300 text-sm">Start ATM assessment run</h2>
-        <p className="text-xs text-slate-500">ATMs have no public IPs in map data. Enter the network target(s) manually (IPs or hostnames from your authorization scope).</p>
+        <p className="text-xs text-slate-500">Uses the location you entered above. Finds every ATM nearby via OpenStreetMap and assesses each one.</p>
         <div className="flex gap-2 flex-wrap">
-          <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[180px]" placeholder="targets, e.g. 192.0.2.10 or atm-corp.example.com" value={targets} onChange={(e) => setTargets(e.target.value)} />
-          <button className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300" onClick={startRun} disabled={starting}>{starting ? "starting..." : "Start ATM assessment run"}</button>
+          <button className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300" onClick={startRun} disabled={starting}>{starting ? "starting..." : "Assess ATMs at this location"}</button>
         </div>
       </div>
 

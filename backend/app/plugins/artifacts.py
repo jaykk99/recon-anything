@@ -6,6 +6,7 @@ Probes are read-only GETs of well-known sensitive files.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List
 from urllib.parse import quote
@@ -213,50 +214,86 @@ class ArtifactsPlugin(Plugin):
         mode = self.module_mode(ctx)
 
         if mode == "passive":
-            # Wayback lookup per path: zero packets to the target
-            for path, label, conf in PATHS:
+            # Wayback lookup per path: zero packets to the target.
+            # Concurrent: 165 paths at archive.org's pace.
+            sem = asyncio.Semaphore(12)
+
+            async def wprobe(item):
+                path, label, conf = item
                 full = base + path
                 url = ("https://web.archive.org/cdx/search/cdx?url="
                        + quote(full, safe="") + "&output=json&fl=timestamp,statuscode&limit=1")
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=15)
-                    if r.status_code == 200:
+                async with sem:
+                    try:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                        timeout=12, max_retries=1)
+                    except Exception:
+                        return None
+                if r.status_code == 200:
+                    try:
                         data = r.json()
-                        if isinstance(data, list) and len(data) > 1:
-                            ts = data[1][0] if len(data[1]) > 0 else ""
-                            findings.append(self._f(
-                                "leak", "artifact_archived",
-                                f"{path} was archived ({ts}) - {label}",
-                                source="Wayback CDX",
-                                source_url=f"https://web.archive.org/web/{ts}/{full}",
-                                confidence=conf - 15, passive=True))
-                except Exception:
+                    except Exception:
+                        return None
+                    if isinstance(data, list) and len(data) > 1:
+                        ts = data[1][0] if len(data[1]) > 0 else ""
+                        return (path, label, conf, ts, full)
+                return None
+
+            wprobed = await asyncio.gather(*[wprobe(p) for p in PATHS])
+            for item in wprobed:
+                if not item:
                     continue
+                path, label, conf, ts, full = item
+                findings.append(self._f(
+                    "leak", "artifact_archived",
+                    f"{path} was archived ({ts}) - {label}",
+                    source="Wayback CDX",
+                    source_url=f"https://web.archive.org/web/{ts}/{full}",
+                    confidence=conf - 15, passive=True))
         else:
-            for path, label, conf in PATHS:
+            # Concurrent direct probe: 165 paths, short timeout, one retry.
+            sem = asyncio.Semaphore(12)
+
+            async def dprobe(item):
+                path, label, conf = item
                 full = base + path
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=12)
-                    if r.status_code == 200 and len(r.text.strip()) > 0:
-                        body = r.text[:300]
-                        # sanity: skip generic 200 pages for odd paths
-                        if path == "/.git/config" and "[core]" not in r.text:
-                            continue
-                        if path == "/.env" and "=" not in r.text:
-                            continue
-                        findings.append(self._f(
-                            "leak", "artifact_exposed",
-                            f"{path} returned 200 - {label}: {body[:150]}",
-                            source="direct probe", source_url=full,
-                            confidence=conf, passive=False))
-                    elif r.status_code in (401, 403):
-                        findings.append(self._f(
-                            "web", "artifact_guarded",
-                            f"{path} returned {r.status_code} (exists but guarded)",
-                            source="direct probe", source_url=full,
-                            confidence=60, passive=False))
-                except Exception:
+                async with sem:
+                    try:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", full,
+                                        timeout=8, max_retries=1)
+                    except Exception:
+                        return None
+                if r.status_code == 200 and len(r.text.strip()) > 0:
+                    body = r.text[:300]
+                    # sanity: skip generic 200 pages for odd paths
+                    if path == "/.git/config" and "[core]" not in r.text:
+                        return None
+                    if path == "/.env" and "=" not in r.text:
+                        return None
+                    return ("exposed", path, label, conf, full, body)
+                elif r.status_code in (401, 403):
+                    return ("guarded", path, label, conf, full, r.status_code)
+                return None
+
+            dprobed = await asyncio.gather(*[dprobe(p) for p in PATHS])
+            for item in dprobed:
+                if not item:
                     continue
+                kind = item[0]
+                if kind == "exposed":
+                    _, path, label, conf, full, body = item
+                    findings.append(self._f(
+                        "leak", "artifact_exposed",
+                        f"{path} returned 200 - {label}: {body[:150]}",
+                        source="direct probe", source_url=full,
+                        confidence=conf, passive=False))
+                else:
+                    _, path, label, conf, full, status = item
+                    findings.append(self._f(
+                        "web", "artifact_guarded",
+                        f"{path} returned {status} (exists but guarded)",
+                        source="direct probe", source_url=full,
+                        confidence=60, passive=False))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"checked {len(PATHS)} paths ({mode})")
