@@ -135,7 +135,8 @@ async def api_start_run(body: RunIn):
     run_id = uuid.uuid4().hex[:12]
     session = get_session()
     try:
-        session.add(Run(id=run_id, mode=body.mode, status="running"))
+        session.add(Run(id=run_id, mode=body.mode, status="running",
+                        source_type=body.source_type))
         session.commit()
         keys = load_all(session)
     finally:
@@ -173,6 +174,7 @@ def api_list_runs(limit: int = Query(30, le=200)):
         runs = session.query(Run).order_by(Run.created_at.desc()).limit(limit).all()
         return {"runs": [
             {"id": r.id, "mode": r.mode, "status": r.status,
+             "source_type": getattr(r, "source_type", None) or "website",
              "created_at": r.created_at.isoformat() if r.created_at else None,
              "summary": r.summary or {}} for r in runs]}
     finally:
@@ -190,6 +192,7 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
+                    "source_type": getattr(run, "source_type", None) or "website",
                     "created_at": run.created_at.isoformat() if run.created_at else None,
                     "finished_at": run.finished_at.isoformat() if run.finished_at else None,
                     "summary": run.summary or {}},
