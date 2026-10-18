@@ -7,3 +7,4 @@ __pycache__/
 .env
 evidence/
 .DS_Store
+frontend/tsconfig.tsbuildinfo
