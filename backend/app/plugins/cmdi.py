@@ -86,7 +86,7 @@ class CmdInjectionPlugin(Plugin):
                 # --- Method 1: time-based ---
                 for payload, os_label in CMD_TIME_PAYLOADS:
                     tested += 1
-                    purl = probe_url(parts, params, name, v + payload)
+                    purl = probe_url(parts, params, name, val + payload)
                     try:
                         p0 = time.monotonic()
                         await fetch(ctx.http, ctx.limiter, "GET", purl,
@@ -119,7 +119,7 @@ class CmdInjectionPlugin(Plugin):
                 # --- Method 2: error-based output leak ---
                 for payload, os_label in CMD_ERROR_PAYLOADS:
                     tested += 1
-                    purl = probe_url(parts, params, name, v + payload)
+                    purl = probe_url(parts, params, name, val + payload)
                     try:
                         pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
                                          timeout=15)
