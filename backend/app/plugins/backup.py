@@ -97,39 +97,39 @@ class BackupPlugin(Plugin):
             # Concurrent sweep: 228 candidates at ~10 RPS = ~25s.
             # Short timeout + single retry: a blackholed path on a WAF
             # means "blocked", retrying just burns the time budget.
+            # Uses ctx.probe: responses are shared per-run with artifacts.py
+            # and hiddenpaths.py, so overlapping paths are fetched once.
             sem = asyncio.Semaphore(12)
 
             async def probe(path: str):
                 full = base + path
                 async with sem:
-                    try:
-                        r = await fetch(ctx.http, ctx.limiter, "GET", full,
-                                        timeout=8, max_retries=1)
-                    except Exception:
-                        return None
-                if r.status_code == 200 and len(r.text.strip()) > 50:
-                    ctype = r.headers.get("content-type", "")
-                    if "text/html" in ctype and len(r.text) > 2000:
+                    probed = await ctx.probe(full, timeout=8)
+                status = probed["status"]
+                text = probed["text"]
+                if status == 200 and len(text.strip()) > 50:
+                    ctype = probed["headers"].get("content-type", "")
+                    if "text/html" in ctype and len(text) > 2000:
                         # probably a soft-404 page; check for backup markers
                         if not any(e in path for e in (".sql", ".zip", ".gz", ".tgz")):
                             return None
-                    return (path, full, r.text)
+                    return (path, full, text, probed["length"])
                 return None
 
             probed = await asyncio.gather(*[probe(p) for p in candidates])
             for item in probed:
                 if not item:
                     continue
-                path, full, body = item
+                path, full, body, length = item
                 note = sniff(body)
                 findings.append(self._f(
                     "leak", "backup_exposed",
-                    f"CRITICAL: backup file {path} is downloadable ({len(body)} bytes)."
+                    f"CRITICAL: backup file {path} is downloadable ({length} bytes)."
                     + note,
                     source="backup sweep", source_url=full,
                     confidence=90, passive=False,
                     evidence={"severity": "critical",
-                              "size": len(body),
+                              "size": length,
                               "remediation": "Remove backup files from web roots immediately. "
                                              "Block backup extensions at the web server and audit what was exposed."}))
                 if len(findings) >= 30:

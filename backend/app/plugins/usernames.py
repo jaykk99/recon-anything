@@ -10,6 +10,8 @@ Works two ways:
 """
 from __future__ import annotations
 
+import asyncio
+
 import re
 import time
 from typing import List
@@ -98,21 +100,34 @@ class UsernamesPlugin(Plugin):
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 
-        for username in candidates:
-            for plat, template, not_found_markers, conf in PLATFORMS:
-                url = template.format(u=username)
+        # Platform checks concurrently (different hosts; same checks).
+        sem = asyncio.Semaphore(8)
+
+        async def _check_platform(username: str, plat: str, template: str,
+                                  not_found_markers, conf: int):
+            url = template.format(u=username)
+            async with sem:
                 try:
                     r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
-                    body = r.text[:5000].lower()
-                    is_not_found = any(m.lower() in body for m in not_found_markers)
-                    if r.status_code == 200 and not is_not_found:
-                        findings.append(self._f(
-                            "identity", "username_found",
-                            f"@{username} exists on {plat}",
-                            source="username checker", source_url=url,
-                            confidence=conf, passive=True))
                 except Exception:
-                    continue
+                    return None
+            body = r.text[:5000].lower()
+            is_not_found = any(m.lower() in body for m in not_found_markers)
+            if r.status_code == 200 and not is_not_found:
+                return self._f(
+                    "identity", "username_found",
+                    f"@{username} exists on {plat}",
+                    source="username checker", source_url=url,
+                    confidence=conf, passive=True)
+            return None
+
+        jobs = []
+        for username in candidates:
+            for plat, template, not_found_markers, conf in PLATFORMS:
+                jobs.append((username, plat, template, not_found_markers, conf))
+        for f in await asyncio.gather(*[_check_platform(*j) for j in jobs]):
+            if f:
+                findings.append(f)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,

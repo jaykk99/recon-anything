@@ -5,6 +5,7 @@ active-mode DNS brute force with a bundled wordlist.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List
 from urllib.parse import quote
@@ -255,7 +256,7 @@ class SubdomainsPlugin(Plugin):
         # jonlu.ca behind a Cloudflare challenge that server-side calls cannot
         # pass, so it could never return results; hackertarget above covers
 
-        # --- more sources: AlienVault OTX, urlscan, ThreatCrowd (all keyless) ---
+        # --- more sources: AlienVault OTX, urlscan, ThreatCrowd (all keyless).
         async def otx():
             url = (f"https://otx.alienvault.com/api/v1/indicators/domain/"
                    f"{quote(domain)}/passive_dns")
@@ -267,7 +268,37 @@ class SubdomainsPlugin(Plugin):
             except Exception:
                 return None
 
-        otx_data, _ = await ctx.cache.cached("otx", domain, otx)
+        async def urlscan():
+            url = (f"https://urlscan.io/api/v1/search/?q=domain:{quote(domain)}"
+                   f"&size=100")
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        async def threatcrowd():
+            url = (f"https://www.threatcrowd.org/searchApi/v2/domain/report/"
+                   f"?domain={quote(domain)}")
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        # Fetched concurrently: 3 sequential x 25s timeouts become one window.
+        otx_data, us_data, tc_data = await asyncio.gather(
+            ctx.cache.cached("otx", domain, otx),
+            ctx.cache.cached("urlscan", domain, urlscan),
+            ctx.cache.cached("tc", domain, threatcrowd),
+        )
+        otx_data = otx_data[0]
+        us_data = us_data[0]
+        tc_data = tc_data[0]
         if isinstance(otx_data, dict):
             n_before = len(seen)
             for rec in otx_data.get("passive_dns", []):
@@ -281,18 +312,6 @@ class SubdomainsPlugin(Plugin):
                                         source="otx.alienvault.com",
                                         confidence=70, passive=True))
 
-        async def urlscan():
-            url = (f"https://urlscan.io/api/v1/search/?q=domain:{quote(domain)}"
-                   f"&size=100")
-            try:
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
-                if resp.status_code != 200:
-                    return None
-                return resp.json()
-            except Exception:
-                return None
-
-        us_data, _ = await ctx.cache.cached("urlscan", domain, urlscan)
         if isinstance(us_data, dict):
             n_before = len(seen)
             for res in us_data.get("results", []):
@@ -306,18 +325,6 @@ class SubdomainsPlugin(Plugin):
                                         source="urlscan.io",
                                         confidence=70, passive=True))
 
-        async def threatcrowd():
-            url = (f"https://www.threatcrowd.org/searchApi/v2/domain/report/"
-                   f"?domain={quote(domain)}")
-            try:
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
-                if resp.status_code != 200:
-                    return None
-                return resp.json()
-            except Exception:
-                return None
-
-        tc_data, _ = await ctx.cache.cached("tc", domain, threatcrowd)
         if isinstance(tc_data, dict):
             n_before = len(seen)
             for sub in tc_data.get("subdomains", []):
@@ -351,6 +358,24 @@ class SubdomainsPlugin(Plugin):
                                     passive=True))
         # the crt.sh-failure case.)
 
+        # Staleness probes for interesting subdomains, run concurrently
+        # (sequential 2-request probes per subdomain become one window).
+        interesting = []
+        for sub in sorted(seen):
+            sev, why = classify_subdomain(sub, domain)
+            if sev:
+                interesting.append((sub, sev, why))
+        stale_sem = asyncio.Semaphore(6)
+
+        async def _stale(sub: str):
+            async with stale_sem:
+                return await check_staleness(sub, ctx)
+
+        stale_results = await asyncio.gather(
+            *[_stale(sub) for sub, _, _ in interesting])
+        stale_by_sub = {sub: sigs for (sub, _, _), sigs
+                        in zip(interesting, stale_results)}
+
         for sub in sorted(seen):
             ctx.publish("subdomains", sub)
             findings.append(self._f("dns", "subdomain", sub,
@@ -360,7 +385,7 @@ class SubdomainsPlugin(Plugin):
             sev, why = classify_subdomain(sub, domain)
             if sev:
                 # Check for staleness on interesting subdomains
-                stale_signals = await check_staleness(sub, ctx)
+                stale_signals = stale_by_sub.get(sub, [])
                 stale_note = ""
                 if stale_signals:
                     stale_note = f" STALENESS: {'; '.join(stale_signals)}. This host looks abandoned."
@@ -375,42 +400,54 @@ class SubdomainsPlugin(Plugin):
                               "remediation": "Verify this host is intentional, patched, "
                                              "and not exposing more than the main site."}))
 
-        # --- active DNS brute force ---
+        # --- active DNS brute force (concurrent: ~170 sequential resolves
+        # become one paced window; the 100-hit cap still applies in
+        # wordlist order when emitting findings) ---
         if mode == "active":
             resolver = dns.asyncresolver.Resolver()
             resolver.lifetime = 6
-            found = 0
-            for word in WORDLIST:
+            dns_sem = asyncio.Semaphore(20)
+
+            async def _resolve(word: str):
                 cand = f"{word}.{domain}"
                 if cand in seen:
+                    return None
+                async with dns_sem:
+                    try:
+                        ans = await resolver.resolve(cand, "A")
+                        return (cand, ", ".join(str(r) for r in ans))
+                    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer,
+                            dns.resolver.NoNameservers, dns.exception.Timeout):
+                        return None
+                    except Exception:
+                        return None
+
+            dns_results = await asyncio.gather(
+                *[_resolve(w) for w in WORDLIST])
+            found = 0
+            for item in dns_results:
+                if not item:
                     continue
-                try:
-                    ans = await resolver.resolve(cand, "A")
-                    ips = ", ".join(str(r) for r in ans)
-                    ctx.publish("subdomains", cand)
-                    findings.append(self._f("dns", "subdomain",
-                                            f"{cand} -> {ips}",
-                                            source="DNS brute force",
-                                            confidence=95, passive=False))
-                    sev, why = classify_subdomain(cand, domain)
-                    if sev:
-                        findings.append(self._f(
-                            "dns", "interesting_subdomain",
-                            f"{sev.upper()}: {cand} looks interesting: {why}.",
-                            source="subdomain classifier", confidence=75,
-                            passive=False,
-                            evidence={"severity": sev, "subdomain": cand,
-                                      "why": why,
-                                      "remediation": "Verify this host is intentional, patched, "
-                                                     "and not exposing more than the main site."}))
-                    found += 1
-                    if found >= 100:
-                        break
-                except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer,
-                        dns.resolver.NoNameservers, dns.exception.Timeout):
-                    continue
-                except Exception:
-                    continue
+                cand, ips = item
+                ctx.publish("subdomains", cand)
+                findings.append(self._f("dns", "subdomain",
+                                        f"{cand} -> {ips}",
+                                        source="DNS brute force",
+                                        confidence=95, passive=False))
+                sev, why = classify_subdomain(cand, domain)
+                if sev:
+                    findings.append(self._f(
+                        "dns", "interesting_subdomain",
+                        f"{sev.upper()}: {cand} looks interesting: {why}.",
+                        source="subdomain classifier", confidence=75,
+                        passive=False,
+                        evidence={"severity": sev, "subdomain": cand,
+                                  "why": why,
+                                  "remediation": "Verify this host is intentional, patched, "
+                                                 "and not exposing more than the main site."}))
+                found += 1
+                if found >= 100:
+                    break
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(seen)} subdomains from CT"

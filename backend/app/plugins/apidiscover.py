@@ -7,6 +7,7 @@ decodes JWTs, checks CORS reflection, and assembles a live API map.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -103,23 +104,37 @@ class ApiDiscoverPlugin(Plugin):
         except Exception:
             pass
 
-        # --- docs discovery ---
-        for path in DOC_PATHS:
+        # --- docs discovery (concurrent: 14 sequential x 12s timeouts
+        # become one paced window; same checks, same findings) ---
+        sem = asyncio.Semaphore(8)
+
+        async def check_doc(path: str):
             url = base + path
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
-            except Exception:
-                continue
+            async with sem:
+                try:
+                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
+                except Exception:
+                    return None
             ctype = r.headers.get("content-type", "")
             if r.status_code == 200 and ("json" in ctype or "graphql" in path.lower()
                                          or r.text.lstrip().startswith(("{", "["))):
+                return ("docs", path, url, r.text)
+            elif "graphql" in path and r.status_code in (200, 400, 405):
+                return ("gql", path, url, r.status_code)
+            return None
+
+        for item in await asyncio.gather(*[check_doc(p) for p in DOC_PATHS]):
+            if not item:
+                continue
+            kind, path, url, payload = item
+            if kind == "docs":
                 findings.append(self._f("api", "api_docs", f"{path} looks like API docs",
                                         source="docs discovery", source_url=url,
                                         confidence=85, passive=passive))
-                self._parse_openapi(r.text, url, findings, api_map, passive)
-            elif "graphql" in path and r.status_code in (200, 400, 405):
+                self._parse_openapi(payload, url, findings, api_map, passive)
+            else:
                 findings.append(self._f("api", "graphql_endpoint",
-                                        f"{path} responds (status {r.status_code})",
+                                        f"{path} responds (status {payload})",
                                         source="docs discovery", source_url=url,
                                         confidence=70, passive=passive))
 
@@ -132,26 +147,35 @@ class ApiDiscoverPlugin(Plugin):
             await self._graphql_introspect(ctx, base + "/api/graphql", findings,
                                            api_map, passive)
 
-        # --- REST version + wordlist probing (active-leaning; light in passive) ---
+        # --- REST version + wordlist probing (concurrent; same probes) ---
         probe_paths = [f"/api/{w}" for w in API_WORDLIST[:30]] if passive \
             else [f"/api/{w}" for w in API_WORDLIST] + [f"/v1/{w}" for w in API_WORDLIST[:20]]
-        for path in probe_paths:
+
+        async def probe_path(path: str):
             url = base + path
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
-            except Exception:
-                continue
+            async with sem:
+                try:
+                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
+                except Exception:
+                    return None
             if r.status_code in (200, 201, 301, 302, 401, 403, 405):
                 note = f"{path} -> {r.status_code}"
                 auth = self._detect_auth(r)
                 if auth:
                     note += f" [{auth}]"
-                findings.append(self._f("api", "endpoint", note,
-                                        source="path probe", source_url=url,
-                                        confidence=70 if r.status_code < 400 else 55,
-                                        passive=passive))
-                api_map[path] = {"methods": ["GET"], "status": r.status_code,
-                                 "auth": auth or "unknown"}
+                return (path, url, r.status_code, auth, note)
+            return None
+
+        for item in await asyncio.gather(*[probe_path(p) for p in probe_paths]):
+            if not item:
+                continue
+            path, url, status, auth, note = item
+            findings.append(self._f("api", "endpoint", note,
+                                    source="path probe", source_url=url,
+                                    confidence=70 if status < 400 else 55,
+                                    passive=passive))
+            api_map[path] = {"methods": ["GET"], "status": status,
+                             "auth": auth or "unknown"}
 
         # --- method matrix on /api ---
         try:

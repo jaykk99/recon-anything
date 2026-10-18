@@ -7,6 +7,7 @@ Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List
 from urllib.parse import urlparse
@@ -64,42 +65,53 @@ class CryptoconfigPlugin(Plugin):
         node_hosts = [domain, f"rpc.{domain}", f"node.{domain}",
                       f"eth.{domain}", f"api.{domain}"]
 
-        tested = 0
+        # 45 (host, path) probes concurrently: sequential 45x10s timeouts
+        # become one paced window. Same probes, same findings.
+        sem = asyncio.Semaphore(10)
+
+        async def probe_one(host: str, path: str, label: str):
+            if path.startswith(":"):
+                url = f"http://{host}{path}"
+            else:
+                url = f"https://{host}{path}"
+            # Try a harmless version call
+            method, params = SAFE_RPC_CALLS[0]
+            async with sem:
+                try:
+                    r = await fetch(
+                        ctx.http, ctx.limiter, "POST", url, timeout=10,
+                        json={"jsonrpc": "2.0", "id": 1,
+                              "method": method, "params": params})
+                except Exception:
+                    return None
+            body = r.text[:2000]
+            if r.status_code == 200 and "result" in body:
+                return self._f(
+                    "infra", "open_rpc_endpoint",
+                    f"CRITICAL: open blockchain RPC at {url} "
+                    f"({label}). Responded to {method}.",
+                    source="RPC probe", source_url=url,
+                    confidence=90, passive=False,
+                    evidence={"severity": "critical",
+                              "endpoint": url,
+                              "method": method,
+                              "response_hint": body[:200],
+                              "remediation": REMEDIATION,
+                              "scope_note": "Read-only probe. An open RPC can drain wallets if personal/admin modules are enabled."})
+            return None
+
+        jobs = []
         for host in node_hosts:
             for path, label in RPC_PATHS:
-                if path.startswith(":"):
-                    url = f"http://{host}{path}"
-                else:
-                    url = f"https://{host}{path}"
-                # Try a harmless version call
-                for method, params in SAFE_RPC_CALLS[:1]:
-                    try:
-                        tested += 1
-                        r = await fetch(
-                            ctx.http, ctx.limiter, "POST", url, timeout=10,
-                            json={"jsonrpc": "2.0", "id": 1,
-                                  "method": method, "params": params})
-                        body = r.text[:2000]
-                        if r.status_code == 200 and "result" in body:
-                            findings.append(self._f(
-                                "infra", "open_rpc_endpoint",
-                                f"CRITICAL: open blockchain RPC at {url} "
-                                f"({label}). Responded to {method}.",
-                                source="RPC probe", source_url=url,
-                                confidence=90, passive=False,
-                                evidence={"severity": "critical",
-                                          "endpoint": url,
-                                          "method": method,
-                                          "response_hint": body[:200],
-                                          "remediation": REMEDIATION,
-                                          "scope_note": "Read-only probe. An open RPC can drain wallets if personal/admin modules are enabled."}))
-                            break
-                    except Exception:
-                        continue
-                if tested > 30:
+                jobs.append((host, path, label))
+                if len(jobs) >= 30:
                     break
-            if tested > 30:
+            if len(jobs) >= 30:
                 break
+        results = await asyncio.gather(
+            *[probe_one(h, p, lab) for h, p, lab in jobs])
+        findings.extend([f for f in results if f])
+        tested = len(jobs)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{tested} RPC probes, {len(findings)} open endpoints")

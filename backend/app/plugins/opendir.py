@@ -5,6 +5,8 @@ Custom-built, works in both passive (Wayback) and active (direct probe) modes.
 """
 from __future__ import annotations
 
+import asyncio
+
 import re
 import time
 from typing import List
@@ -48,32 +50,46 @@ class OpenDirPlugin(Plugin):
         findings: List[Finding] = []
         mode = self.module_mode(ctx)
 
-        for path in DIR_PATHS:
+        _opendir_sem = asyncio.Semaphore(8)
+
+        async def _check_dir(path: str):
             url = base + path
-            try:
-                if mode == "passive":
-                    wb = ("https://web.archive.org/cdx/search/cdx?url="
-                          + quote(url, safe="") + "&output=json&limit=1")
-                    r = await fetch(ctx.http, ctx.limiter, "GET", wb, timeout=10)
-                    if r.status_code == 200 and len(r.json()) > 1:
-                        findings.append(self._f(
-                            "web", "opendir_archived",
-                            f"{path} was archived - may have been an open directory",
-                            source="Wayback", source_url=url,
-                            confidence=45, passive=True))
-                else:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
-                    body = r.text[:5000].lower()
-                    if r.status_code == 200 and any(m in body for m in DIR_MARKERS):
-                        # Count files listed
-                        links = len(re.findall(r'href="[^"]*"', body))
-                        findings.append(self._f(
-                            "web", "open_directory",
-                            f"OPEN DIRECTORY at {path} ({links} links found)",
-                            source="directory check", source_url=url,
-                            confidence=90, passive=False))
-            except Exception:
+            async with _opendir_sem:
+                try:
+                    if mode == "passive":
+                        wb = ("https://web.archive.org/cdx/search/cdx?url="
+                              + quote(url, safe="") + "&output=json&limit=1")
+                        r = await fetch(ctx.http, ctx.limiter, "GET", wb, timeout=10)
+                        if r.status_code == 200 and len(r.json()) > 1:
+                            return ("archived", path, url)
+                    else:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
+                        body = r.text[:5000].lower()
+                        if r.status_code == 200 and any(m in body for m in DIR_MARKERS):
+                            # Count files listed
+                            links = len(re.findall(r'href="[^"]*"', body))
+                            return ("open", path, url, links)
+                except Exception:
+                    pass
+            return None
+
+        for _res in await asyncio.gather(*[_check_dir(p) for p in DIR_PATHS]):
+            if not _res:
                 continue
+            if _res[0] == "archived":
+                _, path, url = _res
+                findings.append(self._f(
+                    "web", "opendir_archived",
+                    f"{path} was archived - may have been an open directory",
+                    source="Wayback", source_url=url,
+                    confidence=45, passive=True))
+            else:
+                _, path, url, links = _res
+                findings.append(self._f(
+                    "web", "open_directory",
+                    f"OPEN DIRECTORY at {path} ({links} links found)",
+                    source="directory check", source_url=url,
+                    confidence=90, passive=False))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"checked {len(DIR_PATHS)} paths ({mode})")
