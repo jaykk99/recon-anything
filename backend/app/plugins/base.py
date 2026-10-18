@@ -61,6 +61,12 @@ BOUNTY_KEY_TIERS = {
     "exposed_github_token": "critical",
     "exposed_stripe_key": "critical",
     "wallet_private_key": "critical",
+    "exposed_card_number": "critical",
+    "exposed_steam_wallet_code": "critical",
+    "exposed_amazon_claim_code": "critical",
+    "exposed_amazon_claim_code_long": "critical",
+    "exposed_generic_gift_code": "critical",
+    "exposed_gift_card_pan": "critical",
     "s3_public_write": "critical",
     "git_exposed": "high",
     # HIGH ($1k-5k)
