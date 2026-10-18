@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { getCode } from "../../../lib/api";
+import { getCode, api } from "../../../lib/api";
 
 interface Finding {
   plugin: string; category: string; key: string; value: string;
@@ -292,7 +292,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -389,6 +389,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "aihunter" && <AIHunterView runId={id} />}
+      {tab === "atm" && <AtmView runId={id} findings={findings} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
@@ -1077,6 +1078,112 @@ function CredsView({ findings }: { findings: Finding[] }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function AtmView({ runId, findings }: { runId: string; findings: Finding[] }) {
+  const [checked, setChecked] = useState(false);
+  const [query, setQuery] = useState("");
+  const [targets, setTargets] = useState("");
+  const [atms, setAtms] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const atmFindings = findings.filter((f) => f.plugin === "atm" || f.key.startsWith("atm_"));
+
+  async function locate() {
+    if (!checked) { setErr("Check the authorization box first."); return; }
+    if (!query.trim()) { setErr("Enter a bank name, address, or lat,lon."); return; }
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      const d = await api<{ atms: any[]; radius_m: number }>(`/api/runs/${runId}/atm/locate`, {
+        method: "POST",
+        body: JSON.stringify({ query: query.trim(), authorized: true }),
+      });
+      setAtms(d.atms || []);
+      setMsg(`found ${d.atms?.length || 0} ATMs within ${d.radius_m}m`);
+    } catch (e: any) {
+      setErr(e.message || "locate failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startRun() {
+    if (!checked) { setErr("Check the authorization box first."); return; }
+    if (!targets.trim()) { setErr("Enter the network target(s) for the ATM(s), e.g. an IP or hostname."); return; }
+    setStarting(true); setErr("");
+    try {
+      const d = await api<{ run_id: string }>("/api/runs", {
+        method: "POST",
+        body: JSON.stringify({ targets: targets.trim(), mode: "passive", module_overrides: { atm: "authorized" } }),
+      });
+      window.location.href = `/run/${d.run_id}`;
+    } catch (e: any) {
+      setErr(e.message || "could not start run");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="card p-4 border-l-4 border-red-500 bg-red-500/5">
+        <p className="text-sm font-semibold text-red-300">WARNING</p>
+        <p className="text-sm text-slate-200 mt-1">Only assess ATMs you own or have WRITTEN authorization to test. Unauthorized ATM testing is a crime.</p>
+        <label className="flex items-center gap-2 mt-3 text-sm text-slate-200 min-h-[44px]">
+          <input type="checkbox" className="w-5 h-5" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+          I have written authorization to assess these ATMs
+        </label>
+      </div>
+
+      <div className="card p-4 space-y-3">
+        <h2 className="font-semibold text-sky-300 text-sm">Locate ATMs (public map data)</h2>
+        <div className="flex gap-2 flex-wrap">
+          <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[180px]" placeholder='bank name, address, or "49.8951,-97.1384" or "lat,lon,radius_m"' value={query} onChange={(e) => setQuery(e.target.value)} />
+          <button className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300" onClick={locate} disabled={busy}>{busy ? "locating..." : "Locate ATMs"}</button>
+        </div>
+        {atms.length > 0 && (
+          <div className="space-y-2">
+            {atms.map((a, i) => (
+              <div key={i} className="rounded-lg p-3 border border-slate-700/50 bg-slate-800/50 text-sm">
+                <p className="text-slate-200 font-medium">{a.name || "ATM"}{a.operator ? <span className="text-slate-400"> ({a.operator})</span> : null}</p>
+                <p className="text-xs text-slate-500 font-mono">{a.lat}, {a.lon}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card p-4 space-y-3">
+        <h2 className="font-semibold text-sky-300 text-sm">Start ATM assessment run</h2>
+        <p className="text-xs text-slate-500">ATMs have no public IPs in map data. Enter the network target(s) manually (IPs or hostnames from your authorization scope).</p>
+        <div className="flex gap-2 flex-wrap">
+          <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[180px]" placeholder="targets, e.g. 192.0.2.10 or atm-corp.example.com" value={targets} onChange={(e) => setTargets(e.target.value)} />
+          <button className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300" onClick={startRun} disabled={starting}>{starting ? "starting..." : "Start ATM assessment run"}</button>
+        </div>
+      </div>
+
+      {err && <p className="text-sm text-red-400">{err}</p>}
+      {msg && <p className="text-sm text-green-400">{msg}</p>}
+
+      <div className="card p-4">
+        <h2 className="font-semibold text-sky-300 text-sm mb-2">ATM findings ({atmFindings.length})</h2>
+        {atmFindings.length === 0 ? (
+          <p className="text-sm text-slate-500">No ATM findings in this run yet. Start an ATM assessment run above.</p>
+        ) : (
+          <div className="space-y-2">
+            {atmFindings.map((f, i) => (
+              <div key={i} className="rounded-lg p-3 border border-slate-700/50 bg-slate-800/50">
+                <code className="text-amber-300 text-xs font-mono">{f.key}</code>
+                <p className="text-sm text-slate-200 mt-1 break-words whitespace-pre-wrap">{f.value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
