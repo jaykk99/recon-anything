@@ -107,8 +107,12 @@ def run_progress(session, run_id: str) -> Dict:
     """Live progress for a run, computed from the durable event log.
 
     The UI's 4s poll fallback uses this when SSE is unavailable: done/total
-    job counts, eta_s (from observed plugin durations at concurrency 5),
-    and the plugins currently running. Read-only, no migration needed.
+    job counts, eta_s (from observed plugin durations at concurrency 5,
+    falling back to a linear burn-down of the pre-run estimate so the UI
+    shows an ETA from the very first poll), estimated_s (the pre-run
+    estimate, so the UI can show "~Z left" even before any plugin
+    finishes), and the plugins currently running. Read-only, no migration
+    needed.
     """
     try:
         from . import config as _config
@@ -117,6 +121,7 @@ def run_progress(session, run_id: str) -> Dict:
         _concurrency = 5
     total = 0
     done = 0
+    estimated_s: float | None = None
     durations: List[float] = []
     started: Dict[str, bool] = {}
     finished = set()
@@ -124,11 +129,17 @@ def run_progress(session, run_id: str) -> Dict:
         rows = (session.query(RunEvent).filter_by(run_id=run_id)
                 .order_by(RunEvent.seq).all())
     except Exception:
-        return {"done": 0, "total": 0, "eta_s": None, "running": []}
+        return {"done": 0, "total": 0, "eta_s": None,
+                "estimated_s": None, "running": []}
     for r in rows:
         d = r.data or {}
         if r.event == "run_start":
             total = (d.get("plugin_count") or 0) * max(d.get("target_count") or 1, 1)
+            est = d.get("estimated_s")
+            if isinstance(est, (int, float)) and est > 0:
+                # Last run_start wins (geo/bank runs emit a placeholder
+                # first, then the real counts).
+                estimated_s = float(est)
         elif r.event == "plugin_start":
             if d.get("plugin"):
                 started[d["plugin"]] = True
@@ -146,10 +157,17 @@ def run_progress(session, run_id: str) -> Dict:
                 total = d["total"]
     running = sorted(p for p in started if p not in finished)[:10]
     eta_s = None
-    if total > 0 and done < total and durations:
-        avg = sum(durations) / len(durations)
-        eta_s = round(max(total - done, 0) * avg / _concurrency, 1)
-    return {"done": done, "total": total, "eta_s": eta_s, "running": running}
+    if total > 0 and done < total:
+        if durations:
+            # Observed speed wins: extrapolate from real plugin durations.
+            avg = sum(durations) / len(durations)
+            eta_s = round(max(total - done, 0) * avg / _concurrency, 1)
+        elif estimated_s:
+            # No plugin has finished yet: burn the pre-run estimate down
+            # linearly so the UI shows "~Z left" from the first poll.
+            eta_s = round(estimated_s * max(total - done, 0) / total, 1)
+    return {"done": done, "total": total, "eta_s": eta_s,
+            "estimated_s": estimated_s, "running": running}
 
 
 def executive_summary(rows: List[Dict]) -> Dict:

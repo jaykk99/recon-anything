@@ -98,6 +98,14 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [elapsed, setElapsed] = useState(0);
   // finding dedupe: SSE replays history on reconnect, so skip repeats.
   const seenFids = useRef<Set<string>>(new Set());
+  // connection health: SSE live vs 4s poll fallback vs dead. Never a
+  // silent dead page: sseState tracks the event stream, feedState tracks
+  // the poll fallback, fatal is a terminal load error (e.g. run wiped).
+  const [sseState, setSseState] = useState<"connecting" | "live" | "down">("connecting");
+  const [feedState, setFeedState] = useState<"ok" | "degraded" | "dead">("ok");
+  const [fatal, setFatal] = useState<string | null>(null);
+  const [retryTick, setRetryTick] = useState(0);
+  const failCount = useRef(0);
   // file viewer
   const [viewing, setViewing] = useState<{
     url: string; body: string; loading: boolean;
@@ -120,8 +128,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
   }, [tab, sourceType]);
 
   useEffect(() => {
+    // Fresh attempt (mount or Retry button): reset health, allow loops again.
+    done.current = false;
+    failCount.current = 0;
+    setFatal(null);
+    setSseState("connecting");
+    setFeedState("ok");
+
     const es = new EventSource(`/api/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
-    const on = (ev: string, fn: (e: MessageEvent) => void) => es.addEventListener(ev, fn as EventListener);
+    // Any SSE event at all means the stream is alive.
+    const on = (ev: string, fn: (e: MessageEvent) => void) =>
+      es.addEventListener(ev, ((e: MessageEvent) => { setSseState("live"); fn(e); }) as EventListener);
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
       if (d.source_type) setSourceType(d.source_type);
@@ -171,46 +188,90 @@ export default function RunPage({ params }: { params: { id: string } }) {
         } catch {}
       }
     });
-    es.onerror = () => { if (!done.current) { /* keep trying briefly */ } };
-    const poll = setInterval(async () => {
-      try {
-        const d = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } }).then((r) => r.json());
-        // Poll fallback keeps progress + ETA alive when SSE is down.
-        if (d.run?.status === "running" && d.progress) {
-          const p = d.progress;
-          if (typeof p.total === "number" && p.total > 0)
-            setProgress({ done: p.done || 0, total: p.total });
-          if (typeof p.eta_s === "number") setEtaS(p.eta_s);
-          if (Array.isArray(p.running) && p.running.length > 0)
-            setPlugins((prev) => {
-              const next = { ...prev };
-              for (const name of p.running)
-                if (!next[name] || next[name].status !== "running")
-                  next[name] = { plugin: name, status: "running", reason: "", findings: 0 };
-              return next;
-            });
-        }
-        if (d.run?.status === "done" || d.run?.status === "failed") {
-          setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
-          setTargets(d.targets || []);
-          // keep the dedupe set in sync so late SSE events do not duplicate
-          (d.findings || []).forEach((f: any) => {
-            seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
+    // SSE dropped: EventSource auto-retries in the background; the 4s poll
+    // below keeps progress alive meanwhile. Any event flips us back to live.
+    es.onerror = () => { if (!done.current) setSseState("down"); };
+
+    // Merge one poll response into state. Returns true when the run is over
+    // (stop polling). This is the fallback that keeps progress + ETA +
+    // running plugin names alive when the SSE stream is down.
+    function applyPoll(d: any): boolean {
+      if (d.run?.status === "running" && d.progress) {
+        const p = d.progress;
+        if (typeof p.total === "number" && p.total > 0)
+          setProgress({ done: p.done || 0, total: p.total });
+        if (typeof p.eta_s === "number") setEtaS(p.eta_s);
+        else if (typeof p.estimated_s === "number" && p.estimated_s > 0) setEstimatedS(p.estimated_s);
+        if (Array.isArray(p.running) && p.running.length > 0)
+          setPlugins((prev) => {
+            const next = { ...prev };
+            for (const name of p.running)
+              if (!next[name] || next[name].status !== "running")
+                next[name] = { plugin: name, status: "running", reason: "", findings: 0 };
+            return next;
           });
-          if (d.run?.source_type) setSourceType(d.run.source_type);
-          clearInterval(poll); es.close();
-          if (d.run.status === "done") {
-            const h = { "X-Access-Code": getCode() };
-            const g = await fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json());
-            setGraph(g);
-            const m = await fetch(`/api/runs/${id}/apimap`, { headers: h }).then((r) => r.json());
-            setApiMap(m);
+        // Live findings while running: merge only what is new (deduped, so
+        // overlapping SSE + poll can never duplicate a finding).
+        if (Array.isArray(d.findings) && d.findings.length > 0) {
+          const fresh: Finding[] = [];
+          for (const f of d.findings) {
+            const key = f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`;
+            if (!seenFids.current.has(key)) { seenFids.current.add(key); fresh.push(f); }
           }
+          if (fresh.length > 0) setFindings((prev) => [...prev, ...fresh]);
         }
-      } catch {}
-    }, 4000);
-    return () => { es.close(); clearInterval(poll); };
-  }, [id]);
+        if (d.run?.source_type) setSourceType(d.run.source_type);
+        if (Array.isArray(d.targets) && d.targets.length > 0) setTargets(d.targets);
+      }
+      if (d.run?.status === "done" || d.run?.status === "failed") {
+        setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
+        setTargets(d.targets || []);
+        done.current = true;
+        // keep the dedupe set in sync so late SSE events do not duplicate
+        (d.findings || []).forEach((f: any) => {
+          seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
+        });
+        if (d.run?.source_type) setSourceType(d.run.source_type);
+        if (d.run.status === "done") {
+          const h = { "X-Access-Code": getCode() };
+          fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
+          fetch(`/api/runs/${id}/apimap`, { headers: h }).then((r) => r.json()).then(setApiMap).catch(() => {});
+        }
+        return true;
+      }
+      return false;
+    }
+
+    let stopped = false;
+    async function pollOnce(): Promise<boolean> {
+      const r = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } });
+      if (r.status === 404) {
+        setFatal("Run not found. The scan data may have been wiped (the free-tier database resets on redeploys), or this link is wrong or expired.");
+        return true;
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return applyPoll(await r.json());
+    }
+
+    async function tick() {
+      if (stopped || done.current) return;
+      try {
+        const finished = await pollOnce();
+        failCount.current = 0;
+        setFeedState("ok");
+        if (finished) { stopped = true; clearInterval(poll); es.close(); }
+      } catch {
+        // Transient blip vs dead server: 1-2 misses degrade quietly,
+        // 3 in a row means the feed is dead -> loud error + retry button.
+        failCount.current += 1;
+        setFeedState(failCount.current >= 3 ? "dead" : "degraded");
+      }
+    }
+
+    const poll = setInterval(tick, 4000);
+    tick(); // first paint now, not after 4s; also surfaces 404 immediately
+    return () => { stopped = true; es.close(); clearInterval(poll); };
+  }, [id, retryTick]);
 
   async function viewFile(url: string) {
     setViewing({ url, body: "", loading: true });
@@ -283,10 +344,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
     s === "ok" ? "pill-ok" : s === "error" ? "pill-err" : s === "running" ? "pill-info" : s === "failed" ? "pill-err" : "pill-warn";
 
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const remaining = estimatedS > 0 && status === "running" ? Math.max(estimatedS - elapsed, 0) : 0;
   // Live ETA from the backend (adapts to actual plugin speed); falls back to
-  // the static pre-run estimate until the first progress event arrives.
-  const etaLeft = etaS !== null ? Math.max(etaS, 0) : remaining;
+  // the pre-run estimate (now also fed by the 4s poll) until observed
+  // durations exist. Empty label when there is nothing to base it on.
+  const etaLeft = etaS !== null ? Math.max(etaS, 0)
+    : estimatedS > 0 && status === "running" ? Math.max(estimatedS - elapsed, 0)
+    : null;
   const pluginsLeft = Math.max(progress.total - progress.done, 0);
   // Live batch view: 5 plugins run at a time, show which batch is active.
   const BATCH = 5;
@@ -330,18 +393,51 @@ export default function RunPage({ params }: { params: { id: string } }) {
             <span className="font-bold">WAF DETECTED:</span> {wafNotice}
           </div>
         )}
+        {/* connection health: never a dead silent page */}
+        {fatal ? (
+          <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
+            <p className="text-sm font-bold text-red-300">Run not found</p>
+            <p className="text-xs text-slate-400 mt-1">{fatal}</p>
+            <div className="flex gap-2 mt-3 flex-wrap">
+              <button onClick={() => setRetryTick((t) => t + 1)}
+                className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300">Retry</button>
+              <a href="/" className="chip px-4 py-2.5 min-h-[44px] text-sm text-slate-300 inline-flex items-center">Back to scans</a>
+            </div>
+          </div>
+        ) : feedState === "dead" ? (
+          <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
+            <p className="text-sm font-bold text-red-300">Connection lost</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Cannot reach the scan server (3 failed refreshes). Check your connection, then retry.
+            </p>
+            <button onClick={() => setRetryTick((t) => t + 1)}
+              className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 mt-3">Retry now</button>
+          </div>
+        ) : sseState === "down" ? (
+          <p className="mt-3 text-xs text-amber-300/90">Live stream down, auto-refreshing every 4s.</p>
+        ) : null}
         {/* progress bar */}
-        {status === "running" && (
+        {status === "running" && !fatal && (
           <div className="mt-3">
-            <div className="flex justify-between text-xs text-slate-400 mb-1">
-              <span>{progress.done}/{progress.total} plugins · {pluginsLeft} left</span>
-              <span>{fmtTime(elapsed)} elapsed · ~{fmtTime(etaLeft)} left</span>
-            </div>
-            <div className="w-full bg-slate-800 rounded-full h-2.5">
-              <div className="bg-sky-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
-            </div>
-            {estimatedS > 0 && progress.total === 0 && (
-              <p className="text-xs text-slate-500 mt-1">Estimated: ~{fmtTime(estimatedS)}</p>
+            {progress.total > 0 ? (
+              <>
+                <p className="text-xl font-bold text-slate-100">
+                  {progress.done} <span className="text-slate-400 font-normal text-base">of {progress.total} plugins done</span>
+                  {etaLeft !== null && <span className="text-emerald-300"> · ~{fmtTime(etaLeft)} left</span>}
+                </p>
+                <div className="flex justify-between text-xs text-slate-400 mt-1 mb-1">
+                  <span>{pluginsLeft} left · {findings.length} findings so far</span>
+                  <span>{fmtTime(elapsed)} elapsed</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-2.5">
+                  <div className="bg-sky-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-400">
+                <span className="animate-pulse">Connecting to the live scan feed…</span>
+                {feedState === "degraded" && <span className="text-amber-300/80"> (refresh hit a snag, retrying)</span>}
+              </p>
             )}
           </div>
         )}
