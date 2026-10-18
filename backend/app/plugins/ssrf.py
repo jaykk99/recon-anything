@@ -72,10 +72,19 @@ class SsrfPlugin(Plugin):
                 findings.append(self._f(
                     "web", "ssrf_prone_param",
                     f"HIGH: SSRF-prone parameter '{m.group(1)}' found on site. "
-                    f"Test with an allowlisted callback you control.",
+                    f"CRITICAL if it can reach cloud metadata: try "
+                    f"http://169.254.169.254/latest/meta-data/ (AWS), "
+                    f"http://metadata.google.internal/ (GCP), "
+                    f"http://100.100.100.200/ (Alibaba). "
+                    f"Cloud credential theft via SSRF pays $5k+.",
                     source="HTML param mining", source_url=page_url,
                     confidence=60, passive=passive,
                     evidence={"severity": "high", "parameter": m.group(1),
+                              "cloud_targets": [
+                                  "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                                  "http://metadata.google.internal/computeMetadata/v1/",
+                                  "http://100.100.100.200/latest/meta-data/"],
+                              "bounty_note": "SSRF to cloud metadata = $5k+ payout. Test with your own callback first.",
                               "remediation": REMEDIATION,
                               "scope_note": "Candidate only: confirm with your own callback server on an authorized target."}))
 

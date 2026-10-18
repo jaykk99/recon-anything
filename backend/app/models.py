@@ -68,6 +68,7 @@ class Finding(Base):
     passive = Column(Boolean, default=True)
     first_seen = Column(DateTime(timezone=True), default=_utcnow)
     raw = Column(JSON, nullable=True)
+    bounty_value = Column(String, default="low")  # critical | high | medium | low
     run = relationship("Run", back_populates="findings")
 
 

@@ -29,6 +29,12 @@ REMEDIATION = ("Block /.git at the web server or WAF immediately, redeploy "
                "without the .git directory, and audit git history for "
                "secrets: rotate anything ever committed.")
 
+RECONSTRUCT_GUIDE = ("To reconstruct the repo (authorized testing only): "
+                     "1) wget -r --no-parent {base}/.git/ "
+                     "2) Use gitdumper: python3 gitdumper.py {base}/.git/ ./out "
+                     "3) cd out && git log --all --oneline to browse history. "
+                     "Every commit ever made is recoverable, including deleted secrets.")
+
 
 class GitPlugin(Plugin):
     id = "git"
@@ -117,12 +123,14 @@ class GitPlugin(Plugin):
             findings.append(self._f(
                 "leak", "git_full_recon",
                 f"CRITICAL: {len(recovered) + 1} git metadata files recoverable "
-                f"({', '.join(recovered)}). Entire source history reconstructable.",
+                f"({', '.join(recovered)}). Entire source history reconstructable. "
+                f"{RECONSTRUCT_GUIDE.format(base=base)}",
                 source=".git check", source_url=base + "/.git/HEAD",
                 confidence=95, passive=False,
                 evidence={"severity": "critical",
                           "remediation": REMEDIATION,
-                          "scope_note": "Authorized testing only. Do not download objects beyond proving exposure."}))
+                          "reconstruct_guide": RECONSTRUCT_GUIDE.format(base=base),
+                          "scope_note": "Authorized testing only. Proving exposure is enough for a bounty report."}))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f".git exposed: {len(findings)} findings")

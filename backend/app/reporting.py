@@ -36,6 +36,7 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
                     "source": f.source, "source_url": f.source_url,
                     "evidence": f.evidence,
                     "confidence": f.confidence, "passive": f.passive,
+                    "bounty_value": getattr(f, "bounty_value", "low"),
                     "first_seen": f.first_seen.isoformat() if f.first_seen else None})
     return out
 
