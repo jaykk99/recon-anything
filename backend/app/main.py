@@ -228,6 +228,47 @@ def api_export(run_id: str, format: str = "json", show_secrets: bool = False):
     raise HTTPException(400, "format must be json|csv|md|html")
 
 
+@app.get("/api/runs/{run_id}/fetch", dependencies=[Depends(gate)])
+async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
+    """Fetch a URL found during a run so Jay can view file contents.
+    Only allows URLs that appeared in this run's findings (SSRF guard)."""
+    from urllib.parse import urlparse
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+    finally:
+        session.close()
+    allowed = set()
+    for r in rows:
+        for k in ("source_url", "value"):
+            v = r.get(k) or ""
+            if v.startswith("http"):
+                # value may contain extra text, extract first URL
+                candidate = v.split()[0] if k == "value" else v
+                if candidate.startswith("http"):
+                    allowed.add(candidate)
+    if url not in allowed:
+        raise HTTPException(403, "URL was not found in this run")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "only http/https allowed")
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True,
+                                     trust_env=False) as client:
+            resp = await client.get(url, headers={"User-Agent": "ReconAnything/1.0"})
+        body = resp.text[:50000]
+        return {"url": url, "status": resp.status_code,
+                "content_type": resp.headers.get("content-type", ""),
+                "size": len(resp.content), "body": body,
+                "truncated": len(resp.content) > 50000}
+    except Exception as e:
+        raise HTTPException(502, f"fetch failed: {str(e)[:200]}")
+
+
 @app.get("/api/diff", dependencies=[Depends(gate)])
 def api_diff(a: str, b: str):
     session = get_session()

@@ -91,14 +91,14 @@ export default function Home() {
   plugins.forEach((p) => { (byGroup[p.group] = byGroup[p.group] || []).push(p); });
 
   return (
-    <div className="space-y-6">
-      <div className="card p-5 space-y-4">
+    <div className="space-y-6 max-w-full">
+      <div className="card p-4 sm:p-5 space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-lg font-semibold">New recon run</h1>
-          <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2 flex-wrap">
             <span className="text-xs text-slate-400">Access code</span>
-            <div className="relative">
-              <input className="input px-2 py-1 text-xs w-52 pr-12"
+            <div className="relative flex-1 sm:flex-none">
+              <input className="input px-2 py-2.5 min-h-[44px] text-sm w-full sm:w-52 pr-12"
                 type={showCode ? "text" : "password"}
                 value={code}
                 onChange={(e) => { setCodeState(e.target.value); setCodeMsg(""); }}
@@ -106,20 +106,20 @@ export default function Home() {
                 placeholder="paste your code"
                 autoComplete="off" spellCheck={false} />
               <button type="button" onClick={() => setShowCode(!showCode)}
-                className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 hover:text-slate-300 px-1">
+                className="absolute right-1 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 px-3 py-2 min-h-[44px]">
                 {showCode ? "hide" : "show"}
               </button>
             </div>
             {!codeSaved ? (
               <button type="button" onClick={saveCode} disabled={!code.trim() || codeBusy}
-                className="chip px-3 py-1 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-40">
+                className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 hover:bg-slate-800 disabled:opacity-40">
                 {codeBusy ? "Checking..." : "Save"}
               </button>
             ) : (
               <>
-                <span className="text-[11px] text-green-400">saved</span>
+                <span className="text-xs text-green-400">saved</span>
                 <button type="button" onClick={forgetCode}
-                  className="chip px-3 py-1 text-xs text-slate-400 hover:text-red-300 hover:bg-slate-800">
+                  className="chip px-4 py-2.5 min-h-[44px] text-sm text-slate-400 hover:text-red-300 hover:bg-slate-800">
                   Forget
                 </button>
               </>
@@ -127,7 +127,7 @@ export default function Home() {
           </div>
         </div>
         {codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
-        <textarea className="input w-full p-3 font-mono text-sm" rows={3}
+        <textarea className="input w-full p-3 font-mono text-base min-h-[88px]" rows={3}
           placeholder={"example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"}
           value={text} onChange={(e) => setText(e.target.value)} />
         {classified.length > 0 && (
@@ -147,23 +147,23 @@ export default function Home() {
             </select>
           </div>
         )}
-        <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Mode:</span>
             <button onClick={() => setMode("passive")}
-              className={`chip px-3 py-1 text-xs ${mode === "passive" ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "passive" ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
               PASSIVE
             </button>
             <button onClick={() => setMode("active")}
-              className={`chip px-3 py-1 text-xs ${mode === "active" ? "bg-amber-900 text-amber-200" : "text-slate-400"}`}>
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "active" ? "bg-amber-900 text-amber-200" : "text-slate-400"}`}>
               ACTIVE
             </button>
           </div>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 w-full sm:w-auto">
             {mode === "passive" ? "third-party APIs and public datasets only, no packets to the target"
               : "direct DNS, HTTP, probes and scans against the target - be polite, rate-limited"}
           </span>
-          <button className="btn px-6 py-2 ml-auto" disabled={!text.trim() || running} onClick={start}>
+          <button className="btn px-6 py-3 min-h-[48px] w-full sm:w-auto sm:ml-auto text-base" disabled={!text.trim() || running} onClick={start}>
             {running ? "Starting..." : "Run recon"}
           </button>
         </div>
