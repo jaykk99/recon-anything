@@ -111,7 +111,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       </div>
 
       <div className="flex gap-2 text-sm">
-        {(["findings", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-3 py-1 ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -148,10 +148,80 @@ export default function RunPage({ params }: { params: { id: string } }) {
         </div>
       ))}
 
+      {tab === "subdomains" && <SubdomainsView findings={findings} />}
+      {tab === "files" && <FilesView findings={findings} />}
       {tab === "graph" && <GraphView graph={graph} />}
       {tab === "apimap" && <ApiMapView data={apiMap} />}
       {tab === "raw" && (
         <pre className="card p-4 text-xs overflow-auto max-h-[600px]">{JSON.stringify(findings, null, 1).slice(0, 20000)}</pre>
+      )}
+    </div>
+  );
+}
+
+function SubdomainsView({ findings }: { findings: Finding[] }) {
+  const subs = findings.filter((f) => f.key === "subdomain");
+  const notes = findings.filter((f) => f.key === "subdomain_enum_note");
+  function copyAll() {
+    navigator.clipboard.writeText(subs.map((s) => s.value).join("\n")).catch(() => {});
+  }
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-3 mb-3">
+        <h2 className="font-semibold text-sky-300">Subdomains <span className="text-slate-500 text-xs">({subs.length})</span></h2>
+        {subs.length > 0 && (
+          <button className="chip px-2 py-1 text-xs text-sky-400 ml-auto" onClick={copyAll}>copy all</button>
+        )}
+      </div>
+      {notes.map((n, i) => (
+        <p key={i} className="text-xs text-amber-300/80 mb-2">{n.value} <span className="text-slate-500">({n.source})</span></p>
+      ))}
+      {subs.length === 0 ? (
+        <p className="text-sm text-slate-500">No subdomains found. Sources tried: crt.sh, hackertarget, anubis. The target may have no CT-logged subdomains, or the sources were unreachable.</p>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-1">
+          {subs.map((s, i) => (
+            <div key={i} className="flex items-center gap-2 text-sm font-mono px-2 py-1 rounded hover:bg-slate-800/50">
+              <span className="text-green-300">{s.value}</span>
+              <span className="text-[10px] text-slate-500 ml-auto">{s.confidence}% {s.source}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilesView({ findings }: { findings: Finding[] }) {
+  const files = findings.filter((f) =>
+    f.key === "artifact_exposed" || f.key === "artifact_archived" || f.key === "artifact_guarded");
+  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+  return (
+    <div className="card p-4">
+      <h2 className="font-semibold text-sky-300 mb-3">Exposed Files <span className="text-slate-500 text-xs">({files.length})</span></h2>
+      {files.length === 0 ? (
+        <p className="text-sm text-slate-500">No exposed files found. The artifacts plugin checks {`/.git/config, /.env, /backup.zip`} and 20+ other sensitive paths via Wayback Machine (passive) or direct probe (active).</p>
+      ) : (
+        <table className="grid">
+          <thead><tr><th>file</th><th>status</th><th>detail</th><th>mode</th><th></th></tr></thead>
+          <tbody>
+            {files.map((f, i) => (
+              <tr key={i}>
+                <td><code className="text-amber-300 text-xs">{f.value.split(" ")[0]}</code></td>
+                <td className="text-xs">
+                  <span className={`px-1 rounded ${f.key === "artifact_exposed" ? "pill-err" : f.key === "artifact_guarded" ? "pill-warn" : "pill-info"}`}>
+                    {f.key === "artifact_exposed" ? "EXPOSED" : f.key === "artifact_guarded" ? "GUARDED" : "ARCHIVED"}
+                  </span>
+                </td>
+                <td className="break-all text-xs">{f.value.slice(0, 180)}
+                  {f.source_url && <a href={f.source_url} target="_blank" className="ml-2 text-sky-400">open</a>}
+                </td>
+                <td><span className={`text-[10px] px-1 rounded ${f.passive ? "pill-info" : "pill-warn"}`}>{f.passive ? "passive" : "ACTIVE"}</span></td>
+                <td><button className="text-xs text-sky-400" onClick={() => copy(f.value)}>copy</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );
