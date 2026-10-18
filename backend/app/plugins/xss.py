@@ -10,6 +10,7 @@ No script execution, no stored payloads. Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 import time
@@ -175,20 +176,24 @@ class XssPlugin(Plugin):
                     domain in urlparse(eu).netloc:
                 urls.add(eu)
 
-        tested = 0
-        for u in list(urls)[:10]:
+        # Test URLs concurrently (sem 4): same pattern as sqli - on a
+        # WAF-blackholed target the sequential version burns minutes.
+        sem = asyncio.Semaphore(4)
+        tested = [0]
+
+        async def test_url(u: str):
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
-                continue
+                return
             for name, val in params[:3]:
-                tested += 1
+                tested[0] += 1
                 canary = "rxss" + uuid.uuid4().hex[:8]
                 probe = [(n, canary if n == name else v) for n, v in params]
                 purl = urlunparse(parts._replace(query=urlencode(probe)))
                 try:
                     pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
-                                     timeout=15)
+                                     timeout=15, max_retries=1)
                     body = pr.text[:200000]
                 except Exception:
                     continue
@@ -224,7 +229,7 @@ class XssPlugin(Plugin):
 
                 # --- Method 4: context + encoding probes ---
                 for tmpl, ctx_label, enc in XSS_CONTEXT_PROBES:
-                    tested += 1
+                    tested[0] += 1
                     cval = "exss" + uuid.uuid4().hex[:8]
                     payload = tmpl.replace("{C}", cval)
                     if enc == "url2x":
@@ -237,7 +242,7 @@ class XssPlugin(Plugin):
                         query=urlencode(cprobe)))
                     try:
                         cpr = await fetch(ctx.http, ctx.limiter, "GET", cpurl, rotate_ua=True,
-                                          timeout=15)
+                                          timeout=15, max_retries=1)
                         cbody = cpr.text[:200000]
                     except Exception:
                         continue
@@ -263,8 +268,14 @@ class XssPlugin(Plugin):
                     continue
                 break
 
+        async def test_url_sem(u: str):
+            async with sem:
+                await test_url(u)
+
+        await asyncio.gather(*[test_url_sem(u) for u in list(urls)[:10]])
+
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"probed {tested} params, "
+        res = self._ok(findings, f"probed {tested[0]} params, "
                                  f"{len(seen_sinks)} DOM sinks, "
                                  f"{len(findings)} XSS findings")
         res.duration_ms = dur

@@ -316,7 +316,7 @@ async def _execute_poi_run(run_id: str, location_raw: str, mode: str,
             if getattr(target, "poi", None):
                 poi = target.poi
                 session.add(FindingRow(
-                    id=uuid.uuid4().hex[:12], run_id=run_id,
+                    run_id=run_id,
                     target_id=target.id, plugin_id="geo",
                     category="location", key="poi",
                     value=f"{poi['name']} - {poi.get('address', '')}",

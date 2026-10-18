@@ -61,6 +61,26 @@ def gate(x_access_code: Optional[str] = Header(default=None),
 @app.on_event("startup")
 def _startup():
     init_db()
+    # Reap runs stuck in "running": a restart (deploy) kills the in-memory
+    # asyncio task, leaving the SQLite row behind forever. Mark them failed
+    # so the UI stops spinning and Jay can start a fresh scan.
+    try:
+        session = get_session()
+        try:
+            stuck = session.query(Run).filter_by(status="running").all()
+            for r in stuck:
+                r.status = "failed"
+                r.finished_at = dt.datetime.now(dt.timezone.utc)
+                summary = dict(r.summary or {})
+                summary["error"] = ("server restarted during scan "
+                                    "(deploy or crash); start a fresh scan")
+                r.summary = summary
+            if stuck:
+                session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
 
 
 @app.get("/api/health")
@@ -667,31 +687,45 @@ def _atm_geocode(text: str):
         return None, f"geocode error: {e}"
 
 
+_OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+
+
 def _atm_overpass(lat: float, lon: float, radius_m: float):
-    """amenity=atm nodes near (lat, lon) via public Overpass API."""
+    """amenity=atm nodes near (lat, lon) via public Overpass API.
+
+    Tries mirrors in order: a single mirror being unreachable (Jay hit
+    Errno 101 on overpass-api.de) must not 502 the whole lookup.
+    """
     import httpx
     ql = (f'[out:json][timeout:25];'
           f'node["amenity"="atm"](around:{int(radius_m)},{lat},{lon});'
           f'out center 50;')
-    try:
-        r = httpx.post("https://overpass-api.de/api/interpreter",
-                       data={"data": ql},
-                       headers={"User-Agent": _OSM_UA}, timeout=15)
-        if r.status_code != 200:
-            return None, f"Overpass failed (HTTP {r.status_code})"
-        out = []
-        for el in (r.json().get("elements") or [])[:50]:
-            tags = el.get("tags") or {}
-            out.append({
-                "name": tags.get("name", ""),
-                "operator": tags.get("operator") or tags.get("brand") or
-                            tags.get("network") or "",
-                "lat": el.get("lat"),
-                "lon": el.get("lon"),
-            })
-        return out, None
-    except Exception as e:
-        return None, f"Overpass error: {e}"
+    last_err = None
+    for url in _OVERPASS_MIRRORS:
+        try:
+            r = httpx.post(url, data={"data": ql},
+                           headers={"User-Agent": _OSM_UA}, timeout=20)
+            if r.status_code != 200:
+                last_err = f"Overpass failed (HTTP {r.status_code})"
+                continue
+            out = []
+            for el in (r.json().get("elements") or [])[:50]:
+                tags = el.get("tags") or {}
+                out.append({
+                    "name": tags.get("name", ""),
+                    "operator": tags.get("operator") or tags.get("brand") or
+                                tags.get("network") or "",
+                    "lat": el.get("lat"),
+                    "lon": el.get("lon"),
+                })
+            return out, None
+        except Exception as e:
+            last_err = f"Overpass error: {e}"
+            continue
+    return None, last_err or "Overpass unreachable"
 
 
 @app.post("/api/runs/{run_id}/atm/locate", dependencies=[Depends(gate)])

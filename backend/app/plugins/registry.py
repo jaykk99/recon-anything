@@ -27,7 +27,15 @@ def discover() -> Dict[str, Type[Plugin]]:
         name = mod.name
         if name in ("base", "registry"):
             continue
-        module = importlib.import_module(f"{package}.{name}")
+        try:
+            module = importlib.import_module(f"{package}.{name}")
+        except Exception as e:
+            # One broken plugin module must never kill the whole registry.
+            # Log it and keep going with the rest.
+            import logging
+            logging.getLogger(__name__).warning(
+                "plugin module %s failed to import: %s", name, e)
+            continue
         for attr in dir(module):
             obj = getattr(module, attr)
             if (isinstance(obj, type) and issubclass(obj, Plugin)
