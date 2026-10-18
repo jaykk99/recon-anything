@@ -3,16 +3,48 @@
 Tables: runs, targets, plugins, findings, nodes, edges, evidence,
 api_keys, snapshots, schedules. Every finding stores run_id + plugin_id +
 timestamp so any result is reproducible and diffable.
+
+Storage: DATABASE_URL comes from the environment (see config.py). SQLite is
+the local-dev default; on Render's free tier the SQLite file lives on an
+ephemeral disk and is wiped on every redeploy, so production must point
+DATABASE_URL at a persistent Postgres (Neon or Supabase free tier both work;
+psycopg2 is already in requirements.txt).
 """
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
                         JSON, String, Text, create_engine)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from .config import DATABASE_URL
+from .config import DATABASE_URL as _RAW_DATABASE_URL
+
+log = logging.getLogger("recon-anything.db")
+
+
+def _normalize_database_url(url: str) -> str:
+    """Normalize provider URLs for this stack (SQLAlchemy 2.x + psycopg2).
+
+    - Some providers (Heroku-style) hand out ``postgres://`` URLs, which
+      SQLAlchemy 2.x rejects outright. Rewrite to ``postgresql://``.
+    - A bare ``postgresql://`` URL makes SQLAlchemy 2.x reach for the
+      ``psycopg`` (v3) driver, which is NOT installed (requirements ship
+      ``psycopg2-binary``). Pin the driver explicitly so a pasted Neon /
+      Supabase / Render connection string just works.
+    - URLs that already name a driver (``postgresql+psycopg2://``,
+      ``postgresql+psycopg://``) are left untouched.
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url
+
+
+DATABASE_URL = _normalize_database_url(_RAW_DATABASE_URL)
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 Base = declarative_base()
 
@@ -164,8 +196,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
-    # Lightweight migration for pre-existing DBs: create_all does not add
-    # columns to tables that already exist, so backfill source_type when missing.
+    if not IS_SQLITE:
+        return  # create_all handles schema on real DBs; the backfill below is sqlite-only
+    # Lightweight migration for pre-existing SQLite DBs: create_all does not
+    # add columns to tables that already exist, so backfill source_type when
+    # missing.
     try:
         with engine.connect() as conn:
             cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(runs)")]
@@ -173,8 +208,37 @@ def init_db() -> None:
                 conn.exec_driver_sql(
                     "ALTER TABLE runs ADD COLUMN source_type VARCHAR DEFAULT 'website'")
                 conn.commit()
+    except Exception as exc:  # corrupted/legacy sqlite file; keep booting
+        log.warning("sqlite schema backfill skipped: %s", exc)
+
+
+def _safe_url(url: str) -> str:
+    """DATABASE_URL with the password masked, for log/error output."""
+    try:
+        from sqlalchemy.engine import make_url
+        u = make_url(url)
+        return str(u.set(password="***")) if u.password else str(u)
     except Exception:
-        pass  # non-sqlite backend or fresh table; create_all already handled it
+        return "<database url>"
+
+
+def check_db() -> None:
+    """Fail fast when the database is unreachable.
+
+    Called once at startup: a DATABASE_URL pointing at a Postgres that
+    refuses connections (wrong host, bad password, SSL off) must crash the
+    deploy with a clear log line instead of surfacing later as empty scans
+    and "run not found" errors.
+    """
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+    except Exception as exc:
+        raise RuntimeError(
+            f"cannot connect to database ({_safe_url(DATABASE_URL)}): {exc}. "
+            "Set DATABASE_URL to a reachable Postgres (Neon/Supabase free tier) "
+            "or unset it to use the local SQLite default."
+        ) from exc
 
 
 def get_session():

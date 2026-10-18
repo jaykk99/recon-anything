@@ -133,7 +133,28 @@ Next.js frontend + FastAPI backend in one container, one public port.
    `RECON_MASTER_KEY` (generate with
    `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
 3. Deploy. SQLite is used by default (data resets on redeploy);
-   point `DATABASE_URL` at a Postgres for persistence.
+   point `DATABASE_URL` at a Postgres for persistence (see
+   "Persistent storage on Render" below).
+
+### Persistent storage on Render (free tier)
+
+Render's free tier has no persistent disks (disks need a paid plan) and the
+default SQLite file is wiped on every redeploy, which makes finished scans
+vanish with "run not found". The fix is a free external Postgres; Neon is
+recommended (free tier, no expiry). The backend already supports Postgres via
+SQLAlchemy; only the env var is needed.
+
+1. Create a free project at https://neon.tech and copy the connection string
+   (it looks like `postgresql://user:pass@ep-xyz.us-east-2.aws.neon.tech/dbname?sslmode=require`).
+2. In the Render dashboard: service -> Environment -> add env var
+   `DATABASE_URL` = that connection string. Redeploy.
+3. Check the service logs on boot: you should NOT see the
+   "using ephemeral SQLite" warning anymore.
+
+On boot the app now fails fast with a clear error if `DATABASE_URL` is set
+but unreachable, instead of silently losing runs. If a run ID is requested
+that no longer exists, the API returns 404 with an explanation pointing at
+this fix instead of a bare "run not found".
 
 ### Railway (two services)
 
@@ -144,6 +165,19 @@ Next.js frontend + FastAPI backend in one container, one public port.
    internal URL (e.g. `http://backend:8000`).
 3. Set `RECON_ACCESS_CODE` on both. Add a Postgres plugin and set
    `DATABASE_URL` on the backend for persistence.
+
+### Environment variables
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `DATABASE_URL` | `sqlite:///./recon.db` | Database. Set to a Postgres URL (e.g. Neon free tier) for persistence; see above. `postgres://` URLs are auto-rewritten and the `psycopg2` driver is pinned (plain `postgresql://` would otherwise make SQLAlchemy 2.x look for the uninstalled `psycopg` v3 driver). |
+| `RECON_ACCESS_CODE` | (empty = no gate) | Single access code gating the UI/API. |
+| `RECON_MASTER_KEY` | (empty = plaintext) | Fernet key for encrypting stored API keys. |
+| `REDIS_URL` | (empty = in-memory) | Optional Redis for the cache backend. |
+| `RECON_TIMEOUT` | `20` | Default HTTP timeout (seconds) for plugins. |
+| `RECON_CONCURRENCY` | `5` | Parallel plugins per run. |
+| `RECON_RPS` | `25` | Per-host request pacing (requests/sec). |
+| `RECON_EVIDENCE_DIR` | `./evidence` | On-disk evidence files (ephemeral on Render free tier). |
 
 ## Demo
 
