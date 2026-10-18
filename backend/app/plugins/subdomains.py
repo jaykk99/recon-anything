@@ -45,6 +45,76 @@ _dmarc
 """.split()
 
 
+# Interesting-subdomain classifier: turns a subdomain list into
+# actionable findings. (label_prefix, severity, why)
+CRITICAL_SUBS = {
+    "admin": "admin panels are the first target for brute force and auth bypass",
+    "administrator": "admin panels are the first target for brute force and auth bypass",
+    "backend": "backend hosts often lack the hardening of the main site",
+    "panel": "panels often expose management functions with weak auth",
+    "dashboard": "dashboards may leak internal data or have weak auth",
+    "dev": "dev hosts often run debug mode, verbose errors and test creds",
+    "development": "dev hosts often run debug mode, verbose errors and test creds",
+    "staging": "staging often mirrors prod data with weaker controls",
+    "stage": "staging often mirrors prod data with weaker controls",
+    "test": "test hosts often have debug enabled and default creds",
+    "qa": "qa hosts often have debug enabled and default creds",
+    "uat": "uat hosts often mirror prod with weaker controls",
+    "sandbox": "sandboxes may allow file upload or code execution",
+    "vpn": "vpn endpoints are high-value for network access",
+    "remote": "remote access portals are high-value targets",
+    "citrix": "citrix gateways have a history of critical CVEs",
+    "rdp": "rdp exposed to the internet gets brute forced constantly",
+    "git": "git hosting may expose private repos",
+    "svn": "svn hosting may expose private repos",
+    "jenkins": "jenkins often has script console RCE with default creds",
+    "ci": "ci systems can leak secrets and allow build tampering",
+    "cd": "cd systems can leak secrets and allow build tampering",
+    "deploy": "deploy hosts may allow code push or expose pipelines",
+    "db": "database hosts should never be internet-facing",
+    "database": "database hosts should never be internet-facing",
+    "sql": "database hosts should never be internet-facing",
+    "phpmyadmin": "phpmyadmin is brute forced constantly; check version CVEs",
+    "api-dev": "non-prod APIs often skip auth checks present in prod",
+    "api-staging": "non-prod APIs often skip auth checks present in prod",
+    "dev-api": "non-prod APIs often skip auth checks present in prod",
+    "old": "legacy hosts run unpatched software",
+    "legacy": "legacy hosts run unpatched software",
+    "backup": "backup hosts may expose archives of the whole site",
+    "bak": "backup hosts may expose archives of the whole site",
+}
+MEDIUM_SUBS = {
+    "api": "api surface: enumerate endpoints and check auth per route",
+    "app": "app host: check for debug endpoints and version disclosure",
+    "mobile": "mobile api host: check for weak cert pinning assumptions",
+    "beta": "beta hosts may have unfinished auth flows",
+    "mail": "mail host: check for open relay and webmail version CVEs",
+    "email": "mail host: check for open relay and webmail version CVEs",
+    "smtp": "smtp host: check for open relay",
+    "cdn": "cdn host: check origin IP disclosure",
+    "static": "static host: check for directory listing",
+    "assets": "asset host: check for directory listing and source maps",
+    "blog": "blog host: check CMS version CVEs",
+    "docs": "docs host: may document internal APIs and creds",
+    "help": "helpdesk may leak internal info via tickets",
+    "support": "support portal may leak internal info",
+}
+
+
+def classify_subdomain(sub: str, domain: str):
+    """Return (severity, why) if the subdomain looks interesting."""
+    first = sub.split(".")[0].lower()
+    # strip common numeric suffixes: admin2, dev01
+    base = first.rstrip("0123456789")
+    for key in (first, base):
+        if key in CRITICAL_SUBS:
+            return ("critical", CRITICAL_SUBS[key])
+    for key in (first, base):
+        if key in MEDIUM_SUBS:
+            return ("medium", MEDIUM_SUBS[key])
+    return (None, None)
+
+
 class SubdomainsPlugin(Plugin):
     id = "subdomains"
     label = "Subdomain Enum"
@@ -125,6 +195,17 @@ class SubdomainsPlugin(Plugin):
                                     source="certificate transparency / hostsearch",
                                     source_url=f"https://crt.sh/?q=%25.{domain}",
                                     confidence=85, passive=True))
+            sev, why = classify_subdomain(sub, domain)
+            if sev:
+                findings.append(self._f(
+                    "dns", "interesting_subdomain",
+                    f"{sev.upper()}: {sub} looks interesting: {why}.",
+                    source="subdomain classifier",
+                    source_url=f"https://crt.sh/?q=%25.{domain}",
+                    confidence=75, passive=True,
+                    evidence={"severity": sev, "subdomain": sub, "why": why,
+                              "remediation": "Verify this host is intentional, patched, "
+                                             "and not exposing more than the main site."}))
 
         # --- active DNS brute force ---
         if mode == "active":
@@ -142,6 +223,17 @@ class SubdomainsPlugin(Plugin):
                                             f"{cand} -> {ips}",
                                             source="DNS brute force",
                                             confidence=95, passive=False))
+                    sev, why = classify_subdomain(cand, domain)
+                    if sev:
+                        findings.append(self._f(
+                            "dns", "interesting_subdomain",
+                            f"{sev.upper()}: {cand} looks interesting: {why}.",
+                            source="subdomain classifier", confidence=75,
+                            passive=False,
+                            evidence={"severity": sev, "subdomain": cand,
+                                      "why": why,
+                                      "remediation": "Verify this host is intentional, patched, "
+                                                     "and not exposing more than the main site."}))
                     found += 1
                     if found >= 100:
                         break

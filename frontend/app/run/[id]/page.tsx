@@ -1,14 +1,72 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getCode } from "../../../lib/api";
 
 interface Finding {
   plugin: string; category: string; key: string; value: string;
   source: string; source_url?: string; confidence: number; passive: boolean;
+  evidence?: Record<string, any>;
 }
 interface PluginState { plugin: string; label?: string; status: string; reason: string; findings: number }
 
 const CATS = ["dns", "web", "api", "mobile", "identity", "infra", "leak", "graph"];
+
+function sevOf(f: Finding): string {
+  return (f.evidence?.severity || "").toLowerCase();
+}
+function sevColor(s: string): string {
+  if (s === "critical") return "text-red-400 border-red-500/40 bg-red-500/10";
+  if (s === "high") return "text-orange-400 border-orange-500/40 bg-orange-500/10";
+  if (s === "medium") return "text-yellow-300 border-yellow-500/30 bg-yellow-500/10";
+  return "text-slate-400 border-slate-700 bg-slate-800/50";
+}
+function findingMarkdown(f: Finding): string {
+  const sev = sevOf(f);
+  let md = `## ${f.key}\n\n`;
+  md += `- **Severity:** ${sev || "info"}\n`;
+  md += `- **Plugin:** ${f.plugin}\n`;
+  md += `- **Category:** ${f.category}\n`;
+  md += `- **Confidence:** ${f.confidence}%\n`;
+  md += `- **Source:** ${f.source}\n`;
+  if (f.source_url) md += `- **URL:** ${f.source_url}\n`;
+  md += `\n${f.value}\n`;
+  if (f.evidence?.remediation) md += `\n**Remediation:** ${f.evidence.remediation}\n`;
+  return md;
+}
+// very small syntax highlighter: comments green, strings amber, keywords sky
+function highlight(code: string, lang: string): ReactNode[] {
+  if (!/js|json|php|py|html|css|sql|sh|env|config|txt|xml|yaml/i.test(lang)) {
+    return [code];
+  }
+  const parts: ReactNode[] = [];
+  const re = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|#[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\b(?:function|return|const|let|var|if|else|for|while|import|from|export|class|def|select|insert|update|delete|where)\b)/g;
+  let last = 0, i = 0;
+  for (const m of code.matchAll(re)) {
+    const idx = m.index ?? 0;
+    if (idx > last) parts.push(code.slice(last, idx));
+    const tok = m[0];
+    let cls = "text-slate-200";
+    if (/^(\/\*|\/\/|#)/.test(tok)) cls = "text-green-500";
+    else if (/^["'`]/.test(tok)) cls = "text-amber-300";
+    else cls = "text-sky-300";
+    parts.push(<span key={i++} className={cls}>{tok}</span>);
+    last = idx + tok.length;
+    if (parts.length > 4000) break;
+  }
+  if (last < code.length) parts.push(code.slice(last, last + 200000));
+  return parts;
+}
+function hexView(text: string): string {
+  const bytes = new TextEncoder().encode(text.slice(0, 4096));
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 16) {
+    const chunk = bytes.slice(i, i + 16);
+    const hex = Array.from(chunk).map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    const ascii = Array.from(chunk).map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
+    out += `${i.toString(16).padStart(8, "0")}  ${hex.padEnd(48, " ")}  ${ascii}\n`;
+  }
+  return out;
+}
 
 function fmtTime(s: number): string {
   if (s < 60) return `${Math.round(s)}s`;
@@ -34,7 +92,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   // file viewer
-  const [viewing, setViewing] = useState<{ url: string; body: string; loading: boolean } | null>(null);
+  const [viewing, setViewing] = useState<{
+    url: string; body: string; loading: boolean;
+    status?: number; contentType?: string; size?: number;
+    lastModified?: string; headers?: Record<string, string>;
+    truncated?: boolean; hex?: boolean;
+  } | null>(null);
   const done = useRef(false);
 
   // elapsed timer
@@ -113,20 +176,64 @@ export default function RunPage({ params }: { params: { id: string } }) {
         { headers: { "X-Access-Code": getCode() } }
       );
       const d = await r.json();
-      setViewing({ url, body: d.body || "(empty)", loading: false });
+      setViewing({
+        url, body: d.body || "(empty)", loading: false,
+        status: d.status, contentType: d.content_type, size: d.size,
+        lastModified: d.last_modified, headers: d.headers,
+        truncated: d.truncated, hex: false,
+      });
     } catch (e: any) {
       setViewing({ url, body: "Failed to load: " + e.message, loading: false });
     }
   }
+  function downloadViewing() {
+    if (!viewing?.body) return;
+    const blob = new Blob([viewing.body], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (viewing.url.split("/").pop() || "file").split("?")[0] || "file";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  function fileLang(url: string, ct?: string): string {
+    const u = url.toLowerCase().split("?")[0];
+    if (/\.(js|mjs|cjs)$/.test(u)) return "js";
+    if (/\.json$/.test(u)) return "json";
+    if (/\.php$/.test(u)) return "php";
+    if (/\.py$/.test(u)) return "py";
+    if (/\.(html?|xml)$/.test(u)) return "html";
+    if (/\.css$/.test(u)) return "css";
+    if (/\.sql$/.test(u)) return "sql";
+    if (/\.(sh|bash)$/.test(u)) return "sh";
+    if (/\.(yml|yaml)$/.test(u)) return "yaml";
+    if (/\.env/.test(u)) return "env";
+    if (ct?.includes("json")) return "json";
+    if (ct?.includes("html")) return "html";
+    return "txt";
+  }
 
   const filtered = findings.filter((f) =>
     (cat === "all" || f.category === cat) &&
-    (!q || (f.key + f.value + f.plugin).toLowerCase().includes(q.toLowerCase())));
+    (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "")).toLowerCase().includes(q.toLowerCase())));
 
   const byCat: Record<string, Finding[]> = {};
   filtered.forEach((f) => { (byCat[f.category] = byCat[f.category] || []).push(f); });
 
   function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+  function copyMd(f: Finding) { copy(findingMarkdown(f)); }
+
+  // pagination per category: 25 at a time, "show more" for the rest
+  const [shownCount, setShownCount] = useState<Record<string, number>>({});
+  const PAGE = 25;
+  // expanded finding cards: key = category + index
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  function sortFindings(list: Finding[]): Finding[] {
+    const rank = (f: Finding) => {
+      const s = sevOf(f);
+      return s === "critical" ? 0 : s === "high" ? 1 : s === "medium" ? 2 : 3;
+    };
+    return [...list].sort((a, b) => rank(a) - rank(b) || b.confidence - a.confidence);
+  }
 
   const pill = (s: string) =>
     s === "ok" ? "pill-ok" : s === "error" ? "pill-err" : s === "running" ? "pill-info" : s === "failed" ? "pill-err" : "pill-warn";
@@ -197,58 +304,157 @@ export default function RunPage({ params }: { params: { id: string } }) {
         <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]" placeholder="filter..." value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
-      {/* findings as cards (mobile friendly) */}
-      {tab === "findings" && Object.keys(byCat).sort().map((c) => (
+      {/* findings as expandable cards (mobile friendly, nothing truncated) */}
+      {tab === "findings" && Object.keys(byCat).sort().map((c) => {
+        const sorted = sortFindings(byCat[c]);
+        const shown = shownCount[c] || PAGE;
+        const sevCounts: Record<string, number> = {};
+        sorted.forEach((f) => { const s = sevOf(f) || "info"; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+        return (
         <div key={c} className="card p-4">
-          <h2 className="font-semibold text-sky-300 mb-3">{c} <span className="text-slate-500 text-xs">({byCat[c].length})</span></h2>
-          <div className="space-y-3">
-            {byCat[c].slice(0, 200).map((f, i) => (
-              <div key={i} className="bg-slate-800/50 rounded-lg p-3 space-y-1.5">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
-                  <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
-                </div>
-                <p className="text-sm break-words">{f.value.slice(0, 300)}</p>
-                <div className="flex items-center gap-2 text-xs flex-wrap">
-                  <span className="text-slate-500">{f.plugin}</span>
-                  <span className={`px-1.5 py-0.5 rounded ${f.passive ? "pill-info" : "pill-warn"}`}>{f.passive ? "passive" : "ACTIVE"}</span>
-                  <span className="text-slate-600">{f.source}</span>
-                  <div className="ml-auto flex gap-2">
-                    {f.source_url && (
-                      <a href={f.source_url} target="_blank" rel="noopener"
-                        className="text-sky-400 px-2 py-1.5 min-h-[36px] inline-flex items-center">source</a>
-                    )}
-                    <button className="text-sky-400 px-2 py-1.5 min-h-[36px]" onClick={() => copy(f.value)}>copy</button>
-                  </div>
-                </div>
-              </div>
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <h2 className="font-semibold text-sky-300">{c} <span className="text-slate-500 text-xs">({sorted.length})</span></h2>
+            {Object.entries(sevCounts).map(([s, n]) => (
+              <span key={s} className={`text-[10px] px-1.5 py-0.5 rounded border ${sevColor(s)}`}>{s}: {n}</span>
             ))}
           </div>
+          <div className="space-y-3">
+            {sorted.slice(0, shown).map((f, i) => {
+              const ek = `${c}:${i}`;
+              const isOpen = !!expanded[ek];
+              const sev = sevOf(f);
+              const ev = f.evidence || {};
+              return (
+              <div key={i} className={`rounded-lg p-3 space-y-1.5 border ${sev ? sevColor(sev) : "border-slate-700/50 bg-slate-800/50"}`}>
+                <button
+                  className="w-full text-left min-h-[44px]"
+                  onClick={() => setExpanded((e) => ({ ...e, [ek]: !e[ek] }))}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {sev && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev)}`}>{sev.toUpperCase()}</span>}
+                    <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
+                    <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
+                    <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
+                  </div>
+                  <p className="text-sm break-words whitespace-pre-wrap mt-1">{f.value}</p>
+                </button>
+                {isOpen && (
+                  <div className="pt-2 border-t border-slate-700/50 space-y-2 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-slate-500">{f.plugin}</span>
+                      <span className={`px-1.5 py-0.5 rounded ${f.passive ? "pill-info" : "pill-warn"}`}>{f.passive ? "passive" : "ACTIVE"}</span>
+                      <span className="text-slate-600 break-all">{f.source}</span>
+                    </div>
+                    {ev.remediation && (
+                      <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
+                    )}
+                    {ev.pattern && <p className="text-slate-400 break-words"><span className="font-semibold">Pattern: </span>{ev.pattern}</p>}
+                    {ev.match && (
+                      <p className="text-slate-400 break-all"><span className="font-semibold">Match: </span>
+                        <code className="font-mono text-red-300/90">{ev.match}</code></p>
+                    )}
+                    {ev.why && <p className="text-slate-400 break-words"><span className="font-semibold">Why it matters: </span>{ev.why}</p>}
+                    {ev.note && <p className="text-slate-500 break-words">{ev.note}</p>}
+                    {ev.scope_note && <p className="text-slate-500 italic break-words">{ev.scope_note}</p>}
+                    {ev.explorer && (
+                      <a href={ev.explorer} target="_blank" rel="noopener" className="text-sky-400 inline-block px-2 py-1.5 min-h-[36px]">open in explorer</a>
+                    )}
+                    <div className="flex gap-2 flex-wrap pt-1">
+                      {f.source_url && (
+                        <a href={f.source_url} target="_blank" rel="noopener"
+                          className="text-sky-400 px-3 py-2 min-h-[44px] inline-flex items-center rounded-lg bg-slate-800">open source</a>
+                      )}
+                      <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copy(f.value)}>copy value</button>
+                      <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyMd(f)}>copy as markdown</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              );
+            })}
+          </div>
+          {sorted.length > shown && (
+            <button
+              className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
+              onClick={() => setShownCount((s) => ({ ...s, [c]: (s[c] || PAGE) + PAGE }))}>
+              show more ({sorted.length - shown} remaining)
+            </button>
+          )}
         </div>
-      ))}
+        );
+      })}
 
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
       {tab === "graph" && <GraphView graph={graph} />}
       {tab === "apimap" && <ApiMapView data={apiMap} />}
       {tab === "raw" && (
-        <pre className="card p-4 text-xs overflow-auto max-h-[600px]">{JSON.stringify(findings, null, 1).slice(0, 20000)}</pre>
+        <div className="card p-4">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-xs text-slate-500">{findings.length} findings, full JSON, scrollable</span>
+            <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400 ml-auto"
+              onClick={() => copy(JSON.stringify(findings, null, 1))}>copy all</button>
+          </div>
+          <pre className="text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">{JSON.stringify(findings, null, 1)}</pre>
+        </div>
       )}
 
-      {/* file viewer modal */}
+      {/* file viewer modal: metadata, headers, highlighting, hex, download */}
       {viewing && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
           onClick={() => setViewing(null)}>
-          <div className="bg-slate-900 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-2xl max-h-[85vh] flex flex-col"
+          <div className="bg-slate-900 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-3xl max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 p-4 border-b border-slate-700">
-              <span className="text-xs font-mono text-sky-300 break-all flex-1">{viewing.url}</span>
-              <button onClick={() => setViewing(null)}
-                className="px-4 py-2.5 min-h-[44px] min-w-[44px] rounded-lg bg-slate-800 text-lg">X</button>
+            <div className="p-4 border-b border-slate-700 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-sky-300 break-all flex-1">{viewing.url}</span>
+                <button onClick={() => setViewing(null)}
+                  className="px-4 py-2.5 min-h-[44px] min-w-[44px] rounded-lg bg-slate-800 text-lg">X</button>
+              </div>
+              {!viewing.loading && (
+                <div className="flex gap-3 text-xs text-slate-400 flex-wrap">
+                  {viewing.status != null && <span>HTTP {viewing.status}</span>}
+                  {viewing.size != null && <span>{viewing.size.toLocaleString()} bytes</span>}
+                  {viewing.contentType && <span className="break-all">{viewing.contentType}</span>}
+                  {viewing.lastModified && <span>modified: {viewing.lastModified}</span>}
+                  {viewing.truncated && <span className="text-amber-300">truncated at 200KB</span>}
+                </div>
+              )}
+              {!viewing.loading && (
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    className={`chip px-3 py-2 min-h-[44px] text-xs ${!viewing.hex ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}
+                    onClick={() => setViewing((v) => v && { ...v, hex: false })}>text</button>
+                  <button
+                    className={`chip px-3 py-2 min-h-[44px] text-xs ${viewing.hex ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}
+                    onClick={() => setViewing((v) => v && { ...v, hex: true })}>hex</button>
+                  <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400"
+                    onClick={downloadViewing}>download</button>
+                  <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400"
+                    onClick={() => copy(viewing.body)}>copy</button>
+                </div>
+              )}
             </div>
-            <pre className="p-4 text-xs overflow-auto flex-1 whitespace-pre-wrap break-words">
-              {viewing.loading ? "Loading..." : viewing.body}
-            </pre>
+            <div className="overflow-auto flex-1 p-4">
+              {viewing.loading ? (
+                <p className="text-sm text-slate-500">Loading...</p>
+              ) : viewing.hex ? (
+                <pre className="text-xs font-mono whitespace-pre">{hexView(viewing.body)}</pre>
+              ) : (
+                <pre className="text-xs overflow-auto whitespace-pre-wrap break-words font-mono">
+                  {highlight(viewing.body, fileLang(viewing.url, viewing.contentType))}
+                </pre>
+              )}
+              {viewing.headers && Object.keys(viewing.headers).length > 0 && (
+                <details className="mt-4">
+                  <summary className="text-xs text-sky-400 cursor-pointer px-2 py-2.5 min-h-[44px]">
+                    HTTP headers ({Object.keys(viewing.headers).length})
+                  </summary>
+                  <pre className="text-xs font-mono break-words whitespace-pre-wrap mt-1 text-slate-400">
+                    {Object.entries(viewing.headers).map(([k, v]) => `${k}: ${v}`).join("\n")}
+                  </pre>
+                </details>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -317,7 +523,7 @@ function FilesView({ findings, onView }: { findings: Finding[]; onView: (url: st
                      f.key === "artifact_guarded" ? "GUARDED" : "ARCHIVED"}
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-1 break-words">{f.value.slice(0, 120)}</p>
+                <p className="text-xs text-slate-500 mt-1 break-words whitespace-pre-wrap">{f.value}</p>
                 <span className="text-xs text-sky-400 mt-1 inline-block">tap to view</span>
               </button>
             );
@@ -383,23 +589,28 @@ function GraphView({ graph }: { graph: any }) {
 }
 
 function ApiMapView({ data }: { data: any }) {
+  const [shown, setShown] = useState(50);
   if (!data) return <div className="card p-4 text-sm text-slate-500">API map builds when the run finishes...</div>;
   const entries = Object.entries(data.entries || {});
   return (
     <div className="card p-4">
       <h2 className="font-semibold text-sky-300 mb-3">API map <span className="text-slate-500 text-xs">({entries.length})</span></h2>
       <div className="space-y-2">
-        {entries.slice(0, 200).map(([path, v]: any, i: number) => (
+        {entries.slice(0, shown).map(([path, v]: any, i: number) => (
           <div key={i} className="bg-slate-800/50 rounded-lg p-3">
             <code className="text-amber-300 text-xs font-mono break-all block">{path}</code>
             <div className="flex gap-3 text-xs text-slate-500 mt-1 flex-wrap">
               <span>{(v.methods || []).join(", ")}</span>
               <span>{String(v.status || "")}</span>
-              <span>{String(v.auth || v.note || "")}</span>
+              <span className="break-words">{String(v.auth || v.note || "")}</span>
             </div>
           </div>
         ))}
       </div>
+      {entries.length > shown && (
+        <button className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
+          onClick={() => setShown((s) => s + 50)}>show more ({entries.length - shown} remaining)</button>
+      )}
     </div>
   );
 }

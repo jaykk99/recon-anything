@@ -34,6 +34,7 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
         out.append({"id": f.id, "target_id": f.target_id, "plugin": f.plugin_id,
                     "category": f.category, "key": f.key, "value": v,
                     "source": f.source, "source_url": f.source_url,
+                    "evidence": f.evidence,
                     "confidence": f.confidence, "passive": f.passive,
                     "first_seen": f.first_seen.isoformat() if f.first_seen else None})
     return out

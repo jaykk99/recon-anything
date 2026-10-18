@@ -108,6 +108,9 @@ PLUGIN_TIME_ESTIMATES = {
     "dorks": 2, "usernames": 20, "opendir": 20, "ports": 15, "robots": 10,
     "waf": 12, "takeover": 15, "banners": 10, "github": 10, "cves": 12,
     "clickjack": 8, "cors": 12, "pastes": 10, "phones": 2, "social": 12,
+    "secrets": 25, "wallets": 20, "creds": 20, "sqli": 30, "xss": 30,
+    "ssrf": 15, "idor": 10, "auth": 12, "db": 20, "backup": 60, "git": 15,
+    "hashid": 8, "exif": 15, "crypto": 12,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 1800  # 30 min hard cap, never leave a run stuck
@@ -240,7 +243,9 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
             total += 1
             await _emit(run_id, "finding",
                         {"plugin": f.plugin_id, "category": f.category,
-                         "key": f.key, "value": f.value[:300],
+                         "key": f.key, "value": f.value,
+                         "source": f.source, "source_url": f.source_url,
+                         "evidence": f.evidence,
                          "confidence": f.confidence,
                          "passive": f.passive, "target": target.normalized})
     session.commit()
