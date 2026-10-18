@@ -5,6 +5,7 @@ look for. All checks are custom-built, no API keys needed.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List
@@ -33,24 +34,34 @@ class BountyPlugin(Plugin):
         findings: List[Finding] = []
         mode = self.module_mode(ctx)
 
+        sem = asyncio.Semaphore(8)
+
         # 1. Open redirect test (passive-safe: only check if redirect param reflected)
-        if mode == "active":
-            for param in ["redirect", "next", "url", "return", "redir"]:
-                test_url = f"{base}/?{param}=https://evil.com"
+        async def _redirect_probe(param: str):
+            test_url = f"{base}/?{param}=https://evil.com"
+            async with sem:
                 try:
                     r = await fetch(ctx.http, ctx.limiter, "GET", test_url,
                                     timeout=10, follow_redirects=False)
-                    loc = r.headers.get("location", "")
-                    if "evil.com" in loc:
-                        findings.append(self._f(
-                            "web", "open_redirect",
-                            f"Possible open redirect via ?{param}= - Location: {loc[:100]}",
-                            source="bounty check", source_url=test_url,
-                            confidence=75, passive=False))
                 except Exception:
-                    continue
+                    return None
+            loc = r.headers.get("location", "")
+            if "evil.com" in loc:
+                return self._f(
+                    "web", "open_redirect",
+                    f"Possible open redirect via ?{param}= - Location: {loc[:100]}",
+                    source="bounty check", source_url=test_url,
+                    confidence=75, passive=False)
+            return None
 
-        # 2. Debug / profiler endpoints
+        if mode == "active":
+            for f in await asyncio.gather(
+                    *[_redirect_probe(p) for p in
+                      ["redirect", "next", "url", "return", "redir"]]):
+                if f:
+                    findings.append(f)
+
+        # 2. Debug / profiler endpoints (concurrent)
         debug_paths = [
             ("/_debug", "debug endpoint"), ("/debug", "debug endpoint"),
             ("/__debug__", "django debug toolbar?"), ("/phpinfo", "phpinfo?"),
@@ -59,31 +70,39 @@ class BountyPlugin(Plugin):
             ("/_profiler", "symfony profiler?"), ("/_wdt", "symfony wdt?"),
             ("/elmah.axd", "elmah error log?"),
         ]
-        for path, label in debug_paths:
+
+        async def _debug_probe(path: str, label: str):
             url = base + path
-            try:
-                if mode == "passive":
-                    # Wayback check
-                    from urllib.parse import quote
-                    wb = ("https://web.archive.org/cdx/search/cdx?url="
-                          + quote(url, safe="") + "&output=json&limit=1")
-                    r = await fetch(ctx.http, ctx.limiter, "GET", wb, timeout=10)
-                    if r.status_code == 200 and len(r.json()) > 1:
-                        findings.append(self._f(
-                            "web", "debug_endpoint_archived",
-                            f"{path} was archived - {label} may have existed",
-                            source="Wayback", source_url=url,
-                            confidence=50, passive=True))
-                else:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
-                    if r.status_code == 200 and len(r.text) > 100:
-                        findings.append(self._f(
-                            "web", "debug_endpoint",
-                            f"{path} returned 200 ({len(r.text)} bytes) - {label}",
-                            source="bounty check", source_url=url,
-                            confidence=70, passive=False))
-            except Exception:
-                continue
+            async with sem:
+                try:
+                    if mode == "passive":
+                        # Wayback check
+                        from urllib.parse import quote
+                        wb = ("https://web.archive.org/cdx/search/cdx?url="
+                              + quote(url, safe="") + "&output=json&limit=1")
+                        r = await fetch(ctx.http, ctx.limiter, "GET", wb, timeout=10)
+                        if r.status_code == 200 and len(r.json()) > 1:
+                            return self._f(
+                                "web", "debug_endpoint_archived",
+                                f"{path} was archived - {label} may have existed",
+                                source="Wayback", source_url=url,
+                                confidence=50, passive=True)
+                    else:
+                        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
+                        if r.status_code == 200 and len(r.text) > 100:
+                            return self._f(
+                                "web", "debug_endpoint",
+                                f"{path} returned 200 ({len(r.text)} bytes) - {label}",
+                                source="bounty check", source_url=url,
+                                confidence=70, passive=False)
+                except Exception:
+                    pass
+            return None
+
+        for f in await asyncio.gather(
+                *[_debug_probe(p, lab) for p, lab in debug_paths]):
+            if f:
+                findings.append(f)
 
         # 3. CORS misconfiguration check
         try:

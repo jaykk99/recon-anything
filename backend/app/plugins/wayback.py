@@ -36,7 +36,10 @@ class WaybackPlugin(Plugin):
                    + quote(domain) + "/*&output=json&fl=timestamp,original,statuscode"
                      "&collapse=urlkey&limit=2000")
             try:
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=40)
+                # Single informational call: tight timeout, one retry max.
+                # A slow CDX API must not stall the whole plugin.
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                   timeout=25, max_retries=1)
                 if resp.status_code != 200:
                     return {"error": f"HTTP {resp.status_code}"}
                 return resp.json()

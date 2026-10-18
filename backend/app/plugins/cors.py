@@ -6,6 +6,8 @@ Custom-built, no API keys needed.
 """
 from __future__ import annotations
 
+import asyncio
+
 import time
 from typing import List
 
@@ -39,30 +41,38 @@ class CorsPlugin(Plugin):
             f"https://{domain}.attacker.com",
         ]
 
-        for origin in test_origins:
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10,
-                                headers={"Origin": origin})
-                acao = r.headers.get("access-control-allow-origin", "")
-                acac = r.headers.get("access-control-allow-credentials", "").lower()
+        _cors_sem = asyncio.Semaphore(5)
 
-                if acao == origin:
-                    severity = "CRITICAL" if acac == "true" else "HIGH"
-                    findings.append(self._f(
-                        "web", "cors_reflect",
-                        f"{severity}: CORS reflects origin '{origin}'" +
-                        (" with credentials=true - full account takeover possible" if acac == "true" else ""),
-                        source="CORS tester", source_url=url,
-                        confidence=90, passive=True))
-                elif acao == "*":
-                    findings.append(self._f(
-                        "web", "cors_wildcard",
-                        f"CORS allows any origin (*) for '{origin}'" +
-                        (" with credentials - misconfigured" if acac == "true" else " (no credentials, lower risk)"),
-                        source="CORS tester", source_url=url,
-                        confidence=75 if acac == "true" else 50, passive=True))
-            except Exception:
-                continue
+        async def _cors_probe(origin: str):
+            async with _cors_sem:
+                try:
+                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10,
+                                    headers={"Origin": origin})
+                except Exception:
+                    return None
+            acao = r.headers.get("access-control-allow-origin", "")
+            acac = r.headers.get("access-control-allow-credentials", "").lower()
+
+            if acao == origin:
+                severity = "CRITICAL" if acac == "true" else "HIGH"
+                return self._f(
+                    "web", "cors_reflect",
+                    f"{severity}: CORS reflects origin '{origin}'" +
+                    (" with credentials=true - full account takeover possible" if acac == "true" else ""),
+                    source="CORS tester", source_url=url,
+                    confidence=90, passive=True)
+            elif acao == "*":
+                return self._f(
+                    "web", "cors_wildcard",
+                    f"CORS allows any origin (*) for '{origin}'" +
+                    (" with credentials - misconfigured" if acac == "true" else " (no credentials, lower risk)"),
+                    source="CORS tester", source_url=url,
+                    confidence=75 if acac == "true" else 50, passive=True)
+            return None
+
+        for _f in await asyncio.gather(*[_cors_probe(o) for o in test_origins]):
+            if _f:
+                findings.append(_f)
 
         # Preflight check
         try:

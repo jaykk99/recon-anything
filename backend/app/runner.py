@@ -28,7 +28,7 @@ from .plugins.registry import all_plugins, discover
 from .ratelimit import RateLimiter
 
 _cache = Cache()
-_limiter = RateLimiter()
+_limiter = RateLimiter(default_rps=config.DEFAULT_RPS)
 
 # In-memory event bus: run_id -> buffered SSE strings + live subscriber queues.
 # Lets GET /api/runs/{id}/stream replay history then follow live events.

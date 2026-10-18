@@ -227,6 +227,40 @@ class Ctx:
         except Exception:
             return None
 
+    async def probe(self, url: str, timeout: int = 8) -> Dict[str, Any]:
+        """Bulk-sweep GET with per-run response sharing.
+
+        backup.py, artifacts.py, hiddenpaths.py and apidiscover.py probe
+        overlapping path lists. This caches (status, headers, text head)
+        per URL in the run's shared bus so the second plugin to probe a
+        URL reuses the first plugin's response instead of re-fetching.
+        Same requests, same findings, fewer packets. Failures are cached
+        as status 0 (a sweep miss either way).
+        """
+        from ..ratelimit import fetch as _fetch
+        bus = self.shared.setdefault("probe_cache", {})
+        hit = bus.get(url)
+        if hit is not None:
+            return hit
+        try:
+            resp = await _fetch(self.http, self.limiter, "GET", url,
+                                timeout=timeout, max_retries=1,
+                                follow_redirects=True)
+            data = {
+                "status": resp.status_code,
+                "headers": {k.lower(): v for k, v in resp.headers.items()},
+                "text": resp.text[:4000],
+                "url": str(resp.url),
+            }
+            try:
+                data["length"] = int(resp.headers.get("content-length", 0)) or len(resp.text)
+            except Exception:
+                data["length"] = len(resp.text)
+        except Exception:
+            data = {"status": 0, "headers": {}, "text": "", "url": url, "length": 0}
+        bus[url] = data
+        return data
+
 
 class Plugin(abc.ABC):
     id: str = "base"

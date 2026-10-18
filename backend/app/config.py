@@ -17,4 +17,8 @@ DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
 # 5 parallel plugins: steady streaming batches Jay can check as they land,
 # fast enough without hammering the target or tripping its WAF.
 MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "5"))
+# Per-host request pacing. 25 RPS is still polite for authorized testing
+# (a single browser tab does more) and keeps bulk sweeps from serializing
+# behind one shared 10 RPS budget. Lower it if a target rate-limits.
+DEFAULT_RPS = float(env("RECON_RPS", "25"))
 EVIDENCE_DIR = env("RECON_EVIDENCE_DIR", "./evidence")

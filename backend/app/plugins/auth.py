@@ -7,6 +7,8 @@ serves, never brute force. Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
+
 import base64
 import json
 import re
@@ -121,29 +123,37 @@ class AuthPlugin(Plugin):
                  55, "medium",
                  "Use single-use, short-lived, high-entropy reset tokens sent out-of-band.")
 
-        # 5. exposed admin panels (no auth check)
+        # 5. exposed admin panels (no auth check) - concurrent probes
         admin_paths = ["/admin", "/admin/", "/administrator", "/wp-admin",
                        "/dashboard", "/manager", "/console", "/panel"]
-        for apath in admin_paths:
-            try:
-                ar = await fetch(ctx.http, ctx.limiter, "GET",
-                                 base.rstrip("/") + apath, timeout=10,
-                                 follow_redirects=False)
-                # 200 without redirect to login = potentially exposed
-                if ar.status_code == 200:
-                    body_sample = ar.text[:5000].lower()
-                    if "login" not in body_sample and "sign in" not in body_sample \
-                            and "password" not in body_sample:
-                        emit("exposed_admin_panel",
-                             f"Admin panel at {apath} returns 200 without "
-                             f"login redirect - may lack authentication.",
-                             70, "high",
-                             "Require authentication on all admin paths. "
-                             "Do not rely on obscurity.",
-                             url=base.rstrip("/") + apath)
-                        break
-            except Exception:
-                continue
+        _auth_sem = asyncio.Semaphore(8)
+
+        async def _admin_probe(apath: str):
+            url = base.rstrip("/") + apath
+            async with _auth_sem:
+                try:
+                    ar = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                     timeout=10, follow_redirects=False)
+                except Exception:
+                    return None
+            # 200 without redirect to login = potentially exposed
+            if ar.status_code == 200:
+                body_sample = ar.text[:5000].lower()
+                if "login" not in body_sample and "sign in" not in body_sample \
+                        and "password" not in body_sample:
+                    return (apath, url)
+            return None
+
+        for _apath, _aurl in [r for r in await asyncio.gather(
+                *[_admin_probe(p) for p in admin_paths]) if r]:
+            emit("exposed_admin_panel",
+                 f"Admin panel at {_apath} returns 200 without "
+                 f"login redirect - may lack authentication.",
+                 70, "high",
+                 "Require authentication on all admin paths. "
+                 "Do not rely on obscurity.",
+                 url=_aurl)
+            break
 
         # 6. HTTP method override headers (auth bypass vector)
         # Check if server respects X-HTTP-Method-Override

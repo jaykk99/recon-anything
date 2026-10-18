@@ -57,24 +57,25 @@ class HiddenPathsPlugin(Plugin):
 
         async def check(path: str):
             url = urljoin(base + "/", path)
-            try:
-                # Short timeout, one retry: bulk sweep, a blackholed
-                # path means blocked, not worth waiting on.
-                resp = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                   timeout=8, max_retries=1)
-                if resp and resp.status_code in (200, 301, 302, 401, 403):
-                    return (path, resp.status_code)
-            except Exception:
-                pass
+            # Shared probe cache: backup.py / artifacts.py may already have
+            # fetched this URL in the same run; reuse instead of re-fetching.
+            probed = await ctx.probe(url, timeout=8)
+            status = probed["status"]
+            if status in (200, 301, 302, 401, 403):
+                return (path, status)
             return None
 
-        # Batch in groups to avoid hammering
-        results = []
-        for i in range(0, len(HIDDEN_PATHS), 10):
-            batch = HIDDEN_PATHS[i:i+10]
-            batch_results = await asyncio.gather(*[check(p) for p in batch])
-            results.extend([r for r in batch_results if r])
-            await asyncio.sleep(0.5)
+        # One concurrent sweep (sem 12); the rate limiter already paces
+        # requests, so the old 0.5s inter-batch sleep was pure overhead.
+        sem = asyncio.Semaphore(12)
+
+        async def _check(path: str):
+            async with sem:
+                return await check(path)
+
+        results = [r for r in
+                   await asyncio.gather(*[_check(p) for p in HIDDEN_PATHS])
+                   if r]
 
         for path, status in results:
             interesting = status in (200, 401, 403)

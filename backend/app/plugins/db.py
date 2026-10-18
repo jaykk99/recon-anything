@@ -58,18 +58,14 @@ class DbPlugin(Plugin):
             return self._skipped("needs active mode (TCP connects)")
         findings: List[Finding] = []
 
-        async def tcp_open(port: int) -> bool:
+        async def check_one(port: int, name: str, http_path, remed):
+            """Check one DB port. Returns a finding or None."""
             try:
                 _, w = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout=6)
                 w.close()
-                return True
             except Exception:
-                return False
-
-        for port, name, http_path, remed in DBS:
-            if not await tcp_open(port):
-                continue
+                return None
             detail = f"port {port} is reachable from the internet"
             conf = 80
             if http_path is not None:
@@ -84,13 +80,20 @@ class DbPlugin(Plugin):
                             detail += " - version info disclosed"
                 except Exception:
                     pass
-            findings.append(self._f(
+            return self._f(
                 "infra", "exposed_database",
                 f"CRITICAL: {name} {detail}. Verify authentication is enforced.",
                 source="db port check", confidence=conf, passive=False,
                 evidence={"severity": "critical", "service": name, "port": port,
                           "remediation": remed,
-                          "scope_note": "Authorized testing only. No auth attempted, no commands run."}))
+                          "scope_note": "Authorized testing only. No auth attempted, no commands run."})
+
+        # All 8 ports concurrently: sequential 8x6s timeouts become one 6s window.
+        # Same checks, same findings, fraction of the time.
+        results = await asyncio.gather(
+            *[check_one(port, name, http_path, remed)
+              for port, name, http_path, remed in DBS])
+        findings.extend([f for f in results if f])
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(findings)} exposed databases")

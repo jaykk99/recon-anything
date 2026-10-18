@@ -196,6 +196,7 @@ PATHS = [
 
 
 class ArtifactsPlugin(Plugin):
+    timeout_s = 180  # slow enumerator: 165-path bulk sweep needs headroom
     id = "artifacts"
     label = "Exposed Artifacts"
     accepts = ["domain", "url"]
@@ -252,27 +253,26 @@ class ArtifactsPlugin(Plugin):
                     confidence=conf - 15, passive=True))
         else:
             # Concurrent direct probe: 165 paths, short timeout, one retry.
+            # Uses ctx.probe: responses are shared per-run with backup.py
+            # and hiddenpaths.py, so overlapping paths are fetched once.
             sem = asyncio.Semaphore(12)
 
             async def dprobe(item):
                 path, label, conf = item
                 full = base + path
                 async with sem:
-                    try:
-                        r = await fetch(ctx.http, ctx.limiter, "GET", full,
-                                        timeout=8, max_retries=1)
-                    except Exception:
-                        return None
-                if r.status_code == 200 and len(r.text.strip()) > 0:
-                    body = r.text[:300]
+                    probed = await ctx.probe(full, timeout=8)
+                status = probed["status"]
+                if status == 200 and len(probed["text"].strip()) > 0:
+                    body = probed["text"][:300]
                     # sanity: skip generic 200 pages for odd paths
-                    if path == "/.git/config" and "[core]" not in r.text:
+                    if path == "/.git/config" and "[core]" not in probed["text"]:
                         return None
-                    if path == "/.env" and "=" not in r.text:
+                    if path == "/.env" and "=" not in probed["text"]:
                         return None
                     return ("exposed", path, label, conf, full, body)
-                elif r.status_code in (401, 403):
-                    return ("guarded", path, label, conf, full, r.status_code)
+                elif status in (401, 403):
+                    return ("guarded", path, label, conf, full, status)
                 return None
 
             dprobed = await asyncio.gather(*[dprobe(p) for p in PATHS])
