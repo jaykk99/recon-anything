@@ -29,7 +29,8 @@ from typing import List
 from urllib.parse import quote_plus
 
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   safe_json_dict)
 
 DISCLAIMER = ("This checks whether your identifier appears in PUBLIC leak "
               "sources. It cannot crack, derive, or recover private keys "
@@ -240,11 +241,21 @@ class KeyleakPlugin(Plugin):
                          "Accept": "application/vnd.github+json"})
             if r.status_code != 200:
                 return out
-            jd = r.json()
-            total = jd.get("total_count", 0)
-            items = jd.get("items", [])[:5]
+            # safe_json_dict/list: wrong-shaped payloads (or bad JSON)
+            # degrade to "no data", never raise.
+            jd = safe_json_dict(r)
+            try:
+                total = int(jd.get("total_count", 0) or 0)
+            except (ValueError, TypeError):
+                total = 0
+            items = jd.get("items", [])
+            if not isinstance(items, list):
+                items = []
+            items = items[:5]
             if total > 0:
                 for it in items:
+                    if not isinstance(it, dict):
+                        continue
                     file_url = it.get("html_url", gurl)
                     repo = (it.get("repository") or {}).get("full_name", "")
                     path = it.get("path", "")

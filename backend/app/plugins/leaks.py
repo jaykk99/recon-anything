@@ -15,7 +15,8 @@ from urllib.parse import quote
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   safe_json_list)
 
 DORKS = [
     'site:{d} ext:log | ext:txt | ext:conf | ext:cfg | ext:env | ext:ini',
@@ -83,7 +84,9 @@ class LeaksPlugin(Plugin):
                             headers={"hibp-api-key": key, "User-Agent": "ReconAnything/1.0"},
                             timeout=20)
             if r.status_code == 200:
-                for b in r.json():
+                # safe_json_list: an error object instead of an array (or
+                # bad JSON) degrades to "no data", never raises.
+                for b in safe_json_list(r):
                     name = b.get("Name", "?")
                     findings.append(self._f("leak", "breach",
                                             f"{name} ({b.get('BreachDate', '?')})",

@@ -16,6 +16,7 @@ full match sits in evidence["match"] so the owner can verify and rotate.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Dict, List
@@ -23,7 +24,8 @@ from urllib.parse import quote
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   safe_json_dict)
 from .secretutils import evidence_block, is_placeholder, redact
 
 # GitHub code-search queries (quoted). Rate-limited to a few per run.
@@ -76,9 +78,29 @@ class EmailExposurePlugin(Plugin):
         passive = (mode == "passive")
 
         await self._github_search(domain, ctx, findings)
-        await self._scylla(domain, ctx, findings)
+        scylla_ok = await self._scylla(domain, ctx, findings)
         if not passive:
             await self._config_probes(domain, ctx, findings)
+
+        # Never silent: if every source came back empty, say what ran and
+        # what was missing so a zero is always explained.
+        if not findings:
+            parts = []
+            if not ctx.keys.get("github_token"):
+                parts.append("GitHub code search needs GITHUB_TOKEN")
+            else:
+                parts.append("GitHub code search ran clean")
+            parts.append("Scylla compilation lookup "
+                         + ("ran clean" if scylla_ok else "unreachable"))
+            if not passive:
+                parts.append("exposed-config probes ran clean")
+            findings.append(self._f(
+                "leak", "exposure_note",
+                f"No public credential exposures found for {domain} "
+                f"({'; '.join(parts)}).",
+                source="exposure sweep", confidence=60, passive=passive,
+                evidence=evidence_block("", "exposure_clean", "credential",
+                                        "low")))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
@@ -120,12 +142,16 @@ class EmailExposurePlugin(Plugin):
                 return
             if r.status_code != 200:
                 continue
-            try:
-                items = r.json().get("items", [])
-            except Exception:
+            jd = safe_json_dict(r)
+            items = jd.get("items", [])
+            if not isinstance(items, list):
                 continue
             for it in items:
-                repo = (it.get("repository") or {}).get("full_name", "?")
+                if not isinstance(it, dict):
+                    continue
+                repo_obj = it.get("repository")
+                repo = (repo_obj.get("full_name", "?")
+                        if isinstance(repo_obj, dict) else "?")
                 path = it.get("path", "?")
                 value = (f"Public code hit for credential query "
                          f"'{q.format(d=domain)}': {repo}/{path}")
@@ -150,53 +176,68 @@ class EmailExposurePlugin(Plugin):
                 break
 
     async def _scylla(self, domain: str, ctx: Ctx,
-                      findings: List[Finding]) -> None:
+                      findings: List[Finding]) -> bool:
+        """Public compilation lookup. Returns True when Scylla answered
+        (even with zero hits); False when unreachable. Never fails the
+        plugin."""
         url = SCYLLA_URL.format(d=domain)
         try:
             r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
         except Exception:
-            return
+            return False
         if r.status_code != 200:
-            return
-        try:
-            hits = r.json().get("hits") or r.json().get("data") or []
-        except Exception:
-            return
+            return False
+        jd = safe_json_dict(r)
+        hits = jd.get("hits") or jd.get("data") or []
+        if not isinstance(hits, list):
+            return False
         seen = set()
         for h in hits[:20]:
-            email = str(h.get("email") or h.get("_source", {}).get("email") or "")
+            if not isinstance(h, dict):
+                continue
+            src = h.get("_source")
+            src_email = src.get("email") if isinstance(src, dict) else ""
+            email = str(h.get("email") or src_email or "")
             if "@" not in email or not email.lower().endswith("@" + domain):
                 continue
             if email in seen:
                 continue
             seen.add(email)
             fields = h.get("fields") or {}
+            field_names = [str(x) for x in list(fields)[:6]]
             value = (f"{redact(email, 6)} appears in a public breach "
                      f"compilation (fields seen: "
-                     f"{', '.join(list(fields)[:6]) or 'email only'})")
+                     f"{', '.join(field_names) or 'email only'})")
             ev = evidence_block(email, "scylla_compilation", "credential",
-                                "high", {"fields": list(fields)[:10]})
+                                "high", {"fields": [str(x) for x in list(fields)[:10]]})
             findings.append(self._f(
                 "leak", "compilation_exposure", value,
                 source="Scylla public compilations", confidence=75,
                 passive=True, evidence=ev))
+        return True
 
     async def _config_probes(self, domain: str, ctx: Ctx,
                              findings: List[Finding]) -> None:
         base = f"https://{domain}"
-        for path in CONFIG_PATHS:
+        # Parallel probes (same pattern as backup/artifacts/hiddenpaths):
+        # sequential probing makes an unreachable target burn the whole
+        # plugin timeout and discards the findings gathered earlier.
+        sem = asyncio.Semaphore(6)
+
+        async def check(path: str):
             url = base + path
             try:
-                data = await ctx.probe(url, timeout=8)
+                async with sem:
+                    data = await ctx.probe(url, timeout=8)
             except Exception:
-                continue
+                return None
             if data.get("status") != 200:
-                continue
+                return None
             body = data.get("text", "")
             if len(body) < 20:
-                continue
+                return None
             if not ENV_MARKER.search(body):
-                continue
+                return None
             secrets: Dict[str, str] = {}
             for m in SECRET_HINT.finditer(body):
                 name, val = m.group(1).lower(), m.group(2)
@@ -204,7 +245,13 @@ class EmailExposurePlugin(Plugin):
                     continue
                 secrets[name] = redact(val)
             if not secrets and "APP_KEY" not in body and "SECRET_KEY" not in body:
+                return None
+            return path, url, body, secrets
+
+        for result in await asyncio.gather(*[check(p) for p in CONFIG_PATHS]):
+            if not result:
                 continue
+            path, url, body, secrets = result
             detail = ", ".join(f"{k}={v}" for k, v in list(secrets.items())[:5])
             value = (f"HIGH: exposed config file {path} on {domain} "
                      f"contains secrets ({detail or 'secret markers'})")
