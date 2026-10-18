@@ -129,7 +129,7 @@ class SqliPlugin(Plugin):
 
         # discover URLs with query params from the homepage
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
+            r = await fetch(ctx.http, ctx.limiter, "GET", base, rotate_ua=True, timeout=25,
                             follow_redirects=True)
             html = r.text[:300000]
             page_url = str(r.url)
@@ -174,7 +174,7 @@ class SqliPlugin(Plugin):
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
-                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
                                          timeout=15)
                         body = pr.text[:200000]
                     except Exception:
@@ -210,7 +210,7 @@ class SqliPlugin(Plugin):
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
-                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
                                          timeout=15)
                         body = pr.text[:200000]
                     except Exception:
@@ -247,7 +247,7 @@ class SqliPlugin(Plugin):
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
                         p0 = time.monotonic()
-                        await fetch(ctx.http, ctx.limiter, "GET", purl,
+                        await fetch(ctx.http, ctx.limiter, "GET", purl, rotate_ua=True,
                                     timeout=20)
                         delta = time.monotonic() - p0
                     except Exception:
@@ -284,9 +284,9 @@ class SqliPlugin(Plugin):
                         query=urlencode(true_probe)))
                     false_url = urlunparse(parts._replace(
                         query=urlencode(false_probe)))
-                    tr = await fetch(ctx.http, ctx.limiter, "GET", true_url,
+                    tr = await fetch(ctx.http, ctx.limiter, "GET", true_url, rotate_ua=True,
                                      timeout=15)
-                    fr = await fetch(ctx.http, ctx.limiter, "GET", false_url,
+                    fr = await fetch(ctx.http, ctx.limiter, "GET", false_url, rotate_ua=True,
                                      timeout=15)
                     true_len = len(tr.text)
                     false_len = len(fr.text)
