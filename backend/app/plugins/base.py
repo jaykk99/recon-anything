@@ -133,6 +133,8 @@ BOUNTY_KEY_TIERS = {
     "git_exposed": "high",
     # HIGH ($1k-5k)
     "idor_candidate": "high",
+    "idor_confirmed": "high",
+    "sourcemap_secret": "high",
     "s3_public_read": "high",
     "exposed_env": "high",
     "hardcoded_password": "high",
@@ -140,6 +142,13 @@ BOUNTY_KEY_TIERS = {
     "interesting_subdomain": "high",
     # MEDIUM ($100-1k)
     "xss_reflected": "medium",
+    "oob_callback_sent": "low",
+    "sourcemap_exposed": "medium",
+    "sourcemap_internal_url": "medium",
+    "sourcemap_api_route": "medium",
+    "sourcemap_cred_comment": "medium",
+    "sourcemap_debug_flag": "low",
+    "fuzz_param_anomaly": "medium",
     "open_redirect": "medium",
     "cors_misconfig": "medium",
     "clickjacking": "medium",
