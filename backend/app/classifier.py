@@ -150,6 +150,11 @@ def classify(raw: str) -> Dict:
 
     checks: List[Tuple[str, callable, int]] = [
         ("jwt", _is_jwt, 98),
+        # Store URLs must beat the generic url check: mobile accepts only
+        # play_store/app_store, and url would swallow them otherwise,
+        # leaving the mobile plugin permanently unreachable.
+        ("play_store", _is_play_store, 88),
+        ("app_store", _is_app_store, 85),
         ("url", _is_url, 97),
         ("email", _is_email, 96),
         ("cidr", _is_cidr, 96),
@@ -158,8 +163,6 @@ def classify(raw: str) -> Dict:
         ("file_hash", lambda x: _hash_type(x) is not None, 95),
         ("crypto_wallet", lambda x: _looks_like_btc(x) or _looks_like_eth(x), 90),
         ("phone", _is_phone, 80),
-        ("play_store", _is_play_store, 88),
-        ("app_store", _is_app_store, 85),
         ("github", _is_github, 80),
         ("domain", _is_domain, 90),
         ("npm_package", _is_package, 60),
