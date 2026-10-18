@@ -99,6 +99,20 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     return result
 
 
+# Estimated seconds per plugin per target (based on observed runs).
+# Used to show Jay a time estimate before/during scans.
+PLUGIN_TIME_ESTIMATES = {
+    "subdomains": 25, "dns": 8, "tls": 10, "webtech": 12, "artifacts": 30,
+    "jsminer": 20, "wayback": 15, "leaks": 10, "rdap": 8, "apidiscover": 15,
+    "pivots": 5, "headers": 8, "mobile": 5, "bounty": 25, "emails": 15,
+    "dorks": 2, "usernames": 20, "opendir": 20, "ports": 15, "robots": 10,
+    "waf": 12, "takeover": 15, "banners": 10, "github": 10, "cves": 12,
+    "clickjack": 8, "cors": 12, "pastes": 10, "phones": 2, "social": 12,
+}
+DEFAULT_PLUGIN_ESTIMATE_S = 12
+RUN_TIMEOUT_S = 1800  # 30 min hard cap, never leave a run stuck
+
+
 async def execute_run(run_id: str, targets_raw: str, mode: str,
                       plugin_ids: Optional[List[str]] = None,
                       module_overrides: Optional[Dict[str, str]] = None,
@@ -107,6 +121,37 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
     init_db()
     RUN_EVENT_BUFFER[run_id] = []
     session = get_session()
+    try:
+        await _execute_run_inner(run_id, targets_raw, mode, plugin_ids,
+                                 module_overrides, keys, session)
+    except Exception as e:
+        # Never leave a run stuck in "running". Mark it failed.
+        try:
+            run = session.query(Run).filter_by(id=run_id).first()
+            if run and run.status == "running":
+                run.status = "failed"
+                run.finished_at = dt.datetime.now(dt.timezone.utc)
+                run.summary = {"error": str(e)[:300], "findings": 0}
+                session.commit()
+        except Exception:
+            pass
+        try:
+            await _emit(run_id, "run_done",
+                        {"run_id": run_id, "findings": 0, "error": str(e)[:300]})
+        except Exception:
+            pass
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
+                             plugin_ids: Optional[List[str]],
+                             module_overrides: Optional[Dict[str, str]],
+                             keys: Optional[Dict[str, str]],
+                             session):
     run = session.query(Run).filter_by(id=run_id).first()
     if not run:
         session.close()
@@ -126,9 +171,18 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                               type=t.type, normalized=t.normalized))
     session.commit()
 
+    # Time estimate: sum of per-plugin estimates x targets, capped by concurrency.
+    n_targets = max(len(trobj), 1)
+    total_plugin_s = sum(PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S)
+                         for p in plugins) * n_targets
+    concurrency = max(getattr(config, "MAX_CONCURRENCY", 5), 1)
+    estimated_s = max(int(total_plugin_s / concurrency), 10)
+
     await _emit(run_id, "run_start",
                 {"run_id": run_id, "targets": [c["normalized"] for c in classified],
-                 "mode": mode, "plugins": [p.id for p in plugins]})
+                 "mode": mode, "plugins": [p.id for p in plugins],
+                 "estimated_s": estimated_s,
+                 "plugin_count": len(plugins), "target_count": n_targets})
 
     async with httpx.AsyncClient(
             headers={"User-Agent": config.USER_AGENT},
@@ -140,20 +194,41 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                   evidence_dir=config.EVIDENCE_DIR)
         sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
 
-        async def one(plugin, target: Target):
-            async with sem:
-                return plugin, target, await _run_plugin(plugin, target, ctx)
-
-        jobs = []
+        total_jobs = 0
         for t in trobj:
             for p in plugins:
                 if not p.accepts or t.type in p.accepts:
-                    jobs.append(one(p, t))
+                    total_jobs += 1
                 else:
                     await _emit(run_id, "plugin_skip",
                                 {"plugin": p.id, "target": t.normalized,
                                  "reason": f"does not accept {t.type}"})
-        results = await asyncio.gather(*jobs)
+        completed_jobs = 0
+
+        # Simpler: wrap each job with progress counting
+        async def wrap(plugin, target):
+            nonlocal completed_jobs
+            async with sem:
+                result = await _run_plugin(plugin, target, ctx)
+            completed_jobs += 1
+            await _emit(run_id, "progress",
+                        {"done": completed_jobs, "total": total_jobs,
+                         "plugin": plugin.id, "target": target.normalized})
+            return plugin, target, result
+
+        wrapped = []
+        for t in trobj:
+            for p in plugins:
+                if not p.accepts or t.type in p.accepts:
+                    wrapped.append(wrap(p, t))
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*wrapped), timeout=RUN_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            await _emit(run_id, "progress",
+                        {"done": completed_jobs, "total": total_jobs,
+                         "note": "run timed out"})
+            results = []
 
     # persist findings
     total = 0
