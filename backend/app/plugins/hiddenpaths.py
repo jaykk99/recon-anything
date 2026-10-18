@@ -58,7 +58,7 @@ class HiddenPathsPlugin(Plugin):
         async def check(path: str):
             url = urljoin(base + "/", path)
             try:
-                resp = await fetch(ctx, url)
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url)
                 if resp and resp.status_code in (200, 301, 302, 401, 403):
                     return (path, resp.status_code)
             except Exception:

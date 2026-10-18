@@ -89,7 +89,7 @@ class FingerprintPlugin(Plugin):
         base = f"https://{domain}" if target.type == "domain" else target.normalized.rstrip("/")
         findings: List[Finding] = []
         try:
-            resp = await fetch(ctx, base + "/")
+            resp = await fetch(ctx.http, ctx.limiter, "GET", base + "/")
         except Exception as e:
             return self._error(f"fetch failed: {e}")
         if not resp or resp.status_code != 200:

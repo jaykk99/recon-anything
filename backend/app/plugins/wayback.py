@@ -15,6 +15,7 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 
 class WaybackPlugin(Plugin):
+    timeout_s = 150  # slow enumerator: needs headroom
     id = "wayback"
     label = "Wayback History"
     accepts = ["domain", "url"]
