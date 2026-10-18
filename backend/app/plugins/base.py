@@ -144,6 +144,16 @@ BOUNTY_KEY_TIERS = {
     "cors_misconfig": "medium",
     "clickjacking": "medium",
     "missing_security_header": "medium",
+    # Detection modules (race / stealth crawl / JWT audit)
+    "race_no_ratelimit": "medium",
+    "race_no_idempotency": "medium",
+    "hidden_api_endpoint": "medium",
+    "jwt_alg_none": "high",
+    "jwt_weak_secret": "high",
+    "jwt_missing_exp": "medium",
+    "jwt_long_exp": "medium",
+    "jwt_sensitive_claims": "medium",
+    "jwt_kid_suspicious": "medium",
     # LOW ($0-100) - default
 }
 
