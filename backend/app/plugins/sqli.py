@@ -16,7 +16,9 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .injutil import sample_urls
 
 SQL_ERRORS = [
     (r"SQL syntax.*?MySQL", "MySQL"),
@@ -125,7 +127,7 @@ class SqliPlugin(Plugin):
         mode = self.module_mode(ctx)
         if mode == "passive":
             return self._skipped("needs active mode (sends probe requests)")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         # discover URLs with query params from the homepage
@@ -323,7 +325,7 @@ class SqliPlugin(Plugin):
             async with sem:
                 await test_url(u)
 
-        await asyncio.gather(*[test_url_sem(u) for u in list(urls)[:8]])
+        await asyncio.gather(*[test_url_sem(u) for u in sample_urls(urls, 12)])
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested[0]} payloads across "

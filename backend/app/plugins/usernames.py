@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 PLATFORMS = [
@@ -69,7 +70,7 @@ class UsernamesPlugin(Plugin):
             domain = domain_from_target(target.type, target.normalized)
             if not domain:
                 return self._skipped("no domain for this target type")
-            base = f"https://{domain}" if target.type == "domain" else target.normalized
+            base = await web_base(ctx, target, domain)
             try:
                 r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
                                 follow_redirects=True)

@@ -17,6 +17,7 @@ from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 MAX_PAGES = 40
@@ -43,7 +44,7 @@ class CrawlerPlugin(Plugin):
         domain = domain_from_target(target.type, target.normalized)
         if not domain:
             return self._skipped("no domain for this target type")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
         seen = set()
         queue = [(base, 0)]
@@ -136,7 +137,7 @@ class CrawlerPlugin(Plugin):
         sitemap_urls = 0
         try:
             sr = await fetch(ctx.http, ctx.limiter, "GET",
-                             f"https://{domain}/sitemap.xml", timeout=15)
+                             f"{base}/sitemap.xml", timeout=15)
             if sr.status_code == 200:
                 for m in re.finditer(r"<loc>([^<]+)</loc>",
                                      sr.text[:500000]):

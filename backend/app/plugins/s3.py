@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # Bucket name patterns in code and responses
@@ -51,7 +52,7 @@ class S3Plugin(Plugin):
         domain = domain_from_target(target.type, target.normalized)
         if not domain:
             return self._skipped("no domain for this target type")
-        base = f"https://{domain}" if target.type == "domain" else target.normalized
+        base = await web_base(ctx, target, domain)
         findings: List[Finding] = []
         mode = self.module_mode(ctx)
         passive = (mode == "passive")

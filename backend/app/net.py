@@ -6,6 +6,11 @@ client in the app behaves the same:
 
 - Proxy: honors HTTP_PROXY / HTTPS_PROXY (and lowercase) from the
   environment, unless it points at localhost (which would loop).
+- NO_PROXY / no_proxy is honored per-host via transport mounts: loopback
+  and listed hosts bypass the proxy with a direct transport (mounts take
+  precedence over the proxy in httpx). Without this, targets like
+  127.0.0.1 get blackholed by the egress proxy and every plugin silently
+  degrades to zero findings - a false negative.
 - TLS: uses the system CA bundle when present (the sandbox egress proxy
   re-signs TLS and certifi lacks its CA); otherwise default verification.
 - trust_env=False is deliberate: proxy handling is explicit through
@@ -46,11 +51,102 @@ def ca_bundle():
     return p if os.path.isfile(p) else True
 
 
+def no_proxy_hosts() -> list:
+    """Hostnames from NO_PROXY / no_proxy (lowercased, brackets stripped)."""
+    raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    hosts = []
+    for entry in raw.split(","):
+        e = entry.strip().lower().strip("[]")
+        if e:
+            hosts.append(e)
+    return hosts
+
+
+def _mount_host(host: str) -> str | None:
+    """Normalize a NO_PROXY entry into an httpx-mountable host, or None."""
+    if host == "*":
+        return None
+    # strip a leading dot (".example.com" convention); exact-host matching
+    # is what httpx mounts provide.
+    key_host = host[1:] if host.startswith(".") else host
+    if not key_host or "/" in key_host or " " in key_host:
+        return None
+    if ":" in key_host and not key_host.startswith("["):
+        key_host = f"[{key_host}]"  # IPv6 literal needs brackets in a URL
+    return key_host
+
+
+def _direct_mounts() -> dict:
+    """httpx mounts that bypass the proxy for NO_PROXY hosts.
+
+    Mounts take precedence over the proxy setting in httpx, so loopback
+    and explicitly listed hosts always get a direct transport. Only
+    exact hostnames/IPs are mounted (no wildcard expansion).
+    """
+    mounts = {}
+    for host in no_proxy_hosts():
+        key_host = _mount_host(host)
+        if not key_host:
+            continue
+        for scheme in ("http", "https"):
+            mounts[f"{scheme}://{key_host}"] = httpx.AsyncHTTPTransport()
+    return mounts
+
+
+def _direct_mounts_sync() -> dict:
+    mounts = {}
+    for host in no_proxy_hosts():
+        key_host = _mount_host(host)
+        if not key_host:
+            continue
+        for scheme in ("http", "https"):
+            mounts[f"{scheme}://{key_host}"] = httpx.HTTPTransport()
+    return mounts
+
+
+async def web_base(ctx, target, domain: str) -> str:
+    """Scheme-aware base URL for web plugins (P0 false-negative fix).
+
+    - url target: the URL exactly as given (scheme preserved).
+    - domain target: prefer https, fall back to http when https is
+      unreachable at the transport level (connection refused, TLS
+      failure, DNS, timeout). HTTP-only sites (e.g. demo.testfire.net)
+      otherwise degrade every plugin to zero findings.
+
+    The resolved scheme is cached per run+domain in ctx.shared so the
+    probe costs one HEAD request per domain per run, not per plugin.
+    A 405/501 on HEAD is retried with GET; HTTP error statuses do NOT
+    trigger fallback (the server speaks TLS, so https is correct).
+    """
+    if target.type != "domain":
+        return target.normalized
+    cache_key = f"_webscheme:{domain.lower()}"
+    hit = ctx.shared.get(cache_key)
+    if isinstance(hit, str) and hit:
+        return hit
+    from .ratelimit import fetch as _fetch
+    base = f"https://{domain}"
+    try:
+        r = await _fetch(ctx.http, ctx.limiter, "HEAD", base, timeout=10,
+                         follow_redirects=True, max_retries=1)
+        if r.status_code in (405, 501):
+            await _fetch(ctx.http, ctx.limiter, "GET", base, timeout=10,
+                         follow_redirects=True, max_retries=1)
+    except Exception:
+        base = f"http://{domain}"
+    ctx.shared[cache_key] = base
+    return base
+
+
 def async_client(**kwargs) -> httpx.AsyncClient:
     """httpx.AsyncClient with full, unrestricted egress configured."""
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
+    if "mounts" not in kwargs:
+        direct = _direct_mounts()
+        if direct:
+            kwargs["mounts"] = direct
     return httpx.AsyncClient(**kwargs)
 
 
@@ -59,4 +155,8 @@ def sync_client(**kwargs) -> httpx.Client:
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
+    if "mounts" not in kwargs:
+        direct = _direct_mounts_sync()
+        if direct:
+            kwargs["mounts"] = direct
     return httpx.Client(**kwargs)

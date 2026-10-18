@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 
@@ -32,7 +33,7 @@ class SocialPlugin(Plugin):
             domain = domain_from_target(target.type, target.normalized)
             if not domain:
                 return self._skipped("no domain")
-            base = f"https://{domain}" if target.type == "domain" else target.normalized.rstrip("/")
+            base = (await web_base(ctx, target, domain)).rstrip("/")
 
             # Scrape homepage for social links
             try:

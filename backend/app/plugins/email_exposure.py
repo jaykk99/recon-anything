@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .secretutils import evidence_block, is_placeholder, redact
 
@@ -78,7 +79,7 @@ class EmailExposurePlugin(Plugin):
         await self._github_search(domain, ctx, findings)
         await self._scylla(domain, ctx, findings)
         if not passive:
-            await self._config_probes(domain, ctx, findings)
+            await self._config_probes(domain, target, ctx, findings)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
@@ -181,9 +182,9 @@ class EmailExposurePlugin(Plugin):
                 source="Scylla public compilations", confidence=75,
                 passive=True, evidence=ev))
 
-    async def _config_probes(self, domain: str, ctx: Ctx,
+    async def _config_probes(self, domain: str, target: Target, ctx: Ctx,
                              findings: List[Finding]) -> None:
-        base = f"https://{domain}"
+        base = (await web_base(ctx, target, domain)).rstrip("/")
         for path in CONFIG_PATHS:
             url = base + path
             try:

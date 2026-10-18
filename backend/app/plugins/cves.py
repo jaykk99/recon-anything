@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
+from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 
@@ -886,7 +887,7 @@ class CvesPlugin(Plugin):
         domain = domain_from_target(target.type, target.normalized)
         if not domain:
             return self._skipped("no domain for this target type")
-        url = f"https://{domain}" if target.type == "domain" else target.normalized
+        url = await web_base(ctx, target, domain)
         findings: List[Finding] = []
 
         try:
