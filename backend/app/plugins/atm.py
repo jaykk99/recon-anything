@@ -68,6 +68,12 @@ class AtmPlugin(Plugin):
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
+        # Source-type plugin: only runs in ATM source mode. During website
+        # or bank runs it stays completely silent (ok, zero findings).
+        if getattr(ctx, "source_type", "website") != "atm":
+            res = self._ok([], "not applicable: ATM plugin only runs in ATM source mode")
+            res.duration_ms = 0
+            return res
         if ctx.module_overrides.get("atm") != "authorized":
             return self._skipped(
                 "ATM module requires explicit authorization "

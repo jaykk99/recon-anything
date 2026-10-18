@@ -128,6 +128,10 @@ class Ctx:
     emit: Any = None  # optional async callback(event dict)
     module_overrides: Dict[str, str] = field(default_factory=dict)
     evidence_dir: str = "./evidence"
+    # Source type of the run: "website" | "bank" | "atm".
+    # Source-type plugins (atm.py, bank.py) only do work when the run's
+    # source_type matches their own; otherwise they stay silent.
+    source_type: str = "website"
     # Discovery bus: plugins publish assets here so phase-2 chain
     # plugins can consume them. Keys: subdomains, js_files, endpoints,
     # tech, forms, params, emails, cert_sans.

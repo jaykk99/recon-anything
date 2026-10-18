@@ -58,6 +58,12 @@ class BankPlugin(Plugin):
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
+        # Source-type plugin: only runs in bank source mode. During website
+        # or ATM runs it stays completely silent (ok, zero findings).
+        if getattr(ctx, "source_type", "website") != "bank":
+            res = self._ok([], "not applicable: bank plugin only runs in bank source mode")
+            res.duration_ms = 0
+            return res
         if ctx.module_overrides.get("bank") != "authorized":
             return self._skipped(AUTH_MSG)
         findings: List[Finding] = []

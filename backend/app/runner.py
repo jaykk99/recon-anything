@@ -286,7 +286,8 @@ async def _execute_poi_run(run_id: str, location_raw: str, mode: str,
         ctx = Ctx(run_id=run_id, mode=mode, http=http, cache=_cache,
                   keys=keys or {}, limiter=_limiter,
                   module_overrides=module_overrides or {},
-                  evidence_dir=config.EVIDENCE_DIR)
+                  evidence_dir=config.EVIDENCE_DIR,
+                  source_type=source_type)
         sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
         total_jobs = len(trobj) * len(plugins)
         completed = 0
@@ -378,6 +379,10 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
     plugins = all_plugins()
     if plugin_ids:
         plugins = [p for p in plugins if p.id in plugin_ids]
+    # Source-type plugins (atm, bank) are silent during website scans:
+    # they only run when the user picks ATM or Bank as the source type.
+    if source_type == "website":
+        plugins = [p for p in plugins if p.id not in ("atm", "bank")]
 
     # persist targets
     trobj: List[Target] = []
@@ -407,7 +412,8 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
         ctx = Ctx(run_id=run_id, mode=mode, http=http, cache=_cache,
                   keys=keys or {}, limiter=_limiter,
                   module_overrides=module_overrides or {},
-                  evidence_dir=config.EVIDENCE_DIR)
+                  evidence_dir=config.EVIDENCE_DIR,
+                  source_type=source_type)
         sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
 
         # Split plugins by phase: phase 1 runs first, then phase 2 chain
