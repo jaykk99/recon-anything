@@ -191,6 +191,11 @@ class Plugin(abc.ABC):
     # run after, consuming the discovery bus (ctx.shared) populated by
     # phase 1. Lets findings lead to more findings.
     phase: int = 1
+    # Per-plugin timeout ceiling (seconds). This is hang protection, NOT a
+    # speed target: plugins are never killed to hit a time budget, only to
+    # stop a genuinely stuck plugin. Findings always win over speed.
+    # Slow enumerators (subdomain enum, crawlers) override this higher.
+    timeout_s: int = 90
 
     @abc.abstractmethod
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:

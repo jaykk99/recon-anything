@@ -13,6 +13,8 @@ REDIS_URL = env("REDIS_URL", "")
 ACCESS_CODE = env("RECON_ACCESS_CODE", "")  # single-user gate; empty = no gate
 MASTER_KEY = env("RECON_MASTER_KEY", "")  # Fernet key for API key encryption
 USER_AGENT = "ReconAnything/1.0 (+https://github.com/jaykk99/recon-anything)"
-DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "10"))
-MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "20"))
+DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
+# 8 parallel plugins: enough for speed, low enough to avoid resource
+# contention and looking like an attack to the target's WAF.
+MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "8"))
 EVIDENCE_DIR = env("RECON_EVIDENCE_DIR", "./evidence")

@@ -30,6 +30,7 @@ COMMENT_PATH_RE = re.compile(r'<!--.*?((?:/[a-zA-Z0-9_\-.]+){2,}).*?-->', re.S)
 
 
 class DeepCrawlPlugin(Plugin):
+    timeout_s = 180  # slow enumerator: needs headroom
     id = "deepcrawl"
     label = "Deep Source Analyzer"
     accepts = ["domain", "url"]
@@ -52,7 +53,7 @@ class DeepCrawlPlugin(Plugin):
 
         async def fetch_page(url: str) -> str:
             try:
-                resp = await fetch(ctx, url)
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url)
                 if resp and resp.status_code == 200:
                     ct = resp.headers.get("content-type", "")
                     if "html" in ct:

@@ -38,6 +38,7 @@ SECRET_MARKERS = ["password", "secret", "api_key", "apikey", "private key",
 
 
 class BackupPlugin(Plugin):
+    timeout_s = 180  # slow enumerator: needs headroom
     id = "backup"
     label = "Backup File Sweeper"
     accepts = ["domain", "url"]

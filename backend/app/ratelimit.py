@@ -42,8 +42,12 @@ class RateLimiter:
 
 
 async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
-                url: str, *, max_retries: int = 1, **kwargs) -> httpx.Response:
-    """HTTP with rate limiting, minimal retries, fast failure."""
+                url: str, *, max_retries: int = 2, **kwargs) -> httpx.Response:
+    """HTTP with rate limiting, retries, backoff+jitter, 429 handling.
+
+    Retries transient failures (429/5xx, timeouts) so findings are not lost
+    to a single bad response. Bounded: at most max_retries extra attempts.
+    """
     from urllib.parse import urlparse
     host = urlparse(url).netloc
     last_exc: Exception | None = None
@@ -58,15 +62,17 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
                 except (ValueError, TypeError):
                     limiter.note_429(host, None)
                 if attempt < max_retries:
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                    await asyncio.sleep(random.uniform(1, 3) * (attempt + 1))
                     continue
                 return resp
-            # Don't retry 5xx aggressively; fail fast for speed
+            if resp.status_code >= 500 and attempt < max_retries:
+                await asyncio.sleep(random.uniform(0.5, 1.5) * (2 ** attempt))
+                continue
             return resp
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
             if attempt < max_retries:
-                await asyncio.sleep(random.uniform(0.3, 0.8))
+                await asyncio.sleep(random.uniform(0.5, 1.5) * (2 ** attempt))
                 continue
             raise
     assert last_exc is not None

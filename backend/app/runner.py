@@ -79,7 +79,10 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
     )
 
 
-PLUGIN_TIMEOUT_S = 10  # hard cap per plugin; slow ones get killed, not failed
+# Default per-plugin timeout ceiling (seconds). Individual plugins override
+# via their timeout_s class attribute. Kept for reference; the runner reads
+# plugin.timeout_s directly.
+DEFAULT_PLUGIN_TIMEOUT_S = 90
 
 
 async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
@@ -89,12 +92,19 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     await _emit(ctx.run_id, "plugin_start",
                 {"plugin": plugin.id, "label": plugin.label, "target": target.normalized})
     t0 = time.monotonic()
+    # Per-plugin timeout ceiling from the plugin itself (default 90s).
+    # This is hang protection only: a plugin is never killed to hit a
+    # speed budget. Findings always win over speed.
+    timeout = getattr(plugin, "timeout_s", 90) or 90
     try:
         result = await asyncio.wait_for(plugin.run(target, ctx),
-                                        timeout=PLUGIN_TIMEOUT_S)
+                                        timeout=timeout)
     except asyncio.TimeoutError:
-        result = plugin._error(f"timed out after {PLUGIN_TIMEOUT_S}s (killed, not failed)")
-        result.status = result.status  # keep error status; reason says timed out
+        result = plugin._error(f"PLUGIN TIMEOUT after {timeout}s: plugin was "
+                               f"killed while still working; findings may be incomplete")
+        await _emit(ctx.run_id, "plugin_timeout",
+                    {"plugin": plugin.id, "timeout_s": timeout,
+                     "target": target.normalized})
     except Exception as e:  # never let one plugin kill the run
         result = plugin._error(f"unhandled: {str(e)[:200]}")
     result.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -105,31 +115,32 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     return result
 
 
-# Estimated seconds per plugin per target (capped at PLUGIN_TIMEOUT_S).
-# Used to show Jay a time estimate and to prioritize fast plugins first.
+# Estimated seconds per plugin per target (realistic, observed values).
+# Used to show Jay a time estimate and to prioritize fast plugins first
+# (quick wins land early; slow enumerators run without blocking results).
 PLUGIN_TIME_ESTIMATES = {
-    "subdomains": 10, "dns": 5, "tls": 5, "webtech": 8, "artifacts": 10,
-    "jsminer": 10, "wayback": 8, "leaks": 5, "rdap": 5, "apidiscover": 8,
-    "pivots": 3, "headers": 5, "mobile": 5, "bounty": 10, "emails": 8,
-    "dorks": 2, "usernames": 10, "opendir": 10, "ports": 8, "robots": 5,
-    "waf": 8, "takeover": 8, "banners": 5, "github": 8, "cves": 8,
-    "clickjack": 5, "cors": 8, "pastes": 5, "phones": 2, "social": 8,
-    "secrets": 10, "wallets": 8, "creds": 10, "sqli": 10, "xss": 10,
-    "ssrf": 8, "idor": 5, "auth": 8, "db": 10, "backup": 10, "git": 8,
-    "hashid": 5, "exif": 8, "crypto": 8, "keyleak": 8,
-    "xxe": 10, "ssti": 10, "lfi": 10, "rce": 10, "redirect": 8,
-    "hostheader": 5, "cache": 10, "asn": 5, "cert": 5, "http2": 5,
-    "cookies": 5, "forms": 5, "breach": 8, "favicon": 5,
-    "adminfinder": 10, "authbypass": 10, "acl": 8, "jwt": 8,
-    "session": 8, "crawler": 10, "paramdiscover": 10, "apifuzz": 10,
-    "s3": 10, "smartcontract": 8, "cryptoconfig": 10, "walletcheck": 8,
-    "bola": 5, "blogic": 5, "k8s": 8, "docker": 8, "iot": 8,
-    "hypervisor": 8, "cloud": 8, "defi": 8, "tokenapproval": 5,
-    "rugpull": 8, "bridge": 8, "nft": 8, "supplychain": 8,
-    "enterprise": 8, "deepcrawl": 10, "fingerprint": 5,
-    "hiddenpaths": 10, "financial": 8, "connections": 5,
+    "subdomains": 25, "dns": 8, "tls": 10, "webtech": 12, "artifacts": 30,
+    "jsminer": 20, "wayback": 15, "leaks": 10, "rdap": 8, "apidiscover": 15,
+    "pivots": 5, "headers": 8, "mobile": 5, "bounty": 25, "emails": 15,
+    "dorks": 5, "usernames": 20, "opendir": 20, "ports": 15, "robots": 10,
+    "waf": 12, "takeover": 15, "banners": 10, "github": 10, "cves": 12,
+    "clickjack": 8, "cors": 12, "pastes": 10, "phones": 5, "social": 12,
+    "secrets": 25, "wallets": 20, "creds": 20, "sqli": 30, "xss": 30,
+    "ssrf": 15, "idor": 10, "auth": 12, "db": 20, "backup": 60, "git": 15,
+    "hashid": 8, "exif": 15, "crypto": 12, "keyleak": 15,
+    "xxe": 20, "ssti": 30, "lfi": 30, "rce": 40, "redirect": 15,
+    "hostheader": 10, "cache": 20, "asn": 10, "cert": 8, "http2": 8,
+    "cookies": 8, "forms": 10, "breach": 15, "favicon": 8,
+    "adminfinder": 20, "authbypass": 25, "acl": 15, "jwt": 12,
+    "session": 15, "crawler": 45, "paramdiscover": 30, "apifuzz": 25,
+    "s3": 20, "smartcontract": 15, "cryptoconfig": 25, "walletcheck": 20,
+    "deepcrawl": 60, "defi": 15, "tokenapproval": 12, "rugpull": 12,
+    "bridge": 12, "nft": 12, "financial": 15, "connections": 10,
+    "supplychain": 20, "enterprise": 15, "iot": 15, "k8s": 12,
+    "docker": 12, "hypervisor": 12, "cloud": 15, "fingerprint": 15,
+    "hiddenpaths": 25, "bola": 15, "blogic": 15,
 }
-DEFAULT_PLUGIN_ESTIMATE_S = 8
+DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
 
 

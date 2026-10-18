@@ -75,14 +75,14 @@ class FinancialPlugin(Plugin):
         all_text = ""
         for url in pages[:3]:  # limit to avoid hammering
             try:
-                resp = await fetch(ctx, url)
+                resp = await fetch(ctx.http, ctx.limiter, "GET", url)
                 if resp and resp.status_code == 200:
                     all_text += resp.text[:200000] + "\n"
                     # Check JS files too
                     for m in re.finditer(r'src=["\']([^"\']+\.js)["\']', resp.text):
                         js_url = urljoin(url, m.group(1))
                         try:
-                            jr = await fetch(ctx, js_url)
+                            jr = await fetch(ctx.http, ctx.limiter, "GET", js_url)
                             if jr and jr.status_code == 200:
                                 all_text += jr.text[:100000] + "\n"
                         except Exception:
