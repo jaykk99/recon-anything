@@ -351,6 +351,193 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn):
             "lines": dry_run(body.candidate_id, base)}
 
 
+# -- actionable findings ------------------------------------------------------
+# Subdomain liveness verification + single port probing. Both are SSRF-guarded:
+# they only touch hosts/ports that appeared in the run's own findings.
+
+
+class SubVerifyIn(BaseModel):
+    force: bool = False
+
+
+@app.post("/api/runs/{run_id}/subdomains/verify", dependencies=[Depends(gate)])
+async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
+    """Probe every subdomain from this run's findings for HTTP liveness.
+
+    Returns {host: {live, status, url, server, title}}. Results are cached
+    in the run summary for 24h. Only hosts from this run's findings are
+    probed (SSRF guard). Read-only GET requests, 8s timeout each.
+    """
+    import asyncio
+    import re
+    import time as _time
+    import httpx
+
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+        summary = dict(run.summary or {})
+    finally:
+        session.close()
+
+    hosts: List[str] = []
+    for r in rows:
+        if r.get("key") == "subdomain":
+            v = (r.get("value") or "").split()[0].strip().lower().rstrip(".")
+            if v and re.match(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$", v) and v not in hosts:
+                hosts.append(v)
+    hosts = hosts[:100]
+
+    cached = summary.get("subdomain_status") or {}
+    now = _time.time()
+
+    async def check(host: str):
+        c = cached.get(host)
+        if c and not body.force and now - c.get("ts", 0) < 86400:
+            return host, c
+        result: Dict = {"live": False, "status": 0, "url": "",
+                        "server": "", "title": "", "ts": now}
+        for scheme in ("https", "http"):
+            try:
+                async with httpx.AsyncClient(
+                        timeout=8, follow_redirects=True, trust_env=False,
+                        headers={"User-Agent": "ReconAnything/1.0"}) as client:
+                    resp = await client.get(f"{scheme}://{host}")
+                title = ""
+                if resp.status_code < 400:
+                    m = re.search(r"<title[^>]*>(.*?)</title>",
+                                  resp.text[:50000], re.I | re.S)
+                    if m:
+                        title = re.sub(r"\s+", " ", m.group(1)).strip()[:80]
+                result = {"live": resp.status_code < 400,
+                          "status": resp.status_code,
+                          "url": str(resp.url),
+                          "server": resp.headers.get("server", "")[:60],
+                          "title": title, "ts": now}
+                if resp.status_code < 400:
+                    break
+            except Exception:
+                continue
+        return host, result
+
+    sem = asyncio.Semaphore(10)
+
+    async def guarded(h: str):
+        async with sem:
+            return await check(h)
+
+    out = dict(cached)
+    for host, res in await asyncio.gather(*[guarded(h) for h in hosts]):
+        out[host] = res
+
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        s = dict(run.summary or {})
+        s["subdomain_status"] = out
+        run.summary = s
+        session.commit()
+    finally:
+        session.close()
+    live_count = sum(1 for v in out.values() if v.get("live"))
+    return {"hosts": out, "count": len(out), "live": live_count}
+
+
+@app.get("/api/runs/{run_id}/probe/port", dependencies=[Depends(gate)])
+async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(...)):
+    """Probe a single host:port for banner/service info.
+
+    SSRF-guarded: host must be a run target or a subdomain from this run's
+    findings, and the port must appear in this run's port findings.
+    Read-only: TCP connect + short banner read, plus an HTTP GET on
+    web-ish ports. Nothing is written.
+    """
+    import asyncio
+    import re
+    import httpx
+
+    host = host.strip().lower().rstrip(".")
+    if not re.match(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$", host) or not (1 <= port <= 65535):
+        raise HTTPException(400, "bad host or port")
+
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+        targets = session.query(Target).filter_by(run_id=run_id).all()
+    finally:
+        session.close()
+
+    allowed_hosts = set()
+    for t in targets:
+        for cand in (t.normalized or "", t.raw or ""):
+            m = re.search(r"([a-z0-9]([a-z0-9.\-]*[a-z0-9])?)", cand.lower())
+            if m:
+                allowed_hosts.add(m.group(1).rstrip("."))
+    for r in rows:
+        if r.get("key") == "subdomain":
+            v = (r.get("value") or "").split()[0].strip().lower().rstrip(".")
+            if v:
+                allowed_hosts.add(v)
+    allowed_ports = set()
+    for r in rows:
+        if r.get("key") in ("port_open", "port_suggestion"):
+            m = re.search(r"port (\d+)", (r.get("value") or "").lower())
+            if m:
+                allowed_ports.add(int(m.group(1)))
+    if host not in allowed_hosts:
+        raise HTTPException(403, "host was not found in this run")
+    if port not in allowed_ports:
+        raise HTTPException(403, "port was not found in this run")
+
+    result: Dict = {"host": host, "port": port, "open": False,
+                    "banner": "", "http": None}
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=5)
+        result["open"] = True
+        try:
+            data = await asyncio.wait_for(reader.read(256), timeout=3)
+            result["banner"] = data.decode("utf-8", "replace").strip()[:200]
+        except Exception:
+            pass
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+    except Exception as e:
+        result["error"] = str(e)[:100]
+        return result
+
+    # Web-ish ports: grab server header + title
+    if port in (80, 443, 8000, 8080, 8443, 3000, 5000, 9000, 9200, 5601):
+        scheme = "https" if port in (443, 8443) else "http"
+        try:
+            async with httpx.AsyncClient(
+                    timeout=8, follow_redirects=True, trust_env=False,
+                    headers={"User-Agent": "ReconAnything/1.0"}) as client:
+                resp = await client.get(f"{scheme}://{host}:{port}/")
+            title = ""
+            m = re.search(r"<title[^>]*>(.*?)</title>", resp.text[:50000], re.I | re.S)
+            if m:
+                title = re.sub(r"\s+", " ", m.group(1)).strip()[:80]
+            result["http"] = {"status": resp.status_code,
+                              "server": resp.headers.get("server", "")[:60],
+                              "title": title,
+                              "url": str(resp.url)}
+            if not result["banner"]:
+                result["banner"] = f"HTTP {resp.status_code} {result['http']['server']}".strip()
+        except Exception as e:
+            result["http"] = {"error": str(e)[:100]}
+    return result
+
+
 # -- ai hunter ---------------------------------------------------------------
 # Uncensored AI as a virtual human tester. Analysis NEVER blocks the scan:
 # it runs in the background after the scan finishes and the UI polls for it.
