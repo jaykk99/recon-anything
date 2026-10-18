@@ -6,7 +6,7 @@ shipped to the browser; plugins receive decrypted values server-side.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 from .config import MASTER_KEY
 

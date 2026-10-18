@@ -81,9 +81,7 @@ def handler(request: httpx.Request) -> httpx.Response:
 
 
 async def main():
-    from app.models import init_db, get_session, Finding, Run
-    from app.runner import execute_run, _cache
-    from app.keys import load_all
+    from app.models import init_db, get_session, Run
     from app.graph import graph_payload
     from app.reporting import findings_dump, to_csv, to_markdown, executive_summary
 
