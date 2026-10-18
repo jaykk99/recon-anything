@@ -56,18 +56,27 @@ async def _emit(run_id: str, event: str, data: Dict):
     # Durable copy in run_events: the in-memory bus is invisible to other
     # worker processes and vanishes on restart, which is what silently
     # broke live UI updates. A DB failure must never break a scan.
+    # Self-healing: if the table is missing (wiped DB), recreate and retry.
     try:
-        RUN_SEQ[run_id] = RUN_SEQ.get(run_id, 0) + 1
-        safe_data = json.loads(json.dumps(data, default=str))
-        session = get_session()
-        try:
-            session.add(RunEvent(run_id=run_id, seq=RUN_SEQ[run_id],
-                                 event=event, data=safe_data))
-            session.commit()
-        finally:
-            session.close()
+        _persist_event(run_id, event, data)
     except Exception:
-        pass
+        try:
+            init_db()
+            _persist_event(run_id, event, data)
+        except Exception:
+            pass
+
+
+def _persist_event(run_id: str, event: str, data: Dict):
+    RUN_SEQ[run_id] = RUN_SEQ.get(run_id, 0) + 1
+    safe_data = json.loads(json.dumps(data, default=str))
+    session = get_session()
+    try:
+        session.add(RunEvent(run_id=run_id, seq=RUN_SEQ[run_id],
+                             event=event, data=safe_data))
+        session.commit()
+    finally:
+        session.close()
 
 
 async def subscribe(run_id: str) -> AsyncIterator[str]:
@@ -75,7 +84,28 @@ async def subscribe(run_id: str) -> AsyncIterator[str]:
 
     Reads from the run_events table (not the in-memory bus) so the stream
     works across worker processes, restarts, and reconnects.
+    Self-healing: recreates the table if a wiped DB left it missing,
+    and falls back to the in-memory buffer if the DB is unusable.
     """
+    try:
+        async for msg in _subscribe_db(run_id):
+            yield msg
+        return
+    except Exception:
+        pass
+    try:
+        init_db()
+        async for msg in _subscribe_db(run_id):
+            yield msg
+        return
+    except Exception:
+        pass
+    # Last resort: in-memory buffer (same-process only).
+    for msg in RUN_EVENT_BUFFER.get(run_id, []):
+        yield msg
+
+
+async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
     last_seq = 0
     session = get_session()
     try:
