@@ -82,6 +82,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [plugins, setPlugins] = useState<Record<string, PluginState>>({});
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
+  const [sourceType, setSourceType] = useState("website");
   const [summary, setSummary] = useState<any>(null);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
@@ -110,11 +111,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
     return () => clearInterval(t);
   }, [status, startTime]);
 
+  // the atm tab only exists on ATM source-type runs; never leave it selected elsewhere
+  useEffect(() => {
+    if (tab === "atm" && sourceType !== "atm") setTab("findings");
+  }, [tab, sourceType]);
+
   useEffect(() => {
     const es = new EventSource(`/api/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
     const on = (ev: string, fn: (e: MessageEvent) => void) => es.addEventListener(ev, fn as EventListener);
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
+      if (d.source_type) setSourceType(d.source_type);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
     });
@@ -159,6 +166,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
         if (d.run?.status === "done" || d.run?.status === "failed") {
           setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
           setTargets(d.targets || []);
+          if (d.run?.source_type) setSourceType(d.run.source_type);
           clearInterval(poll); es.close();
           if (d.run.status === "done") {
             const h = { "X-Access-Code": getCode() };
@@ -298,9 +306,10 @@ export default function RunPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
-      {/* tabs - thumb reachable, 44px targets */}
+      {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
+          ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).filter((t) => t !== "atm" || sourceType === "atm").map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
