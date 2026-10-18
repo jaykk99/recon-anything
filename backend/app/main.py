@@ -272,6 +272,85 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
         raise HTTPException(502, f"fetch failed: {str(e)[:200]}")
 
 
+@app.get("/api/runs/{run_id}/vulns", dependencies=[Depends(gate)])
+def api_vulns(run_id: str):
+    """Possible-vulnerabilities advisor: ranked attack paths from scan findings.
+
+    Heuristic only (no LLM). PoCs are detection-only and non-destructive.
+    """
+    from .vuln_advisor import advise
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+        targets = session.query(Target).filter_by(run_id=run_id).all()
+        summary = {
+            "targets": [{"raw": t.raw, "type": t.type,
+                         "normalized": t.normalized} for t in targets],
+        }
+        return {"run_id": run_id, "candidates": advise(rows, summary)}
+    finally:
+        session.close()
+
+
+class DryRunIn(BaseModel):
+    candidate_id: str
+    base: str = ""
+
+
+@app.post("/api/runs/{run_id}/vulns/test", dependencies=[Depends(gate)])
+def api_vuln_test(run_id: str):
+    """Real safe testing: run non-destructive detection probes against the
+    actual target. GET/HEAD only, rate-limited, nothing modified.
+
+    Runs in the background. Returns only the candidates that were confirmed.
+    Only use against targets you are authorized to test.
+    """
+    from .safe_tester import run_real_tests
+    from .vuln_advisor import advise
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+        targets = session.query(Target).filter_by(run_id=run_id).all()
+        summary = {
+            "targets": [{"raw": t.raw, "type": t.type,
+                         "normalized": t.normalized} for t in targets],
+        }
+        candidates = advise(rows, summary)
+        base = ""
+        if targets:
+            base = targets[0].normalized or targets[0].raw or ""
+        report = run_real_tests(base, candidates)
+        report["run_id"] = run_id
+        return report
+    finally:
+        session.close()
+
+
+@app.post("/api/runs/{run_id}/vulns/dry-run", dependencies=[Depends(gate)])
+def api_vuln_dry_run(run_id: str, body: DryRunIn):
+    """Safe-test terminal: narrates what a detection check WOULD do.
+
+    Sends zero requests. Pure dry-run simulation for authorized testing prep.
+    """
+    from .vuln_advisor import dry_run
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise HTTPException(404, "run not found")
+    finally:
+        session.close()
+    base = body.base or "TARGET"
+    return {"candidate_id": body.candidate_id,
+            "lines": dry_run(body.candidate_id, base)}
+
+
 @app.get("/api/diff", dependencies=[Depends(gate)])
 def api_diff(a: str, b: str):
     session = get_session()

@@ -292,7 +292,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -387,6 +387,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
         );
       })}
 
+      {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
       {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
@@ -534,6 +535,241 @@ function FilesView({ findings, onView }: { findings: Finding[]; onView: (url: st
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface VulnCandidate {
+  id: string; name: string; severity: string; confidence: number;
+  why_viable: string; poc_code: string; poc_lang: string;
+  dry_run_steps: string[]; remediation: string; evidence_count: number;
+}
+
+interface SimResult {
+  id: string; name: string; severity: string; confidence: number;
+  works: boolean; detail: string;
+  poc_code: string; poc_lang: string; why_viable: string; remediation: string;
+}
+interface SimReport {
+  target: string; total_tested: number; working_count: number;
+  working: SimResult[]; results: SimResult[];
+  disclaimer: string;
+}
+
+function VulnsView({ runId }: { runId: string }) {
+  const [cands, setCands] = useState<VulnCandidate[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [term, setTerm] = useState<{ cand: VulnCandidate; lines: string[]; busy: boolean } | null>(null);
+  // simulation state
+  const [sim, setSim] = useState<SimReport | null>(null);
+  const [simBusy, setSimBusy] = useState(false);
+  const [simExpanded, setSimExpanded] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`/api/runs/${runId}/vulns`, { headers: { "X-Access-Code": getCode() } });
+        const d = await r.json();
+        setCands(d.candidates || []);
+      } catch {
+        setCands([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [runId]);
+
+  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+
+  async function runSimulation() {
+    setSimBusy(true);
+    setSim(null);
+    try {
+      const r = await fetch(`/api/runs/${runId}/vulns/test`, {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+      });
+      const d = await r.json();
+      setSim(d);
+    } catch (e: any) {
+      setSim({ target: "", total_tested: 0, working_count: 0, working: [], results: [], disclaimer: "Test failed: " + e.message });
+    } finally {
+      setSimBusy(false);
+    }
+  }
+
+  async function openTerminal(cand: VulnCandidate) {
+    setTerm({ cand, lines: ["$ initializing safe-test terminal...", "[*] DRY RUN MODE - no requests will be sent"], busy: true });
+    try {
+      const r = await fetch(`/api/runs/${runId}/vulns/dry-run`, {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_id: cand.id }),
+      });
+      const d = await r.json();
+      setTerm({ cand, lines: d.lines || ["(no output)"], busy: false });
+    } catch (e: any) {
+      setTerm({ cand, lines: ["error: " + e.message], busy: false });
+    }
+  }
+
+  if (loading) return <div className="card p-4 text-sm text-slate-500">Analyzing findings for viable vulnerabilities...</div>;
+  return (
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h2 className="font-semibold text-sky-300">Possible vulnerabilities</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Ranked by viability from YOUR scan results. PoCs are detection-only and non-destructive.
+          Only test targets you are authorized to test.
+        </p>
+        {/* background testing: real safe probes, only successes shown */}
+        <button
+          onClick={runSimulation}
+          disabled={simBusy}
+          className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 disabled:opacity-50">
+          {simBusy ? "Testing in background..." : "Test for real (safe, non-destructive)"}
+        </button>
+        <p className="text-[11px] text-slate-600 mt-1">
+          Sends real detection probes to the target. GET/HEAD only, rate-limited, nothing modified.
+          Only successful detections are shown. Only test targets you are authorized to test.
+        </p>
+      </div>
+
+      {/* what-works panel: only confirmed real detections */}
+      {sim && (
+        <div className="card p-4 border border-emerald-800/40">
+          <h2 className="font-semibold text-emerald-300">
+            Confirmed <span className="text-slate-500 text-xs">({sim.working_count}/{sim.total_tested} tested against {sim.target})</span>
+          </h2>
+          <p className="text-[11px] text-slate-500 mt-1">{sim.disclaimer}</p>
+          {sim.working.length === 0 ? (
+            <p className="text-sm text-slate-500 mt-2">
+              No vulnerabilities confirmed by live testing. The scan findings did not hold up
+              under real probes. Try a deeper scan or a different target.
+            </p>
+          ) : (
+            <div className="space-y-3 mt-3">
+              {sim.working.map((w) => {
+                const isOpen = !!simExpanded[w.id];
+                return (
+                  <div key={w.id} className="rounded-lg p-3 border border-emerald-800/40 bg-emerald-950/20">
+                    <button className="w-full text-left min-h-[44px]"
+                      onClick={() => setSimExpanded((e) => ({ ...e, [w.id]: !e[w.id] }))}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-emerald-400 text-sm">WORKS</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(w.severity)}`}>{w.severity.toUpperCase()}</span>
+                        <span className="font-semibold text-sm">{w.name}</span>
+                        <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1 break-words">{w.detail}</p>
+                    </button>
+                    {isOpen && (
+                      <div className="pt-2 mt-2 border-t border-emerald-900/40 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500">Working PoC ({w.poc_lang})</span>
+                          <button className="chip px-2 py-1.5 min-h-[36px] text-xs text-sky-400 ml-auto"
+                            onClick={() => copy(w.poc_code)}>copy code</button>
+                        </div>
+                        <pre className="text-xs font-mono bg-slate-950 rounded-lg p-3 overflow-auto whitespace-pre-wrap break-words max-h-[300px]">
+                          {highlight(w.poc_code, w.poc_lang)}
+                        </pre>
+                        <p className="text-xs text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{w.remediation}</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      {(cands || []).length === 0 && (
+        <div className="card p-4 text-sm text-slate-500">
+          No strong vulnerability paths found from this scan. Run more plugins or try a different target.
+        </div>
+      )}
+      {(cands || []).map((c, i) => {
+        const isOpen = !!expanded[c.id];
+        return (
+          <div key={c.id} className={`card p-4 border-l-2 ${sevColor(c.severity).split(" ")[1] || "border-slate-700"}`}>
+            <button className="w-full text-left min-h-[44px]" onClick={() => setExpanded((e) => ({ ...e, [c.id]: !e[c.id] }))}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold text-slate-400">#{i + 1}</span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(c.severity)}`}>{c.severity.toUpperCase()}</span>
+                <span className="font-semibold text-sm">{c.name}</span>
+                <span className="text-[10px] text-slate-500 ml-auto">{c.confidence}% viable</span>
+                <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 break-words">{c.why_viable}</p>
+            </button>
+            {isOpen && (
+              <div className="pt-3 mt-2 border-t border-slate-700/50 space-y-3">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-slate-500">Detection PoC ({c.poc_lang})</span>
+                    <button className="chip px-2 py-1.5 min-h-[36px] text-xs text-sky-400 ml-auto"
+                      onClick={() => copy(c.poc_code)}>copy code</button>
+                  </div>
+                  <pre className="text-xs font-mono bg-slate-950 rounded-lg p-3 overflow-auto whitespace-pre-wrap break-words max-h-[300px]">
+                    {highlight(c.poc_code, c.poc_lang)}
+                  </pre>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500">Safe test plan</span>
+                  <ol className="text-xs text-slate-400 mt-1 space-y-1 list-decimal list-inside">
+                    {c.dry_run_steps.map((s, j) => <li key={j} className="break-words">{s}</li>)}
+                  </ol>
+                </div>
+                <p className="text-xs text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{c.remediation}</p>
+                <button
+                  className="w-full chip px-4 py-3 min-h-[48px] text-sm text-emerald-300 bg-emerald-950/50 border border-emerald-800/50"
+                  onClick={() => openTerminal(c)}>
+                  Test safely (dry-run terminal)
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* safe test terminal modal */}
+      {term && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setTerm(null)}>
+          <div className="bg-slate-950 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-2xl max-h-[90vh] flex flex-col border border-slate-700"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 border-b border-slate-800 flex items-center gap-2">
+              <span className="text-sm font-mono text-emerald-300">safe-test: {term.cand.name}</span>
+              <button onClick={() => setTerm(null)}
+                className="px-4 py-2.5 min-h-[44px] min-w-[44px] rounded-lg bg-slate-800 text-lg ml-auto">X</button>
+            </div>
+            <div className="p-4 bg-amber-950/30 border-b border-amber-900/40">
+              <p className="text-xs text-amber-300">
+                DRY RUN ONLY. Zero requests are sent. This narrates what a safe,
+                non-destructive detection check would do. Only test targets you are authorized to test.
+              </p>
+            </div>
+            <div className="overflow-auto flex-1 p-4 font-mono text-xs space-y-1">
+              {term.lines.map((l, i) => (
+                <p key={i} className={
+                  l.startsWith("$") ? "text-sky-300" :
+                  l.startsWith("[ok]") ? "text-emerald-400" :
+                  l.startsWith("[!]") ? "text-amber-300" :
+                  l.startsWith("[*]") ? "text-slate-400" : "text-slate-300"
+                }>{l}</p>
+              ))}
+              {term.busy && <p className="text-slate-500 animate-pulse">_</p>}
+            </div>
+            <div className="p-4 border-t border-slate-800">
+              <p className="text-[11px] text-slate-500">
+                Copy the PoC above into your own authorized test environment to run it for real.
+                This terminal never touches the target.
+              </p>
+            </div>
+          </div>
         </div>
       )}
     </div>
