@@ -367,6 +367,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
         {summary?.error && (
           <p className="text-red-400 text-sm mt-2">Run failed: {summary.error}</p>
         )}
+        {/* WAF summary: blocked vs clean on completed runs */}
+        {summary?.waf_summary && (
+          <div className="mt-2 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-xs text-amber-200">
+            <span className="font-bold">WAF:</span> {summary.waf_summary}
+          </div>
+        )}
         <div className="flex gap-2 text-xs mt-3 flex-wrap">
           {(["json", "csv", "md", "html"] as const).map((f) => (
             <a key={f} className="chip px-3 py-2 min-h-[44px] flex items-center hover:bg-slate-800"

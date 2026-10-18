@@ -48,6 +48,7 @@ REMEDIATION = ("Enforce server-side authorization on every object access: "
 
 class IdorPlugin(Plugin):
     id = "idor"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "IDOR Pattern Finder"
     accepts = ["domain", "url"]
     passive = True

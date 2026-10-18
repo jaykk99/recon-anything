@@ -52,6 +52,7 @@ NOSQL_TIME_PAYLOADS: List[Tuple[str, str]] = [
 
 class NosqlInjectionPlugin(Plugin):
     id = "nosqli"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "NoSQL Injection"
     accepts = ["domain", "url"]
     passive = False

@@ -54,6 +54,7 @@ REMEDIATION = ("Allowlist fetch destinations, block cloud metadata IPs "
 
 class SsrfPlugin(Plugin):
     id = "ssrf"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "SSRF Sink Finder"
     accepts = ["domain", "url"]
     passive = True

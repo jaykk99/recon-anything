@@ -1,8 +1,18 @@
-"""Global + per-host rate limiter with exponential backoff.
+"""Global + per-host rate limiter with WAF-aware graceful backoff.
 
-Honors 429 Retry-After. Configurable requests-per-second per host.
-For authorized testing only: evasion helpers here exist to complete an
-authorized scan without being blocked, not to attack.
+Honors 429/503 Retry-After (seconds or HTTP-date). Configurable
+requests-per-second per host. When a host shows WAF/challenge/rate-limit
+behavior, the limiter enters graceful mode for that host:
+
+- per-host rate drops to the WAF floor (default 1 RPS, RECON_WAF_RPS)
+- inter-request timing gets jitter so requests don't look robotic
+- aggressive plugins are told to stand down (see runner.py)
+
+Lightweight checks keep flowing - findings still win. Non-WAF hosts see
+zero behavior change: same pacing, no jitter, no suppression.
+
+For authorized testing only: these helpers exist to complete an authorized
+scan without being blocked, not to attack.
 
 Proxy support: HTTP clients are built through app.net, which honors
 HTTP_PROXY and HTTPS_PROXY environment variables automatically.
@@ -11,11 +21,46 @@ No extra code is needed for env-based proxying.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import os
 import random
 import time
 from typing import Dict, Literal, Optional
 
 import httpx
+
+from .waf import BLOCK_KINDS, WafVerdict, classify_response
+
+# Per-host request floor once WAF/challenge behavior is seen. 1 RPS keeps
+# lightweight checks alive without hammering a host that is fighting back.
+WAF_RPS_FLOOR = float(os.environ.get("RECON_WAF_RPS", "1.0"))
+# Generic (unfingerprinted) 403s also count, but it takes a few of them to
+# trigger graceful mode - a single 403 is often just a path ACL, not a WAF.
+WAF_BLOCK_THRESHOLD = 3
+
+
+def parse_retry_after(value: object) -> Optional[float]:
+    """Retry-After as seconds. Accepts delay-seconds or an HTTP-date."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(s)
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        delta = (when - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        return max(delta, 0.0)
+    except Exception:
+        return None
 
 
 class RateLimiter:
@@ -24,18 +69,81 @@ class RateLimiter:
         self._rps: Dict[str, float] = {}
         self._next: Dict[str, float] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
-        # WAF/challenge visibility: how many times each host served a
-        # protection page. Lets the runner warn Jay instead of silently
-        # burning requests on challenge pages.
-        self._protection_hits: Dict[str, int] = {}
+        # Per-host WAF state: vendor, counters, graceful-mode flag.
+        self._waf: Dict[str, Dict] = {}
 
+    # -- per-host WAF state -------------------------------------------
+    def _waf_state(self, host: str) -> Dict:
+        return self._waf.setdefault(host, {
+            "vendor": None, "blocked": 0, "succeeded": 0,
+            "not_found": 0, "server_error": 0,
+            "active": False, "first_seen": None,
+        })
+
+    def note_result(self, host: str, verdict: WafVerdict) -> None:
+        """Fold one classified response into the host's WAF state.
+
+        Clean responses count as successes; 404/5xx are neutral (neither
+        success nor block); WAF/rate-limit/challenge/blocked responses
+        count as blocks and can flip the host into graceful mode.
+        """
+        st = self._waf_state(host)
+        kind = verdict.kind
+        if kind == "clean":
+            st["succeeded"] += 1
+            return
+        if kind == "not-found":
+            st["not_found"] += 1
+            return
+        if kind == "server-error":
+            st["server_error"] += 1
+            return
+        if kind not in BLOCK_KINDS:
+            return
+        st["blocked"] += 1
+        if verdict.vendor and not st["vendor"]:
+            st["vendor"] = verdict.vendor
+        # Activate graceful mode: vendor-attributed block is decisive;
+        # generic blocks need a few hits to rule out per-path ACLs.
+        if not st["active"] and (verdict.vendor or
+                                 st["blocked"] >= WAF_BLOCK_THRESHOLD):
+            st["active"] = True
+            st["first_seen"] = time.time()
+            cur = self._rps.get(host, self.default_rps)
+            self._rps[host] = min(cur, WAF_RPS_FLOOR)
+
+    def waf_active(self, host: str) -> bool:
+        return self._waf.get(host, {}).get("active", False)
+
+    def waf_vendor(self, host: str) -> Optional[str]:
+        return self._waf.get(host, {}).get("vendor")
+
+    def waf_stats(self, host: str) -> Dict:
+        st = self._waf.get(host, {})
+        return {
+            "host": host,
+            "vendor": st.get("vendor"),
+            "active": st.get("active", False),
+            "blocked": st.get("blocked", 0),
+            "succeeded": st.get("succeeded", 0),
+            "not_found": st.get("not_found", 0),
+            "server_error": st.get("server_error", 0),
+            "first_seen": st.get("first_seen"),
+        }
+
+    def waf_hosts(self) -> list:
+        return [h for h, st in self._waf.items() if st.get("active")]
+
+    # -- legacy protection accounting (kept for compatibility) ---------
     def note_protection(self, host: str) -> int:
-        self._protection_hits[host] = self._protection_hits.get(host, 0) + 1
-        return self._protection_hits[host]
+        st = self._waf_state(host)
+        st["blocked"] += 1
+        return st["blocked"]
 
     def protection_hits(self, host: str) -> int:
-        return self._protection_hits.get(host, 0)
+        return self._waf.get(host, {}).get("blocked", 0)
 
+    # -- pacing --------------------------------------------------------
     def set_rps(self, host: str, rps: float) -> None:
         self._rps[host] = rps
 
@@ -46,25 +154,39 @@ class RateLimiter:
 
     async def wait(self, host: str) -> None:
         rps = self._rps.get(host, self.default_rps)
+        protected = self._waf.get(host, {}).get("active", False)
         async with self._lock(host):
             now = time.monotonic()
             nxt = self._next.get(host, 0)
             if now < nxt:
                 await asyncio.sleep(nxt - now)
-            self._next[host] = time.monotonic() + 1.0 / max(rps, 0.1)
+                now = time.monotonic()
+            gap = 1.0 / max(rps, 0.1)
+            if protected:
+                # Jitter the spacing on protected hosts so the request
+                # pattern doesn't look robotic. Non-WAF hosts keep the
+                # exact same deterministic pacing as before.
+                gap *= random.uniform(0.8, 1.4)
+            self._next[host] = now + gap
 
-    def note_429(self, host: str, retry_after: float | None) -> None:
-        wait = retry_after if retry_after else 5.0
-        self._next[host] = time.monotonic() + min(wait, 120)
+    def note_429(self, host: str, retry_after: object = None) -> None:
+        """Honor Retry-After (delay-seconds or HTTP-date), cap 120s."""
+        wait = parse_retry_after(retry_after)
+        if wait is None:
+            wait = 5.0
+        self._next[host] = time.monotonic() + min(max(wait, 0.0), 120.0)
 
 
 async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
                 url: str, *, max_retries: int = 2, rotate_ua: bool = False,
                 **kwargs) -> httpx.Response:
-    """HTTP with rate limiting, retries, backoff+jitter, 429 handling.
+    """HTTP with rate limiting, WAF accounting, retries, backoff+jitter.
 
-    Retries transient failures (429/5xx, timeouts) so findings are not lost
-    to a single bad response. Bounded: at most max_retries extra attempts.
+    Every response is classified (WAF vendor, rate-limit, challenge,
+    blocked, not-found, server-error, clean) and folded into the host's
+    WAF state, which drives graceful backoff. Retries transient failures
+    (429/5xx, timeouts) so findings are not lost to a single bad response.
+    Bounded: at most max_retries extra attempts.
 
     rotate_ua: when True, send a random real browser UA plus realistic
     headers (Accept, Sec-Fetch-*, etc.) so the request looks like normal
@@ -87,20 +209,19 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
         await limiter.wait(host)
         try:
             resp = await client.request(method, url, **kwargs)
-            # Cheap WAF/challenge accounting: only inspect bodies on
-            # statuses that can carry a challenge page.
-            if resp.status_code in (403, 429, 503):
-                try:
-                    if detect_protection(resp):
-                        limiter.note_protection(host)
-                except Exception:
-                    pass
-            if resp.status_code == 429:
-                ra = resp.headers.get("retry-after")
-                try:
-                    limiter.note_429(host, float(ra) if ra else None)
-                except (ValueError, TypeError):
-                    limiter.note_429(host, None)
+            # Classify every response: vendor attribution + block kinds
+            # feed graceful backoff; clean/404/5xx are accounted too.
+            verdict: Optional[WafVerdict] = None
+            try:
+                verdict = classify_response(resp)
+                limiter.note_result(host, verdict)
+            except Exception:
+                pass
+            if resp.status_code == 429 or (
+                    resp.status_code == 503 and verdict is not None
+                    and verdict.kind == "rate-limit"):
+                # Respect Retry-After on 429 and rate-limit 503s.
+                limiter.note_429(host, resp.headers.get("retry-after"))
                 if attempt < max_retries:
                     await asyncio.sleep(random.uniform(1, 3) * (attempt + 1))
                     continue
@@ -119,66 +240,21 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
     raise last_exc
 
 
-_PROTECTION_BODY_MARKERS = (
-    "cf-challenge",
-    "jschl",
-    "checking your browser",
-    "just a moment",
-    "challenge-platform",
-    "captcha",
-    "recaptcha",
-    "cf-turnstile",
-    "incapsula",
-    "sucuri",
-    "cloudflare",
-    "akamai",
-    "access denied",
-    "request blocked",
-    "waf",
-    "web application firewall",
-)
-
-_PROTECTION_HEADERS = (
-    "cf-mitigated",
-    "cf-ray",
-    "x-sucuri-id",
-    "x-iinfo",
-    "x-akamai-",
-)
-
-
 def detect_protection(resp: httpx.Response) -> Optional[
     Literal["waf", "rate-limit", "js-challenge"]
 ]:
-    """Classify a response as blocked by protection, or None.
+    """Legacy classifier kept for compatibility.
 
     "rate-limit": 429, or 503 with rate-limit wording.
     "js-challenge": body looks like a JS challenge or captcha page.
-    "waf": 403 with WAF/CDN markers, or known protection headers.
+    "waf": vendor-identified WAF block or generic block wording.
     Detection only, never attempts to bypass.
     """
-    status = resp.status_code
-    headers_lower = {k.lower(): v for k, v in resp.headers.items()}
-
-    if status == 429:
+    verdict = classify_response(resp)
+    if verdict.kind == "rate-limit":
         return "rate-limit"
-    if status == 503 and "retry" in " ".join(headers_lower).lower():
-        return "rate-limit"
-
-    body = ""
-    try:
-        body = resp.text.lower()
-    except Exception:
-        body = ""
-
-    from .evasion import detect_js_challenge
-
-    if detect_js_challenge(body):
+    if verdict.kind == "js-challenge":
         return "js-challenge"
-
-    if any(h in headers_lower for h in _PROTECTION_HEADERS):
+    if verdict.kind in ("waf", "blocked"):
         return "waf"
-    if status == 403 and any(m in body for m in _PROTECTION_BODY_MARKERS):
-        return "waf"
-
     return None

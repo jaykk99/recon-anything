@@ -62,6 +62,7 @@ XSS_CONTEXT_PROBES = [
 
 class XssPlugin(Plugin):
     id = "xss"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "XSS Canary"
     accepts = ["domain", "url"]
     passive = False

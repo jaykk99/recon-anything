@@ -145,6 +145,74 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
                 yield ": ping\n\n"
 
 
+def _host_of_target(target) -> str:
+    """Host key used by the rate limiter for a target."""
+    try:
+        from urllib.parse import urlparse
+        return urlparse(target.normalized).netloc or target.normalized
+    except Exception:
+        return target.normalized
+
+
+async def _report_waf_summary(run_id: str, session, limiter, targets,
+                              start_stats: Dict[str, Dict]) -> Dict:
+    """Persist + stream a per-host WAF summary at end of run.
+
+    For every target host that entered WAF graceful mode: one persisted
+    finding (so it shows in the findings list) and a summary dict of
+    blocked-vs-clean counts. Returns the summary dict for run metadata.
+    """
+    report: Dict[str, Dict] = {}
+    for t in targets:
+        host = _host_of_target(t)
+        if host in report or not limiter.waf_active(host):
+            continue
+        end = limiter.waf_stats(host)
+        start = start_stats.get(host, {})
+        blocked = max(end["blocked"] - start.get("blocked", 0), 0)
+        succeeded = max(end["succeeded"] - start.get("succeeded", 0), 0)
+        vendor = end["vendor"] or "WAF"
+        report[host] = {"vendor": vendor, "blocked": blocked,
+                        "succeeded": succeeded,
+                        "not_found": end["not_found"],
+                        "server_error": end["server_error"]}
+        value = (f"{vendor} protection on {host}: {blocked} probes "
+                 f"blocked, {succeeded} clean")
+        row = FindingRow(
+            run_id=run_id, target_id=t.id, plugin_id="waf",
+            category="web", key="waf_blocking_active", value=value,
+            source="WAF handler", source_url="",
+            evidence={"severity": "low", "risk": "low", "vendor": vendor,
+                      "host": host, "blocked": blocked,
+                      "succeeded": succeeded,
+                      "remediation": "The WAF is doing its job. Re-scan "
+                      "with fewer aggressive modules, or test from an "
+                      "allowlisted IP if authorized."},
+            confidence=90, passive=True,
+            first_seen=dt.datetime.now(dt.timezone.utc),
+            bounty_value="low")
+        session.add(row)
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+        await _emit(run_id, "finding",
+                    {"fid": row.id, "plugin": "waf", "category": "web",
+                     "key": "waf_blocking_active", "value": value,
+                     "source": "WAF handler", "source_url": "",
+                     "evidence": row.evidence, "confidence": 90,
+                     "passive": True, "target": t.normalized})
+    return report
+
+
+def _waf_summary_line(report: Dict[str, Dict]) -> str:
+    parts = []
+    for host, st in report.items():
+        parts.append(f"{st['vendor']} on {host}: {st['blocked']} blocked, "
+                     f"{st['succeeded']} succeeded")
+    return "; ".join(parts)
+
+
 def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
     return FindingRow(
         run_id=run_id, target_id=target_id, plugin_id=f.plugin_id, category=f.category,
@@ -173,6 +241,30 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     # This is hang protection only: a plugin is never killed to hit a
     # speed budget. Findings always win over speed.
     timeout = getattr(plugin, "timeout_s", 90) or 90
+    # WAF graceful mode: the host is fighting back, so aggressive
+    # (payload / brute-force) plugins stand down for this host instead of
+    # burning the scan budget on blocked endpoints. Reported as ok with a
+    # note (no skips ever); lightweight checks keep running.
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _host = _urlparse(target.normalized).netloc or target.normalized
+    except Exception:
+        _host = target.normalized
+    _lim = getattr(ctx, "limiter", None)
+    if getattr(plugin, "aggressive", False) and _lim is not None \
+            and _lim.waf_active(_host):
+        _vendor = _lim.waf_vendor(_host) or "WAF"
+        result = plugin._skipped(
+            f"WAF mode: {_vendor} protection active on {_host} - aggressive "
+            "probes suppressed, lightweight checks continue")
+        result.duration_ms = 0
+        ctx.shared.setdefault("_waf_suppressed", []).append(plugin.id)
+        await _emit(ctx.run_id, "plugin_done",
+                    {"plugin": plugin.id, "status": result.status.value,
+                     "reason": result.reason, "findings": 0, "ms": 0})
+        await _emit(ctx.run_id, "waf_probe_suppressed",
+                    {"plugin": plugin.id, "host": _host, "vendor": _vendor})
+        return result
     try:
         result = await asyncio.wait_for(plugin.run(target, ctx),
                                         timeout=timeout)
@@ -194,21 +286,26 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
                 {"plugin": plugin.id, "status": result.status.value,
                  "reason": result.reason, "findings": len(result.findings),
                  "ms": result.duration_ms})
-    # WAF visibility (Task 4): if the target host has served 3+ protection
-    # pages, tell Jay once per run instead of silently burning requests on
-    # challenge pages. Does not change plugin behavior - findings still win.
+    # WAF visibility: the host flipped into graceful mode. Tell Jay once
+    # per run per host, with vendor + blocked-vs-clean counts, instead of
+    # silently burning requests on challenge pages. Findings still win.
     try:
-        from urllib.parse import urlparse as _urlparse
-        _host = _urlparse(target.normalized).netloc or target.normalized
         _lim = getattr(ctx, "limiter", None)
-        if _lim and _lim.protection_hits(_host) >= 3 \
-                and not ctx.shared.get("_waf_announced"):
-            ctx.shared["_waf_announced"] = True
-            await _emit(ctx.run_id, "waf_detected",
-                        {"host": _host, "hits": _lim.protection_hits(_host),
-                         "note": "target is behind WAF/challenge protection - "
-                                 "active probes may return challenge pages; "
-                                 "passive findings are unaffected"})
+        if _lim is not None and _lim.waf_active(_host):
+            _ann = ctx.shared.setdefault("_waf_announced", [])
+            if _host not in _ann:
+                _ann.append(_host)
+                _st = _lim.waf_stats(_host)
+                _vendor = _st.get("vendor") or "WAF"
+                _note = (f"{_vendor} protection on {_host}: "
+                         f"{_st['blocked']} probes blocked, "
+                         f"{_st['succeeded']} clean. Aggressive probes "
+                         "suppressed; lightweight checks continue.")
+                await _emit(ctx.run_id, "waf_detected",
+                            {"host": _host, "vendor": _vendor,
+                             "blocked": _st["blocked"],
+                             "succeeded": _st["succeeded"],
+                             "note": _note})
     except Exception:
         pass
     return result
@@ -492,6 +589,12 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                               type=t.type, normalized=t.normalized))
     session.commit()
 
+    # WAF accounting baseline: the limiter is shared across runs, so
+    # snapshot per-host counters now and diff at the end for this run's
+    # blocked-vs-clean numbers.
+    _waf_start = {h: dict(_limiter.waf_stats(h))
+                  for h in {_host_of_target(t) for t in trobj}}
+
     # Time estimate: sum of per-plugin estimates x targets, capped by concurrency.
     n_targets = max(len(trobj), 1)
     total_plugin_s = sum(PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S)
@@ -648,16 +751,27 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
     n_nodes, n_edges = build_graph(session, run_id)
     session.commit()
 
+    # WAF summary: blocked-vs-clean per host, persisted as findings +
+    # run metadata so Jay sees exactly what the WAF ate.
+    waf_report = await _report_waf_summary(run_id, session, _limiter,
+                                           trobj, _waf_start)
+    waf_line = _waf_summary_line(waf_report)
+    suppressed = sorted(set(ctx.shared.get("_waf_suppressed", [])))
+
     run.status = "done"
     run.finished_at = dt.datetime.now(dt.timezone.utc)
     run.summary = {"findings": total, "nodes": n_nodes, "edges": n_edges,
                    "targets": len(trobj),
-                   "plugins": {pid: r.status.value for pid, r in plugin_rows.items()}}
+                   "plugins": {pid: r.status.value for pid, r in plugin_rows.items()},
+                   "waf": waf_report,
+                   "waf_summary": waf_line,
+                   "waf_suppressed_plugins": suppressed}
     session.commit()
     session.close()
     await _emit(run_id, "run_done",
                 {"run_id": run_id, "findings": total,
-                 "nodes": n_nodes, "edges": n_edges})
+                 "nodes": n_nodes, "edges": n_edges,
+                 "waf_summary": waf_line, "waf": waf_report})
 
     # AI Hunter: kick off uncensored-AI test-plan analysis in the background.
     # Never blocks the scan; the UI polls for results when ready.

@@ -49,6 +49,7 @@ CMD_OUTPUT_PATTERNS = [
 
 class CmdInjectionPlugin(Plugin):
     id = "cmdi"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Command Injection"
     accepts = ["domain", "url"]
     passive = False

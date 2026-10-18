@@ -39,6 +39,7 @@ RECONSTRUCT_GUIDE = ("To reconstruct the repo (authorized testing only): "
 
 class GitPlugin(Plugin):
     id = "git"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Exposed .git Check"
     accepts = ["domain", "url"]
     passive = True

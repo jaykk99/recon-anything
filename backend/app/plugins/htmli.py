@@ -28,6 +28,7 @@ CANARY_CLOSE = "</b>"
 
 class HtmlInjectionPlugin(Plugin):
     id = "htmli"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "HTML Injection"
     accepts = ["domain", "url"]
     passive = False

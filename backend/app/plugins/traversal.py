@@ -42,6 +42,7 @@ REMEDIATION = ("Canonicalize all file paths server-side and reject any "
 
 class TraversalPlugin(Plugin):
     id = "traversal"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "Path Traversal Check"
     accepts = ["domain", "url"]
     passive = False

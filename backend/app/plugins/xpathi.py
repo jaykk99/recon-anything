@@ -52,6 +52,7 @@ XPATH_PAYLOADS = [
 
 class XpathInjectionPlugin(Plugin):
     id = "xpathi"
+    aggressive = True  # suppressed on WAF-protected hosts
     label = "XPath Injection"
     accepts = ["domain", "url"]
     passive = False
