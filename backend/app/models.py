@@ -131,6 +131,17 @@ class Schedule(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class AIHunter(Base):
+    __tablename__ = "aihunter"
+    run_id = Column(String, primary_key=True)
+    status = Column(String, default="idle")  # idle | analyzing | ready | failed
+    provider = Column(String, default="")  # which keyless provider answered
+    results = Column(JSON, default=dict)  # parsed test plan + local playbooks
+    error = Column(Text, default="")
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

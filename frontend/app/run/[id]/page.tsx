@@ -292,7 +292,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
       {/* tabs - thumb reachable, 44px targets */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
+        {(["findings", "vulns", "aihunter", "connections", "secrets", "creds", "subdomains", "files", "graph", "apimap", "raw"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
         ))}
@@ -388,6 +388,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       })}
 
       {tab === "vulns" && <VulnsView runId={id} />}
+      {tab === "aihunter" && <AIHunterView runId={id} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
       {tab === "subdomains" && <SubdomainsView findings={findings} />}
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
@@ -778,6 +779,228 @@ function VulnsView({ runId }: { runId: string }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AIHunterView({ runId }: { runId: string }) {
+  const [state, setState] = useState<{ status: string; results: any; provider: string; error: string } | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [wafPayload, setWafPayload] = useState("");
+  const [wafOut, setWafOut] = useState<any>(null);
+  const [wafBusy, setWafBusy] = useState(false);
+  const pollRef = useRef<any>(null);
+
+  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+
+  async function fetchState() {
+    try {
+      const r = await fetch(`/api/runs/${runId}/ai-hunter`, { headers: { "X-Access-Code": getCode() } });
+      const d = await r.json();
+      setState(d);
+      return d.status;
+    } catch {
+      return "failed";
+    }
+  }
+
+  async function start() {
+    try {
+      await fetch(`/api/runs/${runId}/ai-hunter`, {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+      });
+    } catch {}
+    fetchState();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await fetchState();
+      if (cancelled) return;
+      // Auto-start analysis when the tab is opened and nothing is running yet.
+      // The scan also auto-triggers this in the background when it finishes.
+      if (s === "idle" || s === "failed") {
+        start();
+      }
+    })();
+    pollRef.current = setInterval(async () => {
+      const s = await fetchState();
+      if (s === "ready" || s === "failed") {
+        clearInterval(pollRef.current);
+      }
+    }, 5000);
+    return () => { cancelled = true; clearInterval(pollRef.current); };
+  }, [runId]);
+
+  async function runWafBypass() {
+    if (!wafPayload.trim()) return;
+    setWafBusy(true);
+    setWafOut(null);
+    try {
+      const r = await fetch(`/api/runs/${runId}/ai-hunter/waf-bypass?payload=${encodeURIComponent(wafPayload)}`, {
+        headers: { "X-Access-Code": getCode() },
+      });
+      setWafOut(await r.json());
+    } catch (e: any) {
+      setWafOut({ error: e.message });
+    } finally {
+      setWafBusy(false);
+    }
+  }
+
+  const res = state?.results;
+  const tests: any[] = res?.tests || [];
+
+  return (
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h2 className="font-semibold text-violet-300">AI Hunter</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Uncensored AI reads your completed scan and writes a manual test plan for what
+          scanners miss: RCE, auth bypass, business logic, IDOR, WAF bypasses.
+          Analysis runs in the background and never slows your scan.
+        </p>
+        {(!state || state.status === "idle" || state.status === "analyzing") && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-violet-300">
+            <span className="animate-pulse">AI analyzing scan results in the background...</span>
+          </div>
+        )}
+        {state?.status === "failed" && (
+          <div className="mt-3">
+            <p className="text-sm text-red-400">AI analysis failed{state.error ? `: ${state.error}` : "."}</p>
+            <button onClick={start}
+              className="mt-2 chip px-4 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50">
+              Retry AI analysis
+            </button>
+          </div>
+        )}
+        {state?.status === "ready" && (
+          <p className="text-[11px] text-slate-500 mt-2">
+            Test plan ready{state.provider ? ` (via ${state.provider})` : ""} for {res?.target || "target"}.
+            <span className="text-amber-300"> {res?.disclaimer}</span>
+          </p>
+        )}
+      </div>
+
+      {state?.status === "ready" && tests.length > 0 && (
+        <div className="space-y-3">
+          {tests.map((t: any, i: number) => {
+            const key = `t${i}`;
+            const open = !!expanded[key];
+            return (
+              <div key={key} className="card p-4">
+                <button onClick={() => setExpanded({ ...expanded, [key]: !open })}
+                  className="w-full text-left flex items-center justify-between gap-2 min-h-[44px]">
+                  <span>
+                    <span className="text-[10px] uppercase tracking-wide text-violet-400">{t.type}</span>
+                    <span className="block font-semibold text-slate-200">{t.title}</span>
+                  </span>
+                  <span className="text-xs text-slate-500 shrink-0">{t.difficulty} {open ? "▲" : "▼"}</span>
+                </button>
+                <p className="text-xs text-slate-400 mt-1">{t.why}</p>
+                {open && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-300 mb-1">Steps</p>
+                      <ol className="list-decimal list-inside text-xs text-slate-400 space-y-1">
+                        {(t.steps || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
+                      </ol>
+                    </div>
+                    {(t.payloads || []).length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-300 mb-1">Payloads</p>
+                        <div className="space-y-2">
+                          {(t.payloads || []).map((p: string, j: number) => (
+                            <div key={j} className="flex items-start gap-2">
+                              <code className="flex-1 text-[11px] bg-slate-900 rounded p-2 break-all text-emerald-300">{p}</code>
+                              <button onClick={() => copy(p)}
+                                className="chip px-3 py-2 min-h-[44px] text-xs text-slate-300 shrink-0">copy</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {state?.status === "ready" && res?.auth_playbook?.length > 0 && (
+        <div className="card p-4">
+          <h3 className="font-semibold text-violet-300 text-sm">Auth bypass playbook</h3>
+          <p className="text-[11px] text-slate-500 mt-1">Matched to the auth mechanisms your scan detected.</p>
+          <div className="mt-2 space-y-2">
+            {res.auth_playbook.map((a: any, i: number) => (
+              <div key={i} className="border border-slate-800 rounded p-3">
+                <p className="text-xs font-semibold text-slate-200">{a.title} <span className="text-slate-500 font-normal">({a.when})</span></p>
+                <ol className="list-decimal list-inside text-[11px] text-slate-400 mt-1 space-y-0.5">
+                  {(a.steps || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
+                </ol>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {state?.status === "ready" && res?.business_logic?.length > 0 && (
+        <div className="card p-4">
+          <h3 className="font-semibold text-violet-300 text-sm">Business logic targets</h3>
+          <p className="text-[11px] text-slate-500 mt-1">Money/logic parameters found in the scan, with manual test ideas.</p>
+          <div className="mt-2 space-y-2">
+            {res.business_logic.map((b: any, i: number) => (
+              <div key={i} className="border border-slate-800 rounded p-3">
+                <p className="text-xs font-semibold text-slate-200">{b.kind} <span className="text-slate-500 font-normal break-all">{b.where}</span></p>
+                <ul className="list-disc list-inside text-[11px] text-slate-400 mt-1 space-y-0.5">
+                  {(b.test_ideas || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="card p-4">
+        <h3 className="font-semibold text-violet-300 text-sm">WAF bypass helper</h3>
+        <p className="text-[11px] text-slate-500 mt-1">
+          Instant, no AI needed. Mutates your payload with common evasion transforms,
+          tuned to the WAF detected in this run (if any).
+        </p>
+        <div className="flex gap-2 mt-2">
+          <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]"
+            placeholder="<script>alert(1)</script> or ' OR '1'='1"
+            value={wafPayload} onChange={(e) => setWafPayload(e.target.value)} />
+          <button onClick={runWafBypass} disabled={wafBusy}
+            className="chip px-4 py-2.5 min-h-[44px] text-sm text-violet-300 disabled:opacity-50">
+            {wafBusy ? "..." : "Mutate"}
+          </button>
+        </div>
+        {wafOut && !wafOut.error && (
+          <div className="mt-3 space-y-2">
+            <p className="text-[11px] text-slate-500">WAF: <span className="text-slate-300">{wafOut.waf}</span></p>
+            {(wafOut.notes || []).map((n: string, i: number) => (
+              <p key={i} className="text-[11px] text-amber-300/80">{n}</p>
+            ))}
+            {(wafOut.variants || []).map((v: any, i: number) => (
+              <div key={i} className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-semibold text-slate-300">{v.name}</p>
+                  <code className="block text-[11px] bg-slate-900 rounded p-2 break-all text-emerald-300 mt-0.5">{v.payload}</code>
+                  <p className="text-[10px] text-slate-500 mt-0.5">{v.note}</p>
+                </div>
+                <button onClick={() => copy(v.payload)}
+                  className="chip px-3 py-2 min-h-[44px] text-xs text-slate-300 shrink-0">copy</button>
+              </div>
+            ))}
+            <p className="text-[10px] text-slate-600">{wafOut.disclaimer}</p>
+          </div>
+        )}
+        {wafOut?.error && <p className="text-xs text-red-400 mt-2">{wafOut.error}</p>}
+      </div>
     </div>
   );
 }

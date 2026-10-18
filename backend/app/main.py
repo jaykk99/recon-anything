@@ -351,6 +351,71 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn):
             "lines": dry_run(body.candidate_id, base)}
 
 
+# -- ai hunter ---------------------------------------------------------------
+# Uncensored AI as a virtual human tester. Analysis NEVER blocks the scan:
+# it runs in the background after the scan finishes and the UI polls for it.
+
+@app.post("/api/runs/{run_id}/ai-hunter", dependencies=[Depends(gate)])
+def api_ai_hunter_start(run_id: str):
+    """Trigger background AI analysis of a completed run.
+
+    Returns immediately with status=analyzing. Poll GET for results.
+    """
+    from .ai_assistant import get_ai_status, launch_ai_analysis
+    session = get_session()
+    try:
+        if not session.query(Run).filter_by(id=run_id).first():
+            raise HTTPException(404, "run not found")
+    finally:
+        session.close()
+    state = get_ai_status(run_id)
+    if state["status"] == "analyzing":
+        return {"run_id": run_id, "status": "analyzing"}
+    if state["status"] == "ready" and state["results"]:
+        return {"run_id": run_id, "status": "ready",
+                "provider": state["provider"]}
+    launch_ai_analysis(run_id)
+    return {"run_id": run_id, "status": "analyzing"}
+
+
+@app.get("/api/runs/{run_id}/ai-hunter", dependencies=[Depends(gate)])
+def api_ai_hunter_status(run_id: str):
+    """Poll AI Hunter state: idle | analyzing | ready | failed."""
+    from .ai_assistant import get_ai_status
+    session = get_session()
+    try:
+        if not session.query(Run).filter_by(id=run_id).first():
+            raise HTTPException(404, "run not found")
+    finally:
+        session.close()
+    state = get_ai_status(run_id)
+    state["run_id"] = run_id
+    return state
+
+
+@app.get("/api/runs/{run_id}/ai-hunter/waf-bypass", dependencies=[Depends(gate)])
+def api_ai_hunter_waf_bypass(run_id: str, payload: str = Query(..., max_length=2000)):
+    """Instant WAF-bypass payload mutations for a given payload.
+
+    Local and instant (no AI call). Detects the WAF from the run's findings.
+    """
+    from .ai_assistant import waf_bypass_payloads
+    from .reporting import findings_dump
+    session = get_session()
+    try:
+        if not session.query(Run).filter_by(id=run_id).first():
+            raise HTTPException(404, "run not found")
+        rows = findings_dump(session, run_id)
+    finally:
+        session.close()
+    waf = ""
+    for r in rows:
+        if r.get("plugin_id") == "waf" or r.get("key") == "waf_detected":
+            waf = r.get("value") or ""
+            break
+    return waf_bypass_payloads(waf, payload)
+
+
 @app.get("/api/diff", dependencies=[Depends(gate)])
 def api_diff(a: str, b: str):
     session = get_session()
