@@ -14,16 +14,78 @@ const CATS = ["dns", "web", "api", "mobile", "identity", "infra", "leak", "graph
 function sevOf(f: Finding): string {
   return (f.evidence?.severity || "").toLowerCase();
 }
+// normalize to the 3 risk levels (critical maps to high)
+function normSev(f: Finding): string {
+  const s = sevOf(f);
+  if (s === "critical" || s === "high") return "high";
+  if (s === "medium") return "medium";
+  return "low";
+}
 function sevColor(s: string): string {
   // 3 risk levels only: high / medium / low (critical maps to high).
   if (s === "high" || s === "critical") return "text-red-400 border-red-500/40 bg-red-500/10";
   if (s === "medium") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
   return "text-slate-400 border-slate-700 bg-slate-800/50";
 }
+
+// ---------- high-value findings: exploitability tiers ----------
+type ExploitTier = "weaponized" | "public_poc" | "theoretical" | "unknown";
+function exploitOf(f: Finding): ExploitTier {
+  const v = String(f.evidence?.exploitability || "unknown").toLowerCase().replace(/-/g, "_").replace(/ /g, "_");
+  if (v === "weaponized") return "weaponized";
+  if (v === "public_poc") return "public_poc";
+  if (v === "theoretical") return "theoretical";
+  if (v === "poc" || v === "proof_of_concept" || v === "exploit" || v === "metasploit" || v === "nuclei") return "public_poc";
+  return "unknown";
+}
+function exploitLabel(t: ExploitTier): string {
+  return t === "weaponized" ? "WEAPONIZED" : t === "public_poc" ? "PUBLIC PoC" : t === "theoretical" ? "THEORETICAL" : "UNASSESSED";
+}
+// prominent badge classes; weaponized is loud on purpose
+function exploitBadge(t: ExploitTier): string {
+  if (t === "weaponized") return "bg-red-600 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.55)]";
+  if (t === "public_poc") return "text-orange-300 border-orange-500/50 bg-orange-500/15";
+  if (t === "theoretical") return "text-yellow-200 border-yellow-500/40 bg-yellow-500/10";
+  return "text-slate-500 border-slate-700 bg-slate-800/40";
+}
+// value rank: weaponized high-sev first, then high, then medium.
+// low = noise (grouped below). Returns true for the "High value only" view.
+function isHighValue(f: Finding): boolean {
+  const s = normSev(f);
+  const e = exploitOf(f);
+  if (e === "weaponized" || e === "public_poc") return true;
+  return s === "high" || s === "medium";
+}
+function valueRank(f: Finding): number {
+  const sevRank = normSev(f) === "high" ? 0 : normSev(f) === "medium" ? 1 : 2;
+  const expRank = { weaponized: 0, public_poc: 1, theoretical: 2, unknown: 3 }[exploitOf(f)];
+  return sevRank * 10 + expRank;
+}
+function sortByValue(list: Finding[]): Finding[] {
+  return [...list].sort((a, b) => valueRank(a) - valueRank(b) || b.confidence - a.confidence);
+}
+// human label for grouped noise: "520 subdomains"
+function groupLabel(key: string, n: number): string {
+  const map: Record<string, string> = {
+    subdomain: "subdomains", banner: "banners", port_suggestion: "suggested ports",
+    connected_device: "connected devices", connected_service: "connected services",
+    connected_account: "connected accounts", connected_financial: "financial links",
+    tech: "technologies", server_header: "server headers", page_title: "page titles",
+    dnssec: "DNSSEC records", whois_note: "WHOIS notes", js_file: "JS files",
+    fingerprint_summary: "fingerprints", crawl_summary: "crawl summaries",
+    a: "A records", aaaa: "AAAA records", mx: "MX records", txt: "TXT records",
+    ns: "NS records", ptr: "PTR records", cname: "CNAME records",
+    soa: "SOA records", srv: "SRV records", caa: "CAA records",
+  };
+  const m = map[key];
+  const base = m || key.replace(/_/g, " ");
+  return `${n} ${m ? base : base.endsWith("s") ? base : base + "s"}`;
+}
 function findingMarkdown(f: Finding): string {
   const sev = sevOf(f);
   let md = `## ${f.key}\n\n`;
   md += `- **Risk:** ${sev || "low"}\n`;
+  md += `- **Exploitability:** ${exploitOf(f)}\n`;
   md += `- **Plugin:** ${f.plugin}\n`;
   md += `- **Category:** ${f.category}\n`;
   md += `- **Confidence:** ${f.confidence}%\n`;
@@ -75,6 +137,66 @@ function fmtTime(s: number): string {
   return `${m}m ${r}s`;
 }
 
+function copyText(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+
+// One finding as an expandable card. Used in both the top-findings list
+// and inside collapsed noise groups.
+function FindingCard({ f, open, onToggle }: { f: Finding; open: boolean; onToggle: () => void }) {
+  const sev = normSev(f);
+  const tier = exploitOf(f);
+  const ev = f.evidence || {};
+  return (
+    <div className={`rounded-lg p-3 space-y-1.5 border ${sevColor(sev)}`}>
+      <button className="w-full text-left min-h-[44px]" onClick={onToggle}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {tier !== "unknown" && (
+            <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded border ${exploitBadge(tier)}`}>
+              {tier === "weaponized" ? "⚔ " : ""}{exploitLabel(tier)}
+            </span>
+          )}
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev)}`}>{sev.toUpperCase()}</span>
+          <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
+          <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
+          <span className="text-slate-500 text-xs">{open ? "▲" : "▼"}</span>
+        </div>
+        <p className="text-sm break-words whitespace-pre-wrap mt-1">{f.value}</p>
+      </button>
+      {open && (
+        <div className="pt-2 border-t border-slate-700/50 space-y-2 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-slate-500">{f.plugin}</span>
+            <span className={`px-1.5 py-0.5 rounded ${f.passive ? "pill-info" : "pill-warn"}`}>{f.passive ? "passive" : "ACTIVE"}</span>
+            <span className={`px-1.5 py-0.5 rounded border ${exploitBadge(tier)}`}>exploitability: {exploitLabel(tier)}</span>
+            <span className="text-slate-600 break-all">{f.source}</span>
+          </div>
+          {ev.remediation && (
+            <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
+          )}
+          {ev.pattern && <p className="text-slate-400 break-words"><span className="font-semibold">Pattern: </span>{ev.pattern}</p>}
+          {ev.match && (
+            <p className="text-slate-400 break-all"><span className="font-semibold">Match: </span>
+              <code className="font-mono text-red-300/90">{ev.match}</code></p>
+          )}
+          {ev.why && <p className="text-slate-400 break-words"><span className="font-semibold">Why it matters: </span>{ev.why}</p>}
+          {ev.note && <p className="text-slate-500 break-words">{ev.note}</p>}
+          {ev.scope_note && <p className="text-slate-500 italic break-words">{ev.scope_note}</p>}
+          {ev.explorer && (
+            <a href={ev.explorer} target="_blank" rel="noopener" className="text-sky-400 inline-block px-2 py-1.5 min-h-[36px]">open in explorer</a>
+          )}
+          <div className="flex gap-2 flex-wrap pt-1">
+            {f.source_url && (
+              <a href={f.source_url} target="_blank" rel="noopener"
+                className="text-sky-400 px-3 py-2 min-h-[44px] inline-flex items-center rounded-lg bg-slate-800">open source</a>
+            )}
+            <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyText(f.value)}>copy value</button>
+            <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyText(findingMarkdown(f))}>copy as markdown</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RunPage({ params }: { params: { id: string } }) {
   const id = params.id;
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -88,7 +210,16 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [apiMap, setApiMap] = useState<any>(null);
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
-  const [sortBy, setSortBy] = useState("severity");
+  // high-value findings view: weaponized/high first, noise collapsed
+  const [highValueOnly, setHighValueOnly] = useState(false);
+  const [shownTop, setShownTop] = useState(50);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [groupShown, setGroupShown] = useState<Record<string, number>>({});
+  const [noiseOpen, setNoiseOpen] = useState(false);
+  // reset paging when filters change
+  useEffect(() => {
+    setShownTop(50); setGroupShown({}); setOpenGroups({}); setExpanded({});
+  }, [q, cat, highValueOnly]);
   // progress + ETA
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
@@ -258,26 +389,30 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
   const filtered = findings.filter((f) =>
     (cat === "all" || f.category === cat) &&
-    (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "")).toLowerCase().includes(q.toLowerCase())));
+    (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "") + (f.evidence?.exploitability || "")).toLowerCase().includes(q.toLowerCase())));
 
-  const byCat: Record<string, Finding[]> = {};
-  filtered.forEach((f) => { (byCat[f.category] = byCat[f.category] || []).push(f); });
-
-  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
-  function copyMd(f: Finding) { copy(findingMarkdown(f)); }
-
-  // pagination per category: 25 at a time, "show more" for the rest
-  const [shownCount, setShownCount] = useState<Record<string, number>>({});
-  const PAGE = 25;
-  // expanded finding cards: key = category + index
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  function sortFindings(list: Finding[]): Finding[] {
-    const rank = (f: Finding) => {
-      const s = sevOf(f);
-      return (s === "critical" || s === "high") ? 0 : s === "medium" ? 1 : 2;
-    };
-    return [...list].sort((a, b) => rank(a) - rank(b) || b.confidence - a.confidence);
+  // ---------- high-value-first layout ----------
+  // top: high/medium + anything weaponized or with a public PoC, ranked by value.
+  // noise: everything low/informational, grouped by (category, key) and collapsed.
+  const top = sortByValue(filtered.filter(isHighValue));
+  const noise = filtered.filter((f) => !isHighValue(f));
+  const sevCounts: Record<string, number> = { high: 0, medium: 0, low: 0 };
+  const explCounts: Record<ExploitTier, number> = { weaponized: 0, public_poc: 0, theoretical: 0, unknown: 0 };
+  filtered.forEach((f) => { sevCounts[normSev(f)]++; explCounts[exploitOf(f)]++; });
+  interface NoiseGroup { gkey: string; category: string; key: string; items: Finding[] }
+  const noiseGroups: NoiseGroup[] = [];
+  {
+    const byKey: Record<string, NoiseGroup> = {};
+    noise.forEach((f) => {
+      const gk = `${f.category}::${f.key}`;
+      if (!byKey[gk]) byKey[gk] = { gkey: gk, category: f.category, key: f.key, items: [] };
+      byKey[gk].items.push(f);
+    });
+    noiseGroups.push(...Object.values(byKey).sort((a, b) => b.items.length - a.items.length));
   }
+  // expanded finding cards: key = stable per-list index (e.g. "top:12", "grp:<gkey>:7")
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  function toggleCard(k: string) { setExpanded((e) => ({ ...e, [k]: !e[k] })); }
 
   const pill = (s: string) =>
     s === "ok" ? "pill-ok" : s === "error" ? "pill-err" : s === "running" ? "pill-info" : s === "failed" ? "pill-err" : "pill-warn";
@@ -383,89 +518,111 @@ export default function RunPage({ params }: { params: { id: string } }) {
           {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]" placeholder="filter..." value={q} onChange={(e) => setQ(e.target.value)} />
-        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          <option value="severity">sort: severity</option>
-                  </select>
       </div>
 
-      {/* findings as expandable cards (mobile friendly, nothing truncated) */}
-      {tab === "findings" && Object.keys(byCat).sort().map((c) => {
-        const sorted = sortFindings(byCat[c]);
-        const shown = shownCount[c] || PAGE;
-        const sevCounts: Record<string, number> = {};
-        sorted.forEach((f) => { const s = sevOf(f) || "low"; sevCounts[s] = (sevCounts[s] || 0) + 1; });
-        return (
-        <div key={c} className="card p-4">
-          <div className="flex items-center gap-2 flex-wrap mb-3">
-            <h2 className="font-semibold text-sky-300">{c} <span className="text-slate-500 text-xs">({sorted.length})</span></h2>
-            {Object.entries(sevCounts).map(([s, n]) => (
-              <span key={s} className={`text-[10px] px-1.5 py-0.5 rounded border ${sevColor(s)}`}>{s}: {n}</span>
-            ))}
+      {tab === "findings" && (
+      <div className="space-y-4">
+        {/* summary header: counts by severity AND by exploitability */}
+        <div className="card p-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-semibold text-sky-300">Findings <span className="text-slate-500 text-xs">({filtered.length})</span></h2>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("high")}`}>HIGH {sevCounts.high}</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("medium")}`}>MEDIUM {sevCounts.medium}</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("low")}`}>LOW {sevCounts.low}</span>
           </div>
-          <div className="space-y-3">
-            {sorted.slice(0, shown).map((f, i) => {
-              const ek = `${c}:${i}`;
-              const isOpen = !!expanded[ek];
-              const sev = sevOf(f);
-              const ev = f.evidence || {};
-              return (
-              <div key={i} className={`rounded-lg p-3 space-y-1.5 border ${sev ? sevColor(sev) : "border-slate-700/50 bg-slate-800/50"}`}>
-                <button
-                  className="w-full text-left min-h-[44px]"
-                  onClick={() => setExpanded((e) => ({ ...e, [ek]: !e[ek] }))}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {sev && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev)}`}>{sev.toUpperCase()}</span>}
-                    <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
-                    <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
-                    <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
-                  </div>
-                  <p className="text-sm break-words whitespace-pre-wrap mt-1">{f.value}</p>
-                </button>
-                {isOpen && (
-                  <div className="pt-2 border-t border-slate-700/50 space-y-2 text-xs">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-slate-500">{f.plugin}</span>
-                      <span className={`px-1.5 py-0.5 rounded ${f.passive ? "pill-info" : "pill-warn"}`}>{f.passive ? "passive" : "ACTIVE"}</span>
-                      <span className="text-slate-600 break-all">{f.source}</span>
-                    </div>
-                    {ev.remediation && (
-                      <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
-                    )}
-                    {ev.pattern && <p className="text-slate-400 break-words"><span className="font-semibold">Pattern: </span>{ev.pattern}</p>}
-                    {ev.match && (
-                      <p className="text-slate-400 break-all"><span className="font-semibold">Match: </span>
-                        <code className="font-mono text-red-300/90">{ev.match}</code></p>
-                    )}
-                    {ev.why && <p className="text-slate-400 break-words"><span className="font-semibold">Why it matters: </span>{ev.why}</p>}
-                    {ev.note && <p className="text-slate-500 break-words">{ev.note}</p>}
-                    {ev.scope_note && <p className="text-slate-500 italic break-words">{ev.scope_note}</p>}
-                    {ev.explorer && (
-                      <a href={ev.explorer} target="_blank" rel="noopener" className="text-sky-400 inline-block px-2 py-1.5 min-h-[36px]">open in explorer</a>
-                    )}
-                    <div className="flex gap-2 flex-wrap pt-1">
-                      {f.source_url && (
-                        <a href={f.source_url} target="_blank" rel="noopener"
-                          className="text-sky-400 px-3 py-2 min-h-[44px] inline-flex items-center rounded-lg bg-slate-800">open source</a>
-                      )}
-                      <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copy(f.value)}>copy value</button>
-                      <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyMd(f)}>copy as markdown</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              );
-            })}
+          <div className="flex items-center gap-2 flex-wrap mt-2">
+            <span className="text-[11px] text-slate-500">exploitability:</span>
+            <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded border ${exploitBadge("weaponized")}`}>WEAPONIZED {explCounts.weaponized}</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${exploitBadge("public_poc")}`}>PUBLIC PoC {explCounts.public_poc}</span>
+            <span className={`text-[11px] px-2 py-0.5 rounded border ${exploitBadge("theoretical")}`}>THEORETICAL {explCounts.theoretical}</span>
+            <span className={`text-[11px] px-2 py-0.5 rounded border ${exploitBadge("unknown")}`}>UNASSESSED {explCounts.unknown}</span>
           </div>
-          {sorted.length > shown && (
+          <div className="flex gap-2 mt-3 flex-wrap">
             <button
-              className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
-              onClick={() => setShownCount((s) => ({ ...s, [c]: (s[c] || PAGE) + PAGE }))}>
-              show more ({sorted.length - shown} remaining)
+              onClick={() => setHighValueOnly((v) => !v)}
+              className={`chip px-4 py-2.5 min-h-[44px] text-sm ${highValueOnly ? "bg-emerald-900 text-emerald-200 border border-emerald-700" : "text-slate-300"}`}>
+              {highValueOnly ? "✓ High value only" : "High value only"}
             </button>
-          )}
+            <button
+              onClick={() => { setHighValueOnly(false); setNoiseOpen(true); }}
+              className="chip px-4 py-2.5 min-h-[44px] text-sm text-slate-300">
+              Show all
+            </button>
+          </div>
         </div>
-        );
-      })}
+
+        {/* top findings: ranked by value, not alphabetically */}
+        {top.length > 0 && (
+          <div className="card p-4">
+            <h2 className="font-semibold text-sky-300 mb-3">Top findings <span className="text-slate-500 text-xs">({top.length} ranked by value)</span></h2>
+            <div className="space-y-3">
+              {top.slice(0, shownTop).map((f, i) => {
+                const ek = `top:${i}`;
+                return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} />;
+              })}
+            </div>
+            {top.length > shownTop && (
+              <button
+                className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
+                onClick={() => setShownTop((s) => s + 50)}>
+                show more ({top.length - shownTop} remaining)
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* noise: low/informational, grouped + collapsed by default */}
+        {!highValueOnly && noiseGroups.length > 0 && (
+          <div className="card p-4">
+            <button
+              className="w-full text-left min-h-[44px] flex items-center gap-2 flex-wrap"
+              onClick={() => setNoiseOpen((v) => !v)}>
+              <h2 className="font-semibold text-slate-300">Noise <span className="text-slate-500 text-xs">({noise.length} low/informational)</span></h2>
+              <span className="text-slate-500 text-xs ml-auto">{noiseOpen ? "▲ collapse" : "▼ expand"}</span>
+            </button>
+            {noiseOpen && (
+              <div className="space-y-2 mt-3">
+                {noiseGroups.map((g) => {
+                  const isOpen = !!openGroups[g.gkey];
+                  const shownG = groupShown[g.gkey] || 25;
+                  return (
+                    <div key={g.gkey} className="rounded-lg border border-slate-700/60 bg-slate-800/40">
+                      <button
+                        className="w-full text-left min-h-[48px] px-3 py-2.5 flex items-center gap-2 flex-wrap"
+                        onClick={() => setOpenGroups((o) => ({ ...o, [g.gkey]: !o[g.gkey] }))}>
+                        <span className="text-sm font-medium text-slate-200">{groupLabel(g.key, g.items.length)}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-400">{g.category}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded border text-slate-500 border-slate-700">LOW</span>
+                        <span className="text-slate-500 text-xs ml-auto">{isOpen ? "▲" : "▼"}</span>
+                      </button>
+                      {isOpen && (
+                        <div className="px-3 pb-3 space-y-2">
+                          {g.items.slice(0, shownG).map((f, j) => {
+                            const ek = `grp:${g.gkey}:${j}`;
+                            return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} />;
+                          })}
+                          {g.items.length > shownG && (
+                            <button
+                              className="w-full chip px-4 py-3 min-h-[44px] text-sm text-sky-300"
+                              onClick={() => setGroupShown((s) => ({ ...s, [g.gkey]: (s[g.gkey] || 25) + 25 }))}>
+                              show more ({g.items.length - shownG} remaining)
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {filtered.length === 0 && (
+          <div className="card p-4 text-sm text-slate-500">No findings match the current filters.</div>
+        )}
+      </div>
+      )}
 
       {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "aihunter" && <AIHunterView runId={id} />}
@@ -483,7 +640,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <span className="text-xs text-slate-500">{findings.length} findings, full JSON, scrollable</span>
             <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400 ml-auto"
-              onClick={() => copy(JSON.stringify(findings, null, 1))}>copy all</button>
+              onClick={() => copyText(JSON.stringify(findings, null, 1))}>copy all</button>
           </div>
           <pre className="text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">{JSON.stringify(findings, null, 1)}</pre>
         </div>
@@ -521,7 +678,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
                   <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400"
                     onClick={downloadViewing}>download</button>
                   <button className="chip px-3 py-2 min-h-[44px] text-xs text-sky-400"
-                    onClick={() => copy(viewing.body)}>copy</button>
+                    onClick={() => copyText(viewing.body)}>copy</button>
                 </div>
               )}
             </div>
