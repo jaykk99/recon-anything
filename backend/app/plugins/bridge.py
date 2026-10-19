@@ -23,6 +23,32 @@ BRIDGE_PATTERNS = [
     (r"lockAndMint|burnAndMint|deposit.*withdraw", "lock/mint bridge pattern", "medium"),
     (r"relayer", "relayer component (trust assumption)", "medium"),
     (r"validator.*set|guardian", "validator/guardian set (centralization risk)", "medium"),
+    # --- Expanded bridge coverage ---
+    (r"across\.to|across bridge", "Across bridge integration", "medium"),
+    (r"hop\.exchange|hop bridge", "Hop Protocol bridge", "medium"),
+    (r"synapse.*bridge|synapseprotocol", "Synapse bridge", "medium"),
+    (r"cbridge|celer", "Celer cBridge", "medium"),
+    (r"connext|nxTP", "Connext bridge", "medium"),
+    (r"debridge", "deBridge", "medium"),
+    (r"meson\.fi|meson bridge", "Meson bridge", "medium"),
+    (r"orbiter\.finance", "Orbiter Finance bridge", "medium"),
+    (r"rhino\.fi", "Rhino.fi bridge", "medium"),
+    (r"portalbridge|portal\.wormhole", "Wormhole Portal bridge", "medium"),
+    (r"allbridge", "Allbridge", "medium"),
+    (r"thorchain|rune", "THORChain", "medium"),
+    (r"axelar", "Axelar bridge", "medium"),
+    (r"hyperlane", "Hyperlane bridge", "medium"),
+    (r"ccip|chainlink.*ccip", "Chainlink CCIP bridge", "medium"),
+    # --- Bridge risk patterns ---
+    (r"wrapped (btc|eth|usdc)|wbtc|weth", "wrapped asset usage (custody risk)", "low"),
+    (r"mint\(.*\)|_mint\(", "unrestricted mint function pattern", "medium"),
+    (r"pause\(\)|pausable|emergency.*(stop|halt|pause)", "pausable bridge (admin key risk)", "medium"),
+    (r"multisig|multi-sig", "multisig custody (check signer threshold)", "low"),
+    (r"rate.?limit|daily.?limit|volume.?cap", "bridge rate limiting present", "low"),
+    (r"liquidity.?pool.*bridge|bridge.*liquidity", "liquidity-pool bridge model", "low"),
+    (r"atomic.?swap|htlc|hash.?time.?lock", "atomic swap / HTLC pattern", "low"),
+    (r"optimistic.*bridge|fraud.?proof", "optimistic bridge (fraud-proof window)", "low"),
+    (r"zk.?bridge|zero.?knowledge.*bridge", "ZK bridge", "low"),
 ]
 
 REMEDIATION = ("Prefer bridges with strong validator decentralization, "
