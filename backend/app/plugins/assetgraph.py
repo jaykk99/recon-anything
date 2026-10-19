@@ -143,6 +143,22 @@ class AssetGraphPlugin(Plugin):
             "edges": edges[:1000],
         }
 
+        # Neo4j sink (best-effort; never breaks the scan)
+        try:
+            from ..dbs import neo4j_push_graph
+            pushed = neo4j_push_graph(
+                getattr(ctx, "run_id", "") or "",
+                list(nodes.values()),
+                [{"from": e["from"], "to": e["to"],
+                  "kind": e.get("kind", "linked")} for e in edges],
+            )
+            if pushed:
+                reason_extra = f", {pushed} edges pushed to Neo4j"
+            else:
+                reason_extra = ""
+        except Exception:
+            reason_extra = ""
+
         findings: List[Finding] = []
         findings.append(self._f(
             "graph", "asset_map",
@@ -171,7 +187,7 @@ class AssetGraphPlugin(Plugin):
                               "node_label": node.get("label"),
                               "degree": deg}))
 
-        reason = f"graph built: {len(nodes)} nodes, {len(edges)} edges"
+        reason = f"graph built: {len(nodes)} nodes, {len(edges)} edges{reason_extra}"
         res = self._ok(findings, reason)
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res

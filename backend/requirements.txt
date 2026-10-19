@@ -10,3 +10,7 @@ phonenumbers==9.0.15
 redis==8.1.0
 # optional: postgres driver (only needed when DATABASE_URL is postgres)
 psycopg2-binary==2.9.13
+# optional: mongodb findings archive (only used when MONGO_URL is set)
+pymongo==4.10.1
+# optional: neo4j asset graph sink (only used when NEO4J_URL is set)
+neo4j==5.28.1

@@ -9,7 +9,12 @@ def env(key: str, default: str = "") -> str:
 
 
 DATABASE_URL = env("DATABASE_URL", "sqlite:///./recon.db")
-REDIS_URL = env("REDIS_URL", "")
+DATABASE_URL_BACKUP = env("DATABASE_URL_BACKUP", "")  # second Postgres (Railway); failover only
+REDIS_URL = env("REDIS_URL", "")  # Upstash Redis: shared cache layer
+MONGO_URL = env("MONGO_URL", "")  # MongoDB Atlas: findings archive
+NEO4J_URL = env("NEO4J_URL", "")  # Neo4j Aura: asset graph sink
+NEO4J_USER = env("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = env("NEO4J_PASSWORD", "")
 ACCESS_CODE = env("RECON_ACCESS_CODE", "")  # single-user gate; empty = no gate
 MASTER_KEY = env("RECON_MASTER_KEY", "")  # Fernet key for API key encryption
 USER_AGENT = "ReconAnything/1.0 (+https://github.com/jaykk99/recon-anything)"

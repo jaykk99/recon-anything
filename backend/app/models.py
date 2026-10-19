@@ -189,6 +189,29 @@ class RunEvent(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class PluginJob(Base):
+    # DB-backed plugin job queue. Every (plugin x target) pair of a scan is
+    # a row here. A background worker claims queued rows, runs them, and
+    # writes results back. If the server restarts mid-scan (deploy/crash),
+    # jobs left in queued/running are picked back up on boot - the scan
+    # resumes instead of dying. The frontend polls run state from these
+    # rows (via run_progress), never from in-memory state.
+    __tablename__ = "plugin_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, ForeignKey("runs.id"), index=True)
+    target_id = Column(String, index=True)
+    plugin_id = Column(String, index=True)
+    phase = Column(Integer, default=1)  # 1 = main pass, 2 = chain consumers
+    priority = Column(Integer, default=2)  # 1 = HIGH, 2 = MEDIUM, 3 = LOW
+    status = Column(String, default="queued", index=True)  # queued|running|done|skipped|failed
+    attempts = Column(Integer, default=0)
+    result = Column(JSON, nullable=True)  # {status, reason, findings, ms}
+    worker = Column(String, nullable=True)  # worker id holding the claim
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -233,7 +256,31 @@ def check_db() -> None:
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
+        return
     except Exception as exc:
+        from .config import DATABASE_URL_BACKUP
+        if DATABASE_URL_BACKUP:
+            log.warning("primary database unreachable, failing over to DATABASE_URL_BACKUP")
+            try:
+                backup_url = _normalize_database_url(DATABASE_URL_BACKUP)
+                engine = create_engine(
+                    backup_url,
+                    connect_args={"check_same_thread": False}
+                    if backup_url.startswith("sqlite") else {},
+                    pool_pre_ping=True,
+                )
+                SessionLocal = sessionmaker(
+                    bind=engine, autoflush=False, autocommit=False)
+                with engine.connect() as conn:
+                    conn.exec_driver_sql("SELECT 1")
+                log.warning("failover to backup database succeeded")
+                return
+            except Exception as exc2:
+                raise RuntimeError(
+                    f"cannot connect to database ({_safe_url(DATABASE_URL)}): {exc2}. "
+                    "Set DATABASE_URL to a reachable Postgres (Neon/Supabase free tier) "
+                    "or unset it to use the local SQLite default."
+                ) from exc2
         raise RuntimeError(
             f"cannot connect to database ({_safe_url(DATABASE_URL)}): {exc}. "
             "Set DATABASE_URL to a reachable Postgres (Neon/Supabase free tier) "

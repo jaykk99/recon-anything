@@ -833,6 +833,24 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                            f"time budget ({int(SCAN_BUDGET_S)}s scan ceiling)")
     run.summary = summary
     session.commit()
+
+    # MongoDB findings archive (best-effort; never breaks the scan)
+    try:
+        from .dbs import mongo_archive_findings
+        rows = session.query(FindingRow).filter_by(run_id=run_id).all()
+        archived = mongo_archive_findings(run_id, [{
+            "target_id": r.target_id, "plugin_id": r.plugin_id,
+            "category": r.category, "key": r.key, "value": r.value,
+            "source": r.source, "source_url": r.source_url,
+            "confidence": r.confidence, "evidence": r.evidence,
+            "bounty_value": r.bounty_value,
+        } for r in rows])
+        if archived:
+            summary["mongo_archived"] = archived
+            run.summary = summary
+            session.commit()
+    except Exception:
+        pass
     session.close()
     run_done_data = {"run_id": run_id, "findings": total,
                      "nodes": n_nodes, "edges": n_edges}
