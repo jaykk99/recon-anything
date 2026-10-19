@@ -19,7 +19,7 @@ from xml.etree import ElementTree as ET
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 
 LINK_RE = re.compile(
     r'''(?:href|src|action)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -105,15 +105,21 @@ class FirecrawlPlugin(Plugin):
         robots_paths: Set[str] = set()
         crawled: Set[str] = set()
 
-        # 1. sitemaps
+        # 1. sitemaps (hard-capped: slow sitemap hosts used to be
+        # able to stall this plugin past its ceiling)
         for sm in (f"{base}/sitemap.xml", f"{base}/sitemap_index.xml"):
-            sitemap_urls |= await self._sitemap_urls(ctx, sm, set())
+            try:
+                sitemap_urls |= await bounded(
+                    self._sitemap_urls(ctx, sm, set()), 18)
+            except Exception:
+                continue
 
         # 2. robots.txt
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET",
-                            f"{base}/robots.txt", timeout=10, max_retries=1)
-            if r.status_code == 200:
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", f"{base}/robots.txt",
+                timeout=10, max_retries=0), 12)
+            if r is not None and r.status_code == 200:
                 for line in r.text.splitlines():
                     line = line.strip()
                     if line.lower().startswith(
@@ -135,11 +141,11 @@ class FirecrawlPlugin(Plugin):
                 continue
             seen.add(url)
             try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                timeout=10, follow_redirects=True,
-                                max_retries=1)
-                if r.status_code == 200 and "text/html" in \
-                        r.headers.get("content-type", ""):
+                r = await bounded(fetch(
+                    ctx.http, ctx.limiter, "GET", url,
+                    timeout=10, follow_redirects=True, max_retries=0), 12)
+                if r is not None and r.status_code == 200 and \
+                        "text/html" in r.headers.get("content-type", ""):
                     crawled.add(str(r.url))
                     for m in LINK_RE.finditer(r.text[:150000]):
                         link = urljoin(str(r.url), m.group(1).strip())

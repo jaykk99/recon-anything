@@ -10,13 +10,14 @@ Read-only, no keys. Bounded to keep under the 30s ceiling.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List, Set
 from urllib.parse import quote
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 
 JUICY_EXTS = (".bak", ".old", ".zip", ".sql", ".env", ".log", ".txt",
               ".json", ".xml", ".yaml", ".yml", ".conf", ".swp",
@@ -52,21 +53,37 @@ class WaybackurlsPlugin(Plugin):
             return self._skipped("no domain for this target type")
 
         async def cdx():
+            # limit 2000: smaller payload = faster. The CDX API can
+            # trickle 600KB+ over 30s+ for busy domains, so the fetch
+            # gets a hard 24s wall-clock cap (battle-test 2026-10-18:
+            # httpbin.org took 34s and blew the plugin ceiling; 24s
+            # keeps the whole plugin under 30s with parse time to spare).
             url = ("https://web.archive.org/cdx/search/cdx?url="
                    + quote(domain) + "/*&output=json&fl=timestamp,original"
-                     "&collapse=urlkey&limit=5000")
+                     "&collapse=urlkey&limit=2000")
             try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                timeout=25, max_retries=1)
-                if r.status_code != 200:
-                    return {"error": f"HTTP {r.status_code}"}
+                r = await bounded(fetch(
+                    ctx.http, ctx.limiter, "GET", url,
+                    timeout=15, max_retries=0), 24)
+                if r is None or r.status_code != 200:
+                    return {"error": f"HTTP {r.status_code if r else 'timeout'}"}
                 return r.json()
+            except asyncio.TimeoutError:
+                return {"error": "CDX query exceeded 24s wall-clock"}
             except Exception as e:
                 return {"error": str(e)[:150]}
 
         rows, _ = await ctx.cache.cached("waybackurls", domain, cdx)
-        if isinstance(rows, dict) and rows.get("error"):
-            return self._degraded(f"CDX unavailable: {rows['error']}")
+        if isinstance(rows, dict):
+            # CDX sometimes returns a JSON error object instead of the
+            # row list (e.g. rate-limit bodies without an "error" key).
+            # Battle-test 2026-10-18: `rows[1:]` on such a dict raised
+            # KeyError: slice(1, None, None) and crashed the plugin.
+            if "error" in rows:
+                return self._degraded(
+                    f"CDX unavailable: {rows.get('error') or 'unknown error'}")
+            return self._ok(
+                [], f"CDX returned unexpected shape: {str(rows)[:120]}")
 
         urls: Set[str] = set()
         first_seen = {}

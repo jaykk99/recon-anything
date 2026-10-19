@@ -24,7 +24,8 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  bounded, gather_capped)
 
 TIME_BUDGET = 25
 CONCURRENCY = 10
@@ -114,9 +115,10 @@ class AppIntelPlugin(Plugin):
         js_auth_hints: Set[str] = set()
         html = ""
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=10,
-                            max_retries=0)
-            if r.status_code == 200:
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", base, timeout=10,
+                max_retries=0), 12)
+            if r is not None and r.status_code == 200:
                 html = r.text[:400000]
         except Exception:
             pass
@@ -164,7 +166,8 @@ class AppIntelPlugin(Plugin):
         same_site_js = [u for u in js_files if _host(u) == domain or
                         _host(u).endswith("." + domain)][:20]
         if same_site_js:
-            await asyncio.gather(*[scan_js(u) for u in same_site_js])
+            await gather_capped([scan_js(u) for u in same_site_js],
+                                TIME_BUDGET - (time.monotonic() - t0))
 
         # rank interesting files
         interesting: List[str] = []

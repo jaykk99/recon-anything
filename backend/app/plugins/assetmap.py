@@ -23,7 +23,8 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 40
 CONCURRENCY = 12
@@ -134,8 +135,13 @@ class AssetMapPlugin(Plugin):
                     (time.monotonic() - t0) < 15:
                 batch = queue[:CONCURRENCY]
                 queue = queue[CONCURRENCY:]
-                results = await asyncio.gather(*[grab(u) for u in batch])
-                for req, (final, html) in zip(batch, results):
+                results = await gather_capped(
+                    [grab(u) for u in batch],
+                    max(1.0, 15 - (time.monotonic() - t0)))
+                for req, res in zip(batch, results):
+                    if not res:
+                        continue
+                    final, html = res
                     if not html or final is None:
                         continue
                     pages += 1
@@ -174,15 +180,27 @@ class AssetMapPlugin(Plugin):
                         r = await fetch(ctx.http, ctx.limiter, "GET", u,
                                         timeout=8, max_retries=0,
                                         headers={"Range": "bytes=0-0"})
-                    cl = r.headers.get("content-length")
-                    assets[u]["size"] = int(cl) if cl and cl.isdigit() else None
+                    size = None
+                    if r.status_code == 206:
+                        # content-length on a 206 is the range length
+                        # (1 byte here), not the file size: parse the
+                        # total out of "bytes 0-0/<total>"
+                        cr = r.headers.get("content-range", "")
+                        m = re.search(r"/(\d+)\s*$", cr)
+                        if m:
+                            size = int(m.group(1))
+                    if size is None:
+                        cl = r.headers.get("content-length")
+                        size = int(cl) if cl and cl.isdigit() else None
+                    assets[u]["size"] = size
                     assets[u]["ctype"] = r.headers.get(
                         "content-type", "")[:80]
                     assets[u]["status"] = r.status_code
                 except Exception:
                     pass
 
-        await asyncio.gather(*[probe(u) for u in probe_urls])
+        await gather_capped([probe(u) for u in probe_urls],
+                            TIME_BUDGET - (time.monotonic() - t0))
 
         by_kind: Dict[str, int] = {}
         first_n = third_n = 0

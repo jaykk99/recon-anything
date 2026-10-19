@@ -18,11 +18,13 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 25
 MAX_DEPTH = 3
 CONCURRENCY = 15
+LOOP_BUDGET = 24
 
 LINK_RE = re.compile(
     r'''(?:href|src|action)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -74,7 +76,8 @@ class HakrawlerPlugin(Plugin):
                     return page["url"], page["text"][:200000]
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 24:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < LOOP_BUDGET:
             batch = []
             while queue and len(batch) < CONCURRENCY and \
                     pages + len(batch) < MAX_PAGES:
@@ -85,9 +88,13 @@ class HakrawlerPlugin(Plugin):
                 batch.append((url, depth))
             if not batch:
                 break
-            for (url, depth), (final, html) in zip(
-                    batch, await asyncio.gather(
-                        *[grab(u) for u, _ in batch])):
+            results = await gather_capped(
+                [grab(u) for u, _ in batch],
+                LOOP_BUDGET - (time.monotonic() - t0))
+            for (url, depth), res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1
@@ -112,6 +119,13 @@ class HakrawlerPlugin(Plugin):
                     j = urljoin(final, m.group(1).strip())
                     if _host(j) == domain or _host(j).endswith("." + domain):
                         jsfiles.add(j)
+                # subdomains mentioned in text, not just in links
+                # (SUB_HINT was defined but never used - battle-test
+                # 2026-10-18)
+                for m in SUB_HINT.finditer(html):
+                    h = m.group(1).lower().rstrip(".")
+                    if h != domain and h.endswith("." + domain):
+                        subs.add(h)
 
         findings: List[Finding] = []
         for s in sorted(subs)[:60]:

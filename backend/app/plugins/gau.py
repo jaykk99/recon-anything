@@ -9,6 +9,7 @@ Read-only, no keys, no auth. Bounded to keep under the 30s ceiling.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Dict, List, Set
 from urllib.parse import quote, urlparse
@@ -16,7 +17,7 @@ from urllib.parse import quote, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 
 JUICY_EXTS = (".bak", ".old", ".zip", ".sql", ".env", ".log", ".txt",
               ".json", ".xml", ".yaml", ".yml", ".conf", ".config",
@@ -50,9 +51,10 @@ class GauPlugin(Plugin):
         url = (f"https://otx.alienvault.com/api/v1/indicators/domain/"
                f"{quote(domain)}/urls?limit=500")
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                            timeout=15, max_retries=1)
-            if r.status_code == 200:
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", url,
+                timeout=10, max_retries=0), 12)
+            if r is not None and r.status_code == 200:
                 data = r.json()
                 for item in data.get("url_list", []) or []:
                     u = item.get("url") if isinstance(item, dict) else item
@@ -66,11 +68,15 @@ class GauPlugin(Plugin):
         out: Set[str] = set()
         url = ("https://web.archive.org/cdx/search/cdx?url="
                + quote(domain) + "/*&output=json&fl=original"
-                 "&collapse=urlkey&limit=3000")
+                 "&collapse=urlkey&limit=2000")
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                            timeout=20, max_retries=1)
-            if r.status_code == 200:
+            # CDX can trickle a huge payload for 30s+ (battle-test
+            # 2026-10-18: httpbin.org took 34s). Hard wall-clock cap;
+            # 20s keeps the 3-source gather under the 30s ceiling.
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", url,
+                timeout=12, max_retries=0), 20)
+            if r is not None and r.status_code == 200:
                 rows = r.json()
                 for row in rows[1:]:
                     if row and row[0]:
@@ -82,10 +88,11 @@ class GauPlugin(Plugin):
     async def _commoncrawl(self, ctx: Ctx, domain: str) -> Set[str]:
         out: Set[str] = set()
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET",
-                            "https://index.commoncrawl.org/collinfo.json",
-                            timeout=12, max_retries=1)
-            if r.status_code != 200:
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET",
+                "https://index.commoncrawl.org/collinfo.json",
+                timeout=10, max_retries=0), 12)
+            if r is None or r.status_code != 200:
                 return out
             colls = r.json()
             idx = colls[0].get("id") if colls else None
@@ -93,9 +100,10 @@ class GauPlugin(Plugin):
                 return out
             url = (f"https://index.commoncrawl.org/{idx}-index?url="
                    + quote(domain) + "/*&output=json&limit=2000")
-            r2 = await fetch(ctx.http, ctx.limiter, "GET", url,
-                             timeout=20, max_retries=1)
-            if r2.status_code == 200:
+            r2 = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", url,
+                timeout=12, max_retries=0), 15)
+            if r2 is not None and r2.status_code == 200:
                 for line in r2.text.splitlines():
                     line = line.strip()
                     if not line:
@@ -117,7 +125,9 @@ class GauPlugin(Plugin):
         if not domain:
             return self._skipped("no domain for this target type")
 
-        import asyncio
+        # Each source is hard-capped inside its helper, so the gather
+        # can never exceed ~16s: the plugin stays well under the 30s ceiling
+        # even when an archive API trickles or stalls.
         otx, wb, cc = await asyncio.gather(
             self._otx(ctx, domain),
             self._wayback(ctx, domain),

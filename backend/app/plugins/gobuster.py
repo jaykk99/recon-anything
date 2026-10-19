@@ -18,7 +18,8 @@ from urllib.parse import quote
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   bounded)
 
 WORDLIST = """admin administrator admin1 admin-panel adminpanel admincp
 adm manage management manager moderator mod cp controlpanel control-panel
@@ -107,9 +108,11 @@ class GobusterPlugin(Plugin):
         rand = "".join(random.choices(string.ascii_lowercase, k=16))
         probe = f"{base}/__no_such_path_{rand}__"
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", probe,
-                            timeout=10, follow_redirects=False,
-                            max_retries=1)
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", probe,
+                timeout=10, follow_redirects=False, max_retries=0), 12)
+            if r is None:
+                return {"status": 0, "length": 0, "body": ""}
             body = r.text[:3000]
             return {"status": r.status_code, "length": len(body),
                     "body": body[:1500]}
@@ -146,11 +149,19 @@ class GobusterPlugin(Plugin):
 
         baseline = await self._baseline(ctx, base)
 
-        # Build probe list: words x extensions, deduped
+        # Build probe list: bare words FIRST, then extension
+        # permutations. Battle-test 2026-10-18: on a slow network only
+        # the first ~80 probes fit the 20s budget, and bare words
+        # (directories, known files) are far more valuable than
+        # "word.php.bak" permutations, so they must lead.
         probes = []
         seen_p = set()
         for w in WORDLIST:
-            for ext in EXTENSIONS:
+            if w not in seen_p:
+                seen_p.add(w)
+                probes.append(f"{base}/{quote(w)}")
+        for w in WORDLIST:
+            for ext in EXTENSIONS[1:]:
                 p = w + ext
                 if p in seen_p:
                     continue
@@ -173,9 +184,13 @@ class GobusterPlugin(Plugin):
             reqs = [("GET", u, {"timeout": 10, "max_retries": 0,
                                 "follow_redirects": False})
                     for u in chunk]
-            resps = await fetch_many(ctx.http, ctx.limiter, reqs,
-                                     concurrency=20)
-            swept += len(chunk)
+            # deadline (not all-or-nothing): on a slow network the
+            # chunk may not finish - keep whatever probes completed
+            # instead of discarding the whole chunk
+            resps = await fetch_many(
+                ctx.http, ctx.limiter, reqs, concurrency=20,
+                deadline=max(1.0, BUDGET_S - (time.monotonic() - t_start)))
+            swept += sum(1 for r in resps if r is not None)
             for u, r in zip(chunk, resps):
                 if r is None:
                     continue

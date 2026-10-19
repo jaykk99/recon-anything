@@ -18,13 +18,18 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 
 FORM_RE = re.compile(r'''<form\b([^>]*)>''', re.I)
 INPUT_RE = re.compile(r'''<input\b([^>]*)>''', re.I)
 IFRAME_RE = re.compile(r'''<iframe\b[^>]*src\s*=\s*["']([^"']+)["']''', re.I)
 META_RE = re.compile(
     r'''<meta\b[^>]*name\s*=\s*["']([^"']+)["'][^>]*content\s*=\s*["']([^"']*)["']''',
+    re.I)
+# same, but content-before-name attribute order (missed before -
+# battle-test 2026-10-18)
+META_RE_REV = re.compile(
+    r'''<meta\b[^>]*content\s*=\s*["']([^"']*)["'][^>]*name\s*=\s*["']([^"']+)["']''',
     re.I)
 RES_RE = re.compile(
     r'''(?:href|src)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -64,8 +69,13 @@ class DevtoolsPlugin(Plugin):
         base = await web_base(ctx, target, domain)
 
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base,
-                            timeout=15, follow_redirects=True, max_retries=1)
+            # hard wall-clock cap: a trickling server can keep the
+            # connection alive past the per-operation timeout
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", base,
+                timeout=12, follow_redirects=True, max_retries=0), 20)
+            if r is None:
+                return self._degraded("fetch timed out (20s wall-clock)")
         except Exception as e:
             return self._degraded(f"could not fetch: {str(e)[:120]}")
         if "text/html" not in r.headers.get("content-type", ""):
@@ -79,7 +89,8 @@ class DevtoolsPlugin(Plugin):
         forms = FORM_RE.findall(html)
         inputs = INPUT_RE.findall(html)
         iframes = [urljoin(final, s.strip()) for s in IFRAME_RE.findall(html)]
-        metas = META_RE.findall(html)
+        metas = META_RE.findall(html) + \
+            [(n, c) for c, n in META_RE_REV.findall(html)]
         for i, f in enumerate(forms[:10]):
             act = re.search(r'''action\s*=\s*["']([^"']+)["']''', f, re.I)
             meth = re.search(r'''method\s*=\s*["']([^"']+)["']''', f, re.I)
