@@ -259,6 +259,7 @@ def check_db() -> None:
         return
     except Exception as exc:
         from .config import DATABASE_URL_BACKUP
+        global engine, SessionLocal
         if DATABASE_URL_BACKUP:
             log.warning("primary database unreachable, failing over to DATABASE_URL_BACKUP")
             try:
