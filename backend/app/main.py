@@ -86,6 +86,8 @@ async def _startup():
     # Start accepting requests immediately; do heavy init in background
     # so Render's health check doesn't time out on slow cold starts.
     import threading
+    import asyncio
+    _db_ready = asyncio.Event()
     def _bg_init():
         try:
             # Fail fast on an unreachable database: a bad DATABASE_URL must crash
@@ -102,7 +104,7 @@ async def _startup():
             # Only legacy stuck runs (no jobs at all - pre-queue scans) are marked
             # failed so the UI stops spinning.
             try:
-                from .runner import (reset_stale_queue_jobs, start_queue_worker)
+                from .runner import reset_stale_queue_jobs
                 from .models import PluginJob
                 reset_stale_queue_jobs()
                 session = get_session()
@@ -123,7 +125,6 @@ async def _startup():
                         session.commit()
                 finally:
                     session.close()
-                start_queue_worker()  # no-op when RECON_WORKER_ENABLED=0 (UI-only)
             except Exception:
                 pass
             # Prune the SSE event log so run_events does not grow forever.
@@ -139,9 +140,29 @@ async def _startup():
                 pass
         except Exception as e:
             log.error("background init failed: %s", e)
+        finally:
+            # Signal that DB init is done (or failed); worker will try anyway
+            try:
+                _loop.call_soon_threadsafe(_db_ready.set)
+            except Exception:
+                pass
     # Run heavy init in background so the server starts accepting
     # requests immediately (Render health check won't time out).
+    _loop = asyncio.get_running_loop()
     threading.Thread(target=_bg_init, daemon=True).start()
+    # Start the queue worker after DB init completes (needs the event loop)
+    async def _start_worker_when_ready():
+        try:
+            await asyncio.wait_for(_db_ready.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            log.warning("DB init timed out, starting worker anyway")
+        try:
+            from .runner import start_queue_worker
+            start_queue_worker()
+            log.info("queue worker started")
+        except Exception as e:
+            log.error("failed to start queue worker: %s", e)
+    asyncio.create_task(_start_worker_when_ready())
 
 
 @app.get("/api/health")
