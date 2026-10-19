@@ -3,9 +3,11 @@
 Finds credentials tied to the target that are ALREADY PUBLIC:
 
 - GitHub code search for the domain + credential keywords (needs
-  GITHUB_TOKEN in ctx.keys as "github_token"; skipped gracefully when
-  missing). Read-only API search, never clones private repos.
-- Scylla.sh public compilation search for emails on this domain.
+  GITHUB_TOKEN in ctx.keys as "github_token"; without it the plugin
+  tries keyless Sourcegraph public code search and emits one-click
+  manual dork URLs). Read-only searches, never clones private repos.
+- ProxyNova COMB public breach-compilation search (keyless) for emails
+  on this domain, with exposed password counts.
 - Live probes for exposed config files on the target itself
   (/.env, wp-config backups, .git/config) via the shared probe cache.
   Only flagged when the content actually contains secret-looking values.
@@ -17,6 +19,7 @@ full match sits in evidence["match"] so the owner can verify and rotate.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import Dict, List
@@ -38,8 +41,33 @@ GH_QUERIES = [
     '"{d}" smtp_password',
 ]
 
-# Paste / compilation aggregator (public, no key).
-SCYLLA_URL = "https://scylla.sh/search?q=email:*@{d}&size=50"
+# Sourcegraph public code search (keyless, unauthenticated API).
+# Best-effort: the streaming API returns event-stream lines; we parse
+# the first page of results. If the format changes, we degrade to the
+# clickable manual-search finding below.
+SOURCEGRAPH_STREAM = ("https://sourcegraph.com/.api/search/stream"
+                      "?q=context:global+{q}&v=V3&t=keyword&display=25")
+SG_QUERIES = [
+    '{d} password',
+    '{d} api_key',
+    '{d} db_password',
+]
+
+# Manual search URLs emitted as clickable findings when no GITHUB_TOKEN
+# is configured, so Jay can run the dorks himself in one click.
+MANUAL_DORKS = [
+    ("GitHub code search",
+     'https://github.com/search?q={q}&type=code'),
+    ("Sourcegraph public code search",
+     'https://sourcegraph.com/search?q=context:global+{q}&patternType=keyword'),
+    ("Google paste search",
+     'https://www.google.com/search?q=site%3Apastebin.com+%22{d}%22'),
+]
+
+# Paste / compilation aggregator (public, no key): ProxyNova COMB API.
+# Supports domain queries like @example.com and returns email:password
+# lines from the public Collection of Many Breaches.
+COMB_URL = "https://api.proxynova.com/comb?query=%40{d}"
 
 # Config paths probed on the target itself (active mode only). Flagged
 # only when the body looks like it holds real secrets.
@@ -79,7 +107,7 @@ class EmailExposurePlugin(Plugin):
         passive = (mode == "passive")
 
         await self._github_search(domain, ctx, findings)
-        scylla_ok = await self._scylla(domain, ctx, findings)
+        comb_ok = await self._comb_domain(domain, ctx, findings)
         if not passive:
             await self._config_probes(domain, target, ctx, findings)
 
@@ -87,12 +115,11 @@ class EmailExposurePlugin(Plugin):
         # what was missing so a zero is always explained.
         if not findings:
             parts = []
-            if not ctx.keys.get("github_token"):
-                parts.append("GitHub code search needs GITHUB_TOKEN")
-            else:
-                parts.append("GitHub code search ran clean")
-            parts.append("Scylla compilation lookup "
-                         + ("ran clean" if scylla_ok else "unreachable"))
+            parts.append("GitHub code search: "
+                         + ("keyless Sourcegraph ran" if not ctx.keys.get(
+                             "github_token") else "authenticated search ran"))
+            parts.append("COMB compilation lookup "
+                         + ("ran clean" if comb_ok else "unreachable"))
             if not passive:
                 parts.append("exposed-config probes ran clean")
             findings.append(self._f(
@@ -113,12 +140,30 @@ class EmailExposurePlugin(Plugin):
                              findings: List[Finding]) -> None:
         token = ctx.keys.get("github_token")
         if not token:
+            # No token: try keyless Sourcegraph public code search, and
+            # always emit one-click manual dork URLs so the dorks still
+            # get run by Jay in his browser.
+            sg_hits = await self._sourcegraph_search(domain, ctx, findings)
+            links = []
+            qtext = GH_QUERIES[0].format(d=domain)
+            for label, tpl in MANUAL_DORKS:
+                links.append(
+                    (label, tpl.format(q=quote(qtext),
+                                       d=quote(domain, safe=""))))
+            link_lines = "\n".join(f"- {label}: {url}" for label, url in links)
+            value = ("Keyless credential dorking (no GITHUB_TOKEN): "
+                     f"Sourcegraph public search returned {sg_hits} hits. "
+                     f"Run these dorks manually:\n{link_lines}\n"
+                     "Add GITHUB_TOKEN in Keys for automatic API code search.")
+            ev = evidence_block(link_lines, "keyless_dork_links",
+                                "credential", "medium",
+                                {"sourcegraph_hits": sg_hits,
+                                 "links": [u for _, u in links]})
             findings.append(self._f(
-                "leak", "github_note",
-                "GitHub code search skipped: no GITHUB_TOKEN configured "
-                "(add it in Keys to hunt exposed credentials in public code)",
-                source="GitHub", confidence=50, passive=True,
-                evidence=evidence_block("", "gh_no_token", "credential", "low")))
+                "leak", "github_manual_dorks", value,
+                source="keyless code-search fallbacks",
+                source_url=links[0][1] if links else None,
+                confidence=55, passive=True, evidence=ev))
             return
         for q in GH_QUERIES:
             url = ("https://api.github.com/search/code?q="
@@ -176,45 +221,112 @@ class EmailExposurePlugin(Plugin):
                                             "low")))
                 break
 
-    async def _scylla(self, domain: str, ctx: Ctx,
-                      findings: List[Finding]) -> bool:
-        """Public compilation lookup. Returns True when Scylla answered
-        (even with zero hits); False when unreachable. Never fails the
-        plugin."""
-        url = SCYLLA_URL.format(d=domain)
+    async def _sourcegraph_search(self, domain: str, ctx: Ctx,
+                                  findings: List[Finding]) -> int:
+        """Keyless Sourcegraph public code search (best-effort). Returns
+        the number of hits appended. Any failure (network, format change,
+        non-200) silently returns 0; the manual-dork finding covers it."""
+        total = 0
+        for q in SG_QUERIES:
+            qtext = q.format(d=domain)
+            url = SOURCEGRAPH_STREAM.format(q=quote(qtext))
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                                headers={"Accept": "text/event-stream",
+                                         "User-Agent": "ReconAnything/1.0"})
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                text = r.text
+            except Exception:
+                continue
+            # Event-stream format: lines starting with "data: {json}".
+            for line in text.splitlines()[:400]:
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(payload)
+                except Exception:
+                    continue
+                results = obj.get("results")
+                if not isinstance(results, list):
+                    continue
+                for item in results[:25]:
+                    if not isinstance(item, dict):
+                        continue
+                    repo = str(item.get("repository") or
+                               item.get("repo") or "?")
+                    fobj = item.get("file")
+                    path = str(fobj.get("path") if isinstance(fobj, dict)
+                               else item.get("path") or "?")
+                    if total >= 20:
+                        break
+                    total += 1
+                    value = (f"Public code hit for '{qtext}': "
+                             f"{repo}/{path}")
+                    ev = evidence_block(
+                        path, "sourcegraph_credential_dork", "credential",
+                        "medium", {"repo": repo, "query": qtext})
+                    findings.append(self._f(
+                        "leak", "sourcegraph_credential_hit", value,
+                        source="Sourcegraph public code search (keyless)",
+                        confidence=60, passive=True, evidence=ev))
+            if total >= 20:
+                break
+        return total
+
+    async def _comb_domain(self, domain: str, ctx: Ctx,
+                           findings: List[Finding]) -> bool:
+        """Public COMB compilation lookup for the whole domain (keyless).
+        Returns True when the API answered (even with zero hits); False
+        when unreachable. Never fails the plugin."""
+        url = COMB_URL.format(d=quote(domain, safe=""))
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25)
+            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25,
+                            headers={"User-Agent": "ReconAnything/1.0"})
         except Exception:
             return False
         if r.status_code != 200:
             return False
         jd = safe_json_dict(r)
-        hits = jd.get("hits") or jd.get("data") or []
-        if not isinstance(hits, list):
+        lines = jd.get("lines")
+        if not isinstance(lines, list):
             return False
-        seen = set()
-        for h in hits[:20]:
-            if not isinstance(h, dict):
+        try:
+            count = int(jd.get("count", 0) or 0)
+        except (ValueError, TypeError):
+            count = 0
+        emails = set()
+        for line in lines[:200]:
+            if not isinstance(line, str) or ":" not in line:
                 continue
-            src = h.get("_source")
-            src_email = src.get("email") if isinstance(src, dict) else ""
-            email = str(h.get("email") or src_email or "")
-            if "@" not in email or not email.lower().endswith("@" + domain):
-                continue
-            if email in seen:
-                continue
-            seen.add(email)
-            fields = h.get("fields") or {}
-            field_names = [str(x) for x in list(fields)[:6]]
-            value = (f"{redact(email, 6)} appears in a public breach "
-                     f"compilation (fields seen: "
-                     f"{', '.join(field_names) or 'email only'})")
-            ev = evidence_block(email, "scylla_compilation", "credential",
-                                "high", {"fields": [str(x) for x in list(fields)[:10]]})
+            addr, _, _pw = line.partition(":")
+            addr = addr.strip().lower()
+            if "@" in addr and addr.endswith("@" + domain):
+                emails.add(addr)
+        if emails:
+            sample = ", ".join(redact(e, 3) for e in sorted(emails)[:8])
+            value = (f"HIGH: {len(emails)} addresses on {domain} appear in "
+                     f"the public COMB breach compilation "
+                     f"({count:,}+ password pairs total). Samples: "
+                     f"{sample}")
+            ev = evidence_block(sample, "comb_domain_exposure",
+                                "credential", "high",
+                                {"domain": domain,
+                                 "email_count": len(emails),
+                                 "password_pairs": count,
+                                 "verify_url": url,
+                                 "action": ("Force password resets for "
+                                            "every address on this domain.")})
             findings.append(self._f(
                 "leak", "compilation_exposure", value,
-                source="Scylla public compilations", confidence=75,
-                passive=True, evidence=ev))
+                source="ProxyNova COMB (keyless public breach data)",
+                source_url=url, confidence=80, passive=True, evidence=ev))
         return True
 
     async def _config_probes(self, domain: str, target: Target, ctx: Ctx,

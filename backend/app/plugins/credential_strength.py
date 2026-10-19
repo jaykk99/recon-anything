@@ -93,13 +93,13 @@ async def _public_crack_lookup(h: str, ctx: Ctx) -> Optional[str]:
 class CredentialStrengthPlugin(Plugin):
     id = "credential_strength"
     label = "Credential Strength"
-    accepts = ["domain", "url"]
+    accepts = ["domain", "url", "email"]
     passive = True
     cost = Cost.FREE
     group = "identity"
     description = ("Assess hashes/passwords found in public sources: hash "
                    "type, public cracked-DB lookup, crackability verdict. "
-                   "No cracking performed.")
+                   "No cracking performed. Works with no API keys.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -111,6 +111,15 @@ class CredentialStrengthPlugin(Plugin):
         mode = self.module_mode(ctx)
         passive = (mode == "passive")
         seen = set()
+        if target.type == "email":
+            findings.append(self._f(
+                "leak", "credential_note",
+                f"Email target {redact(target.normalized.strip(), 4)}: "
+                f"scanning its domain's public website ({domain}) for "
+                f"exposed hashes and plaintext passwords",
+                source="credential scan", confidence=60, passive=passive,
+                evidence=evidence_block(domain, "cred_email_domain",
+                                        "credential", "low")))
 
         page = await ctx.fetch_page(base, timeout=25)
         texts: List[Tuple[str, Optional[str]]] = []

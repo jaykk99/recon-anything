@@ -3,7 +3,11 @@
 Checks whether emails tied to the target appear in PUBLIC breach data:
 
 - HaveIBeenPwned v3 breachedaccount API (needs HIBP_API_KEY in ctx.keys
-  as "hibp"; skipped gracefully with a note when missing).
+  as "hibp"; per-account checks only run when the key is present).
+- ProxyNova COMB public breach-compilation search (KEYLESS): per-email
+  and per-domain lookups that always run, key or no key, and return the
+  actual exposed passwords (redacted in findings).
+- XposedOrNot keyless API: per-email breach-name lookup.
 - HaveIBeenPwned /breaches?domain= listing (no key needed) for
   domain-wide breach exposure.
 
@@ -21,8 +25,8 @@ from urllib.parse import quote
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
-                   safe_json_list)
-from .secretutils import evidence_block
+                   safe_json_dict, safe_json_list)
+from .secretutils import evidence_block, redact
 
 HIBP_V3 = "https://haveibeenpwned.com/api/v3"
 UA = "ReconAnything/1.0"
@@ -49,18 +53,24 @@ class EmailBreachPlugin(Plugin):
         t0 = time.monotonic()
         findings: List[Finding] = []
         key = ctx.keys.get("hibp")
+        ran_keyless = False
 
-        # 1) Email-target direct lookup: breachedaccount API (needs key).
+        # 1) Email-target direct lookup. Keyless checks (ProxyNova COMB
+        #    passwords + XposedOrNot breach names) ALWAYS run; HIBP
+        #    per-account check runs only with a key.
         if target.type == "email":
             email = target.normalized.strip().lower()
+            ran_keyless = await self._proxynova_email(email, ctx, findings)
+            if await self._xposedornot_email(email, ctx, findings):
+                ran_keyless = True
             if key:
                 await self._breached_account(email, ctx, key, findings)
             else:
                 findings.append(self._f(
                     "leak", "hibp_note",
-                    "HIBP account check skipped: no HIBP_API_KEY configured "
-                    "(add it in Keys so emails can be checked against "
-                    "breach data)",
+                    "HIBP per-account check skipped: no HIBP_API_KEY "
+                    "configured (add it in Keys for full breach-account "
+                    "verification; keyless compilation search ran above)",
                     source="haveibeenpwned", confidence=50, passive=True,
                     evidence=evidence_block("", "hibp_no_key", "credential",
                                             "low")))
@@ -73,17 +83,32 @@ class EmailBreachPlugin(Plugin):
             domain_checked = await self._domain_breaches(domain, ctx, findings)
 
         # 3) Also check harvested emails from the discovery bus (bounded).
+        #    Keyless lookups always run; HIBP only with a key.
         emails = [e for e in ctx.consume("emails")][:5]
-        if key and emails and target.type != "email":
+        if emails and target.type != "email":
             for email in emails:
-                await self._breached_account(email, ctx, key, findings)
+                email = str(email).strip().lower()
+                if "@" not in email:
+                    continue
+                if await self._proxynova_email(email, ctx, findings):
+                    ran_keyless = True
+                if await self._xposedornot_email(email, ctx, findings):
+                    ran_keyless = True
+            if key:
+                for email in emails:
+                    email = str(email).strip().lower()
+                    if "@" in email:
+                        await self._breached_account(email, ctx, key, findings)
 
         # Never silent: a zero must always explain what was checked and
         # what was missing, so Jay never sees an empty plugin again.
         if not findings:
-            if not key and not domain_checked:
-                detail = ("no HIBP_API_KEY configured, and the keyless HIBP "
-                          "domain lookup could not be reached")
+            if not key and not domain_checked and not ran_keyless:
+                detail = ("no HIBP_API_KEY configured, and the keyless "
+                          "lookups could not be reached")
+            elif not key and (domain_checked or ran_keyless):
+                detail = ("no HIBP_API_KEY configured; keyless lookups ran "
+                          "and found nothing")
             elif not key:
                 detail = ("no HIBP_API_KEY configured; the keyless HIBP "
                           "domain lookup ran and this domain appears in no "
@@ -101,7 +126,8 @@ class EmailBreachPlugin(Plugin):
 
         dur = int((time.monotonic() - t0) * 1000)
         note = (f"{len(findings)} breach findings"
-                + ("" if key else " (HIBP account checks need API key)"))
+                + ("" if key else " (keyless only; HIBP_API_KEY adds "
+                                 "per-account verification)"))
         res = self._ok(findings, note)
         res.duration_ms = dur
         return res
@@ -177,6 +203,106 @@ class EmailBreachPlugin(Plugin):
                 "leak", "breach_account", value, source="haveibeenpwned",
                 source_url="https://haveibeenpwned.com/", confidence=95,
                 passive=True, evidence=ev))
+
+    async def _proxynova_email(self, email: str, ctx: Ctx,
+                               findings: List[Finding]) -> bool:
+        """Keyless per-email breach-compilation lookup via the ProxyNova
+        COMB API (public Collection of Many Breaches data). Returns the
+        exposed password pairs, redacted. True when the API answered
+        (even with zero hits); False when unreachable. Never fails the
+        plugin. No key needed."""
+        url = f"https://api.proxynova.com/comb?query={quote(email)}"
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25,
+                            headers={"User-Agent": UA})
+        except Exception:
+            return False
+        if r.status_code != 200:
+            return False
+        jd = safe_json_dict(r)
+        lines = jd.get("lines")
+        if not isinstance(lines, list):
+            return False
+        try:
+            count = int(jd.get("count", 0) or 0)
+        except (ValueError, TypeError):
+            count = 0
+        pairs = []
+        for line in lines[:50]:
+            if not isinstance(line, str) or ":" not in line:
+                continue
+            addr, _, pw = line.partition(":")
+            if addr.strip().lower() != email.lower():
+                continue
+            pw = pw.strip()
+            if not pw or is_placeholder(pw) or len(pw) < 2:
+                continue
+            pairs.append(pw)
+        if pairs:
+            samples = ", ".join(redact(p, 2) for p in pairs[:5])
+            value = (f"HIGH: {redact(email, 4)} appears in the public COMB "
+                     f"breach compilation with {count:,}+ exposed "
+                     f"passwords (samples: {samples}). Rotate every "
+                     f"password ever used with this email.")
+            ev = evidence_block(email, "comb_password_exposure",
+                                "credential", "high",
+                                {"password_count": count,
+                                 "samples_redacted": [redact(p, 2)
+                                                      for p in pairs[:10]],
+                                 "verify_url": url,
+                                 "action": ("Rotate every password ever "
+                                            "used with this email; enable "
+                                            "2FA everywhere.")})
+            findings.append(self._f(
+                "leak", "comb_exposure", value,
+                source="ProxyNova COMB (keyless public breach data)",
+                source_url=url, confidence=90, passive=True, evidence=ev))
+        else:
+            findings.append(self._f(
+                "identity", "comb_clean",
+                f"{redact(email, 4)}: not found in the public COMB "
+                f"compilation (keyless check)",
+                source="ProxyNova COMB (keyless public breach data)",
+                confidence=75, passive=True,
+                evidence=evidence_block(email, "comb_clean", "credential",
+                                        "low")))
+        return True
+
+    async def _xposedornot_email(self, email: str, ctx: Ctx,
+                                 findings: List[Finding]) -> bool:
+        """Keyless per-email breach-name lookup via XposedOrNot. True when
+        the API answered; False when unreachable. No key needed."""
+        url = f"https://api.xposedornot.com/v1/check-email/{quote(email)}"
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=25,
+                            headers={"User-Agent": UA})
+        except Exception:
+            return False
+        if r.status_code != 200:
+            return False
+        jd = safe_json_dict(r)
+        breaches = jd.get("breaches")
+        names: List[str] = []
+        if isinstance(breaches, list):
+            for b in breaches:
+                if isinstance(b, list):
+                    names.extend(str(x) for x in b)
+                elif isinstance(b, str):
+                    names.append(b)
+        names = [n for n in names if n and n != "No breaches found"]
+        if names:
+            value = (f"{redact(email, 4)} appears in {len(names)} public "
+                     f"breaches: {', '.join(names[:12])}"
+                     + ("..." if len(names) > 12 else ""))
+            ev = evidence_block(email, "xposedornot_breaches", "credential",
+                                "high", {"breaches": names[:30],
+                                          "action": ("Rotate passwords tied "
+                                                     "to this email.")})
+            findings.append(self._f(
+                "leak", "breach_account", value,
+                source="XposedOrNot (keyless)", confidence=85,
+                passive=True, evidence=ev))
+        return True
 
     async def _domain_breaches(self, domain: str, ctx: Ctx,
                                findings: List[Finding]) -> bool:
