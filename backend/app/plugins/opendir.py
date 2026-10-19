@@ -24,12 +24,31 @@ DIR_PATHS = [
     "/assets/", "/static/", "/media/", "/data/", "/db/",
     "/admin/", "/private/", "/secret/", "/test/", "/dev/",
     "/wp-content/uploads/", "/sites/default/files/",
+    "/bak/", "/bkp/", "/dump/", "/dumps/", "/export/", "/exports/",
+    "/archive/", "/archives/", "/store/", "/storage/", "/docs/",
+    "/documents/", "/public/", "/pub/", "/share/", "/shared/",
+    "/incoming/", "/outgoing/", "/transfer/", "/temp/",
+    "/cache/", "/logs/", "/log/", "/reports/", "/report/",
+    "/conf/", "/config/", "/cfg/", "/etc/", "/var/",
+    "/home/", "/root/", "/srv/", "/opt/", "/usr/",
+    "/web/", "/www/", "/html/", "/site/", "/sites/",
+    "/content/", "/cms/", "/app/", "/apps/", "/api/",
+    "/v1/", "/v2/", "/rest/", "/soap/", "/xml/",
+    "/install/", "/setup/", "/update/", "/upgrade/",
+    "/staging/", "/stage/", "/qa/", "/uat/", "/sandbox/",
+    "/beta/", "/alpha/", "/demo/", "/trial/", "/poc/",
+    "/git/", "/svn/", "/cvs/", "/hg/",
+    "/dist/", "/build/", "/release/", "/releases/",
+    "/vendor/", "/node_modules/", "/bower_components/",
+    "/.well-known/", "/meta/", "/info/",
 ]
 
 # Markers of an open directory listing
 DIR_MARKERS = [
     "index of /", "directory listing for", "<title>index of",
     "[parent directory]", "[to parent directory]",
+    "directory browsing", "autoindex", "folder listing",
+    "<h1>directory", "last modified</a>", "parent directory</a>",
 ]
 
 

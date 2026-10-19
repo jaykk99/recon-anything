@@ -28,8 +28,22 @@ BUCKET_PATTERNS = [
     (r"https?://storage\.googleapis\.com/([a-z0-9][a-z0-9\-_.]{1,61})", "gcp"),
     # Azure blob
     (r"https?://([a-z0-9]{3,24})\.blob\.core\.windows\.net", "azure"),
+    # DigitalOcean Spaces
+    (r"https?://([a-z0-9][a-z0-9\-.]{1,61})\.([a-z0-9]+\.)?digitaloceanspaces\.com", "do"),
+    # Wasabi
+    (r"https?://([a-z0-9][a-z0-9\-.]{1,61})\.s3\.[a-z0-9\-]+\.wasabisys\.com", "wasabi"),
+    # Backblaze B2
+    (r"https?://f[0-9]{3}\.backblazeb2\.com/file/([a-z0-9\-_]+)", "b2"),
+    # Cloudflare R2 (custom domains, harder - look for r2.dev)
+    (r"https?://([a-z0-9][a-z0-9\-.]{1,61})\.r2\.dev", "r2"),
+    # Linode Object Storage
+    (r"https?://([a-z0-9][a-z0-9\-.]{1,61})\.[a-z0-9]+\.linodeobjects\.com", "linode"),
     # Generic bucket variable assignments in JS
     (r"""['"](?:s3_?bucket|bucket_?name|aws_?bucket)['"]\s*[:=]\s*['"]([a-z0-9][a-z0-9\-.]{2,61})['"]""", "aws"),
+    # Firebase Storage
+    (r"https?://firebasestorage\.googleapis\.com/v0/b/([a-z0-9\-_]+)", "firebase"),
+    # Supabase Storage
+    (r"https?://[a-z0-9]+\.supabase\.co/storage/v1/object/public/([a-z0-9\-_]+)", "supabase"),
 ]
 
 REMEDIATION = ("Block public access at the bucket level (S3 Block Public "
