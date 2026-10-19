@@ -795,14 +795,6 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
         run_done_data["skipped_time_budget"] = skipped_budget
     await _emit(run_id, "run_done", run_done_data)
 
-    # AI Hunter: kick off uncensored-AI test-plan analysis in the background.
-    # Never blocks the scan; the UI polls for results when ready.
-    try:
-        from .ai_assistant import run_ai_analysis
-        asyncio.create_task(run_ai_analysis(run_id))
-    except Exception:
-        pass  # AI analysis is best-effort; the scan itself is done
-
 
 async def launch_run(run_id: str, targets_raw: str, mode: str,
                    plugin_ids: Optional[List[str]] = None,

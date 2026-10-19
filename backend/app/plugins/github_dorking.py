@@ -1,23 +1,26 @@
 """GitHub secret-dorking plugin (passive, read-only).
 
 Hunts for accidentally committed secrets tied to the target using
-GitHub code search dork patterns:
-  "{domain}" filename:.env | filename:id_rsa | extension:pem
-  "{domain}" api_key | password | secret | token
+secret-dork patterns. Works with ZERO API keys:
 
-Needs GITHUB_TOKEN in the Keys tab (GitHub code search requires auth).
-Skips gracefully without it and leaves manual dork links instead.
-Never clones repos, never touches code - search API only.
+- Keyless: Sourcegraph public code search API (no auth needed) runs the
+  highest-signal dorks automatically.
+- Keyless: clickable GitHub/Sourcegraph/Google dork URLs for manual review.
+- Enhanced: GITHUB_TOKEN unlocks the GitHub code search API directly
+  (higher limits, richer results).
+
+Never clones repos, never touches code - search APIs only.
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import List
 from urllib.parse import quote_plus
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
 
 # (dork suffix, label, severity) - full query becomes '"{domain}" ' + suffix
 SECRET_DORKS = [
@@ -46,11 +49,13 @@ class GithubDorkingPlugin(Plugin):
     id = "github_dorking"
     label = "GitHub Secret Dorks"
     accepts = ["domain", "url"]
-    requires_keys = ["github_token"]
+    requires_keys = []  # works keyless; GITHUB_TOKEN only enhances limits
     passive = True
     cost = Cost.FREE
     group = "identity"
-    description = "GitHub code search for secrets tied to the target (needs GITHUB_TOKEN)."
+    description = ("Secret dorking for committed secrets: keyless Sourcegraph "
+                   "code search + clickable dork links. GITHUB_TOKEN (optional) "
+                   "adds GitHub API results.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -77,7 +82,12 @@ class GithubDorkingPlugin(Plugin):
 
         token = ctx.keys.get("github_token")
         if not token:
-            res = self._ok(findings, "no GITHUB_TOKEN - left clickable dork links")
+            # Keyless path: Sourcegraph public code search (no auth needed).
+            sg_findings = await self._sourcegraph_search(ctx, domain)
+            findings.extend(sg_findings)
+            note = (f"keyless: Sourcegraph code search ran ({len(sg_findings)} "
+                    f"hit(s)); GITHUB_TOKEN would add GitHub API results")
+            res = self._ok(findings, note)
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 
