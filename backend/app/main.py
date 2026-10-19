@@ -83,55 +83,65 @@ def gate(x_access_code: Optional[str] = Header(default=None),
 
 @app.on_event("startup")
 async def _startup():
-    # Fail fast on an unreachable database: a bad DATABASE_URL must crash
-    # the deploy with a clear error, not surface later as empty scans.
-    check_db()
-    if IS_SQLITE:
-        log.warning(
-            "using ephemeral SQLite (%s): all runs are wiped on redeploy. "
-            "Set DATABASE_URL to a persistent Postgres (Neon/Supabase free "
-            "tier) to keep scans across restarts.", DATABASE_URL)
-    init_db()
-    # Queue recovery: jobs orphaned by a dead worker go back to queued;
-    # runs that still have jobs stay "running" so the worker resumes them.
-    # Only legacy stuck runs (no jobs at all - pre-queue scans) are marked
-    # failed so the UI stops spinning.
-    try:
-        from .runner import (reset_stale_queue_jobs, start_queue_worker)
-        from .models import PluginJob
-        reset_stale_queue_jobs()
-        session = get_session()
+    # Start accepting requests immediately; do heavy init in background
+    # so Render's health check doesn't time out on slow cold starts.
+    import threading
+    def _bg_init():
         try:
-            stuck = session.query(Run).filter_by(status="running").all()
-            for r in stuck:
-                has_jobs = (session.query(PluginJob)
-                            .filter_by(run_id=r.id).count() > 0)
-                if has_jobs:
-                    continue  # the queue worker resumes this run
-                r.status = "failed"
-                r.finished_at = dt.datetime.now(dt.timezone.utc)
-                summary = dict(r.summary or {})
-                summary["error"] = ("server restarted during scan "
-                                    "(deploy or crash); start a fresh scan")
-                r.summary = summary
-            if stuck:
-                session.commit()
-        finally:
-            session.close()
-        start_queue_worker()  # no-op when RECON_WORKER_ENABLED=0 (UI-only)
-    except Exception:
-        pass
-    # Prune the SSE event log so run_events does not grow forever.
-    try:
-        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)
-        s2 = get_session()
-        try:
-            s2.query(RunEvent).filter(RunEvent.created_at < cutoff).delete()
-            s2.commit()
-        finally:
-            s2.close()
-    except Exception:
-        pass
+            # Fail fast on an unreachable database: a bad DATABASE_URL must crash
+            # the deploy with a clear error, not surface later as empty scans.
+            check_db()
+            if IS_SQLITE:
+                log.warning(
+                    "using ephemeral SQLite (%s): all runs are wiped on redeploy. "
+                    "Set DATABASE_URL to a persistent Postgres (Neon/Supabase free "
+                    "tier) to keep scans across restarts.", DATABASE_URL)
+            init_db()
+            # Queue recovery: jobs orphaned by a dead worker go back to queued;
+            # runs that still have jobs stay "running" so the worker resumes them.
+            # Only legacy stuck runs (no jobs at all - pre-queue scans) are marked
+            # failed so the UI stops spinning.
+            try:
+                from .runner import (reset_stale_queue_jobs, start_queue_worker)
+                from .models import PluginJob
+                reset_stale_queue_jobs()
+                session = get_session()
+                try:
+                    stuck = session.query(Run).filter_by(status="running").all()
+                    for r in stuck:
+                        has_jobs = (session.query(PluginJob)
+                                    .filter_by(run_id=r.id).count() > 0)
+                        if has_jobs:
+                            continue  # the queue worker resumes this run
+                        r.status = "failed"
+                        r.finished_at = dt.datetime.now(dt.timezone.utc)
+                        summary = dict(r.summary or {})
+                        summary["error"] = ("server restarted during scan "
+                                            "(deploy or crash); start a fresh scan")
+                        r.summary = summary
+                    if stuck:
+                        session.commit()
+                finally:
+                    session.close()
+                start_queue_worker()  # no-op when RECON_WORKER_ENABLED=0 (UI-only)
+            except Exception:
+                pass
+            # Prune the SSE event log so run_events does not grow forever.
+            try:
+                cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)
+                s2 = get_session()
+                try:
+                    s2.query(RunEvent).filter(RunEvent.created_at < cutoff).delete()
+                    s2.commit()
+                finally:
+                    s2.close()
+            except Exception:
+                pass
+        except Exception as e:
+            log.error("background init failed: %s", e)
+    # Run heavy init in background so the server starts accepting
+    # requests immediately (Render health check won't time out).
+    threading.Thread(target=_bg_init, daemon=True).start()
 
 
 @app.get("/api/health")
