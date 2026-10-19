@@ -143,3 +143,58 @@ class GithubDorkingPlugin(Plugin):
         res = self._ok(findings, f"ran {min(8, len(SECRET_DORKS))} secret dorks")
         res.duration_ms = dur
         return res
+
+    async def _sourcegraph_search(self, ctx: Ctx, domain: str) -> List[Finding]:
+        """Keyless Sourcegraph public code search (no auth required).
+
+        Runs the highest-signal secret dorks against Sourcegraph's public
+        code index and returns findings for repos/files mentioning the
+        target alongside secret patterns.
+        """
+        out: List[Finding] = []
+        # Highest-signal dorks only - keep the keyless path fast.
+        for suffix, label, sev in SECRET_DORKS[:6]:
+            query = f'{domain} {suffix} select:file'
+            url = ("https://sourcegraph.com/.api/search/stream?q=" +
+                   quote_plus(query) + "&v=V3&display=5")
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                                headers={"Accept": "text/event-stream"},
+                                max_retries=1)
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            hits = 0
+            examples: List[str] = []
+            try:
+                for line in r.text.splitlines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except Exception:
+                        continue
+                    for res in ev.get("results", []) or []:
+                        hits += 1
+                        repo = (res.get("repository") or {}).get("name", "?")
+                        path = res.get("name", "?")
+                        if len(examples) < 3:
+                            examples.append(f"{repo}: {path}")
+            except Exception:
+                continue
+            if hits > 0:
+                out.append(self._f(
+                    "leak", "sourcegraph_secret_dork_hit",
+                    f"{sev.upper()}: Sourcegraph found {hits} file(s) for "
+                    f'dork "{domain} {suffix}" ({label}) - possible committed secret',
+                    source="Sourcegraph code search",
+                    source_url="https://sourcegraph.com/search?q=" + quote_plus(query),
+                    confidence=70, passive=True,
+                    exploitability="public_poc",
+                    evidence={"severity": sev, "remediation": REMEDIATION,
+                              "dork": f"{domain} {suffix}",
+                              "result_count": hits,
+                              "examples": examples}))
+        return out

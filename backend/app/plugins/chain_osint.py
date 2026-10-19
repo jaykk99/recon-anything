@@ -1,14 +1,14 @@
 """Blockchain OSINT aggregator (defensive OSINT).
 
-For wallet/contract addresses discovered during a scan (published on the
-"contract_addresses" discovery bus by the address-mining plugins), this
-fetches PUBLIC chain data via the Etherscan API (free tier): transaction
-history (first 20 most recent), balance, and whether the contract source
-is verified. Read-only. It never signs, sends, or interacts with anything
-on-chain.
+Works with ZERO API keys:
+- Keyless: Blockchair API (no auth) for balances, tx counts, first/last
+  activity. Sourcify (no auth) for verified-source checks.
+- Enhanced: ETHERSCAN_API_KEY unlocks richer Etherscan enrichment
+  (full tx history, counterparty analysis).
 
-Needs ETHERSCAN_API_KEY (ctx key "etherscan" or the ETHERSCAN_API_KEY
-env var). Skips gracefully with a clear note when the key is missing.
+For wallet/contract addresses discovered during a scan (published on the
+"contract_addresses" discovery bus by the address-mining plugins).
+Read-only. It never signs, sends, or interacts with anything on-chain.
 """
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
 
 ETH_API = "https://api.etherscan.io/api"
+BLOCKCHAIR_API = "https://api.blockchair.com/ethereum/dashboards/address"
+SOURCIFY_V2 = "https://sourcify.dev/server/v2/contract/1"
 MAX_ADDR = 8     # addresses to enrich per run (free-tier friendly)
 TX_LIMIT = 20    # transactions per address
 
@@ -43,19 +45,17 @@ class ChainOsintPlugin(Plugin):
     passive = True
     cost = Cost.FREEMIUM
     group = "web3"
-    requires_keys = ["etherscan"]
-    description = ("Etherscan enrichment for discovered addresses: tx "
-                   "history, balances, verified-source check. Read-only.")
+    requires_keys = []  # works keyless via Blockchair+Sourcify; etherscan key enhances
+    description = ("Chain enrichment for discovered addresses: keyless "
+                   "Blockchair balances/activity + Sourcify verified-source "
+                   "checks always run; ETHERSCAN_API_KEY (optional) adds full "
+                   "tx history and counterparties. Read-only.")
     phase = 2  # runs after address miners populate the discovery bus
     timeout_s = 180
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
         key = _key(ctx)
-        if not key:
-            return self._skipped(
-                "ETHERSCAN_API_KEY not configured (set the 'etherscan' key or "
-                "ETHERSCAN_API_KEY env var). Blockchain OSINT skipped.")
 
         addrs = self._collect(ctx)
         if not addrs:
@@ -66,9 +66,14 @@ class ChainOsintPlugin(Plugin):
 
         findings: List[Finding] = []
         enriched = 0
+        keyless = 0
         for addr in addrs[:MAX_ADDR]:
             try:
-                f = await self._enrich(ctx, key, addr)
+                if key:
+                    f = await self._enrich(ctx, key, addr)
+                else:
+                    f = await self._enrich_keyless(ctx, addr)
+                    keyless += 1
                 if f:
                     findings.extend(f)
                     enriched += 1
@@ -76,7 +81,10 @@ class ChainOsintPlugin(Plugin):
                 continue  # one bad address never kills the plugin
 
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"enriched {enriched}/{len(addrs)} address(es)")
+        mode = (f"keyless (Blockchair+Sourcify); ETHERSCAN_API_KEY would add "
+                f"full tx history") if not key else "etherscan"
+        res = self._ok(findings, f"enriched {enriched}/{len(addrs)} address(es) "
+                                 f"via {mode}")
         res.duration_ms = dur
         return res
 
@@ -194,6 +202,110 @@ class ChainOsintPlugin(Plugin):
                 f"on Etherscan. Treat any interaction with it as high risk.",
                 source="Etherscan", source_url=f"https://etherscan.io/address/{addr}",
                 confidence=90, passive=True,
+                evidence={
+                    "severity": "medium", "address": addr,
+                    "exploitability": "theoretical",
+                    "remediation": ("Do not interact with unverified contracts. If "
+                                    "this contract belongs to the target, publish "
+                                    "verified source so users can audit what they "
+                                    "approve.")}))
+        return out
+
+    async def _sourcify_verified(self, ctx: Ctx, addr: str):
+        """Keyless verified-source check via Sourcify (no auth).
+
+        Returns (is_contract, verified, contract_name). Sourcify v2 API
+        returns 404 when the address is not a verified contract.
+        """
+        url = f"{SOURCIFY_V2}/{addr}"
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                            max_retries=1)
+        except Exception:
+            return False, False, ""
+        if r.status_code == 404:
+            return False, False, ""
+        if r.status_code != 200:
+            return False, False, ""
+        try:
+            d = r.json()
+        except Exception:
+            return False, False, ""
+        # v2 returns match info; presence of creationMatch/runtimeMatch
+        # means verified bytecode on Sourcify.
+        creation = d.get("creationMatch")
+        runtime = d.get("runtimeMatch")
+        verified = bool(creation or runtime)
+        name = ""
+        try:
+            meta = (runtime or creation or {}).get("metadata") or {}
+            settings = meta.get("settings") or {}
+            targets = settings.get("compilationTarget") or {}
+            if isinstance(targets, dict) and targets:
+                first = next(iter(targets.values()))
+                name = str(first).split(":")[-1] if isinstance(first, str) else ""
+        except Exception:
+            pass
+        # Any 200 with match data implies contract bytecode exists.
+        return True, verified, name
+
+    async def _enrich_keyless(self, ctx: Ctx, addr: str) -> List[Finding]:
+        """Keyless enrichment: Blockchair (balance/activity) + Sourcify
+        (verified-source check). No API keys needed."""
+        out: List[Finding] = []
+
+        # 1. Blockchair dashboard: balance, tx counts, first/last seen.
+        balance = 0.0
+        tx_count = 0
+        first_seen = last_seen = ""
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            f"{BLOCKCHAIR_API}/{addr}", timeout=20,
+                            max_retries=1)
+            data = safe_json_dict(r)
+            info = ((data.get("data") or {}).get(addr) or {})
+            address_info = info.get("address") or {}
+            balance = _wei_to_eth(str(address_info.get("balance") or "0"))
+            tx_count = int(address_info.get("transaction_count") or 0)
+            first_seen = str(address_info.get("first_seen_receiving") or "")[:10]
+            last_seen = str(address_info.get("last_seen_spending") or "")[:10]
+        except Exception:
+            pass
+
+        # 2. Sourcify verified-source check.
+        is_contract, verified, contract_name = await self._sourcify_verified(ctx, addr)
+        ctx.publish("chain_contracts", {
+            "address": addr, "is_contract": is_contract,
+            "verified": verified, "name": contract_name})
+
+        kind = "contract" if is_contract else "wallet/EOA"
+        out.append(self._f(
+            "identity", "chain_profile",
+            f"Chain profile: {addr} ({kind}) - balance {balance:.4f} ETH, "
+            f"{tx_count} total txns, first seen {first_seen or 'n/a'}, "
+            f"last {last_seen or 'n/a'}"
+            f"{', verified source on Sourcify' + (f' ({contract_name})' if contract_name else '') if verified else ''}.",
+            source="Blockchair+Sourcify (keyless)",
+            source_url=f"https://blockchair.com/ethereum/address/{addr}",
+            confidence=85, passive=True,
+            evidence={
+                "severity": "low", "address": addr, "kind": kind,
+                "balance_eth": round(balance, 6), "tx_count": tx_count,
+                "first_seen": first_seen, "last_seen": last_seen,
+                "verified_source": verified, "contract_name": contract_name,
+                "exploitability": "unknown",
+                "remediation": ("Public chain data: nothing to remediate. Add "
+                                "ETHERSCAN_API_KEY for full tx history and "
+                                "counterparty analysis.")}))
+
+        if is_contract and not verified:
+            out.append(self._f(
+                "identity", "contract_unverified",
+                f"MEDIUM: {addr} has deployed bytecode but no verified source "
+                f"on Sourcify/Etherscan. Treat any interaction with it as high risk.",
+                source="Sourcify (keyless)",
+                source_url=f"https://blockchair.com/ethereum/address/{addr}",
+                confidence=85, passive=True,
                 evidence={
                     "severity": "medium", "address": addr,
                     "exploitability": "theoretical",

@@ -1,15 +1,17 @@
 """Smart contract static analyzer (pure Python, no Slither).
 
-For contract addresses with VERIFIED source on Etherscan, pulls the public
-source and runs static checks: reentrancy patterns (external call before
-state update), missing access controls (public state-changing functions
-with no guard), tx.origin usage, unchecked external calls, and integer
-overflow risk on pre-0.8.0 Solidity. Static analysis only: it never sends
+Works with ZERO API keys:
+- Keyless: Sourcify repo (no auth) for verified contract source.
+- Enhanced: ETHERSCAN_API_KEY fetches Etherscan verified source first
+  (broader coverage) when configured.
+
+For contract addresses with VERIFIED source, pulls the public source and
+runs static checks: reentrancy patterns (external call before state
+update), missing access controls (public state-changing functions with no
+guard), tx.origin usage, unchecked external calls, and integer overflow
+risk on pre-0.8.0 Solidity. Static analysis only: it never sends
 transactions, calls contracts, or touches the chain beyond reading
 published source.
-
-Needs ETHERSCAN_API_KEY (ctx key "etherscan" or the ETHERSCAN_API_KEY
-env var). Skips gracefully with a clear note when the key is missing.
 """
 from __future__ import annotations
 
@@ -19,9 +21,10 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
 
 ETH_API = "https://api.etherscan.io/api"
+SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
 MAX_ADDR = 5  # contracts to audit per run (free-tier friendly)
 
 # Matches `function name(...) modifiers returns (...) {` up to the matching
@@ -320,9 +323,11 @@ class ContractAuditPlugin(Plugin):
     passive = True
     cost = Cost.FREEMIUM
     group = "web3"
-    requires_keys = ["etherscan"]
+    requires_keys = []  # works keyless via Sourcify; etherscan key enhances
     description = ("Static analysis of verified contract source: reentrancy, "
                    "access control, tx.origin, unchecked calls, overflow. "
+                   "Keyless Sourcify source always tried; ETHERSCAN_API_KEY "
+                   "(optional) adds Etherscan coverage. "
                    "Never interacts with contracts.")
     phase = 2  # consumes addresses published by address miners
     timeout_s = 180
@@ -330,10 +335,6 @@ class ContractAuditPlugin(Plugin):
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
         key = _key(ctx)
-        if not key:
-            return self._skipped(
-                "ETHERSCAN_API_KEY not configured (set the 'etherscan' key or "
-                "ETHERSCAN_API_KEY env var). Contract audit skipped.")
 
         addrs = self._collect(ctx)
         if not addrs:
@@ -347,14 +348,14 @@ class ContractAuditPlugin(Plugin):
         no_source = 0
         for addr in addrs[:MAX_ADDR]:
             try:
-                src = await self._source(ctx, key, addr)
+                src, src_origin = await self._source(ctx, key, addr)
                 if not src:
                     no_source += 1
                     findings.append(self._f(
                         "web3", "contract_source_unavailable",
                         f"{addr}: no verified source on Etherscan; static audit "
                         "not possible (bytecode only).",
-                        source="Etherscan",
+                        source="Etherscan/Sourcify",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=90, passive=True,
                         evidence={
@@ -374,7 +375,7 @@ class ContractAuditPlugin(Plugin):
                         "access control, unchecked calls, overflow, "
                         "front-running, flash-loan callbacks, initializers). "
                         "Not a proof of safety.",
-                        source="Etherscan static audit",
+                        source="Etherscan/Sourcify static audit",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=60, passive=True,
                         evidence={
@@ -386,7 +387,7 @@ class ContractAuditPlugin(Plugin):
                     findings.append(self._f(
                         "web3", f"contract_{iss['check']}",
                         f"{iss['severity'].upper()}: {iss['detail']}",
-                        source="Etherscan static audit",
+                        source="Etherscan/Sourcify static audit",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=70, passive=True,
                         evidence={
@@ -415,7 +416,23 @@ class ContractAuditPlugin(Plugin):
                     seen.append(a)
         return seen
 
-    async def _source(self, ctx: Ctx, key: str, addr: str) -> Optional[str]:
+    async def _source(self, ctx: Ctx, key: Optional[str], addr: str):
+        """Fetch verified contract source.
+
+        Tries Etherscan (when a key is configured) first, then keyless
+        Sourcify repo. Returns (source, origin_label); (None, "") when
+        neither has verified source.
+        """
+        if key:
+            src = await self._source_etherscan(ctx, key, addr)
+            if src:
+                return src, "Etherscan"
+        src = await self._source_sourcify(ctx, addr)
+        if src:
+            return src, "Sourcify"
+        return None, ""
+
+    async def _source_etherscan(self, ctx: Ctx, key: str, addr: str) -> Optional[str]:
         from urllib.parse import urlencode
         url = f"{ETH_API}?{urlencode({'module': 'contract', 'action': 'getsourcecode', 'address': addr, 'apikey': key})}"
         r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
@@ -434,3 +451,41 @@ class ContractAuditPlugin(Plugin):
         if src.startswith("{{"):
             src = src.strip("{}")
         return src if len(src) > 100 else None
+
+    async def _source_sourcify(self, ctx: Ctx, addr: str) -> Optional[str]:
+        """Keyless verified source via Sourcify repo (no auth).
+
+        Tries full_match then partial_match metadata, downloads every
+        .sol source file, concatenates. Returns None when not verified.
+        """
+        for match in ("full_match", "partial_match"):
+            meta_url = f"{SOURCIFY_REPO}/{match}/1/{addr}/metadata.json"
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", meta_url,
+                                timeout=20, max_retries=1)
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                meta = r.json()
+            except Exception:
+                continue
+            sources = (meta or {}).get("sources") or {}
+            sol_paths = [p for p in sources.keys()
+                         if isinstance(p, str) and p.endswith(".sol")]
+            if not sol_paths:
+                continue
+            parts: List[str] = []
+            for sp in sol_paths[:12]:  # cap files per contract
+                furl = f"{SOURCIFY_REPO}/{match}/1/{addr}/sources/{sp}"
+                try:
+                    fr = await fetch(ctx.http, ctx.limiter, "GET", furl,
+                                     timeout=20, max_retries=1)
+                except Exception:
+                    continue
+                if fr.status_code == 200 and fr.text:
+                    parts.append(f"\n// ==== {sp} ====\n{fr.text}")
+            if parts:
+                return "\n".join(parts)
+        return None

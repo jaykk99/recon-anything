@@ -8,8 +8,7 @@ sell tax asymmetry), and unrenounced ownership. Detection only: pure
 static source analysis, never interacts with the chain, never calls
 contracts, never touches wallets.
 
-Needs ETHERSCAN_API_KEY (ctx key "etherscan" or the ETHERSCAN_API_KEY
-env var). Skips gracefully with a clear note when the key is missing.
+Works with ZERO API keys (keyless Sourcify source; ETHERSCAN_API_KEY optional).
 
 Liquidity depth/locks cannot be checked statically; every finding's
 remediation says to verify locks manually.
@@ -250,21 +249,18 @@ class MemeCoinPlugin(Plugin):
     passive = True
     cost = Cost.FREEMIUM
     group = "web3"
-    requires_keys = ["etherscan"]
+    requires_keys = []  # works keyless via Sourcify; etherscan key enhances
     description = ("Meme-coin / token risk scan on verified source: honeypot "
                    "shapes, rug-pull levers (mint, blacklist, taxes, trading "
-                   "toggles), tax asymmetry, ownership. Static only, never "
-                   "touches the chain.")
+                   "toggles), tax asymmetry, ownership. Keyless Sourcify source "
+                   "always tried; ETHERSCAN_API_KEY (optional) adds Etherscan "
+                   "coverage. Static only, never touches the chain.")
     phase = 2  # consumes addresses published by address miners
     timeout_s = 180
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
         key = _key(ctx)
-        if not key:
-            return self._skipped(
-                "ETHERSCAN_API_KEY not configured (set the 'etherscan' key or "
-                "ETHERSCAN_API_KEY env var). Meme-coin scan skipped.")
 
         addrs = self._collect(ctx)
         if not addrs:
@@ -283,10 +279,10 @@ class MemeCoinPlugin(Plugin):
                     no_source += 1
                     findings.append(self._f(
                         "web3", "meme_unverified",
-                        f"{addr}: no verified source on Etherscan. Token "
+                        f"{addr}: no verified source on Etherscan/Sourcify. Token "
                         "risk cannot be assessed statically; treat as "
                         "dangerous.",
-                        source="Etherscan",
+                        source="Etherscan/Sourcify",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=90, passive=True,
                         evidence={
@@ -348,7 +344,49 @@ class MemeCoinPlugin(Plugin):
                     seen.append(a)
         return seen
 
-    async def _source(self, ctx: Ctx, key: str, addr: str) -> Optional[str]:
+    async def _source(self, ctx: Ctx, key: Optional[str], addr: str) -> Optional[str]:
+        """Verified token source: Etherscan when keyed, else keyless Sourcify."""
+        if key:
+            src = await self._source_etherscan(ctx, key, addr)
+            if src:
+                return src
+        return await self._source_sourcify(ctx, addr)
+
+    async def _source_sourcify(self, ctx: Ctx, addr: str) -> Optional[str]:
+        """Keyless verified source via Sourcify repo (no auth)."""
+        for match in ("full_match", "partial_match"):
+            meta_url = f"{SOURCIFY_REPO}/{match}/1/{addr}/metadata.json"
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", meta_url,
+                                timeout=20, max_retries=1)
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                meta = r.json()
+            except Exception:
+                continue
+            sources = (meta or {}).get("sources") or {}
+            sol_paths = [sp for sp in sources.keys()
+                         if isinstance(sp, str) and sp.endswith(".sol")]
+            if not sol_paths:
+                continue
+            parts = []
+            for sp in sol_paths[:12]:
+                furl = f"{SOURCIFY_REPO}/{match}/1/{addr}/sources/{sp}"
+                try:
+                    fr = await fetch(ctx.http, ctx.limiter, "GET", furl,
+                                     timeout=20, max_retries=1)
+                except Exception:
+                    continue
+                if fr.status_code == 200 and fr.text:
+                    parts.append(f"\n// ==== {sp} ====\n{fr.text}")
+            if parts:
+                return "\n".join(parts)
+        return None
+
+    async def _source_etherscan(self, ctx: Ctx, key: str, addr: str) -> Optional[str]:
         from urllib.parse import urlencode
         url = f"{ETH_API}?{urlencode({'module': 'contract', 'action': 'getsourcecode', 'address': addr, 'apikey': key})}"
         r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
