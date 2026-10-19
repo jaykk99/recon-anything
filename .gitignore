@@ -8,3 +8,4 @@ __pycache__/
 evidence/
 .DS_Store
 frontend/tsconfig.tsbuildinfo
+*.db*
