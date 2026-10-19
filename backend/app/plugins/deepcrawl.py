@@ -17,14 +17,16 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-MAX_PAGES = 100
-MAX_DEPTH = 4
+MAX_PAGES = 200
+MAX_DEPTH = 6
 CONCURRENCY = 10
 
 # Patterns that reveal structure
 LINK_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 SRC_RE = re.compile(r'src=["\']([^"\']+)["\']', re.I)
 ACTION_RE = re.compile(r'action=["\']([^"\']+)["\']', re.I)
+CSS_LINK_RE = re.compile(r'<link[^>]+href=["\']([^"\']+\.css(?:\?[^"\']*)?)["\']', re.I)
+CSS_URL_RE = re.compile(r'url\(\s*["\']?([^)"\']+)["\']?\s*\)', re.I)
 API_CALL_RE = re.compile(r'(?:fetch|axios\.(?:get|post)|XMLHttpRequest|\.ajax)\s*\(\s*["\']([^"\']+)["\']', re.I)
 IMPORT_RE = re.compile(r'(?:import|require)\s*\(?\s*["\']([^"\']+)["\']', re.I)
 COMMENT_PATH_RE = re.compile(r'<!--.*?((?:/[a-zA-Z0-9_\-.]+){2,}).*?-->', re.S)
@@ -50,6 +52,7 @@ class DeepCrawlPlugin(Plugin):
         queue = [(base + "/", 0)]
         pages_crawled = 0
         js_files: Set[str] = set()
+        css_files: Set[str] = set()
         api_calls: Set[str] = set()
 
         async def fetch_page(url: str) -> str:
@@ -104,6 +107,13 @@ class DeepCrawlPlugin(Plugin):
                     imp = m.group(1)
                     if imp.startswith(("http", "/")):
                         js_files.add(urljoin(url, imp))
+                # CSS files: mine url() references for backend asset paths
+                for m in CSS_LINK_RE.finditer(html):
+                    css_url = urljoin(url, m.group(1))
+                    p = urlparse(css_url)
+                    if p.netloc == parsed_base.netloc or not p.netloc:
+                        css_files.add(css_url)
+                        ctx.publish("css_files", css_url)
                 # Comment paths
                 for m in COMMENT_PATH_RE.finditer(html):
                     ctx.publish("endpoints", urljoin(url, m.group(1)))
@@ -112,12 +122,43 @@ class DeepCrawlPlugin(Plugin):
             findings.append(self._f("web", "js_file_deep", js,
                                     f"deepcrawl: JS file found at depth", confidence=75))
             ctx.publish("js_files", js)
+        # Mine CSS url() references for backend/asset paths
+        async def fetch_css(css_url: str) -> str:
+            try:
+                resp = await fetch(ctx.http, ctx.limiter, "GET", css_url)
+                if resp and resp.status_code == 200:
+                    return resp.text[:300000]
+            except Exception:
+                pass
+            return ""
+        if css_files:
+            css_bodies = await asyncio.gather(
+                *[fetch_css(u) for u in sorted(css_files)[:20]])
+            css_refs = 0
+            for css_url, css in zip(sorted(css_files)[:20], css_bodies):
+                if not css:
+                    continue
+                for m in CSS_URL_RE.finditer(css):
+                    ref = m.group(1).strip()
+                    if ref.startswith(("data:", "#")):
+                        continue
+                    rlink = urljoin(css_url, ref)
+                    p = urlparse(rlink)
+                    if p.netloc == urlparse(base).netloc or not p.netloc:
+                        ctx.publish("endpoints", rlink)
+                        css_refs += 1
+            if css_refs:
+                findings.append(self._f("web", "css_refs",
+                                        f"deepcrawl: {css_refs} url() references "
+                                        f"mined from {len(css_files)} CSS files",
+                                        "deepcrawl", confidence=80))
         for api in sorted(api_calls)[:50]:
             findings.append(self._f("api", "api_call", api,
                                     "deepcrawl: API call in page JS", confidence=70))
 
         findings.append(self._f("web", "crawl_summary",
                                 f"{pages_crawled} pages crawled to depth {MAX_DEPTH}, "
-                                f"{len(js_files)} JS files, {len(api_calls)} API calls",
+                                f"{len(js_files)} JS files, {len(css_files)} CSS files, "
+                                f"{len(api_calls)} API calls",
                                 "deepcrawl", confidence=90))
         return self._ok(findings, f"deep crawled {pages_crawled} pages")

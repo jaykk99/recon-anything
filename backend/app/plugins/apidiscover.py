@@ -33,6 +33,20 @@ DOC_PATHS = [
     "/api/redoc", "/redoc/", "/api/redoc/",
     "/api/openapi", "/openapi", "/api/v3/api-docs",
     "/api/documentation", "/documentation", "/api/spec.json",
+    # Backend framework defaults (deep API dive, Jay 2026-10-18)
+    "/actuator", "/actuator/health", "/actuator/env", "/actuator/mappings",
+    "/actuator/beans", "/actuator/configprops", "/actuator/info",
+    "/metrics", "/prometheus", "/healthz", "/readyz", "/livez", "/health",
+    "/api/health", "/api/v1/health", "/api/v2/health", "/api/status",
+    "/wp-json/", "/wp-json/wp/v2/", "/wp-json/wp/v2/users",
+    "/xmlrpc.php", "/wp-cron.php",
+    "/api/v3/", "/api/v4/", "/api/internal/", "/api/private/",
+    "/api/admin/", "/api/public/", "/internal/", "/private/",
+    "/rest/", "/api/rest/", "/gql/", "/graphql/console",
+    "/server-status", "/server-info", "/phpinfo.php", "/info.php",
+    "/.well-known/", "/.well-known/security.txt",
+    "/debug/", "/_debug/", "/console/", "/telescope/", "/horizon/",
+    "/jmx-console/", "/web-console/", "/manager/html", "/manager/status",
 ]
 
 API_WORDLIST = """users user me profile account accounts login logout register

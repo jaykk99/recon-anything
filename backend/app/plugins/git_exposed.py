@@ -1,9 +1,10 @@
-"""GitTools-style exposed .git directory detector.
+"""GitTools-style exposed VCS directory detector.
 
-Probes for publicly readable .git metadata: /.git/HEAD, /.git/config,
-/.gitignore, /.git/logs/HEAD. If exposed, flags it HIGH - an exposed .git
-directory lets anyone reconstruct source code and history, which almost
-always leaks secrets.
+Probes for publicly readable version-control metadata: /.git/HEAD,
+/.git/config, /.git/logs/HEAD, plus Subversion (/.svn/entries),
+Mercurial (/.hg/requires), and Bazaar (/.bzr/branch.conf). If exposed,
+flags it HIGH - an exposed VCS directory lets anyone reconstruct source
+code and history, which almost always leaks secrets.
 
 Detection only: small read-only GETs of metadata files. Never downloads
 entire repos or objects. Authorized testing only.
@@ -26,6 +27,15 @@ GIT_PROBES = [
     ("/.gitignore", None, ".gitignore"),
     ("/.git/logs/HEAD", "commit", ".git/logs/HEAD"),
     ("/.git/COMMIT_EDITMSG", None, ".git/COMMIT_EDITMSG"),
+    ("/.git/index", None, ".git/index"),
+    # Subversion
+    ("/.svn/entries", "dir", ".svn/entries"),
+    ("/.svn/wc.db", "SQLite", ".svn/wc.db"),
+    # Mercurial
+    ("/.hg/requires", "revlog", ".hg/requires"),
+    ("/.hg/hgrc", "[", ".hg/hgrc"),
+    # Bazaar
+    ("/.bzr/branch.conf", "parent", ".bzr/branch.conf"),
 ]
 
 
@@ -36,8 +46,8 @@ class GitExposedPlugin(Plugin):
     passive = True
     cost = Cost.FREE
     group = "web"
-    description = ("GitTools-style: probe for publicly readable .git "
-                   "metadata (HEAD, config, logs).")
+    description = ("GitTools-style: probe for publicly readable VCS "
+                   "metadata (.git, .svn, .hg, .bzr).")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -76,22 +86,25 @@ class GitExposedPlugin(Plugin):
                           "severity": sev, "risk": sev,
                           "preview": detail}))
 
-        # .git directory listing check (some servers index it)
-        try:
-            url = base.rstrip("/") + "/.git/"
-            r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
-            if (r.status_code == 200
-                    and re.search(r"HEAD|config|objects/?", r.text)):
-                findings.append(self._f(
-                    "leak", "git_exposed",
-                    "Exposed .git/ directory listing publicly readable",
-                    source="git exposure probe", source_url=url,
-                    confidence=90, passive=passive,
-                    evidence={"remediation": "Block /.git at the web server "
-                              "or CDN immediately.",
-                              "severity": "high", "risk": "high"}))
-        except Exception:
-            pass
+        # VCS directory listing checks (some servers index them)
+        for vcs_dir, vcs_marker in (("/.git/", "HEAD|config|objects/?"),
+                                    ("/.svn/", "entries|wc.db|format"),
+                                    ("/.hg/", "requires|store|hgrc")):
+            try:
+                url = base.rstrip("/") + vcs_dir
+                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10)
+                if (r.status_code == 200
+                        and re.search(vcs_marker, r.text)):
+                    findings.append(self._f(
+                        "leak", "git_exposed",
+                        f"Exposed {vcs_dir} directory listing publicly readable",
+                        source="git exposure probe", source_url=url,
+                        confidence=90, passive=passive,
+                        evidence={"remediation": f"Block {vcs_dir} at the web server "
+                                  "or CDN immediately.",
+                                  "severity": "high", "risk": "high"}))
+            except Exception:
+                pass
 
         res = self._ok(findings,
                        f"{len(findings)} .git exposure hits" if findings

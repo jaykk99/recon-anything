@@ -1,11 +1,12 @@
 """Site crawler (phase 1, feeds the discovery bus).
 
-Crawls the target 2 levels deep: extracts every link, form action,
-script src, and input name; parses sitemap.xml for listed URLs;
-mines HTML comments for paths and secrets; collects external
-resources (CDNs, APIs, third-party). Everything discovered is
-published to ctx.shared so phase-2 chain plugins and vuln probes
-have maximum input. Fast: capped pages, concurrent fetches.
+Crawls the target 5 levels deep: extracts every link, form action,
+script src, stylesheet, and input name; parses sitemap.xml (including
+sitemap indexes) for listed URLs; mines CSS url() references, HTML
+comments for paths and secrets; collects external resources (CDNs,
+APIs, third-party). Everything discovered is published to ctx.shared
+so phase-2 chain plugins and vuln probes have maximum input.
+Fast: capped pages, concurrent fetches.
 """
 from __future__ import annotations
 
@@ -20,9 +21,9 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-MAX_PAGES = 40
-MAX_DEPTH = 2
-CONCURRENCY = 8
+MAX_PAGES = 120
+MAX_DEPTH = 5
+CONCURRENCY = 10
 
 COMMENT_SECRET_HINTS = re.compile(
     r"(api[_-]?key|secret|password|token|passwd|aws_|private[_-]?key)",
@@ -37,7 +38,7 @@ class CrawlerPlugin(Plugin):
     passive = True
     cost = Cost.FREE
     group = "web"
-    description = "2-level crawl: links, forms, comments, sitemap, externals."
+    description = "5-level crawl: links, forms, comments, sitemap, CSS, externals."
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -154,6 +155,50 @@ class CrawlerPlugin(Plugin):
                     else:
                         externals.add(urlparse(src).netloc)
 
+                # stylesheets -> fetch and mine url() references (often leak
+                # backend asset paths, upload dirs, API hosts)
+                css_urls = []
+                for m in re.finditer(
+                        r'<link[^>]+rel=["\']stylesheet["\'][^>]+'
+                        r'href=["\']([^"\']+)["\']', html, re.I):
+                    css_urls.append(urljoin(furl or url, m.group(1).strip()))
+                for m in re.finditer(
+                        r'<link[^>]+href=["\']([^"\']+\.css(?:\?[^"\']*)?)["\']',
+                        html, re.I):
+                    css_urls.append(urljoin(furl or url, m.group(1).strip()))
+                for css_url in list(dict.fromkeys(css_urls))[:15]:
+                    ctx.publish("css_files", css_url)
+                    try:
+                        cr = await fetch(ctx.http, ctx.limiter, "GET",
+                                         css_url, timeout=12)
+                        if cr.status_code == 200:
+                            css = cr.text[:300000]
+                            for um in re.finditer(
+                                    r'url\(\s*["\']?([^)"\']+)["\']?\s*\)',
+                                    css, re.I):
+                                ref = um.group(1).strip()
+                                if ref.startswith(("data:", "#")):
+                                    continue
+                                rlink = urljoin(css_url, ref)
+                                p = urlparse(rlink)
+                                if p.netloc == domain or \
+                                        p.netloc.endswith("." + domain):
+                                    ctx.publish("endpoints", rlink)
+                                elif p.netloc:
+                                    externals.add(
+                                        f"{p.scheme}://{p.netloc}")
+                            # CSS comments often hold paths/TODOs
+                            for ccm in re.finditer(r"/\*(.*?)\*/", css, re.S):
+                                ctext = ccm.group(1)
+                                for pm in re.finditer(
+                                        r"((?:/[a-zA-Z0-9_\-.]+){2,})",
+                                        ctext):
+                                    ctx.publish(
+                                        "endpoints",
+                                        urljoin(css_url, pm.group(1)))
+                    except Exception:
+                        pass
+
                 # forms (with and without action)
                 for m in re.finditer(
                         r'<form[^>]+action=["\']([^"\']*)["\']', html, re.I):
@@ -202,20 +247,36 @@ class CrawlerPlugin(Plugin):
                             evidence={"severity": "high",
                                       "comment": comment[:500]}))
 
-        # sitemap.xml: crawl every listed URL (cheap, high value)
+        # sitemap.xml: crawl every listed URL (cheap, high value).
+        # Handles sitemap indexes (nested sitemaps) recursively.
         sitemap_urls = 0
-        try:
-            sr = await fetch(ctx.http, ctx.limiter, "GET",
-                             f"{base}/sitemap.xml", timeout=15)
-            if sr.status_code == 200:
-                for m in re.finditer(r"<loc>([^<]+)</loc>",
-                                     sr.text[:500000]):
+
+        async def fetch_sitemap(surl: str, depth: int = 0):
+            nonlocal sitemap_urls
+            if depth > 2:
+                return
+            try:
+                sr = await fetch(ctx.http, ctx.limiter, "GET", surl,
+                                 timeout=15)
+                if sr.status_code != 200:
+                    return
+                body = sr.text[:1000000]
+                is_index = "<sitemapindex" in body or \
+                    re.search(r"<sitemap>", body)
+                for m in re.finditer(r"<loc>([^<]+)</loc>", body):
                     loc = m.group(1).strip()
-                    if domain in urlparse(loc).netloc:
+                    if is_index and depth < 2 and \
+                            loc.lower().endswith((".xml", ".xml.gz")):
+                        await fetch_sitemap(loc, depth + 1)
+                    elif domain in urlparse(loc).netloc:
                         ctx.publish("endpoints", loc)
                         sitemap_urls += 1
-        except Exception:
-            pass
+            except Exception:
+                pass
+
+        for spath in ("/sitemap.xml", "/sitemap_index.xml",
+                      "/sitemap-index.xml"):
+            await fetch_sitemap(f"{base}{spath}")
         if sitemap_urls:
             findings.append(self._f(
                 "web", "sitemap",

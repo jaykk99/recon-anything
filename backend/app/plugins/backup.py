@@ -5,6 +5,12 @@ db, dump, site, www, etc.) and tries every common backup extension.
 Also sweeps well-known backup paths directly. Passive mode uses the
 Wayback Machine; active mode does read-only GETs. When a backup is
 found, its first bytes are sniffed for secrets/config markers.
+
+Deep backend sweep (Jay 2026-10-18): also probes backend source dirs
+(/src/, /app/, /backend/, /api/, /server/, /lib/, /config/, /inc/,
+/includes/) with backend extensions (.php, .asp, .aspx, .jsp, .py,
+.rb, .pl, .cgi) plus admin consoles (/wp-admin/, /phpmyadmin/,
+/server-status/, /actuator/, etc.).
 Authorized testing only.
 """
 from __future__ import annotations
@@ -87,6 +93,56 @@ DIRECT_PATHS = [
 SECRET_MARKERS = ["password", "secret", "api_key", "apikey", "private key",
                   "BEGIN PRIVATE", "mongodb://", "postgres://", "mysql://"]
 
+# DEEP backend discovery (Jay's order 2026-10-18): probe backend source
+# dirs and backend file extensions directly. These are checked AFTER
+# the secret/config tiers above so the 30s cap hits highest value first.
+BACKEND_DIRS = ["/src", "/app", "/backend", "/api", "/server", "/lib",
+                "/config", "/inc", "/includes", "/core", "/system",
+                "/application", "/classes", "/models", "/controllers",
+                "/protected", "/private", "/admin", "/manage",
+                "/cgi-bin", "/scripts", "/bin"]
+
+# Backend source file extensions probed directly (no backup suffix)
+BACKEND_EXTS = [".php", ".asp", ".aspx", ".jsp", ".py", ".rb", ".pl",
+                ".cgi"]
+
+BACKEND_FILES = [
+    # PHP
+    "config.php", "configuration.php", "settings.php", "db.php",
+    "database.php", "connect.php", "connection.php", "dbconn.php",
+    "dbconfig.php", "config.inc.php", "index.php", "admin.php",
+    "login.php", "wp-config.php", "local-config.php",
+    # Python
+    "settings.py", "config.py", "app.py", "main.py", "wsgi.py",
+    "manage.py",
+    # Node
+    "server.js", "app.js", "index.js", "routes.js", ".env",
+    # Ruby
+    "config.ru", "application.rb", "database.yml", "secrets.yml",
+    # Java
+    "web.xml", "struts.xml", "application.properties",
+    "application.yml", "pom.xml", "index.jsp", "login.jsp",
+    # .NET
+    "web.config", "global.asax", "default.aspx", "login.aspx",
+    # Perl/CGI
+    "index.pl", "admin.pl", "index.cgi",
+]
+
+# Admin/management consoles and server-info endpoints
+ADMIN_PATHS = [
+    "/wp-admin/", "/wp-login.php", "/administrator/", "/admin/",
+    "/admin/login.php", "/manage/", "/management/", "/console/",
+    "/phpmyadmin/", "/phpMyAdmin/", "/pma/", "/myadmin/",
+    "/server-status", "/server-status/", "/server-info", "/server-info/",
+    "/phpinfo.php", "/info.php", "/test.php", "/phpinfo/",
+    "/.env", "/.env.local", "/.env.production",
+    "/actuator", "/actuator/health", "/actuator/env", "/actuator/mappings",
+    "/metrics", "/prometheus", "/healthz", "/readyz", "/livez",
+    "/telescope/", "/horizon/", "/_debug/", "/debug/",
+    "/xmlrpc.php", "/wp-json/", "/wp-json/wp/v2/",
+    "/jmx-console/", "/web-console/", "/manager/html",
+]
+
 
 class BackupPlugin(Plugin):
     timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
@@ -114,6 +170,18 @@ class BackupPlugin(Plugin):
             for ext in EXTENSIONS:
                 candidates.append(f"/{name}{ext}")
         candidates += DIRECT_PATHS
+
+        # Deep backend sweep: backend files with backend extensions at
+        # root, backend dirs themselves, and admin/management paths.
+        # Appended after secret/config tiers (priority order).
+        for name in BACKEND_FILES:
+            parts = name.rsplit(".", 1)
+            base_name = parts[0] if len(parts) == 2 and parts[0] else name
+            for ext in BACKEND_EXTS:
+                candidates.append(f"/{base_name}{ext}")
+        for d in BACKEND_DIRS:
+            candidates.append(d + "/")
+        candidates += ADMIN_PATHS
 
         def sniff(body: str) -> str:
             low = body.lower()[:2000]
