@@ -126,7 +126,17 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                                  "function": "",
                                  "detail": f"Return value of .{what}(...) not checked near: {ctx_line.replace(chr(10), ' ').strip()[:140]}"})
 
+    # --- 3. selfdestruct / suicide: can brick or drain the contract ---
+    for sm in re.finditer(r"\bselfdestruct\s*\(|\bsuicide\s*\(", clean):
+        ctx_line = clean[max(0, sm.start() - 80):sm.end() + 40].replace("\n", " ").strip()
+        findings.append({"check": "selfdestruct", "severity": "medium",
+                         "function": "",
+                         "detail": f"selfdestruct/suicide present: ...{ctx_line[:140]}... "
+                                   "Can brick the contract or force-drain ETH to an "
+                                   "attacker-chosen address."})
+
     funcs = _split_functions(clean)
+    fn_names = [n for n, _ in funcs]
     for name, body in funcs:
         # find the signature text (from 'function name' to the '{')
         sig_m = re.search(r"function\s+" + re.escape(name) + r"\s*\([^;{}]*\)[^{;]*", clean)
@@ -144,14 +154,61 @@ def audit_source(src: str) -> List[Dict[str, str]]:
             for cm in re.finditer(call_re, body):
                 after = body[cm.end():]
                 if _state_writes(after):
+                    no_guard_note = ("" if "nonReentrant" in mods else
+                                     " Also missing a nonReentrant guard on this "
+                                     "value-transfer function.")
                     findings.append({
                         "check": "reentrancy", "severity": "high",
                         "function": name,
                         "detail": (f"Function '{name}' makes an external value call "
                                    f"({call_kind}) and writes state AFTER it. Classic "
                                    "reentrancy shape: apply checks-effects-interactions "
-                                   "or ReentrancyGuard.")})
+                                   f"or ReentrancyGuard.{no_guard_note}")})
                     break
+
+        # --- 3b. delegatecall to a non-hardcoded (untrusted) target ---
+        for dm in re.finditer(r"\.delegatecall\s*\(", body):
+            arg_m = re.match(r"\s*([^),;]{0,80})", body[dm.end():])
+            arg = (arg_m.group(1) if arg_m else "").strip()
+            trusted = bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", arg))
+            if not trusted and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", arg):
+                # immutable/constant state vars are set once at deploy time:
+                # effectively hardcoded, so trusted. Check the declaration
+                # statement (keyword can come before or after the name).
+                for decl in re.finditer(r"[^;{}]*\b" + re.escape(arg) +
+                                        r"\b[^;{}]*;", clean):
+                    if re.search(r"\b(immutable|constant)\b", decl.group(0)):
+                        trusted = True
+                        break
+            if not trusted:
+                findings.append({
+                    "check": "delegatecall_untrusted", "severity": "high",
+                    "function": name,
+                    "detail": (f"Function '{name}' delegatecalls to a non-hardcoded "
+                               f"target ({arg[:60] or 'dynamic'}). If the target "
+                               "address is attacker-controllable the contract's "
+                               "logic can be hijacked (storage lives in the "
+                               "caller).")})
+                break
+
+        # --- 3c. flash-loan callback without caller check ---
+        if name in ("onFlashLoan", "executeOperation") and not guarded:
+            findings.append({
+                "check": "flashloan_callback", "severity": "medium",
+                "function": name,
+                "detail": (f"Flash-loan callback '{name}' has no access control. "
+                           "Anyone can invoke it directly, skipping the lending "
+                           "pool's accounting (repay checks, fee enforcement).")})
+
+        # --- 3d. unprotected initializer (proxy pattern) ---
+        if name.lower() == "initialize" and is_public and not guarded:
+            if not re.search(r"require\s*\(\s*!?_?initialized", body, re.I):
+                findings.append({
+                    "check": "unprotected_initializer", "severity": "high",
+                    "function": name,
+                    "detail": (f"Public initialize() in '{name}' has no guard. "
+                               "On upgradeable proxies anyone can front-run the "
+                               "initialization and seize ownership/admin rights.")})
 
         # --- 2. missing access control on public state-changing fns ---
         if is_public and name not in ("constructor",) and _state_writes(body) and not guarded:
@@ -172,6 +229,32 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                     "detail": (f"Pragma {pragma.strip()} is pre-0.8.0 (no built-in "
                                "overflow checks) and no SafeMath detected. Arithmetic "
                                f"in '{name}' may overflow/underflow.")})
+
+    # --- 6. front-running / tx-ordering shape: a public price/amount that is
+    #     settable and immediately usable (setPrice + buy), or an oracle price
+    #     consumed with no TWAP / commit-reveal protection ---
+    setters = [n for n in fn_names
+               if re.search(r"set(price|rate)|updateprice|setoracle", n, re.I)]
+    buyers = [n for n in fn_names
+              if re.search(r"buy|purchase|swap|deposit", n, re.I)]
+    if setters and buyers:
+        findings.append({
+            "check": "frontrunning", "severity": "medium", "function": "",
+            "detail": (f"MEV/front-running shape: public price setter(s) "
+                       f"{', '.join(setters[:5])} and immediately-usable value "
+                       f"function(s) {', '.join(buyers[:5])} in the same contract. "
+                       "A searcher can observe the price update in the mempool "
+                       "and buy/sell ahead of it.")})
+    for om in re.finditer(r"latestRoundData\s*\(", clean):
+        window = clean[max(0, om.start() - 500):om.end() + 500]
+        if not re.search(r"updatedAt|answeredInRound", window):
+            findings.append({
+                "check": "frontrunning", "severity": "medium", "function": "",
+                "detail": ("Oracle price from latestRoundData() used with no "
+                           "staleness check (no updatedAt/answeredInRound "
+                           "validation nearby). Stale prices enable oracle "
+                           "manipulation and MEV extraction.")})
+            break
 
     # dedup by (check, function)
     seen = set()
@@ -197,6 +280,23 @@ REMEDIATION = {
                        "require(success) / (bool ok,) = target.call{...}(...).",
     "overflow": "Upgrade to Solidity >=0.8.0 (built-in overflow checks) or use "
                 "SafeMath for all arithmetic on older compilers.",
+    "delegatecall_untrusted": "Only delegatecall to immutable, hardcoded "
+                              "implementation addresses you control. Never let "
+                              "the delegatecall target come from calldata, "
+                              "storage set by an owner, or an untrusted registry.",
+    "selfdestruct": "Remove selfdestruct if the contract holds funds. If an "
+                    "escape hatch is required, gate it behind a timelock + "
+                    "multisig and make it pause-first, never instant-destroy.",
+    "frontrunning": "Don't let a public setter change prices that are "
+                    "immediately tradable. Use commit-reveal, TWAP oracles, "
+                    "or batch auctions; validate oracle staleness "
+                    "(updatedAt, answeredInRound) before acting on a price.",
+    "flashloan_callback": "Restrict the callback to the lending pool: "
+                          "require(msg.sender == address(POOL)). Aave-style "
+                          "callbacks must never be callable by arbitrary users.",
+    "unprotected_initializer": "Call _disableInitializers() in the implementation "
+                                "constructor, or guard initialize() so it runs "
+                                "exactly once (OpenZeppelin Initializable).",
 }
 
 EXPL = {
@@ -205,6 +305,11 @@ EXPL = {
     "tx_origin": "public_poc",
     "unchecked_call": "theoretical",
     "overflow": "public_poc",
+    "delegatecall_untrusted": "weaponized",
+    "selfdestruct": "public_poc",
+    "frontrunning": "theoretical",
+    "flashloan_callback": "public_poc",
+    "unprotected_initializer": "weaponized",
 }
 
 
@@ -265,8 +370,10 @@ class ContractAuditPlugin(Plugin):
                     findings.append(self._f(
                         "web3", "contract_audit_clean",
                         f"{addr}: verified source scanned; no flagged patterns "
-                        "(reentrancy, tx.origin, access control, unchecked calls, "
-                        "overflow). Not a proof of safety.",
+                        "(reentrancy, delegatecall, selfdestruct, tx.origin, "
+                        "access control, unchecked calls, overflow, "
+                        "front-running, flash-loan callbacks, initializers). "
+                        "Not a proof of safety.",
                         source="Etherscan static audit",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=60, passive=True,
