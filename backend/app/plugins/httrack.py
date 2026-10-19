@@ -19,11 +19,13 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 30
 MAX_DEPTH = 3
 CONCURRENCY = 10
+LOOP_BUDGET = 25
 
 LINK_RE = re.compile(
     r'''(?:href|src|action)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -48,11 +50,20 @@ def _dir_of(url: str) -> str:
 
 
 def _looks_page(url: str) -> bool:
-    low = url.lower().split("?")[0]
-    if low.endswith("/") or low.endswith(PAGE_EXT):
+    # battle-test fix 2026-10-18: the old version ran endswith/rsplit on
+    # the FULL url, so "https://host" (no path) was misclassified as an
+    # asset (its host contains a dot) and never crawled. Only the path
+    # decides page-vs-asset now.
+    try:
+        path = urlparse(url.lower().split("?")[0]).path
+    except Exception:
+        return True
+    if not path or path.endswith("/"):
+        return True
+    if path.endswith(PAGE_EXT):
         return True
     # extensionless paths are usually pages/routes
-    return "." not in low.rsplit("/", 1)[-1]
+    return "." not in path.rsplit("/", 1)[-1]
 
 
 class HttrackPlugin(Plugin):
@@ -91,7 +102,8 @@ class HttrackPlugin(Plugin):
                     return page["url"], page["text"][:150000]
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 25:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < LOOP_BUDGET:
             batch = []
             while queue and len(batch) < CONCURRENCY and \
                     pages + len(batch) < MAX_PAGES:
@@ -102,9 +114,13 @@ class HttrackPlugin(Plugin):
                 batch.append((url, depth))
             if not batch:
                 break
-            for (url, depth), (final, html) in zip(
-                    batch, await asyncio.gather(
-                        *[grab(u) for u, _ in batch])):
+            results = await gather_capped(
+                [grab(u) for u, _ in batch],
+                LOOP_BUDGET - (time.monotonic() - t0))
+            for (url, depth), res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1

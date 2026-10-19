@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 
 RES_RE = re.compile(
     r'''(?:href|src|data-src|poster|content)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -70,8 +70,13 @@ class UrlscanPlugin(Plugin):
         findings: List[Finding] = []
 
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base,
-                            timeout=15, follow_redirects=True, max_retries=1)
+            # hard wall-clock cap: a trickling server can keep the
+            # connection alive past the per-operation timeout
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", base,
+                timeout=12, follow_redirects=True, max_retries=0), 20)
+            if r is None:
+                return self._degraded("fetch timed out (20s wall-clock)")
         except Exception as e:
             return self._degraded(f"could not fetch: {str(e)[:120]}")
 

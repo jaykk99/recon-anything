@@ -27,7 +27,8 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_BUNDLES = 100
 CONCURRENCY = 10
@@ -210,10 +211,15 @@ class JsDeepPlugin(Plugin):
                     if _host(hit) and len(hit) < 200:
                         urls.add(hit)
                         deobf_hits += 1
-            for ep in sorted(endpoints)[:200]:
-                ctx.publish("endpoints", ep)
 
-        await asyncio.gather(*[analyze(u) for u in queue])
+        # capped: a trickling bundle server must not stall the
+        # whole analysis past the budget
+        await gather_capped([analyze(u) for u in queue],
+                            TIME_BUDGET - (time.monotonic() - t0))
+        # publish once, after all bundles are analyzed (was redundantly
+        # re-sorted and re-published inside every analyze() call)
+        for ep in sorted(endpoints)[:200]:
+            ctx.publish("endpoints", ep)
 
         # --- source map reconstruction: download each .map, recover the
         # original source tree, and mine sourcesContent for secrets/endpoints
@@ -259,9 +265,10 @@ class JsDeepPlugin(Plugin):
                     if t not in todos and len(todos) < 30:
                         todos.append(t[:150])
 
-        await asyncio.gather(*[reconstruct(sm) for sm in
-                               sorted(sourcemaps)[:30]
-                               if (time.monotonic() - t0) < TIME_BUDGET])
+        await gather_capped(
+            [reconstruct(sm) for sm in sorted(sourcemaps)[:30]
+             if (time.monotonic() - t0) < TIME_BUDGET],
+            TIME_BUDGET - (time.monotonic() - t0))
 
         findings: List[Finding] = []
         findings.append(self._f(

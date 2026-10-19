@@ -87,6 +87,53 @@ def normalize_risk(severity: str) -> str:
     return "low"
 
 
+async def bounded(coro, seconds: float):
+    """Await a coroutine with a hard wall-clock cap.
+
+    httpx per-operation timeouts do not stop a slow trickle: a server
+    can keep the connection alive indefinitely sending bytes (the
+    Wayback CDX API does exactly this). This gives up after `seconds`
+    total wall-clock and raises asyncio.TimeoutError, which callers
+    fold into their normal degraded/error handling.
+    """
+    return await asyncio.wait_for(asyncio.ensure_future(coro),
+                                  timeout=seconds)
+
+
+async def gather_capped(coros, budget_s: float):
+    """asyncio.gather with a hard wall-clock cap.
+
+    The crawl loops check their time budget between batches, but one
+    stalled batch (a trickling server) used to be able to blow past
+    the 30s plugin ceiling on its own. This returns results for the
+    fetches that finished and None for the rest; it never raises on
+    timeout. Cancelled waiters on ctx.fetch_page's singleflight are
+    safe: the shared inner task is shielded and keeps its cache entry.
+    """
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    if not tasks:
+        return []
+    try:
+        done, pending = await asyncio.wait(tasks,
+                                           timeout=max(0.1, budget_s))
+    except Exception:
+        done, pending = set(), set(tasks)
+    for t in pending:
+        t.cancel()
+    out = []
+    for t in tasks:
+        if t in done:
+            try:
+                out.append(t.result())
+            except Exception:
+                out.append(None)
+        else:
+            out.append(None)
+    # let cancellations settle so semaphore slots are released
+    await asyncio.sleep(0)
+    return out
+
+
 def safe_json_list(resp) -> List[Dict[str, Any]]:
     """Parse an httpx response as JSON, returning a list of dicts.
 

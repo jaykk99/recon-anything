@@ -17,7 +17,8 @@ from urllib.parse import quote
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                   bounded)
 
 DIR_WORDS = """admin administrator api v1 v2 assets static media uploads
 images img files downloads css js scripts lib includes inc
@@ -68,9 +69,11 @@ class FeroxbusterPlugin(Plugin):
         rand = "".join(random.choices(string.ascii_lowercase, k=16))
         probe = f"{base}/__no_such_path_{rand}__"
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", probe,
-                            timeout=10, follow_redirects=False,
-                            max_retries=1)
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET", probe,
+                timeout=10, follow_redirects=False, max_retries=0), 12)
+            if r is None:
+                return {"status": 0, "length": 0, "body": ""}
             body = r.text[:3000]
             return {"status": r.status_code, "length": len(body),
                     "body": body[:1500]}
@@ -104,8 +107,10 @@ class FeroxbusterPlugin(Plugin):
                  {"timeout": 8, "max_retries": 0,
                   "follow_redirects": False})
                 for w in DIR_WORDS + FILE_WORDS]
+        # deadline: keep partial results on a slow host instead of
+        # discarding the whole directory sweep
         resps = await fetch_many(ctx.http, ctx.limiter, reqs,
-                                 concurrency=20)
+                                 concurrency=20, deadline=20)
         for (method, u, _kw), r in zip(reqs, resps):
             if r is None:
                 continue

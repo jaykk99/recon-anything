@@ -6,7 +6,7 @@ calls, WebSocket URLs, and GraphQL endpoints. Everything discovered is
 published to the discovery bus so phase-2 chain plugins and vuln
 probes have maximum input.
 
-GET only. Bounded: 50 pages, depth 4, 30s ceiling.
+GET only. Bounded: 30 pages, depth 4, 30s ceiling.
 """
 from __future__ import annotations
 
@@ -19,11 +19,13 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 30
 MAX_DEPTH = 4
 CONCURRENCY = 10
+LOOP_BUDGET = 26  # wall-clock cap for the whole crawl loop
 
 # Link-ish attributes to harvest
 HREF_RE = re.compile(
@@ -91,7 +93,8 @@ class KatanaPlugin(Plugin):
                     return page["url"], page["text"][:400000]
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 26:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < LOOP_BUDGET:
             batch = []
             while queue and len(batch) < CONCURRENCY and \
                     pages + len(batch) < MAX_PAGES:
@@ -102,9 +105,15 @@ class KatanaPlugin(Plugin):
                 batch.append((url, depth))
             if not batch:
                 break
-            results = await asyncio.gather(
-                *[fetch_page(u) for u, _ in batch])
-            for (url, depth), (final, html) in zip(batch, results):
+            # capped gather: one trickling server must not stall the
+            # whole batch past the loop budget
+            results = await gather_capped(
+                [fetch_page(u) for u, _ in batch],
+                LOOP_BUDGET - (time.monotonic() - t0))
+            for (url, depth), res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1

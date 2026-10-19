@@ -23,7 +23,8 @@ from urllib.parse import urljoin
 from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  bounded, gather_capped)
 
 CONCURRENCY = 20
 TIME_BUDGET = 25
@@ -109,10 +110,12 @@ class FileHunterPlugin(Plugin):
         # 404 baseline so we can filter soft-404s
         baseline: Optional[Tuple[int, int]] = None
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET",
-                            base + "fh-nope-9f3a2b1c7d.html",
-                            timeout=8, max_retries=0)
-            baseline = (r.status_code, len(r.content))
+            r = await bounded(fetch(
+                ctx.http, ctx.limiter, "GET",
+                base + "fh-nope-9f3a2b1c7d.html",
+                timeout=8, max_retries=0), 10)
+            if r is not None:
+                baseline = (r.status_code, len(r.content))
         except Exception:
             pass
 
@@ -150,7 +153,9 @@ class FileHunterPlugin(Plugin):
                     return
                 hits.append((path, cat, sev, note, r.status_code, body))
 
-        await asyncio.gather(*[probe(p, c, s, n) for p, c, s, n in TARGETS])
+        # capped: stalled probes must not push past the budget
+        await gather_capped([probe(p, c, s, n) for p, c, s, n in TARGETS],
+                            TIME_BUDGET - (time.monotonic() - t0))
 
         findings: List[Finding] = []
         for path, cat, sev, note, status, body in sorted(

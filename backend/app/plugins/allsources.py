@@ -23,7 +23,8 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 60
 CONCURRENCY = 12
@@ -138,11 +139,17 @@ class AllSourcesPlugin(Plugin):
                     pass
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < TIME_BUDGET:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < TIME_BUDGET:
             batch = [u for u in queue[:CONCURRENCY]]
             queue = queue[CONCURRENCY:]
-            results = await asyncio.gather(*[grab(u) for u in batch])
-            for req_url, (final, html) in zip(batch, results):
+            results = await gather_capped(
+                [grab(u) for u in batch],
+                TIME_BUDGET - (time.monotonic() - t0))
+            for req_url, res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1
@@ -153,7 +160,10 @@ class AllSourcesPlugin(Plugin):
                         if _same_site(u, domain):
                             ctx.publish("js", u)
                 for m in TAG_RE["css"].finditer(html):
-                    u = urljoin(final, m.group(2) or m.group(1) or "").strip()
+                    raw = (m.group(2) or m.group(1) or "").strip()
+                    if not raw:
+                        continue
+                    u = urljoin(final, raw)
                     if u.startswith(("http://", "https://")):
                         css.add(u)
                         ctx.publish("assets", u)

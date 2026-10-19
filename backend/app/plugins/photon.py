@@ -18,10 +18,12 @@ from urllib.parse import urljoin, urlparse, parse_qsl
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 20
 CONCURRENCY = 12
+LOOP_BUDGET = 22
 
 FILE_RE = re.compile(
     r'''(?:href|src)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -80,11 +82,17 @@ class PhotonPlugin(Plugin):
                     pass
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 22:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < LOOP_BUDGET:
             batch = [u for u in queue[:CONCURRENCY]]
             queue = queue[CONCURRENCY:]
-            for (url, (final, html)) in zip(
-                    batch, await asyncio.gather(*[grab(u) for u in batch])):
+            results = await gather_capped(
+                [grab(u) for u in batch],
+                LOOP_BUDGET - (time.monotonic() - t0))
+            for url, res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1

@@ -267,7 +267,7 @@ def detect_protection(resp: httpx.Response) -> Optional[
 
 async def fetch_many(client: httpx.AsyncClient, limiter: RateLimiter,
                      requests: list, *, concurrency: int = 6,
-                     max_retries: int = 1,
+                     max_retries: int = 1, deadline: float | None = None,
                      **shared_kwargs) -> list:
     """Fetch many URLs concurrently, results in input order.
 
@@ -278,6 +278,12 @@ async def fetch_many(client: httpx.AsyncClient, limiter: RateLimiter,
     stay polite. Use for independent enumeration probes (sitemaps,
     well-known paths, doc endpoints) - not for injection payloads,
     which stay sequential to avoid tripping WAFs.
+
+    deadline: optional wall-clock cap (seconds) for the whole sweep.
+    Requests still in flight when it expires come back as None, so
+    callers keep partial results instead of losing the entire chunk
+    (battle-test 2026-10-18: gobuster discarded full 300-probe chunks
+    on slow networks and reported "probed 0 paths").
     """
     sem = asyncio.Semaphore(max(1, concurrency))
 
@@ -290,9 +296,34 @@ async def fetch_many(client: httpx.AsyncClient, limiter: RateLimiter,
             kw = shared_kwargs
         async with sem:
             try:
-                return await fetch(client, limiter, method, url,
-                                   max_retries=max_retries, **kw)
+                # Battle-test fix 2026-10-18: passing max_retries both
+                # explicitly AND inside per-request kwargs raised
+                # "TypeError: multiple values for keyword argument",
+                # which this except swallowed -> EVERY probe silently
+                # returned None (gobuster/feroxbuster/wget/firecrawl
+                # were enumerating nothing). Per-request value wins.
+                kw = dict(kw)
+                kw.setdefault("max_retries", max_retries)
+                return await fetch(client, limiter, method, url, **kw)
             except Exception:
                 return None
 
-    return list(await asyncio.gather(*(_one(r) for r in requests)))
+    tasks = [asyncio.ensure_future(_one(r)) for r in requests]
+    if not tasks:
+        return []
+    if deadline is None:
+        return list(await asyncio.gather(*tasks))
+    done, pending = await asyncio.wait(tasks, timeout=max(0.1, deadline))
+    for t in pending:
+        t.cancel()
+    out = []
+    for t in tasks:
+        if t in done:
+            try:
+                out.append(t.result())
+            except Exception:
+                out.append(None)
+        else:
+            out.append(None)  # timed out: partial results survive
+    await asyncio.sleep(0)  # let cancellations release semaphore slots
+    return out

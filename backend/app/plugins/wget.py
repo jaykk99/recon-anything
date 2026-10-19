@@ -10,20 +10,21 @@ GET only, no writes to the target. Bounded to keep under 30s.
 """
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 from typing import Dict, List, Set
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch, fetch_many
+from ..ratelimit import fetch_many
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
+                  gather_capped)
 
 MAX_PAGES = 20
 MAX_DEPTH = 2
 MAX_ASSETS = 120
+LOOP_BUDGET = 18
 
 ASSET_RE = re.compile(
     r'''(?:href|src|data-src|poster)\s*=\s*["']([^"'\s<>]+)["']''', re.I)
@@ -98,7 +99,8 @@ class WgetPlugin(Plugin):
                 return page["url"], page["text"][:200000]
             return None, None
 
-        while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 18:
+        while queue and pages < MAX_PAGES and \
+                (time.monotonic() - t0) < LOOP_BUDGET:
             batch = []
             while queue and len(batch) < 6 and pages + len(batch) < MAX_PAGES:
                 url, depth = queue.pop(0)
@@ -108,9 +110,13 @@ class WgetPlugin(Plugin):
                 batch.append((url, depth))
             if not batch:
                 break
-            for (url, depth), (final, html) in zip(
-                    batch, await asyncio.gather(
-                        *[grab(u) for u, _ in batch])):
+            results = await gather_capped(
+                [grab(u) for u, _ in batch],
+                LOOP_BUDGET - (time.monotonic() - t0))
+            for (url, depth), res in zip(batch, results):
+                if not res:
+                    continue
+                final, html = res
                 if not html:
                     continue
                 pages += 1
@@ -129,19 +135,24 @@ class WgetPlugin(Plugin):
                     if len(assets) < MAX_ASSETS and link not in assets:
                         assets[link] = k
 
-        # Verify assets exist and record sizes (headers only where possible)
+        # Verify assets exist and record sizes via HEAD only.
+        # Battle-test fix 2026-10-18: this used to GET every asset and
+        # read r.content into memory, which blows RAM on large media
+        # files. HEAD gives status + content-length with no body.
         asset_urls = list(assets.keys())[:MAX_ASSETS]
         sizes: Dict[str, int] = {}
-        reqs = [("GET", u, {"timeout": 10, "max_retries": 0})
+        reqs = [("HEAD", u, {"timeout": 10, "max_retries": 0})
                 for u in asset_urls]
-        resps = await fetch_many(ctx.http, ctx.limiter, reqs,
-                                 concurrency=12)
+        # deadline: HEADs against a slow host must not eat the rest
+        # of the 30s ceiling; partial sizes are kept
+        resps = await fetch_many(
+            ctx.http, ctx.limiter, reqs, concurrency=12,
+            deadline=max(1.0, 28 - (time.monotonic() - t0)))
         for u, r in zip(asset_urls, resps):
             try:
                 if r is not None and r.status_code == 200:
                     cl = r.headers.get("content-length")
-                    sizes[u] = int(cl) if cl and cl.isdigit() else \
-                        min(len(r.content), 2000000)
+                    sizes[u] = int(cl) if cl and cl.isdigit() else -1
                 else:
                     sizes[u] = -1
             except Exception:
