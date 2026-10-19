@@ -30,7 +30,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from ..ratelimit import fetch
+from ..ratelimit import fetch, fetch_many
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from .secretutils import PLACEHOLDERS, evidence_block, is_placeholder, redact
 
@@ -116,19 +116,22 @@ class SourcemapPlugin(Plugin):
             return self._skipped("no JS files found by discovery (nothing to map)")
 
         seen_urls = set()
+        targets = []
         for js in js_files:
             map_url = js.split("#")[0].split("?")[0] + ".map"
             if map_url in seen_urls:
                 continue
             seen_urls.add(map_url)
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", map_url,
-                                timeout=12, follow_redirects=True, max_retries=1)
-            except Exception:
+            targets.append((js, map_url))
+        # Fetch all candidate .map URLs in parallel (independent probes)
+        responses = await fetch_many(
+            ctx.http, ctx.limiter,
+            [("GET", mu, {"timeout": 12, "follow_redirects": True})
+             for _, mu in targets],
+            concurrency=8, max_retries=1)
+        for (js, map_url), r in zip(targets, responses):
+            if r is None or r.status_code != 200:
                 continue
-            if r.status_code != 200:
-                continue
-            ctype = r.headers.get("content-type", "")
             body = r.text[:MAP_BODY_LIMIT]
             try:
                 sm = json.loads(body)

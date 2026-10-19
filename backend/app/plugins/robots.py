@@ -12,7 +12,7 @@ from typing import List
 from xml.etree import ElementTree
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
+from ..ratelimit import fetch, fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
@@ -34,129 +34,129 @@ class RobotsPlugin(Plugin):
         base = (await web_base(ctx, target, domain)).rstrip("/")
         findings: List[Finding] = []
 
-        # robots.txt
+        # robots.txt first (its sitemap: lines inform nothing else here,
+        # but the parse is cheap and independent of the parallel batch below)
+        robots_text = ""
         try:
             r = await fetch(ctx.http, ctx.limiter, "GET", base + "/robots.txt", timeout=12)
             if r.status_code == 200 and r.text.strip():
+                robots_text = r.text
                 findings.append(self._f(
                     "web", "robots_txt",
                     f"robots.txt found ({len(r.text)} bytes)",
                     source="robots parser", source_url=base + "/robots.txt",
                     confidence=80, passive=True))
-                for line in r.text.splitlines():
-                    line = line.strip()
-                    low = line.lower()
-                    if low.startswith("disallow:"):
-                        path = line.split(":", 1)[1].strip()
-                        if path and path != "/":
-                            sev = "high" if any(
-                                k in path.lower() for k in
-                                ("admin", "backup", "config", ".env", "private",
-                                 "secret", "db", "sql", "internal")) else "low"
-                            findings.append(self._f(
-                                "web", "robots_disallow",
-                                f"Disallowed path (may hide interesting content): {path}",
-                                source="robots parser", source_url=base + "/robots.txt",
-                                confidence=65, passive=True,
-                                evidence={"severity": sev}))
-                    elif low.startswith("sitemap:"):
-                        sm = line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        if robots_text:
+            for line in robots_text.splitlines():
+                line = line.strip()
+                low = line.lower()
+                if low.startswith("disallow:"):
+                    path = line.split(":", 1)[1].strip()
+                    if path and path != "/":
+                        sev = "high" if any(
+                            k in path.lower() for k in
+                            ("admin", "backup", "config", ".env", "private",
+                             "secret", "db", "sql", "internal")) else "low"
                         findings.append(self._f(
-                            "web", "robots_sitemap",
-                            f"Sitemap declared: {sm}",
+                            "web", "robots_disallow",
+                            f"Disallowed path (may hide interesting content): {path}",
                             source="robots parser", source_url=base + "/robots.txt",
-                            confidence=70, passive=True))
-                    elif low.startswith("allow:"):
-                        path = line.split(":", 1)[1].strip()
-                        if path:
-                            findings.append(self._f(
-                                "web", "robots_allow",
-                                f"Explicitly allowed path: {path}",
-                                source="robots parser",
-                                source_url=base + "/robots.txt",
-                                confidence=55, passive=True))
-                    elif low.startswith("crawl-delay:"):
+                            confidence=65, passive=True,
+                            evidence={"severity": sev}))
+                elif low.startswith("sitemap:"):
+                    sm = line.split(":", 1)[1].strip()
+                    findings.append(self._f(
+                        "web", "robots_sitemap",
+                        f"Sitemap declared: {sm}",
+                        source="robots parser", source_url=base + "/robots.txt",
+                        confidence=70, passive=True))
+                elif low.startswith("allow:"):
+                    path = line.split(":", 1)[1].strip()
+                    if path:
                         findings.append(self._f(
-                            "web", "robots_crawl_delay",
-                            f"Crawl-delay set: {line}",
+                            "web", "robots_allow",
+                            f"Explicitly allowed path: {path}",
                             source="robots parser",
                             source_url=base + "/robots.txt",
-                            confidence=60, passive=True))
-        except Exception:
-            pass
-
-        # Also check common alternative locations
-        for alt in ("/sitemap_index.xml", "/sitemap-index.xml",
-                    "/wp-sitemap.xml", "/sitemap.php"):
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", base + alt, timeout=10)
-                if r.status_code == 200 and "<url" in r.text[:2000]:
+                            confidence=55, passive=True))
+                elif low.startswith("crawl-delay:"):
                     findings.append(self._f(
-                        "web", "sitemap_alt",
-                        f"Alternative sitemap found: {alt}",
-                        source="sitemap parser", source_url=base + alt,
-                        confidence=75, passive=True))
-                    break
-            except Exception:
-                continue
+                        "web", "robots_crawl_delay",
+                        f"Crawl-delay set: {line}",
+                        source="robots parser",
+                        source_url=base + "/robots.txt",
+                        confidence=60, passive=True))
+
+        # sitemap.xml + alternative sitemap locations + security.txt:
+        # independent probes, fetched in parallel
+        alt_paths = ["/sitemap.xml", "/sitemap_index.xml",
+                     "/sitemap-index.xml", "/wp-sitemap.xml",
+                     "/sitemap.php", "/.well-known/security.txt"]
+        responses = await fetch_many(
+            ctx.http, ctx.limiter,
+            [("GET", base + p, {"timeout": 10}) for p in alt_paths],
+            concurrency=6)
+        sm_resp, *alt_resps, sec_resp = responses
+        for alt, r in zip(alt_paths[1:5], alt_resps):
+            if r is not None and r.status_code == 200 and "<url" in r.text[:2000]:
+                findings.append(self._f(
+                    "web", "sitemap_alt",
+                    f"Alternative sitemap found: {alt}",
+                    source="sitemap parser", source_url=base + alt,
+                    confidence=75, passive=True))
+                break
 
         # security.txt (RFC 9116) - bug bounty contact info
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "GET",
-                            base + "/.well-known/security.txt", timeout=10)
-            if r.status_code == 200 and r.text.strip():
-                findings.append(self._f(
-                    "web", "security_txt",
-                    "security.txt found - bug bounty/contact info disclosed",
-                    source="security.txt", source_url=base + "/.well-known/security.txt",
-                    confidence=85, passive=True))
-                for line in r.text.splitlines()[:20]:
-                    if line.strip().lower().startswith("contact:"):
-                        findings.append(self._f(
-                            "web", "security_txt_contact",
-                            f"Security contact: {line.split(':', 1)[1].strip()[:150]}",
-                            source="security.txt",
-                            source_url=base + "/.well-known/security.txt",
-                            confidence=80, passive=True))
-        except Exception:
-            pass
-
-        # sitemap.xml
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base + "/sitemap.xml", timeout=12)
-            if r.status_code == 200 and "<url" in r.text[:2000]:
-                try:
-                    root = ElementTree.fromstring(r.text[:500000])
-                    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-                    urls = root.findall(".//s:loc", ns) or root.findall(".//loc")
+        if sec_resp is not None and sec_resp.status_code == 200 and sec_resp.text.strip():
+            findings.append(self._f(
+                "web", "security_txt",
+                "security.txt found - bug bounty/contact info disclosed",
+                source="security.txt", source_url=base + "/.well-known/security.txt",
+                confidence=85, passive=True))
+            for line in sec_resp.text.splitlines()[:20]:
+                if line.strip().lower().startswith("contact:"):
                     findings.append(self._f(
-                        "web", "sitemap",
-                        f"sitemap.xml found with {len(urls)} URLs",
-                        source="sitemap parser", source_url=base + "/sitemap.xml",
+                        "web", "security_txt_contact",
+                        f"Security contact: {line.split(':', 1)[1].strip()[:150]}",
+                        source="security.txt",
+                        source_url=base + "/.well-known/security.txt",
                         confidence=80, passive=True))
-                    interesting = [u.text for u in urls[:500] if u.text and
-                                   any(k in u.text.lower() for k in
-                                       ["admin", "login", "api", "dashboard",
-                                        "private", "test", "dev", "staging",
-                                        "backup", "config", "internal",
-                                        "debug", "console", "manage",
-                                        "upload", "download", "export",
-                                        "report", "user", "account",
-                                        "settings", "profile", "wp-admin"])]
-                    for u in interesting[:20]:
-                        findings.append(self._f(
-                            "web", "sitemap_interesting",
-                            f"Interesting sitemap URL: {u}",
-                            source="sitemap parser", source_url=base + "/sitemap.xml",
-                            confidence=65, passive=True))
-                except Exception:
+
+        # sitemap.xml parse (from the parallel batch)
+        r = sm_resp
+        if r is not None and r.status_code == 200 and "<url" in r.text[:2000]:
+            try:
+                root = ElementTree.fromstring(r.text[:500000])
+                ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                urls = root.findall(".//s:loc", ns) or root.findall(".//loc")
+                findings.append(self._f(
+                    "web", "sitemap",
+                    f"sitemap.xml found with {len(urls)} URLs",
+                    source="sitemap parser", source_url=base + "/sitemap.xml",
+                    confidence=80, passive=True))
+                interesting = [u.text for u in urls[:500] if u.text and
+                               any(k in u.text.lower() for k in
+                                   ["admin", "login", "api", "dashboard",
+                                    "private", "test", "dev", "staging",
+                                    "backup", "config", "internal",
+                                    "debug", "console", "manage",
+                                    "upload", "download", "export",
+                                    "report", "user", "account",
+                                    "settings", "profile", "wp-admin"])]
+                for u in interesting[:20]:
                     findings.append(self._f(
-                        "web", "sitemap",
-                        "sitemap.xml found but could not parse",
+                        "web", "sitemap_interesting",
+                        f"Interesting sitemap URL: {u}",
                         source="sitemap parser", source_url=base + "/sitemap.xml",
-                        confidence=60, passive=True))
-        except Exception:
-            pass
+                        confidence=65, passive=True))
+            except Exception:
+                findings.append(self._f(
+                    "web", "sitemap",
+                    "sitemap.xml found but could not parse",
+                    source="sitemap parser", source_url=base + "/sitemap.xml",
+                    confidence=60, passive=True))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, "parsed robots.txt and sitemap.xml")

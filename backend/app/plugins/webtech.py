@@ -12,7 +12,7 @@ import time
 from typing import List
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
+from ..ratelimit import fetch, fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
@@ -181,18 +181,19 @@ class WebTechPlugin(Plugin):
             findings.append(self._f("identity", "adsense_id", m.group(0),
                                     source="HTML/JS", confidence=95, passive=passive))
 
-        # well-known files
-        for label, path in WELLKNOWN.items():
-            url = base.rstrip("/") + path
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
-                if r.status_code == 200 and len(r.text.strip()) > 0:
-                    findings.append(self._f("web", f"wellknown_{label}",
-                                            r.text.strip()[:600],
-                                            source=label, source_url=url,
-                                            confidence=90, passive=passive))
-            except Exception:
-                continue
+        # well-known files (independent probes -> parallel)
+        wk_items = list(WELLKNOWN.items())
+        wk_urls = [base.rstrip("/") + path for _, path in wk_items]
+        wk_resps = await fetch_many(
+            ctx.http, ctx.limiter,
+            [("GET", u, {"timeout": 12}) for u in wk_urls],
+            concurrency=6)
+        for (label, _path), url, r in zip(wk_items, wk_urls, wk_resps):
+            if r is not None and r.status_code == 200 and len(r.text.strip()) > 0:
+                findings.append(self._f("web", f"wellknown_{label}",
+                                        r.text.strip()[:600],
+                                        source=label, source_url=url,
+                                        confidence=90, passive=passive))
 
         # disallowed paths in robots.txt become leads
         for f in findings:

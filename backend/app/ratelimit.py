@@ -258,3 +258,36 @@ def detect_protection(resp: httpx.Response) -> Optional[
     if verdict.kind in ("waf", "blocked"):
         return "waf"
     return None
+
+
+async def fetch_many(client: httpx.AsyncClient, limiter: RateLimiter,
+                     requests: list, *, concurrency: int = 6,
+                     max_retries: int = 1,
+                     **shared_kwargs) -> list:
+    """Fetch many URLs concurrently, results in input order.
+
+    requests: list of (method, url) tuples or (method, url, kwargs-dict).
+    Returns a list aligned with the input: httpx.Response on success,
+    None on failure (never raises). The shared rate limiter paces
+    per-host requests and applies WAF backoff, so concurrent fetches
+    stay polite. Use for independent enumeration probes (sitemaps,
+    well-known paths, doc endpoints) - not for injection payloads,
+    which stay sequential to avoid tripping WAFs.
+    """
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(req):
+        if len(req) == 3:
+            method, url, kw = req
+            kw = {**shared_kwargs, **kw}
+        else:
+            method, url = req
+            kw = shared_kwargs
+        async with sem:
+            try:
+                return await fetch(client, limiter, method, url,
+                                   max_retries=max_retries, **kw)
+            except Exception:
+                return None
+
+    return list(await asyncio.gather(*(_one(r) for r in requests)))

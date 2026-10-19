@@ -14,7 +14,7 @@ from typing import List
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
+from ..ratelimit import fetch, fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .secretutils import evidence_block, finding_value, is_placeholder, redact
@@ -98,17 +98,21 @@ class WalletsPlugin(Plugin):
 
         srcs = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I)
         srcs = [s for s in srcs if not s.startswith("data:")][:25]
+        js_targets = []
         for src in srcs:
             full = urljoin(page_url, src)
             host = urlparse(full).netloc
             if host and not host.endswith(domain):
                 continue
-            try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=20)
-                if r.status_code == 200:
-                    texts.append((f"JS bundle {host or 'inline'}", r.text[:800000], full))
-            except Exception:
-                continue
+            js_targets.append((full, host))
+        # JS bundles are independent -> fetch in parallel
+        js_resps = await fetch_many(
+            ctx.http, ctx.limiter,
+            [("GET", full, {"timeout": 20}) for full, _ in js_targets],
+            concurrency=6)
+        for (full, host), r in zip(js_targets, js_resps):
+            if r is not None and r.status_code == 200:
+                texts.append((f"JS bundle {host or 'inline'}", r.text[:800000], full))
 
         def emit(name: str, match: str, where: str, conf: int,
                  severity: str, url: str | None):
@@ -144,28 +148,36 @@ class WalletsPlugin(Plugin):
         # wallet file paths (passive: Wayback, active: direct GET)
         if passive:
             from urllib.parse import quote
+            wb_targets = []
             for path, label, conf in WALLET_PATHS:
                 full = base.rstrip("/") + path
                 url = ("https://web.archive.org/cdx/search/cdx?url="
                        + quote(full, safe="") + "&output=json&fl=timestamp&limit=1")
+                wb_targets.append((path, label, conf, full, url))
+            wb_resps = await fetch_many(
+                ctx.http, ctx.limiter,
+                [("GET", url, {"timeout": 15}) for *_, url in wb_targets],
+                concurrency=6)
+            for (path, label, conf, full, _url), r in zip(wb_targets, wb_resps):
+                if r is None or r.status_code != 200:
+                    continue
                 try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=15)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, list) and len(data) > 1:
-                            emit("wallet_file_archived", path, f"archived: {label}",
-                                 conf - 15, "high", full)
+                    data = r.json()
                 except Exception:
                     continue
+                if isinstance(data, list) and len(data) > 1:
+                    emit("wallet_file_archived", path, f"archived: {label}",
+                         conf - 15, "high", full)
         else:
-            for path, label, conf in WALLET_PATHS:
-                full = base.rstrip("/") + path
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=12)
-                    if r.status_code == 200 and len(r.text.strip()) > 0:
-                        emit("wallet_file_exposed", path, label, conf, "critical", full)
-                except Exception:
-                    continue
+            act_targets = [(path, label, conf, base.rstrip("/") + path)
+                           for path, label, conf in WALLET_PATHS]
+            act_resps = await fetch_many(
+                ctx.http, ctx.limiter,
+                [("GET", full, {"timeout": 12}) for _, _, _, full in act_targets],
+                concurrency=6)
+            for (path, label, conf, full), r in zip(act_targets, act_resps):
+                if r is not None and r.status_code == 200 and len(r.text.strip()) > 0:
+                    emit("wallet_file_exposed", path, label, conf, "critical", full)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(findings)} wallet exposure findings")

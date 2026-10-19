@@ -5,6 +5,8 @@ old URLs (great for finding forgotten endpoints). Free, no key.
 """
 from __future__ import annotations
 
+import asyncio
+
 import time
 from typing import List
 from urllib.parse import quote, urlparse
@@ -126,7 +128,12 @@ class WaybackPlugin(Plugin):
             return self._skipped("no domain for this target type")
         findings: List[Finding] = []
 
-        rows = await fetch_cdx(ctx, domain)
+        # The three archive sources are independent -> query in parallel
+        rows, cc_urls, arq_urls = await asyncio.gather(
+            fetch_cdx(ctx, domain),
+            fetch_commoncrawl(ctx, domain),
+            fetch_arquivo(ctx, domain),
+        )
         if isinstance(rows, dict) and rows.get("error"):
             res = self._degraded(f"Wayback: {rows['error']}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -170,7 +177,6 @@ class WaybackPlugin(Plugin):
 
         # Common Crawl: historical URLs from the crawl corpus (cached,
         # 3 newest indexes). Publishes interesting URLs to the bus.
-        cc_urls = await fetch_commoncrawl(ctx, domain)
         if isinstance(cc_urls, list) and cc_urls:
             findings.append(self._f(
                 "infra", "commoncrawl_urls",
@@ -200,7 +206,6 @@ class WaybackPlugin(Plugin):
                     ctx.publish("endpoints", u)
 
         # Arquivo.pt: Portuguese web archive, good for EU/LatAm targets
-        arq_urls = await fetch_arquivo(ctx, domain)
         if isinstance(arq_urls, list) and arq_urls:
             findings.append(self._f(
                 "infra", "arquivo_hits",
