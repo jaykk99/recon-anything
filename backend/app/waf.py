@@ -96,6 +96,53 @@ VENDOR_HEADERS: List[Tuple[str, Optional[str], str]] = [
     # Distil Networks
     ("x-distil-cs", None, "Distil"),
     ("x-distil-r", None, "Distil"),
+    # Barracuda
+    ("x-barracuda", None, "Barracuda"),
+    ("barra_counter_session", None, "Barracuda"),
+    # Citrix / NetScaler
+    ("x-nsc", None, "Citrix NetScaler"),
+    ("citrix_ns_id", None, "Citrix NetScaler"),
+    ("ns_af", "citrix", "Citrix NetScaler"),
+    # Radware
+    ("x-rdwr", None, "Radware"),
+    # Fortinet FortiWeb
+    ("x-fw-version", None, "Fortinet FortiWeb"),
+    ("fortiwaf", None, "Fortinet FortiWeb"),
+    # Palo Alto
+    ("x-pan", None, "Palo Alto"),
+    # Check Point
+    ("x-checkpoint", None, "Check Point"),
+    # Cloudbric
+    ("x-cloudbric", None, "Cloudbric"),
+    # StackPath
+    ("x-hw", None, "StackPath"),
+    ("x-stackpath", None, "StackPath"),
+    # KeyCDN
+    ("x-keycdn", None, "KeyCDN"),
+    # BunnyCDN
+    ("cdn-bunny", None, "BunnyCDN"),
+    ("x-bunny", None, "BunnyCDN"),
+    # G-Core
+    ("x-gcore", None, "G-Core"),
+    # Edgio (formerly Limelight)
+    ("x-edg", None, "Edgio"),
+    ("x-ll", None, "Edgio"),
+    # Wordfence
+    ("x-wf", None, "Wordfence"),
+    # ShieldSquare
+    ("x-shieldsquare", None, "ShieldSquare"),
+    # Arkose Labs
+    ("x-arkose", None, "Arkose Labs"),
+    # Shape Security
+    ("x-shape", None, "Shape Security"),
+    # Reblaze (already in body markers, add header)
+    ("x-reblaze", None, "Reblaze"),
+    # Signal Sciences
+    ("x-sigsci", None, "Signal Sciences"),
+    # ThreatX
+    ("x-threatx", None, "ThreatX"),
+    # Wallarm
+    ("x-wallarm", None, "Wallarm"),
     # Generic WAF telltales
     ("x-waf", None, "Generic WAF"),
     ("x-protected-by", None, "Generic WAF"),
@@ -126,6 +173,11 @@ VENDOR_COOKIES: List[Tuple[str, str]] = [
     ("ts01", "F5 BIG-IP"),
     ("as_av", "F5 BIG-IP"),
     ("sucuri_cloudproxy", "Sucuri"),
+    ("_barracuda_", "Barracuda"),
+    ("ns_af", "Citrix NetScaler"),
+    ("citrix_ns_id", "Citrix NetScaler"),
+    ("f5avr", "F5 BIG-IP"),
+    ("x-csrf", "Generic WAF"),
 ]
 
 # (body marker, vendor, is_challenge_page)

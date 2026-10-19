@@ -86,13 +86,71 @@ class WaybackPlugin(Plugin):
             u = r[url_i].lower()
             if any(k in u for k in ("admin", "api", "backup", "old", "test",
                                     "dev", "staging", ".bak", ".zip", ".sql",
-                                    "swagger", "graphql")):
+                                    "swagger", "graphql", "login", "dashboard",
+                                    "config", ".env", "debug", "internal",
+                                    "private", "secret", "key", "token",
+                                    "upload", "download", "export", "report",
+                                    "v1", "v2", "beta", "demo", "cms",
+                                    "wp-admin", "phpmyadmin", "console")):
                 interesting.append(r[url_i])
         for u in sorted(set(interesting))[:25]:
             findings.append(self._f("leak", "wayback_interesting_url", u,
                                     source="Wayback CDX",
                                     source_url=f"https://web.archive.org/web/*/{u}",
                                     confidence=70, passive=True))
+
+        # Common Crawl index: another historical URL source
+        try:
+            cc_url = ("https://index.commoncrawl.org/CC-MAIN-2025-30-index"
+                      f"?url={quote(domain)}/*&output=json&limit=100")
+            cc_r = await fetch(ctx.http, ctx.limiter, "GET", cc_url, timeout=20)
+            if cc_r.status_code == 200:
+                cc_urls = []
+                for line in cc_r.text.strip().split("\n")[:100]:
+                    try:
+                        import json as _json
+                        entry = _json.loads(line)
+                        u = entry.get("url", "")
+                        if u:
+                            cc_urls.append(u)
+                    except Exception:
+                        continue
+                if cc_urls:
+                    findings.append(self._f(
+                        "infra", "commoncrawl_urls",
+                        f"Common Crawl has {len(cc_urls)} URLs for {domain}",
+                        source="Common Crawl index", confidence=80, passive=True))
+                    for u in cc_urls[:10]:
+                        ul = u.lower()
+                        if any(k in ul for k in ("admin", "api", "backup", "config",
+                                                 ".env", "swagger", "graphql")):
+                            findings.append(self._f(
+                                "leak", "commoncrawl_interesting_url", u,
+                                source="Common Crawl index", confidence=65,
+                                passive=True))
+        except Exception:
+            pass
+
+        # Arquivo.pt: Portuguese web archive, good for EU targets
+        try:
+            arq_url = ("https://arquivo.pt/textsearch?versionHistory="
+                       + quote(domain) + "&maxItems=50")
+            arq_r = await fetch(ctx.http, ctx.limiter, "GET", arq_url, timeout=20)
+            if arq_r.status_code == 200:
+                try:
+                    import json as _json
+                    arq_data = _json.loads(arq_r.text)
+                    n_hits = arq_data.get("totalItems", 0)
+                    if n_hits:
+                        findings.append(self._f(
+                            "infra", "arquivo_hits",
+                            f"Arquivo.pt has {n_hits} captures for {domain}",
+                            source="Arquivo.pt",
+                            source_url=arq_url, confidence=75, passive=True))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(data)} snapshots, {len(interesting)} interesting URLs")

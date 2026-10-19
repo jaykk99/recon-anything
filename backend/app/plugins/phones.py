@@ -38,27 +38,79 @@ AREA_CODES = {
 class PhonesPlugin(Plugin):
     id = "phones"
     label = "Phone Lookup"
-    accepts = ["phone"]
+    accepts = ["phone", "domain", "url"]
     passive = True
     cost = Cost.FREE
     group = "identity"
-    description = "Carrier, line type, region, and validity for phone numbers (offline, no keys)."
+    description = "Carrier, line type, region, and validity for phone numbers (offline, no keys). Extracts phone numbers from pages."
+
+    # Phone number patterns for extraction from page content
+    PHONE_PATTERNS = [
+        (r"\+?1[-.\s]?\(?([2-9]\d{2})\)?[-.\s]?([2-9]\d{2})[-.\s]?(\d{4})", "NANP"),
+        (r"\+?44[-.\s]?\(?(\d{2,5})\)?[-.\s]?(\d{3,4})[-.\s]?(\d{3,4})", "UK"),
+        (r"\+?61[-.\s]?\(?(\d{1,2})\)?[-.\s]?(\d{4})[-.\s]?(\d{4})", "AU"),
+        (r"tel:([+\d][\d\-.\s()]{7,20})", "tel: link"),
+        (r'["\'](\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4})["\']', "intl quoted"),
+    ]
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
-        raw = target.normalized.strip()
         findings: List[Finding] = []
 
-        if HAVE_PHONENUMBERS:
-            findings = self._analyze_libphonenumber(raw)
+        if target.type == "phone":
+            raw = target.normalized.strip()
+            if HAVE_PHONENUMBERS:
+                findings = self._analyze_libphonenumber(raw)
+            else:
+                findings = self._analyze_fallback(raw)
+            if not findings:
+                return self._skipped("could not parse as a phone number")
         else:
-            findings = self._analyze_fallback(raw)
-
-        if not findings:
-            return self._skipped("could not parse as a phone number")
+            # Extract phone numbers from the target's web pages
+            from ..classifier import domain_from_target
+            from ..ratelimit import fetch
+            from ..net import web_base
+            domain = domain_from_target(target.type, target.normalized)
+            if not domain:
+                return self._skipped("no domain for this target type")
+            base = await web_base(ctx, target, domain)
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=15)
+                if r.status_code == 200:
+                    seen = set()
+                    for pat, label in self.PHONE_PATTERNS:
+                        for m in re.finditer(pat, r.text):
+                            num = m.group(0)[:30]
+                            if num in seen:
+                                continue
+                            seen.add(num)
+                            findings.append(self._f(
+                                "identity", "phone_found",
+                                f"Phone ({label}): {num}",
+                                source="page phone extraction",
+                                source_url=base, confidence=70, passive=True))
+                            # Analyze with libphonenumber if available
+                            if HAVE_PHONENUMBERS and len(findings) < 20:
+                                try:
+                                    pn = phonenumbers.parse(num, "US")
+                                    if phonenumbers.is_possible_number(pn):
+                                        carrier_name = pn_carrier.name_for_number(pn, "en")
+                                        e164 = phonenumbers.format_number(
+                                            pn, phonenumbers.PhoneNumberFormat.E164)
+                                        findings.append(self._f(
+                                            "identity", "phone_detail",
+                                            f"{e164}: carrier={carrier_name or 'unknown'}",
+                                            source="libphonenumber",
+                                            confidence=80, passive=True))
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+            if not findings:
+                return self._skipped("no phone numbers found on page")
 
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"analyzed {raw}")
+        res = self._ok(findings, f"found {len(findings)} phone signals")
         res.duration_ms = dur
         return res
 

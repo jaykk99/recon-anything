@@ -96,6 +96,54 @@ class CrawlerPlugin(Plugin):
                     else:
                         externals.add(f"{p.scheme}://{p.netloc}")
 
+                # srcset (responsive images often leak CDN paths)
+                for m in re.finditer(r'srcset=["\']([^"\']+)["\']', html, re.I):
+                    for part in m.group(1).split(","):
+                        src_url = part.strip().split(" ")[0]
+                        if src_url:
+                            link = urljoin(furl or url, src_url)
+                            p = urlparse(link)
+                            if p.netloc and p.netloc != domain \
+                                    and not p.netloc.endswith("." + domain):
+                                externals.add(f"{p.scheme}://{p.netloc}")
+                            elif link not in seen and depth < MAX_DEPTH:
+                                queue.append((link, depth + 1))
+
+                # data-* attributes that hold URLs (lazy-load, API endpoints)
+                for m in re.finditer(
+                        r'data-(?:src|url|href|api|endpoint)=["\']([^"\']+)["\']',
+                        html, re.I):
+                    durl = m.group(1).strip()
+                    if durl.startswith(("http", "/")):
+                        link = urljoin(furl or url, durl)
+                        ctx.publish("endpoints", link)
+
+                # meta refresh redirects
+                for m in re.finditer(
+                        r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+'
+                        r'content=["\']?[^"\']*url=([^"\';\s]+)',
+                        html, re.I):
+                    link = urljoin(furl or url, m.group(1).strip())
+                    ctx.publish("endpoints", link)
+                    if link not in seen and depth < MAX_DEPTH \
+                            and domain in urlparse(link).netloc:
+                        queue.append((link, depth + 1))
+
+                # canonical / alternate links
+                for m in re.finditer(
+                        r'<link[^>]+href=["\']([^"\']+)["\']', html, re.I):
+                    link = urljoin(furl or url, m.group(1).strip())
+                    p = urlparse(link)
+                    if p.netloc and p.netloc != domain \
+                            and not p.netloc.endswith("." + domain):
+                        externals.add(f"{p.scheme}://{p.netloc}")
+
+                # inline JSON-LD / embedded JSON blobs with URLs
+                for m in re.finditer(
+                        r'"(https?://[a-zA-Z0-9.-]+\.[a-z]{2,24}[^"]*)"',
+                        html):
+                    ctx.publish("endpoints", m.group(1))
+
                 # scripts -> discovery bus for JS mining chain
                 for m in re.finditer(
                         r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
@@ -106,14 +154,35 @@ class CrawlerPlugin(Plugin):
                     else:
                         externals.add(urlparse(src).netloc)
 
-                # forms
+                # forms (with and without action)
                 for m in re.finditer(
                         r'<form[^>]+action=["\']([^"\']*)["\']', html, re.I):
                     ctx.publish("endpoints",
                                 urljoin(furl or url, m.group(1) or furl or url))
+                # forms without action submit to current page
+                for m in re.finditer(r'<form(?![^>]*action=)[^>]*>', html, re.I):
+                    ctx.publish("endpoints", furl or url)
+                # form methods worth noting
+                for m in re.finditer(
+                        r'<form[^>]+method=["\']([^"\']+)["\'][^>]*'
+                        r'action=["\']([^"\']*)["\']',
+                        html, re.I):
+                    method, action = m.group(1).upper(), m.group(2)
+                    if method in ("PUT", "DELETE", "PATCH"):
+                        findings.append(self._f(
+                            "web", "form_risky_method",
+                            f"Form uses {method} on {action or furl or url}",
+                            source="form mining", source_url=furl or url,
+                            confidence=65))
                 for m in re.finditer(
                         r'<input[^>]+name=["\']([^"\']+)["\']', html, re.I):
                     ctx.publish("params", m.group(1))
+                # input types that hint at functionality
+                for m in re.finditer(
+                        r'<input[^>]+type=["\']([^"\']+)["\']', html, re.I):
+                    itype = m.group(1).lower()
+                    if itype in ("file", "password", "hidden"):
+                        ctx.publish("params", f"input_type:{itype}")
 
                 # HTML comments: often contain paths, keys, TODOs
                 for cm in re.finditer(r"<!--(.*?)-->", html, re.S):

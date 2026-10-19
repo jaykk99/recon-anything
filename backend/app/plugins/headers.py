@@ -33,6 +33,33 @@ SECURITY_HEADERS = [
     ("permissions-policy", "permissions_policy_missing",
      "Permissions-Policy missing - browser features not restricted", 55,
      "Add Permissions-Policy to restrict camera, mic, etc."),
+    ("cross-origin-embedder-policy", "coep_missing",
+     "COEP missing - cross-origin isolation not enforced", 60,
+     "Add Cross-Origin-Embedder-Policy: require-corp"),
+    ("cross-origin-opener-policy", "coop_missing",
+     "COOP missing - cross-origin window attacks possible", 60,
+     "Add Cross-Origin-Opener-Policy: same-origin"),
+    ("cross-origin-resource-policy", "corp_missing",
+     "CORP missing - resource loading not restricted", 55,
+     "Add Cross-Origin-Resource-Policy: same-origin"),
+    ("expect-ct", "expect_ct_missing",
+     "Expect-CT missing - certificate transparency not enforced", 50,
+     "Add Expect-CT: enforce, max-age=86400"),
+    ("feature-policy", "feature_policy_missing",
+     "Feature-Policy (legacy) missing - consider Permissions-Policy", 45,
+     "Migrate to Permissions-Policy header"),
+    ("x-xss-protection", "xss_protection_missing",
+     "X-XSS-Protection missing (legacy, low value if CSP present)", 40,
+     "Add X-XSS-Protection: 1; mode=block or rely on CSP"),
+    ("clear-site-data", "clear_site_data_info",
+     "Clear-Site-Data not set on logout endpoints (check manually)", 40,
+     "Consider Clear-Site-Data on logout"),
+    ("cache-control", "cache_control_missing",
+     "Cache-Control missing - sensitive pages may be cached", 55,
+     "Add Cache-Control: no-store on sensitive pages"),
+    ("pragma", "pragma_missing",
+     "Pragma no-cache missing on sensitive pages", 45,
+     "Add Pragma: no-cache alongside Cache-Control"),
 ]
 
 INFO_HEADERS = [
@@ -42,8 +69,24 @@ INFO_HEADERS = [
      "X-Powered-By reveals technology stack", 70),
     ("x-aspnet-version", "aspnet_version_header",
      "ASP.NET version disclosed", 75),
+    ("x-aspnetmvc-version", "aspnetmvc_version_header",
+     "ASP.NET MVC version disclosed", 75),
     ("x-generator", "generator_header",
      "X-Generator reveals CMS/framework", 70),
+    ("x-drupal-cache", "drupal_header",
+     "Drupal headers disclose CMS", 75),
+    ("x-varnish", "varnish_header",
+     "Varnish cache header discloses infra", 60),
+    ("x-cache", "cache_header",
+     "X-Cache header discloses caching layer", 55),
+    ("x-amz-cf-id", "cloudfront_header",
+     "CloudFront header discloses CDN usage", 55),
+    ("via", "via_header",
+     "Via header discloses proxy chain", 55),
+    ("x-backend", "backend_header",
+     "X-Backend header discloses origin server", 70),
+    ("x-runtime", "runtime_header",
+     "X-Runtime discloses app server timing", 60),
 ]
 
 
@@ -103,6 +146,21 @@ class HeadersPlugin(Plugin):
                     "Cookies set without Secure flag on HTTPS site",
                     source="header check", source_url=url,
                     confidence=70, passive=True))
+            if "samesite" not in set_cookie.lower():
+                findings.append(self._f(
+                    "web", "cookie_no_samesite",
+                    "Cookies set without SameSite attribute - CSRF risk",
+                    source="header check", source_url=url,
+                    confidence=65, passive=True))
+            # Cookie prefixes __Host- / __Secure- require Secure flag
+            for c in set_cookie.split(","):
+                cname = c.strip().split("=")[0].strip().lower()
+                if cname.startswith("__host-") and "secure" not in c.lower():
+                    findings.append(self._f(
+                        "web", "cookie_host_prefix_violation",
+                        f"Cookie {cname} uses __Host- prefix without Secure flag",
+                        source="header check", source_url=url,
+                        confidence=75, passive=True))
 
         # HSTS check details
         if "strict-transport-security" in headers:
@@ -118,6 +176,46 @@ class HeadersPlugin(Plugin):
                             confidence=60, passive=True))
                 except (ValueError, IndexError):
                     pass
+            if "includesubdomains" not in hsts.lower():
+                findings.append(self._f(
+                    "web", "hsts_no_subdomains",
+                    "HSTS missing includeSubDomains - subdomains not protected",
+                    source="header check", source_url=url,
+                    confidence=60, passive=True))
+            if "preload" not in hsts.lower():
+                findings.append(self._f(
+                    "web", "hsts_no_preload",
+                    "HSTS missing preload directive",
+                    source="header check", source_url=url,
+                    confidence=45, passive=True))
+
+        # CSP analysis
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].lower()
+            if "'unsafe-inline'" in csp:
+                findings.append(self._f(
+                    "web", "csp_unsafe_inline",
+                    "CSP allows 'unsafe-inline' - XSS mitigation weakened",
+                    source="header check", source_url=url,
+                    confidence=70, passive=True))
+            if "'unsafe-eval'" in csp:
+                findings.append(self._f(
+                    "web", "csp_unsafe_eval",
+                    "CSP allows 'unsafe-eval' - code injection risk",
+                    source="header check", source_url=url,
+                    confidence=70, passive=True))
+            if "data:" in csp:
+                findings.append(self._f(
+                    "web", "csp_data_uri",
+                    "CSP allows data: URIs - potential XSS vector",
+                    source="header check", source_url=url,
+                    confidence=60, passive=True))
+            if "*" in csp.replace("https:", "").replace("http:", ""):
+                findings.append(self._f(
+                    "web", "csp_wildcard",
+                    "CSP contains wildcard sources - overly permissive",
+                    source="header check", source_url=url,
+                    confidence=60, passive=True))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"checked {len(SECURITY_HEADERS)} security headers")
