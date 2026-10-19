@@ -253,13 +253,13 @@ def check_db() -> None:
     deploy with a clear log line instead of surfacing later as empty scans
     and "run not found" errors.
     """
+    global engine, SessionLocal
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
         return
     except Exception as exc:
         from .config import DATABASE_URL_BACKUP
-        global engine, SessionLocal
         if DATABASE_URL_BACKUP:
             log.warning("primary database unreachable, failing over to DATABASE_URL_BACKUP")
             try:
