@@ -51,6 +51,9 @@ class ParamDiscoveryPlugin(Plugin):
     cost = Cost.FREE
     group = "web"
     timeout_s = 240
+    # Phase 2: runs after apidiscover (phase 1) so the api_chain can feed
+    # it discovered API base paths via the "endpoints" bus.
+    phase = 2
     description = ("Discover hidden GET params with canary probes; flag "
                    "unencoded reflection (XSS candidates). GET only.")
 
@@ -90,6 +93,16 @@ class ParamDiscoveryPlugin(Plugin):
                 pu = urlparse(eu)
                 if domain in pu.netloc:
                     seeds.add(f"{pu.scheme}://{pu.netloc}{pu.path}".rstrip("?"))
+        # Chain: api_base signals from the api_chain (apidiscover phase 1 ->
+        # param_discovery phase 2) seed the discovered API base paths too.
+        try:
+            from ..chains import chain_signals
+            for ab in chain_signals(ctx, "api_base"):
+                pu = urlparse(ab)
+                if domain in pu.netloc:
+                    seeds.add(f"{pu.scheme}://{pu.netloc}{pu.path}".rstrip("?"))
+        except Exception:
+            pass
 
         # params already known from links/forms: skip re-testing those
         known_params: Set[str] = set()

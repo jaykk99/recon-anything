@@ -95,6 +95,9 @@ class CmsProbesPlugin(Plugin):
     passive = True
     cost = Cost.FREE
     group = "web"
+    # Phase 2: runs after tech_fingerprint/fingerprint (phase 1) so the
+    # cms_chain can hand it a confirmed CMS to probe deeply.
+    phase = 2
     description = ("WordPress/Drupal/Joomla + Shopify/Squarespace/Wix "
                    "version detection + known-vuln checks. "
                    "GET only, no login attempts.")
@@ -119,6 +122,11 @@ class CmsProbesPlugin(Plugin):
                 return 0, "", {}
 
         def add(key, value, conf, sev, remediation, url=None):
+            # Chain confirmation boost: when the cms_chain hinted this CMS
+            # (fingerprint already saw it) and our probes confirm it,
+            # the finding is corroborated - bump confidence, cap 95.
+            if chained and conf < 95:
+                conf = min(conf + 5, 95)
             findings.append(self._f(
                 "web", key, value, source="CMS probes",
                 source_url=url or base, confidence=conf, passive=passive,
@@ -174,6 +182,31 @@ class CmsProbesPlugin(Plugin):
                 html, re.I)
             cms = "joomla"
             version = m3.group(1) if m3 else None
+
+        # ---- chain: tech_fingerprint / fingerprint (phase 1) may have
+        # already confirmed a CMS via headers, scripts, or cookies that the
+        # homepage HTML above missed. A chain hint either corroborates our
+        # own detection (confidence boost in add()) or becomes the
+        # candidate CMS so the deep checks still run (cms_chain in
+        # backend/app/chains.py). Detection only, GET requests.
+        chained = False
+        try:
+            from ..chains import chain_signals
+            hints = [h for h in chain_signals(ctx, "cms")
+                     if h in ("wordpress", "drupal", "joomla", "shopify",
+                              "squarespace", "wix")]
+        except Exception:
+            hints = []
+        if cms and cms in hints:
+            chained = True  # fingerprint corroborates homepage detection
+        elif not cms and hints:
+            cms = hints[0]
+            chained = True
+            add("cms_chain_triggered",
+                f"Chain: tech fingerprinting flagged {cms.title()} - "
+                f"running {cms.title()} deep checks on the chain hint.",
+                80, "low",
+                "No action needed - this records why the CMS checks ran.")
 
         if not cms:
             res = self._ok([], "no supported CMS fingerprinted")
