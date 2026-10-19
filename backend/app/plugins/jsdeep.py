@@ -92,6 +92,7 @@ class JsDeepPlugin(Plugin):
     label = "Deep JS Analysis"
     accepts = ["domain", "url"]
     passive = True
+    phase = 2
     cost = Cost.FREE
     group = "web"
     timeout_s = 30
@@ -321,5 +322,6 @@ class JsDeepPlugin(Plugin):
                                          "at unfinished security controls."}))
 
         reason = (f"analyzed {analyzed} JS bundles: {len(endpoints)} endpoints, "
-                  f"{len(secrets)} secrets, {len(sourcemaps)} source maps")
+                  f"{len(secrets)} secrets, {len(sourcemaps)} source maps, "
+                  f"{len(set(reconstructed_sources))} reconstructed sources")
         return self._ok(findings, reason)

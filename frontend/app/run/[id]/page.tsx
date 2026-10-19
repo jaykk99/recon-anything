@@ -28,6 +28,37 @@ function sevColor(s: string): string {
   return "text-slate-400 border-slate-700 bg-slate-800/50";
 }
 
+// Single source of truth for "what belongs on the Ports tab".
+// The tab badge AND the PortsView both use this, so the count
+// can never disagree with what is displayed.
+function isPortFinding(f: Finding): boolean {
+  const k = f.key || "";
+  if (k === "port_open" || k === "port_suggestion") return true;
+  if (k === "http_banner" || k === "tcp_banner" || k === "banner_note") return true;
+  if (k === "tls_nonstandard" || k === "os_guess") return true;
+  // danger exposures from port_audit: ftp_open, telnet_open, mongodb_open, ...
+  if (/_open$/.test(k) && f.plugin === "port_audit") return true;
+  return false;
+}
+// Same idea for the other tabs: badge count always uses the same
+// filter the tab view uses, so counts never disagree with lists.
+function isSecretFinding(f: Finding): boolean {
+  const k = f.key || "";
+  return k.startsWith("exposed_") || k.startsWith("wallet_");
+}
+function isCredFinding(f: Finding): boolean {
+  return (f.key || "").startsWith("cred_");
+}
+function isSubdomainFinding(f: Finding): boolean {
+  return f.key === "subdomain";
+}
+function isFileFinding(f: Finding): boolean {
+  const k = f.key || "";
+  return k === "artifact_exposed" || k === "artifact_archived" ||
+    k === "artifact_guarded" || k === "open_directory" ||
+    k === "opendir_archived";
+}
+
 // ---------- high-value findings: exploitability tiers ----------
 type ExploitTier = "weaponized" | "public_poc" | "theoretical" | "unknown";
 function exploitOf(f: Finding): ExploitTier {
@@ -619,11 +650,11 @@ export default function RunPage({ params }: { params: { id: string } }) {
         {((() => {
           const tabCount = (t: string): number => {
             if (t === "findings") return findings.length;
-            if (t === "secrets") return findings.filter((f) => f.category === "leak").length;
-            if (t === "creds") return findings.filter((f) => /cred|password|key|token/i.test(f.key)).length;
-            if (t === "subdomains") return findings.filter((f) => /subdomain/i.test(f.key)).length;
-            if (t === "ports") return findings.filter((f) => /port|banner/i.test(f.key)).length;
-            if (t === "files") return findings.filter((f) => /file|backup|artifact|git_exposed|sourcemap/i.test(f.key)).length;
+            if (t === "secrets") return findings.filter(isSecretFinding).length;
+            if (t === "creds") return findings.filter(isCredFinding).length;
+            if (t === "subdomains") return findings.filter(isSubdomainFinding).length;
+            if (t === "ports") return findings.filter(isPortFinding).length;
+            if (t === "files") return findings.filter(isFileFinding).length;
             if (t === "vulns") return findings.filter((f) => f.category === "vuln").length;
             return 0;
           };
@@ -879,7 +910,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
 interface SubStatus { live: boolean; status: number; url: string; server: string; title: string; }
 
 function SubdomainsView({ runId, findings }: { runId: string; findings: Finding[] }) {
-  const subs = findings.filter((f) => f.key === "subdomain");
+  const subs = findings.filter(isSubdomainFinding);
   const notes = findings.filter((f) => f.key === "subdomain_enum_note");
   const [status, setStatus] = useState<Record<string, SubStatus>>({});
   const [verifying, setVerifying] = useState(false);
@@ -954,10 +985,16 @@ function SubdomainsView({ runId, findings }: { runId: string; findings: Finding[
 interface PortProbe { host: string; port: number; open: boolean; banner: string; http: { status?: number; server?: string; title?: string; url?: string; error?: string } | null; error?: string }
 
 function PortsView({ runId, findings, targets }: { runId: string; findings: Finding[]; targets: { raw: string; normalized: string; type: string }[] }) {
-  const ports = findings.filter((f) => f.key === "port_open" || f.key === "port_suggestion");
+  // Same filter as the tab badge: the count and the list can never disagree.
+  const ports = findings.filter(isPortFinding);
   const [probes, setProbes] = useState<Record<string, PortProbe>>({});
   const [probing, setProbing] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   function parsePort(f: Finding) {
+    const evPort = (f.evidence as any)?.port;
+    if (typeof evPort === "number" && evPort > 0) {
+      return { port: evPort, service: String((f.evidence as any)?.service || "unknown") };
+    }
     const m = /port (\d+)\s*\(([^)]+)\)/i.exec(f.value);
     return { port: m ? parseInt(m[1]) : 0, service: m ? m[2] : "unknown" };
   }
@@ -982,58 +1019,149 @@ function PortsView({ runId, findings, targets }: { runId: string; findings: Find
     } catch (e: any) { setProbes((p) => ({ ...p, [key]: { host, port, open: false, banner: "", http: null, error: e.message } })); }
     setProbing(null);
   }
+  // Structured evidence table: shows what is actually inside the finding,
+  // not just the text summary.
+  function evidenceRows(f: Finding): [string, string][] {
+    const ev: any = f.evidence || {};
+    const rows: [string, string][] = [];
+    const push = (k: string, v: any) => {
+      if (v === undefined || v === null || v === "") return;
+      rows.push([k, typeof v === "object" ? JSON.stringify(v, null, 1) : String(v)]);
+    };
+    push("Port", ev.port);
+    push("Service", ev.service);
+    push("IP", ev.ip);
+    push("Version", ev.version);
+    push("OS hint", ev.os_hint || ev.os);
+    push("TLS", ev.tls ? (typeof ev.tls === "object" ? JSON.stringify(ev.tls) : ev.tls) : undefined);
+    push("Detected via", ev.via);
+    push("Default-credential risk", ev.default_cred_risk);
+    push("Exploitability", ev.exploitability);
+    return rows;
+  }
   const host = baseHost();
   const openPorts = ports.filter((f) => f.key === "port_open");
   const sugPorts = ports.filter((f) => f.key === "port_suggestion");
+  const danger = ports.filter((f) => /_open$/.test(f.key) && f.key !== "port_open" && f.plugin === "port_audit");
+  const banners = ports.filter((f) => f.key === "http_banner" || f.key === "tcp_banner" || f.key === "banner_note");
+  const misc = ports.filter((f) => f.key === "tls_nonstandard" || f.key === "os_guess");
+  const sev = (f: Finding) => normSev(f);
+  function renderRow(f: Finding, i: number, kind: "danger" | "open" | "banner" | "suggested" | "misc") {
+    const ek = `ports:${kind}:${i}`;
+    const isOpen = !!expanded[ek];
+    const { port, service } = parsePort(f);
+    const url = port > 0 ? webUrl(host, port) : "";
+    const key = `${host}:${port}`;
+    const pr = probes[key];
+    const banner = (f.evidence as any)?.banner || pr?.banner || "";
+    const rows = evidenceRows(f);
+    const ev: any = f.evidence || {};
+    const dot = kind === "danger" ? "bg-red-500" : kind === "open" ? "bg-green-400" : kind === "banner" ? "bg-sky-400" : "bg-slate-600";
+    const tag = kind === "danger" ? "DANGER" : kind === "open" ? "OPEN" : kind === "banner" ? "BANNER" : kind === "suggested" ? "SUGGESTED" : "INFO";
+    const tagCls = kind === "danger" ? "pill-err" : kind === "open" ? "bg-green-900/50 text-green-300" : "pill-info";
+    return (
+      <div key={ek} className={`px-3 py-2.5 rounded-lg bg-slate-800/50 ${kind === "danger" ? "border-l-2 border-red-500" : ""}`}>
+        <button className="w-full text-left min-h-[44px]" onClick={() => setExpanded((e) => ({ ...e, [ek]: !e[ek] }))}>
+          <div className="flex items-center gap-2 text-sm flex-wrap">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+            {url ? (
+              <a href={url} target="_blank" rel="noreferrer" className="font-mono text-sky-300 hover:underline"
+                onClick={(e) => e.stopPropagation()}>
+                {host}:{port} <span className="text-slate-400">({service})</span>
+              </a>
+            ) : port > 0 ? (
+              <span className="font-mono text-slate-300">{host ? `${host}:` : ""}{port} <span className="text-slate-500">({service})</span></span>
+            ) : (
+              <code className="text-amber-300 text-xs font-mono break-all">{f.key.replace(/_/g, " ")}</code>
+            )}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap ${tagCls}`}>{tag}</span>
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev(f))}`}>{sev(f).toUpperCase()}</span>
+            {kind === "open" && host && port > 0 && (
+              <span className="ml-auto" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => probe(host, port)} disabled={probing === key}
+                  className="chip px-2.5 py-2 min-h-[40px] text-[11px] text-emerald-300 whitespace-nowrap">
+                  {probing === key ? "..." : "probe"}
+                </button>
+              </span>
+            )}
+            <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1 break-words whitespace-pre-wrap">{f.value}</p>
+        </button>
+        {isOpen && (
+          <div className="pt-2 mt-1 border-t border-slate-700/50 space-y-2">
+            {rows.length > 0 && (
+              <table className="w-full text-xs">
+                <tbody>
+                  {rows.map(([k, v], ri) => (
+                    <tr key={ri} className="border-b border-slate-800/60">
+                      <td className="py-1 pr-3 text-slate-500 whitespace-nowrap align-top w-1/3">{k}</td>
+                      <td className="py-1 font-mono text-slate-200 break-all whitespace-pre-wrap">{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {(banner || pr?.http?.title) && (
+              <p className="text-[11px] text-slate-500 font-mono break-all">
+                <span className="text-slate-400 font-sans">banner: </span>
+                {banner}{pr?.http?.title ? ` | ${pr.http.title}` : ""}
+              </p>
+            )}
+            {ev.remediation && (
+              <p className="text-xs text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
+            )}
+            {pr?.error && <p className="text-[11px] text-red-400/80">{pr.error}</p>}
+            <div className="flex gap-2 flex-wrap text-[11px] text-slate-500">
+              <span>plugin: {f.plugin}</span>
+              <span>confidence: {f.confidence}%</span>
+              {f.source_url && <a href={f.source_url} target="_blank" rel="noreferrer" className="text-sky-400">open source</a>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="card p-4">
       <div className="flex items-center gap-3 mb-3 flex-wrap">
-        <h2 className="font-semibold text-sky-300">Ports <span className="text-slate-500 text-xs">({openPorts.length} open, {sugPorts.length} suggested)</span></h2>
+        <h2 className="font-semibold text-sky-300">Ports <span className="text-slate-500 text-xs">({ports.length})</span></h2>
       </div>
-      <p className="text-xs text-slate-500 mb-3">Tap a port to open it in your browser. Probe grabs the live banner.</p>
+      <p className="text-xs text-slate-500 mb-3">Tap a row to expand full details. Tap a port to open it in your browser. Probe grabs the live banner.</p>
       {ports.length === 0 ? (
         <p className="text-sm text-slate-500">No port findings yet. Run an active scan for real results.</p>
       ) : (
-        <div className="space-y-1">
-          {ports.map((f, i) => {
-            const { port, service } = parsePort(f);
-            const url = webUrl(host, port);
-            const key = `${host}:${port}`;
-            const pr = probes[key];
-            const banner = (f.evidence as any)?.banner || pr?.banner || "";
-            const isOpen = f.key === "port_open";
-            return (
-              <div key={i} className="px-3 py-2.5 min-h-[44px] rounded-lg bg-slate-800/50">
-                <div className="flex items-center gap-2 text-sm flex-wrap">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${isOpen ? "bg-green-400" : "bg-slate-600"}`} />
-                  {url ? (
-                    <a href={url} target="_blank" rel="noreferrer" className="font-mono text-sky-300 hover:underline">
-                      {host}:{port} <span className="text-slate-400">({service})</span>
-                    </a>
-                  ) : (
-                    <span className="font-mono text-slate-300">{port} <span className="text-slate-500">({service})</span></span>
-                  )}
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap ${isOpen ? "pill-err" : "pill-info"}`}>
-                    {isOpen ? "OPEN" : "SUGGESTED"}
-                  </span>
-                  <div className="ml-auto flex gap-2">
-                    {isOpen && host && (
-                      <button onClick={() => probe(host, port)} disabled={probing === key}
-                        className="chip px-2.5 py-2 min-h-[40px] text-[11px] text-emerald-300 whitespace-nowrap">
-                        {probing === key ? "..." : "probe"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                {(banner || pr?.http?.title) && (
-                  <p className="text-[11px] text-slate-500 font-mono mt-1 break-all">
-                    {banner}{pr?.http?.title ? ` | ${pr.http.title}` : ""}
-                  </p>
-                )}
-                {pr?.error && <p className="text-[11px] text-red-400/80 mt-1">{pr.error}</p>}
-              </div>
-            );
-          })}
+        <div className="space-y-4">
+          {danger.length > 0 && (
+            <div className="space-y-1">
+              <h3 className="text-xs uppercase text-red-400 font-semibold">Dangerous exposures ({danger.length})</h3>
+              {danger.map((f, i) => renderRow(f, i, "danger"))}
+            </div>
+          )}
+          {openPorts.length > 0 && (
+            <div className="space-y-1">
+              <h3 className="text-xs uppercase text-green-400 font-semibold">Open ports ({openPorts.length})</h3>
+              {openPorts.map((f, i) => renderRow(f, i, "open"))}
+            </div>
+          )}
+          {banners.length > 0 && (
+            <div className="space-y-1">
+              <h3 className="text-xs uppercase text-sky-400 font-semibold">Banners ({banners.length})</h3>
+              {banners.map((f, i) => renderRow(f, i, "banner"))}
+            </div>
+          )}
+          {misc.length > 0 && (
+            <div className="space-y-1">
+              <h3 className="text-xs uppercase text-slate-400 font-semibold">TLS / OS ({misc.length})</h3>
+              {misc.map((f, i) => renderRow(f, i, "misc"))}
+            </div>
+          )}
+          {sugPorts.length > 0 && (
+            <div className="space-y-1">
+              <h3 className="text-xs uppercase text-slate-500 font-semibold">Suggested ({sugPorts.length})</h3>
+              {sugPorts.map((f, i) => renderRow(f, i, "suggested"))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1041,9 +1169,7 @@ function PortsView({ runId, findings, targets }: { runId: string; findings: Find
 }
 
 function FilesView({ findings, onView }: { findings: Finding[]; onView: (url: string) => void }) {
-  const files = findings.filter((f) =>
-    f.key === "artifact_exposed" || f.key === "artifact_archived" || f.key === "artifact_guarded" ||
-    f.key === "open_directory" || f.key === "opendir_archived");
+  const files = findings.filter(isFileFinding);
   function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
   return (
     <div className="card p-4">
@@ -1325,7 +1451,7 @@ function VulnsView({ runId }: { runId: string }) {
 interface ChatMsg { role: "user" | "assistant"; text: string }
 
 function AssistantView({ runId }: { runId: string }) {
-  const [mode, setMode] = useState<"chat" | "agent">("chat");
+  const [mode, setMode] = useState<"chat" | "agent" | "app">("chat");
 
   // --- chat mode ---
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
@@ -1427,10 +1553,10 @@ function AssistantView({ runId }: { runId: string }) {
           Ask about this scan, or let the agent find coverage gaps and go deeper.
         </p>
         <div className="flex gap-2 mt-3">
-          {(["chat", "agent"] as const).map((m) => (
+          {([["chat", "Chat"], ["agent", "Agent"], ["app", "AI App Analysis"]] as const).map(([m, label]) => (
             <button key={m} onClick={() => setMode(m)}
-              className={`chip px-4 py-2.5 min-h-[44px] text-sm capitalize ${mode === m ? "bg-violet-900 text-violet-200" : "text-slate-400"}`}>
-              {m}
+              className={`chip px-4 py-2.5 min-h-[44px] text-sm ${mode === m ? "bg-violet-900 text-violet-200" : "text-slate-400"}`}>
+              {label}
             </button>
           ))}
         </div>
@@ -1547,14 +1673,166 @@ function AssistantView({ runId }: { runId: string }) {
           )}
         </div>
       )}
+
+      {mode === "app" && <AppAnalysisView runId={runId} />}
+    </div>
+  );
+}
+
+// ---------- AI App Analysis ----------
+// Reads the appintel plugin's app_ai_brief finding, shows the extracted
+// app structure, and sends it to the uncensored assistant for a full
+// breakdown: frameworks, API patterns, auth flows, what to test next.
+function AppAnalysisView({ runId }: { runId: string }) {
+  const [brief, setBrief] = useState<any>(null);
+  const [briefMeta, setBriefMeta] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [analysis, setAnalysis] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/runs/${runId}`, {
+          headers: { "X-Access-Code": getCode() },
+        });
+        const d = await r.json();
+        const fs: Finding[] = d.findings || d.run?.findings || [];
+        const b = fs.find((f) => f.key === "app_ai_brief");
+        if (live) {
+          if (b?.evidence?.brief) {
+            setBrief(b.evidence.brief);
+            setBriefMeta(b.value || "");
+          } else {
+            setErr("No app brief yet. Run a scan with the appintel plugin first.");
+          }
+        }
+      } catch (e: any) {
+        if (live) setErr(e.message || "Failed to load app brief.");
+      } finally {
+        if (live) setLoading(false);
+      }
+    })();
+    return () => { live = false; };
+  }, [runId]);
+
+  async function analyzeWithAI() {
+    if (!brief || analyzing) return;
+    setAnalyzing(true);
+    setErr("");
+    setAnalysis("");
+    const prompt =
+      "You are analyzing a web application's structure from a security reconnaissance scan. " +
+      "This is defensive analysis: explain the app, identify its patterns, and suggest what to test manually. " +
+      "Never provide exploits.\n\n" +
+      "APP BRIEF (JSON):\n" + JSON.stringify(brief, null, 1).slice(0, 12000) +
+      "\n\nGive me: 1) What this app is and its stack, 2) API surface patterns you notice, " +
+      "3) Auth flow observations, 4) The 5 most interesting files/endpoints to look at deeper and why, " +
+      "5) Concrete manual tests to try next (detection/verification only). Keep it tight.";
+    try {
+      const r = await fetch("/api/assistant/chat", {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          run_id: runId,
+        }),
+      });
+      const d = await r.json();
+      const reply = d.reply || d.message || d.error || "No reply.";
+      setAnalysis(String(reply));
+      if (d.error && !d.reply && !d.message) setErr(d.error);
+    } catch (e: any) {
+      setErr(e.message || "AI analysis request failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="card p-4">
+        <p className="text-xs text-slate-500">Loading app brief...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h3 className="font-semibold text-violet-300 text-sm">AI App Analysis</h3>
+        <p className="text-xs text-slate-500 mt-1">
+          Full-app extraction brief, then the uncensored assistant breaks it down.
+        </p>
+        {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
+        {briefMeta && <p className="text-xs text-slate-400 mt-2">{briefMeta}</p>}
+        {brief && (
+          <button onClick={analyzeWithAI} disabled={analyzing}
+            className="chip px-5 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50 disabled:opacity-50 mt-3">
+            {analyzing ? "Analyzing..." : "Analyze with AI"}
+          </button>
+        )}
+      </div>
+
+      {brief && (
+        <div className="card p-4">
+          <h3 className="font-semibold text-violet-300 text-sm mb-2">App brief</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="border border-slate-800 rounded p-2">
+              <p className="text-slate-500">Frameworks</p>
+              <p className="text-slate-200 mt-1">{(brief.frameworks || []).join(", ") || "unknown"}</p>
+            </div>
+            <div className="border border-slate-800 rounded p-2">
+              <p className="text-slate-500">API endpoints</p>
+              <p className="text-slate-200 mt-1">{brief.api?.endpoints_found ?? 0}{brief.api?.graphql ? " (GraphQL)" : ""}</p>
+            </div>
+            <div className="border border-slate-800 rounded p-2">
+              <p className="text-slate-500">Auth pages</p>
+              <p className="text-slate-200 mt-1">{(brief.auth?.auth_pages || []).length}</p>
+            </div>
+            <div className="border border-slate-800 rounded p-2">
+              <p className="text-slate-500">Files</p>
+              <p className="text-slate-200 mt-1">{brief.files?.js_files ?? 0} JS / {brief.files?.assets ?? 0} assets</p>
+            </div>
+          </div>
+          {(brief.api?.base_paths || []).length > 0 && (
+            <div className="mt-2">
+              <p className="text-[11px] text-slate-500 mb-1">API base paths</p>
+              <div className="flex gap-1 flex-wrap">
+                {(brief.api.base_paths as string[]).slice(0, 12).map((p, i) => (
+                  <span key={i} className="text-[11px] px-2 py-1 rounded bg-slate-800 text-slate-300 font-mono">{p}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {(brief.files?.interesting_files || []).length > 0 && (
+            <div className="mt-2">
+              <p className="text-[11px] text-slate-500 mb-1">Interesting files</p>
+              <ul className="text-[11px] text-slate-400 space-y-0.5 font-mono break-all">
+                {(brief.files.interesting_files as string[]).slice(0, 10).map((u, i) => (
+                  <li key={i}>{u}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {analysis && (
+        <div className="card p-4">
+          <h3 className="font-semibold text-violet-300 text-sm mb-2">AI breakdown</h3>
+          <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">{analysis}</p>
+        </div>
+      )}
     </div>
   );
 }
 
 function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: string) => void }) {
   const [typeFilter, setTypeFilter] = useState("all");
-  const secrets = findings.filter((f) =>
-    f.key.startsWith("exposed_") || f.key.startsWith("wallet_"));
+  const secrets = findings.filter(isSecretFinding);
   const types = Array.from(new Set(secrets.map((s) =>
     s.key.replace("exposed_", "").replace("wallet_", "").split("_")[0])));
   const shown = typeFilter === "all" ? secrets :
@@ -1598,7 +1876,7 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
 }
 
 function CredsView({ findings }: { findings: Finding[] }) {
-  const creds = findings.filter((f) => f.key.startsWith("cred_"));
+  const creds = findings.filter(isCredFinding);
   return (
     <div className="card p-4">
       <h2 className="font-semibold text-amber-300 mb-1">Credentials <span className="text-slate-500 text-xs">({creds.length})</span></h2>

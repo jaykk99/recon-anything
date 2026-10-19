@@ -51,6 +51,9 @@ LOW_PRIORITY = {
     "katana", "hakrawler", "wget", "httrack", "gobuster", "feroxbuster",
     "gau", "waybackurls", "stealth_crawler", "threat_monitor",
     "subdomain_brute", "port_scan", "port_audit",
+    # Full-app extraction plugins: heavy by nature, run last so findings
+    # lead and enumeration trails. (Jay's order 2026-10-18.)
+    "allsources", "assetmap", "filehunter", "jsdeep",
 }
 
 
