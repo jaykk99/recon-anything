@@ -96,7 +96,7 @@ class JsDeepPlugin(Plugin):
     group = "web"
     timeout_s = 30
     description = ("Download all JS bundles: endpoints, URLs, secrets, TODOs, "
-                   "source maps, light deobfuscation.")
+                   "source maps + original-source reconstruction.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -214,12 +214,61 @@ class JsDeepPlugin(Plugin):
 
         await asyncio.gather(*[analyze(u) for u in queue])
 
+        # --- source map reconstruction: download each .map, recover the
+        # original source tree, and mine sourcesContent for secrets/endpoints
+        map_sem = asyncio.Semaphore(6)
+
+        async def reconstruct(sm_url: str):
+            if (time.monotonic() - t0) > TIME_BUDGET:
+                return
+            async with map_sem:
+                try:
+                    r = await fetch(ctx.http, ctx.limiter, "GET", sm_url,
+                                    timeout=12, max_retries=0)
+                    if r.status_code != 200:
+                        return
+                    data = _json.loads(r.content[:MAX_MAP_BYTES].decode(
+                        "utf-8", "ignore"))
+                except Exception:
+                    return
+            sources = data.get("sources") or []
+            contents = data.get("sourcesContent") or []
+            for s in sources[:500]:
+                name = str(s)[:200]
+                if name and name not in ("",):
+                    reconstructed_sources.append(name)
+            for content in contents:
+                if not isinstance(content, str):
+                    continue
+                blob = content[:500000]
+                for rx in ENDPOINT_RES:
+                    for m in rx.finditer(blob):
+                        ep = m.group(1).strip()
+                        if ep.startswith("/"):
+                            ep = urljoin(sm_url, ep)
+                        if ep.startswith(("http://", "https://")):
+                            endpoints.add(ep)
+                for rx, kind in HARDCODED_SECRET_RES:
+                    for m in rx.finditer(blob):
+                        val = m.group(0)[:200]
+                        secrets.append({"kind": kind + " (source map)",
+                                        "url": sm_url, "match": val[:120]})
+                for m in TODO_RE.finditer(blob):
+                    t = m.group(0).strip()
+                    if t not in todos and len(todos) < 30:
+                        todos.append(t[:150])
+
+        await asyncio.gather(*[reconstruct(sm) for sm in
+                               sorted(sourcemaps)[:30]
+                               if (time.monotonic() - t0) < TIME_BUDGET])
+
         findings: List[Finding] = []
         findings.append(self._f(
             "web", "js_analysis",
             f"analyzed {analyzed} JS bundles: {len(endpoints)} endpoints, "
             f"{len(urls)} URLs, {len(secrets)} secret matches, "
-            f"{len(sourcemaps)} source maps",
+            f"{len(sourcemaps)} source maps, "
+            f"{len(set(reconstructed_sources))} reconstructed sources",
             "jsdeep", confidence=90,
             evidence={"severity": "low", "bundles": analyzed,
                       "deobfuscated_url_hits": deobf_hits,
@@ -248,6 +297,22 @@ class JsDeepPlugin(Plugin):
                 evidence={"severity": "medium",
                           "remediation": "Disable source maps in production "
                                          "or restrict access."}))
+        if reconstructed_sources:
+            uniq_src = sorted(set(reconstructed_sources))
+            interesting = [s for s in uniq_src
+                           if re.search(r'config|secret|key|auth|admin|env|credential',
+                                        s, re.I)][:20]
+            findings.append(self._f(
+                "web", "reconstructed_source_tree",
+                f"reconstructed {len(uniq_src)} original source files from "
+                f"{len(sourcemaps)} source maps" +
+                (f"; interesting: {', '.join(interesting)}" if interesting else ""),
+                "jsdeep", confidence=90,
+                evidence={"severity": "medium",
+                          "source_files": uniq_src[:100],
+                          "interesting_files": interesting,
+                          "remediation": "Source maps expose original source; "
+                                         "disable in production."}))
         for t in todos[:15]:
             findings.append(self._f(
                 "web", "js_todo", t, "jsdeep", confidence=70,
