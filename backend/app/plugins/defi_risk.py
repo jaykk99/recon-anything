@@ -122,6 +122,82 @@ def scan_defi_risks(src: str) -> List[Dict[str, str]]:
             "remediation": ("Cap supply or burn mint keys. If minting is needed, "
                             "gate it behind a multisig + timelock with on-chain "
                             "limits.")})
+    # --- 6. unbounded token allowance (approve to max without limit) ---
+    approve_re = re.compile(
+        r"function\s+approve\s*\([^;{}]*\)[^{;]*\{", re.S)
+    for am in approve_re.finditer(clean):
+        # grab the function body with brace counting
+        i = am.end() - 1
+        depth = 0
+        j = i
+        while j < len(clean):
+            if clean[j] == "{":
+                depth += 1
+            elif clean[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = clean[i:j + 1]
+        if re.search(r"type\s*\(\s*uint(256)?\s*\)\s*\.\s*max|uint\s*\(\s*-1\s*\)|"
+                     r"2\s*\*\*\s*256\s*-\s*1|0xfff+", body, re.I):
+            out.append({
+                "check": "approve_unbounded",
+                "severity": "medium",
+                "detail": ("UNBOUNDED ALLOWANCE: approve() sets a max/uncapped "
+                           "allowance with no limit. An approved spender (or a "
+                           "compromised one) can drain the full balance."),
+                "remediation": ("Approve only exact amounts, or use "
+                                "increaseAllowance/decreaseAllowance patterns. "
+                                "UI should default to the spend amount, not "
+                                "infinite approval.")})
+            break
+
+    # --- 7. oracle risk: Chainlink price feed with no staleness check ---
+    for om in re.finditer(r"latestRoundData\s*\(", clean):
+        window = clean[max(0, om.start() - 600):om.end() + 600]
+        if not re.search(r"updatedAt|answeredInRound", window):
+            out.append({
+                "check": "oracle_stale",
+                "severity": "medium",
+                "detail": ("ORACLE RISK: latestRoundData() consumed without "
+                           "checking updatedAt/answeredInRound. Stale or "
+                           "incomplete-round prices can be exploited for "
+                           "under/over-valued liquidations and swaps."),
+                "remediation": ("Validate the round: require(answeredInRound >= "
+                                "roundId) and require(block.timestamp - updatedAt "
+                                "< MAX_DELAY). Prefer feeds with deviation "
+                                "thresholds suited to the asset.")})
+            break
+
+    # --- 8. single-key admin: onlyOwner but no timelock/multisig in source ---
+    has_owner = bool(re.search(r"\bonlyOwner\b", clean))
+    has_distributed = bool(re.search(r"timelock|multisig|gnosissafe|"
+                                     r"\bSafe\b|AccessControl.*DEFAULT_ADMIN",
+                                     clean, re.I))
+    if has_owner and not has_distributed:
+        out.append({
+            "check": "single_key_admin",
+            "severity": "medium",
+            "detail": ("SINGLE-KEY ADMIN RISK: onlyOwner-guarded functions exist "
+                       "but no timelock, multisig, or Safe pattern appears in "
+                       "source. One compromised EOA key controls the protocol."),
+            "remediation": ("Move admin to a multisig (e.g. Gnosis Safe) with a "
+                            "timelock. Publish the signers and the delay; users "
+                            "should never trust an anonymous EOA admin.")})
+
+    # --- 9. rebase / elastic supply ---
+    rebase_hits = re.findall(r"function\s+(rebase)\s*\(", clean, re.I)
+    if rebase_hits:
+        out.append({
+            "check": "rebase",
+            "severity": "medium",
+            "detail": ("REBASE/ELASTIC SUPPLY: rebase() present. Balances change "
+                       "without transfers; breaks integrations that assume "
+                       "fixed balances and enables supply-manipulation games."),
+            "remediation": ("Document the rebase cadence and formula. "
+                            "Integrators must read balances fresh every block "
+                            "and never cache user balances across rebases.")})
     return out
 
 
@@ -131,6 +207,10 @@ EXPL = {
     "pause": "theoretical",
     "fee_on_transfer": "theoretical",
     "mint": "public_poc",
+    "approve_unbounded": "theoretical",
+    "oracle_stale": "public_poc",
+    "single_key_admin": "theoretical",
+    "rebase": "theoretical",
 }
 
 
@@ -191,7 +271,8 @@ class DefiRiskPlugin(Plugin):
                     findings.append(self._f(
                         "web3", "defi_no_flags",
                         f"{addr}: verified source scanned; no proxy, owner-privilege, "
-                        "pause, fee, or mint flags found. Not a proof of safety.",
+                        "pause, fee, mint, allowance, oracle, admin, or rebase "
+                        "flags found. Not a proof of safety.",
                         source="Etherscan static scan",
                         source_url=f"https://etherscan.io/address/{addr}",
                         confidence=60, passive=True,
