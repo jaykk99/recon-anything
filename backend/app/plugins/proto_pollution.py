@@ -132,17 +132,8 @@ class ProtoPollutionPlugin(Plugin):
                                           "remediation": f"Upgrade {name} to "
                                           f"{below} or newer, or pin a fixed "
                                           "version, then re-scan."}))
-                        elif v_parsed:
-                            findings.append(self._f(
-                                "web", f"proto_pollution_{lib}_ok",
-                                f"{name} {ver} is at or above the safe version "
-                                f"({below}) for prototype pollution",
-                                source="Prototype pollution detector",
-                                source_url=base + "/",
-                                confidence=70, passive=True,
-                                evidence={"severity": "low",
-                                          "exploitability": "unknown",
-                                          "remediation": "No action needed."}))
+                        # Safe versions (>= the fixed release) are NOT
+                        # findings: "library is patched" is not a vuln.
 
         # --- 2. Safe reflection probes --------------------------------------
         for pattern in SAFE_PATTERNS:
@@ -168,18 +159,11 @@ class ProtoPollutionPlugin(Plugin):
                               "helpers."}))
                 break  # one reflection finding is enough; probes are harmless
 
-        if not findings:
-            findings.append(self._f(
-                "web", "proto_pollution_clean",
-                "No vulnerable JS library versions and no pollution-marker "
-                "reflection detected",
-                source="Prototype pollution detector", source_url=base,
-                confidence=70, passive=True,
-                evidence={"severity": "low", "exploitability": "unknown",
-                          "remediation": "No action needed."}))
-
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"checked {len(seen_libs)} JS libs + "
-                                 f"{len(SAFE_PATTERNS)} reflection probes")
+        note = (f"checked {len(seen_libs)} JS libs + "
+                f"{len(SAFE_PATTERNS)} reflection probes")
+        if not findings:
+            note += " - no vulnerable library versions or pollution-marker reflection"
+        res = self._ok(findings, note)
         res.duration_ms = dur
         return res

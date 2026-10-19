@@ -18,7 +18,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url
+from .injutil import fetch_homepage, param_urls, probe_url, fetch_baseline, \
+    over_budget
 
 TRAVERSAL_PAYLOADS = [
     "....//....//....//....//etc/passwd",
@@ -74,6 +75,8 @@ class TraversalPlugin(Plugin):
         tested = 0
         confirmed = False
         for u in sorted(urls)[:12]:
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             try:
                 params = parse_qsl(parts.query, keep_blank_values=True)
@@ -91,6 +94,8 @@ class TraversalPlugin(Plugin):
                 base_params = [(n, "1") for n in names]
             for name in names[:6]:
                 for payload in TRAVERSAL_PAYLOADS[:3]:
+                    if over_budget(t0):
+                        break
                     purl = probe_url(parts, base_params, name, payload)
                     try:
                         r = await fetch(ctx.http, ctx.limiter, "GET", purl,
@@ -99,7 +104,14 @@ class TraversalPlugin(Plugin):
                         continue
                     tested += 1
                     body = r.text[:50000]
-                    if any(m in body for m in PASSWD_MARKERS):
+                    # Baseline FP guard: markers like "root:x:0:0" or
+                    # "[extensions]" can exist in the page's normal content
+                    # (docs, tutorials). Only flag when the marker appears
+                    # in the probed response but NOT in the baseline.
+                    base_body, _ = await fetch_baseline(ctx, u, timeout=12)
+                    base_body = base_body[:50000]
+                    if any(m in body for m in PASSWD_MARKERS) and \
+                            not any(m in base_body for m in PASSWD_MARKERS):
                         findings.append(self._f(
                             "web", "dir_traversal_confirmed",
                             f"HIGH: Path traversal CONFIRMED - /etc/passwd leaked via "
@@ -113,7 +125,8 @@ class TraversalPlugin(Plugin):
                                 "poc_command": f"curl -s '{purl}' | grep -c 'root:x:0:0'"}))
                         confirmed = True
                         break
-                    if any(m in body for m in WININI_MARKERS):
+                    if any(m in body for m in WININI_MARKERS) and \
+                            not any(m in base_body for m in WININI_MARKERS):
                         findings.append(self._f(
                             "web", "dir_traversal_confirmed",
                             f"HIGH: Windows path traversal CONFIRMED - win.ini leaked via "

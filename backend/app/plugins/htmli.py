@@ -75,7 +75,12 @@ class HtmlInjectionPlugin(Plugin):
                 raw_hit = canary in body
                 encoded_hit = ("&lt;b&gt;" + tag in body) or \
                     ("&lt;/b&gt;" in body)
-                if raw_hit and not encoded_hit:
+                # Context-aware FP guard: unencoded markup only matters in
+                # an HTML document. A JSON/XML API echoing the value back
+                # is not HTML injection.
+                ctype = pr.headers.get("content-type", "").lower()
+                is_html = ("html" in ctype) or ("text" in ctype) or (not ctype)
+                if raw_hit and not encoded_hit and is_html:
                     findings.append(self._f(
                         "leak", "html_injection",
                         f"HIGH: HTML injection in parameter '{name}' at "

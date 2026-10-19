@@ -42,59 +42,42 @@ class ClickjackPlugin(Plugin):
         xfo = headers.get("x-frame-options", "")
         csp = headers.get("content-security-policy", "")
 
-        # X-Frame-Options analysis
-        if not xfo:
+        # X-Frame-Options / CSP frame-ancestors analysis. Only exposures
+        # are findings - a protected site is not a finding.
+        fa = ""
+        if "frame-ancestors" in csp:
+            fa = csp.split("frame-ancestors")[1].split(";")[0].strip()
+        csp_protects = fa and ("'none'" in fa or "'self'" in fa) \
+            and "*" not in fa and "https:" not in fa
+
+        if not xfo and not csp_protects:
+            poc = (f"<html><body><h1>Clickjacking PoC for {domain}</h1>"
+                   f'<iframe src="{url}" width="800" height="600"></iframe>'
+                   f"</body></html>")
             findings.append(self._f(
                 "web", "clickjack_vulnerable",
-                "VULNERABLE: No X-Frame-Options header - site can be iframed",
+                "VULNERABLE: No X-Frame-Options header and no protective "
+                "CSP frame-ancestors - site can be iframed",
                 source="clickjack tester", source_url=url,
-                confidence=85, passive=True))
-        elif xfo.upper() not in ("DENY", "SAMEORIGIN"):
+                confidence=85, passive=True,
+                evidence={"severity": "medium",
+                          "poc_html": poc,
+                          "remediation": "Add X-Frame-Options: DENY or "
+                          "SAMEORIGIN (or CSP frame-ancestors)."}))
+        elif xfo and xfo.upper() not in ("DENY", "SAMEORIGIN"):
             findings.append(self._f(
                 "web", "clickjack_weak",
                 f"Weak X-Frame-Options: '{xfo}' - should be DENY or SAMEORIGIN",
                 source="clickjack tester", source_url=url,
                 confidence=70, passive=True))
-        else:
-            findings.append(self._f(
-                "web", "clickjack_protected_xfo",
-                f"Protected by X-Frame-Options: {xfo}",
-                source="clickjack tester", source_url=url,
-                confidence=90, passive=True))
 
-        # CSP frame-ancestors analysis
-        if "frame-ancestors" in csp:
-            fa = csp.split("frame-ancestors")[1].split(";")[0].strip()
-            if "'none'" in fa:
-                findings.append(self._f(
-                    "web", "clickjack_protected_csp",
-                    "Protected by CSP frame-ancestors 'none'",
-                    source="clickjack tester", source_url=url,
-                    confidence=90, passive=True))
-            elif "*" in fa or "https:" in fa:
-                findings.append(self._f(
-                    "web", "clickjack_csp_bypass",
-                    f"CSP frame-ancestors too permissive: {fa}",
-                    source="clickjack tester", source_url=url,
-                    confidence=75, passive=True))
-        elif not xfo:
+        # frame-ancestors present but permissive - separate finding.
+        if fa and ("*" in fa or "https:" in fa):
             findings.append(self._f(
-                "web", "clickjack_no_csp",
-                "No CSP frame-ancestors either - doubly vulnerable",
+                "web", "clickjack_csp_bypass",
+                f"CSP frame-ancestors too permissive: {fa}",
                 source="clickjack tester", source_url=url,
-                confidence=90, passive=True))
-
-        # Generate PoC if vulnerable
-        if not xfo or "frame-ancestors" not in csp:
-            poc = (f"<html><body><h1>Clickjacking PoC for {domain}</h1>"
-                   f'<iframe src="{url}" width="800" height="600"></iframe>'
-                   f"</body></html>")
-            findings.append(self._f(
-                "web", "clickjack_poc",
-                f"PoC HTML generated ({len(poc)} chars) - save as .html and open to verify",
-                source="clickjack tester",
-                confidence=80, passive=True,
-                evidence={"poc": poc}))
+                confidence=75, passive=True))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, "clickjacking analysis complete")

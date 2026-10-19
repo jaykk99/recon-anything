@@ -251,11 +251,17 @@ class SqliPlugin(Plugin):
                     except Exception:
                         continue
                     # UNION success: page renders differently without error
-                    # Check for UNION-specific DB errors (column count mismatch)
+                    # Check for UNION-specific DB errors (column count mismatch).
+                    # Skip patterns already in the baseline (FP guard).
                     if re.search(r"(column.*?mismatch|different number of columns|"
                                  r"UNION.*types? (are|do) not match|"
                                  r"SELECTs? to the left and right)",
                                  body, re.I):
+                        if re.search(r"(column.*?mismatch|different number of columns|"
+                                     r"UNION.*types? (are|do) not match|"
+                                     r"SELECTs? to the left and right)",
+                                     baseline_body, re.I):
+                            continue
                         findings.append(self._f(
                             "leak", "sqli_union_based",
                             f"CRITICAL: UNION-based SQL injection in parameter "

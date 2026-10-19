@@ -10,19 +10,25 @@ from __future__ import annotations
 import re
 import time
 from typing import List
-from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-# API endpoint patterns that commonly suffer BOLA
+# API endpoint patterns that commonly suffer BOLA. Only endpoints
+# carrying an object ID (numeric or UUID) are flagged - a bare
+# "/api/users/" string in JS is normal API surface, not a vuln.
 BOLA_PATTERNS = [
-    (r"/api/(?:v\d+/)?(?:users?|accounts?|profiles?)/[^/\s\"']+", "user object API endpoint"),
-    (r"/api/(?:v\d+/)?(?:orders?|invoices?|payments?)/[^/\s\"']+", "order object API endpoint"),
-    (r"/graphql", "GraphQL endpoint (test field-level authz)"),
-    (r"/api/(?:v\d+/)?(?:admin|internal|private)/", "privileged API namespace"),
+    (r"/api/(?:v\d+/)?(?:users?|accounts?|profiles?)/\d{1,12}(?=[/\"'?\s]|$)",
+     "user object API endpoint with numeric ID", 60),
+    (r"/api/(?:v\d+/)?(?:users?|accounts?|profiles?)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+     "user object API endpoint with UUID", 55),
+    (r"/api/(?:v\d+/)?(?:orders?|invoices?|payments?)/\d{1,12}(?=[/\"'?\s]|$)",
+     "order object API endpoint with numeric ID", 60),
+    (r"/graphql(?=[/\"'?\s]|$)", "GraphQL endpoint (test field-level authz)", 55),
+    (r"/api/(?:v\d+/)?(?:admin|internal|private)/",
+     "privileged API namespace", 55),
 ]
 
 REMEDIATION = ("Enforce object-level authorization on every API endpoint: "
@@ -64,7 +70,7 @@ class BolaPlugin(Plugin):
         sources = [html] + [str(u) for u in ctx.consume("endpoints")[:50]]
         seen = set()
         for src in sources:
-            for pat, label in BOLA_PATTERNS:
+            for pat, label, conf in BOLA_PATTERNS:
                 for m in re.finditer(pat, src):
                     sample = m.group(0)[:80]
                     if sample in seen:
@@ -75,7 +81,7 @@ class BolaPlugin(Plugin):
                         f"BOLA candidate: {label} at '{sample.strip()}'. "
                         f"Test object-level authz with two accounts on an authorized target.",
                         source="BOLA pattern mining", source_url=page_url,
-                        confidence=60, passive=passive,
+                        confidence=conf, passive=passive,
                         evidence={"severity": "high", "pattern": label,
                                   "sample": sample.strip(),
                                   "remediation": REMEDIATION,

@@ -15,7 +15,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url, sample_urls
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls, \
+    fetch_baseline, baseline_pattern_hits, over_budget
 
 REMEDIATION = ("Use typed query builders / ODMs, never pass raw request "
                "objects into queries. Cast inputs to expected types, "
@@ -81,10 +82,20 @@ class NosqlInjectionPlugin(Plugin):
 
         tested = 0
         for u in sample_urls(urls, 8):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
                 continue
+            # Baseline FP guard: Mongo/Redis error strings can appear in
+            # normal content (docs, status pages). Only flag error text
+            # that appears AFTER the probe, not in the baseline. The same
+            # baseline time guards the $where sleep canary against slow
+            # servers.
+            baseline_body, baseline_t = await fetch_baseline(ctx, u)
+            baseline_err_hits = baseline_pattern_hits(baseline_body,
+                                                      NOSQL_ERRORS)
             for name, val in params[:3]:
                 found = False
 
@@ -99,6 +110,8 @@ class NosqlInjectionPlugin(Plugin):
                     except Exception:
                         continue
                     for pat, label in NOSQL_ERRORS:
+                        if pat in baseline_err_hits:
+                            continue
                         if re.search(pat, body, re.I | re.S):
                             findings.append(self._f(
                                 "leak", "nosqli_error_based",
@@ -123,6 +136,9 @@ class NosqlInjectionPlugin(Plugin):
                     continue
 
                 # --- Method 2: $where timing probe ---
+                # Baseline-aware: require the delay to be >=4s absolute AND
+                # >=3s above the normal response time. A slow server adds
+                # latency to every request - that is not NoSQLi.
                 for payload, label in NOSQL_TIME_PAYLOADS:
                     tested += 1
                     purl = probe_url(parts, params, name, payload)
@@ -133,7 +149,7 @@ class NosqlInjectionPlugin(Plugin):
                         delta = time.monotonic() - p0
                     except Exception:
                         continue
-                    if delta >= 4.0:
+                    if delta >= 4.0 and (delta - baseline_t) >= 3.0:
                         findings.append(self._f(
                             "leak", "nosqli_time_based",
                             f"HIGH: time-based NoSQL injection in "
