@@ -1,8 +1,11 @@
 """Enterprise software detector.
 
-Detects SAP, Oracle, Salesforce, SharePoint, and other enterprise
-products. Flags exposed admin panels and version disclosure.
-Read-only. Authorized testing only.
+Detects SAP, Oracle, Salesforce, Microsoft (SharePoint, Dynamics 365,
+Power BI, Exchange OWA/ECP), ServiceNow, Workday, Atlassian
+(Jira/Confluence/Bitbucket/Bamboo), Tableau, Qlik, Splunk, Elastic
+Kibana, SolarWinds, ManageEngine, and other enterprise products.
+Flags exposed admin panels and version disclosure.
+Read-only. Authorized testing only. Never attempts credentials.
 """
 from __future__ import annotations
 
@@ -15,12 +18,21 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
+# (detection regex, product name, admin paths to probe)
 ENTERPRISE_SIGS = [
-    (r"sap|/sap/bc/", "SAP", ["/sap/bc/gui/sap/its/webgui", "/sap/public/"]),
-    (r"oracle|weblogic", "Oracle (WebLogic/Fusion)", ["/console/login/LoginForm.jsp"]),
-    (r"salesforce|force\.com|lightning", "Salesforce", []),
-    (r"sharepoint|/_layouts/", "Microsoft SharePoint", ["/_layouts/15/viewlsts.aspx"]),
-    (r"servicenow", "ServiceNow", []),
+    (r"sap|/sap/bc/|/sap/public/", "SAP",
+     ["/sap/bc/gui/sap/its/webgui", "/sap/bc/ui5_ui5", "/irj/portal",
+      "/sap/public/"]),
+    (r"oracle|weblogic|/em/|/oam/", "Oracle (WebLogic/Fusion/EM/OAM)",
+     ["/console/login/LoginForm.jsp", "/em/", "/oam/"]),
+    (r"salesforce|force\.com|lightning", "Salesforce", ["/s/"]),
+    (r"sharepoint|/_layouts/", "Microsoft SharePoint",
+     ["/_layouts/15/viewlsts.aspx"]),
+    (r"crm\.dynamics\.com|dynamics 365", "Microsoft Dynamics 365", []),
+    (r"powerbi|powerbi\.com", "Microsoft Power BI", []),
+    (r"/owa/|/ecp/|outlook web app", "Microsoft Exchange OWA/ECP",
+     ["/owa/", "/ecp/"]),
+    (r"servicenow", "ServiceNow", ["/navpage.do"]),
     (r"workday", "Workday", []),
     (r"sap\.hybris|hybris", "SAP Hybris Commerce", []),
     (r"peoplesoft|psp/", "Oracle PeopleSoft", ["/psp/"]),
@@ -29,7 +41,24 @@ ENTERPRISE_SIGS = [
     (r"jenkins", "Jenkins CI", ["/login"]),
     (r"jira|atlassian", "Atlassian Jira", ["/secure/Dashboard.jspa"]),
     (r"confluence", "Atlassian Confluence", ["/login.action"]),
+    (r"bitbucket", "Atlassian Bitbucket", ["/login"]),
+    (r"bamboo", "Atlassian Bamboo", ["/login.action"]),
+    (r"tableau|/views/", "Tableau Server", ["/views/"]),
+    (r"qlik", "Qlik Sense", ["/hub/"]),
+    (r"splunk", "Splunk", ["/en-US/account/login"]),
+    (r"kibana|/app/kibana", "Elastic Kibana", ["/app/kibana", "/login"]),
+    (r"solarwinds|orion", "SolarWinds Orion", ["/Orion/Login.aspx"]),
+    (r"manageengine", "ManageEngine", ["/"]),
 ]
+
+# Admin paths whose exposure is high severity on their own (mail flow,
+# config panels). Everything else: exposed login panel = medium.
+HIGH_ADMIN_PATHS = {"/ecp/"}
+
+# Hints in a login panel body that default credentials are suggested.
+DEFAULT_CRED_HINTS = re.compile(
+    r"default\s+(user|password|credentials)|admin[/:]admin|"
+    r"username:\s*admin", re.I)
 
 REMEDIATION = ("Restrict enterprise admin panels to VPN, enforce MFA, "
                "patch promptly, and disable version disclosure.")
@@ -42,7 +71,9 @@ class EnterprisePlugin(Plugin):
     passive = True
     cost = Cost.FREE
     group = "web"
-    description = "Detect SAP, Oracle, SharePoint, Jira and admin panels."
+    description = ("Detect SAP, Oracle, Salesforce, SharePoint, Exchange, "
+                   "ServiceNow, Atlassian, Tableau, Splunk, Kibana and "
+                   "admin panels. Read-only.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -60,7 +91,7 @@ class EnterprisePlugin(Plugin):
                 raise RuntimeError("homepage fetch failed")
             html = page["text"][:400000]
             text = html + " " + str(page["headers"])
-            page_url = str(r.url)
+            page_url = page["url"]
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -85,15 +116,29 @@ class EnterprisePlugin(Plugin):
                         pr = await fetch(ctx.http, ctx.limiter, "GET", url,
                                          timeout=12, follow_redirects=False)
                         if pr.status_code in (200, 401, 403):
+                            body = pr.text[:8000]
+                            sev = "medium"
+                            note = (f"exposed {name} login/admin panel at "
+                                    f"{url} (HTTP {pr.status_code})")
+                            # high-value panels and default-cred hints
+                            if ap in HIGH_ADMIN_PATHS:
+                                sev = "high"
+                                note += (" - high-value mail admin panel; "
+                                         "restrict to VPN + MFA")
+                            elif DEFAULT_CRED_HINTS.search(body):
+                                sev = "high"
+                                note += (" - page hints at default "
+                                         "credentials; change them now")
                             findings.append(self._f(
                                 "web", "enterprise_admin",
-                                f"Enterprise admin surface: {name} panel at "
-                                f"{url} (HTTP {pr.status_code}).",
+                                f"Enterprise admin surface ({sev}): {note}.",
                                 source="Enterprise probe", source_url=url,
                                 confidence=75, passive=passive,
-                                evidence={"severity": "high",
+                                evidence={"severity": sev,
                                           "remediation": REMEDIATION,
-                                          "scope_note": "Read-only probe. Authorized testing only."}))
+                                          "scope_note": "Read-only probe. "
+                                          "Authorized testing only. No "
+                                          "credential attempts made."}))
                     except Exception:
                         continue
         dur = int((time.monotonic() - t0) * 1000)
