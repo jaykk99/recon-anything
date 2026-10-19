@@ -1,0 +1,154 @@
+"""TheHarvester-style OSINT gatherer (keyless sources only).
+
+Gathers emails, subdomains, and hostnames from public sources without API
+keys: crt.sh certificate transparency, HackerTarget hostsearch, ThreatCrowd,
+and email extraction from fetched pages. Publishes everything to the
+discovery bus so chain plugins can consume it.
+
+Detection only: passive public-source queries. No authentication attempts.
+Authorized testing only.
+"""
+from __future__ import annotations
+
+import re
+import time
+from typing import List, Set
+from urllib.parse import quote
+
+from ..classifier import domain_from_target
+from ..net import web_base
+from ..ratelimit import fetch
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_list
+
+EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+OBFUSCATED_RE = re.compile(
+    r"[a-zA-Z0-9._%+\-]{1,64}\s*(?:\[at\]|\(at\)|\sat\s)\s*[a-zA-Z0-9.\-]+\s*(?:\[dot\]|\(dot\)|\sdot\s)\s*[a-zA-Z]{2,}",
+    re.I)
+
+
+class HarvesterPlugin(Plugin):
+    id = "harvester"
+    label = "OSINT Harvester"
+    accepts = ["domain", "url"]
+    passive = True
+    cost = Cost.FREE
+    group = "graph"
+    description = ("TheHarvester-style: emails, subdomains, hostnames from "
+                   "keyless public sources.")
+
+    async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        t0 = time.monotonic()
+        domain = domain_from_target(target.type, target.normalized)
+        if not domain:
+            return self._skipped("no domain for this target type")
+        base = await web_base(ctx, target, domain)
+        findings: List[Finding] = []
+        emails: Set[str] = set()
+        subdomains: Set[str] = set()
+
+        # 1. crt.sh certificate transparency (subdomains + sometimes emails in SANs)
+        try:
+            r = await fetch(
+                ctx.http, ctx.limiter, "GET",
+                f"https://crt.sh/?q=%25.{quote(domain)}&output=json",
+                timeout=20)
+            for entry in safe_json_list(r):
+                nv = str(entry.get("name_value", ""))
+                for part in nv.split("\n"):
+                    part = part.strip().lower().lstrip("*.")
+                    if part.endswith(domain) and part != domain:
+                        subdomains.add(part)
+        except Exception:
+            pass
+
+        # 2. HackerTarget hostsearch (keyless)
+        try:
+            r = await fetch(
+                ctx.http, ctx.limiter, "GET",
+                f"https://api.hackertarget.com/hostsearch/?q={quote(domain)}",
+                timeout=20)
+            if r.status_code == 200:
+                for line in r.text.splitlines():
+                    host = line.split(",")[0].strip().lower()
+                    if host.endswith(domain) and host != domain:
+                        subdomains.add(host)
+        except Exception:
+            pass
+
+        # 3. ThreatCrowd (keyless)
+        try:
+            r = await fetch(
+                ctx.http, ctx.limiter, "GET",
+                f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={quote(domain)}",
+                timeout=20)
+            try:
+                data = r.json()
+                for sub in data.get("subdomains", []) or []:
+                    sub = str(sub).strip().lower()
+                    if sub.endswith(domain):
+                        subdomains.add(sub)
+                for em in data.get("emails", []) or []:
+                    em = str(em).strip().lower()
+                    if "@" in em:
+                        emails.add(em)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # 4. Email extraction from homepage + a few common pages
+        pages = [base]
+        for p in ["/contact", "/about", "/team", "/about-us"]:
+            pages.append(base.rstrip("/") + p)
+        for url in pages[:5]:
+            try:
+                page = await ctx.fetch_page(url, timeout=12)
+                if not page:
+                    continue
+                text = page["text"][:200000]
+                for m in EMAIL_RE.finditer(text):
+                    em = m.group(0).lower()
+                    if em.endswith(domain) and not em.startswith(("noreply@", "no-reply@")):
+                        emails.add(em)
+                    elif "@" in em and len(em) < 80:
+                        # keep non-domain emails too (partners, vendors)
+                        emails.add(em)
+            except Exception:
+                continue
+
+        # Publish to discovery bus + emit findings
+        for sub in sorted(subdomains)[:200]:
+            ctx.publish("subdomains", sub)
+        if subdomains:
+            findings.append(self._f(
+                "graph", "harvested_subdomains",
+                f"{len(subdomains)} subdomains from public sources: "
+                + ", ".join(sorted(subdomains)[:10])
+                + ("..." if len(subdomains) > 10 else ""),
+                source="theharvester: crt.sh/hackertarget/threatcrowd",
+                confidence=85, passive=True,
+                evidence={"remediation": "Review subdomain inventory. Remove "
+                          "stale records (takeover risk).",
+                          "severity": "low", "risk": "low",
+                          "subdomains": sorted(subdomains)[:200]}))
+        for em in sorted(emails)[:100]:
+            ctx.publish("emails", em)
+        if emails:
+            findings.append(self._f(
+                "identity", "harvested_emails",
+                f"{len(emails)} emails from public sources: "
+                + ", ".join(sorted(emails)[:8])
+                + ("..." if len(emails) > 8 else ""),
+                source="theharvester: page scrape + threatcrowd",
+                confidence=80, passive=True,
+                evidence={"remediation": "Exposed emails enable phishing. "
+                          "Remove from public pages where possible; enforce "
+                          "MFA on all accounts.",
+                          "severity": "low", "risk": "low",
+                          "emails": sorted(emails)[:100]}))
+
+        res = self._ok(
+            findings,
+            f"{len(subdomains)} subdomains, {len(emails)} emails harvested")
+        res.duration_ms = int((time.monotonic() - t0) * 1000)
+        return res
