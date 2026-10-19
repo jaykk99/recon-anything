@@ -96,11 +96,22 @@ class HarvesterPlugin(Plugin):
         except Exception:
             pass
 
-        # 4. Email extraction from homepage + a few common pages
+        # 4. Email extraction from homepage + common pages
         pages = [base]
-        for p in ["/contact", "/about", "/team", "/about-us"]:
+        for p in ["/contact", "/contact-us", "/about", "/about-us",
+                  "/team", "/our-team", "/staff", "/people", "/directory",
+                  "/careers", "/jobs", "/press", "/media", "/news",
+                  "/support", "/privacy", "/privacy-policy", "/legal",
+                  "/imprint", "/footer"]:
             pages.append(base.rstrip("/") + p)
-        for url in pages[:5]:
+
+        def deobfuscate(m: re.Match) -> str:
+            s = m.group(0)
+            s = re.sub(r"\s*(?:\[at\]|\(at\)|\sat\s)\s*", "@", s, flags=re.I)
+            s = re.sub(r"\s*(?:\[dot\]|\(dot\)|\sdot\s)\s*", ".", s, flags=re.I)
+            return s.lower()
+
+        for url in pages[:12]:
             try:
                 page = await ctx.fetch_page(url, timeout=12)
                 if not page:
@@ -112,6 +123,11 @@ class HarvesterPlugin(Plugin):
                         emails.add(em)
                     elif "@" in em and len(em) < 80:
                         # keep non-domain emails too (partners, vendors)
+                        emails.add(em)
+                # NEW: deobfuscated emails (user [at] domain [dot] com)
+                for m in OBFUSCATED_RE.finditer(text):
+                    em = deobfuscate(m)
+                    if "@" in em and len(em) < 80:
                         emails.add(em)
             except Exception:
                 continue

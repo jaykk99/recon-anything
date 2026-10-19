@@ -20,10 +20,19 @@ from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 DOC_PATHS = [
-    "/swagger.json", "/swagger/v1/swagger.json", "/openapi.json",
+    "/swagger.json", "/swagger/v1/swagger.json", "/swagger/v2/swagger.json",
+    "/openapi.json", "/openapi.yaml", "/openapi.yml",
     "/api-docs", "/api/docs", "/docs", "/redoc", "/graphql",
-    "/.well-known/openapi.json", "/v3/api-docs", "/swagger-ui.html",
+    "/.well-known/openapi.json", "/v3/api-docs", "/v2/api-docs",
+    "/swagger-ui.html", "/swagger-ui/", "/swagger/index.html",
     "/api/swagger.json", "/api/openapi.json", "/api/v1/swagger.json",
+    "/api/v2/swagger.json", "/api/openapi.yaml", "/api/docs/swagger.json",
+    "/api/schema/", "/schema/", "/api/schema/swagger-ui/",
+    "/graphiql", "/playground", "/altair", "/voyager",
+    "/api/graphql", "/v1/graphql", "/query", "/api/query",
+    "/api/redoc", "/redoc/", "/api/redoc/",
+    "/api/openapi", "/openapi", "/api/v3/api-docs",
+    "/api/documentation", "/documentation", "/api/spec.json",
 ]
 
 API_WORDLIST = """users user me profile account accounts login logout register
@@ -38,6 +47,33 @@ posts post comments comment messages message notifications
 teams team org organization organizations members roles permissions
 keys apikey webhooks webhook events logs audit
 graphql api v1 v2 v3 rest
+customers customer leads lead contacts vendors suppliers
+employees employee payroll hr benefits
+tickets ticket incidents incident alerts alert
+reports report analytics stats dashboard
+devices device sensors sensor gateways gateway
+subscriptions subscription plans plan pricing
+coupons coupon discounts discount promos promo
+reviews review ratings rating feedback
+categories category tags tag collections
+articles article pages page menus menu
+widgets widget plugins plugin themes theme
+backups backup exports export imports import
+migrations migration seeds seed jobs job
+queues queue workers worker tasks task
+caches cache sessions tokens invites invite
+domains domain dns ssl certificates certificate
+billing invoices payments refunds refund
+shipping shipments tracking track
+wishlist wishlists carts baskets
+addresses address phones phone
+avatars avatar profiles settings preferences
+oauth saml sso ldap scim
+webhooks callbacks callback integrations integration
+exports imports migrations seeds
+debug status healthz readyz livez
+actuator prometheus metrics
+.env config configuration environment
 """.split()
 
 ERROR_FINGERPRINTS = [
@@ -162,9 +198,17 @@ class ApiDiscoverPlugin(Plugin):
                 js_text = home_page["text"][:500000]
                 # Find fetch() and axios calls with URL strings
                 fetch_urls = re.findall(r"""fetch\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
-                axios_urls = re.findall(r"""axios\.(?:get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                axios_urls = re.findall(r"""axios\.(?:get|post|put|patch|delete|request)\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
                 xhr_urls = re.findall(r"""\.open\s*\(\s*['"`](?:GET|POST|PUT|PATCH|DELETE)['"`]\s*,\s*['"`]([^'"`]{3,200})['"`]""", js_text)
-                for ep_url in set(fetch_urls + axios_urls + xhr_urls):
+                # NEW: more patterns - $.ajax, $.get, $.post, superagent, ky, got
+                jquery_urls = re.findall(r"""\$\.(?:ajax|get|post|getJSON)\s*\(\s*(?:\{[^}]{0,300}?url\s*:\s*)?['"`]([^'"`]{3,200})['"`]""", js_text)
+                url_assign = re.findall(r"""(?:apiUrl|api_url|baseUrl|baseURL|endpoint|apiEndpoint)\s*[:=]\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                # NEW: template literals with /api/ paths
+                template_urls = re.findall(r"""`([^`]{0,200}?/(?:api|v\d|rest|graphql)[^`]{0,150})`""", js_text)
+                # NEW: WebSocket URLs
+                ws_urls = re.findall(r"""new\s+WebSocket\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                for ep_url in set(fetch_urls + axios_urls + xhr_urls + jquery_urls +
+                                   url_assign + template_urls + ws_urls):
                     if ep_url.startswith(("http", "//")):
                         continue  # skip absolute URLs to other domains
                     if not ep_url.startswith("/"):
@@ -182,16 +226,20 @@ class ApiDiscoverPlugin(Plugin):
             pass
 
         # --- REST version + wordlist probing (concurrent; same probes) ---
-        # Aggressive: check /api/, /v1/, /v2/, /rest/ prefixes even in passive
+        # Aggressive: check /api/, /v1/, /v2/, /v3/, /v4/, /rest/ prefixes even in passive
         probe_paths = []
-        prefixes = ["/api", "/v1", "/v2", "/rest"] if passive else ["/api", "/v1", "/v2", "/v3", "/rest"]
-        words = API_WORDLIST[:25] if passive else API_WORDLIST
+        prefixes = ["/api", "/v1", "/v2", "/v3", "/v4", "/rest",
+                    "/api/v1", "/api/v2", "/api/v3"] if passive else \
+                   ["/api", "/v1", "/v2", "/v3", "/v4", "/rest",
+                    "/api/v1", "/api/v2", "/api/v3", "/internal",
+                    "/private"]
+        words = API_WORDLIST[:30] if passive else API_WORDLIST
         for prefix in prefixes:
             for w in words:
                 probe_paths.append(f"{prefix}/{w}")
-                if len(probe_paths) >= 120:  # cap total probes
+                if len(probe_paths) >= 180:  # cap total probes
                     break
-            if len(probe_paths) >= 120:
+            if len(probe_paths) >= 180:
                 break
 
         async def probe_path(path: str):

@@ -30,7 +30,8 @@ class SubdomainCompilerPlugin(Plugin):
     cost = Cost.FREE
     group = "network"
     description = ("Fast keyless subdomain compilation from crt.sh, "
-                   "hackertarget, threatcrowd, AlienVault OTX, certspotter.")
+                   "hackertarget, threatcrowd, AlienVault OTX, certspotter, "
+                   "urlscan.io, subdomain.center.")
     timeout_s = 30
 
     async def _fetch_text(self, ctx: Ctx, url: str) -> str:
@@ -120,6 +121,41 @@ class SubdomainCompilerPlugin(Plugin):
             pass
         return out
 
+    async def _urlscan(self, ctx: Ctx, domain: str) -> Set[str]:
+        """urlscan.io search API (keyless): subdomains from scanned URLs."""
+        out: Set[str] = set()
+        try:
+            resp = await ctx.http.get(
+                "https://urlscan.io/api/v1/search/"
+                f"?q=domain%3A{quote(domain)}&size=100",
+                timeout=SRC_TIMEOUT, follow_redirects=True)
+            data = safe_json_dict(resp)
+            for row in data.get("results") or []:
+                page = (row or {}).get("page") or {}
+                u = str(page.get("url", ""))
+                host = u.split("/")[2] if "://" in u else ""
+                host = host.split(":")[0].lower()
+                if host.endswith(domain) and host != domain:
+                    out.add(host)
+        except Exception:
+            pass
+        return out
+
+    async def _subdomain_center(self, ctx: Ctx, domain: str) -> Set[str]:
+        """subdomain.center API (keyless): passive subdomain list."""
+        out: Set[str] = set()
+        try:
+            resp = await ctx.http.get(
+                f"https://api.subdomain.center/?domain={quote(domain)}",
+                timeout=SRC_TIMEOUT, follow_redirects=True)
+            for s in safe_json_list(resp):
+                s = str(s).strip().lower()
+                if s.endswith(domain) and s != domain:
+                    out.add(s)
+        except Exception:
+            pass
+        return out
+
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
         domain = domain_from_target(target.type, target.normalized)
@@ -132,10 +168,13 @@ class SubdomainCompilerPlugin(Plugin):
             self._threatcrowd(ctx, domain),
             self._otx(ctx, domain),
             self._certspotter(ctx, domain),
+            self._urlscan(ctx, domain),
+            self._subdomain_center(ctx, domain),
             return_exceptions=True,
         )
         sources = ["crt.sh", "hackertarget", "threatcrowd",
-                   "alienvault-otx", "certspotter"]
+                   "alienvault-otx", "certspotter", "urlscan",
+                   "subdomain.center"]
         merged: Set[str] = set()
         working: List[str] = []
         for src, res in zip(sources, results):
@@ -172,7 +211,7 @@ class SubdomainCompilerPlugin(Plugin):
             return self._ok(
                 findings,
                 reason=(f"compiled {len(merged)} subdomains from "
-                        f"{len(working)}/5 sources in {elapsed}ms"))
+                        f"{len(working)}/7 sources in {elapsed}ms"))
         return self._ok(
-            [], reason=(f"no subdomains from {len(working)}/5 sources "
+            [], reason=(f"no subdomains from {len(working)}/7 sources "
                         f"({elapsed}ms)"))

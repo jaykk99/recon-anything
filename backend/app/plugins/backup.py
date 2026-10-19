@@ -25,18 +25,63 @@ EXTENSIONS = [".bak", ".backup", ".old", ".orig", ".save", ".swp",
               ".bak1", ".bak2", ".old1", ".orig1", ".txt", ".log",
               ".sql.bak", ".db.bak", ".conf.bak", ".config.bak",
               ".php.bak", ".js.bak", ".html.bak", "1", "2",
-              ".backup1", ".backup2", ".tmp1", ".swp1"]
+              ".backup1", ".backup2", ".tmp1", ".swp1",
+              # NEW: more archive + editor + numbered variants
+              ".zip", ".tar", ".tar.gz", ".tgz", ".7z", ".rar",
+              ".bak3", ".old2", ".old3", ".save1", ".save2",
+              ".bakup", ".bk", ".bk1", ".bk2", ".bck", ".bakup1",
+              ".original", ".orig2", ".tmp2", ".temp", ".dmp",
+              ".sql", ".sql.gz", ".sql.zip", ".sqlite", ".db",
+              ".env.bak", ".env.old", ".env.save", ".env~",
+              ".swo", ".swn", ".un~", ".kate-swp",
+              "_bak", "_old", "_backup", "_copy", "_orig", "_tmp",
+              "-bak", "-old", "-backup", "-copy", "-orig",
+              ".inc", ".conf", ".cfg", ".ini.bak",
+              ".2019", ".2020", ".2021", ".2022", ".2023", ".2024",
+              ".2025", ".2026"]
 
-BASE_NAMES = ["index.php", "index.html", "wp-config.php", "config.php",
-              "configuration.php", ".env", "settings.py", "settings.php",
-              "application.properties", "web.config", "database.sql",
-              "db.sql", "dump.sql", "backup.sql", "site.sql", "main.py",
-              "app.py", "server.js"]
+# Priority-ordered: secret-bearing files first so the 30s plugin cap
+# always covers the highest-value candidates before lower-value ones.
+BASE_NAMES = [
+    # Tier 1: secrets/config (check first)
+    ".env", ".env.local", ".env.production", ".env.development",
+    "wp-config.php", "config.php", "configuration.php",
+    "settings.py", "settings.php", "application.properties",
+    "secrets.json", "credentials.json", ".git-credentials", ".npmrc",
+    "id_rsa", "id_dsa",
+    # Tier 2: database dumps
+    "database.sql", "db.sql", "dump.sql", "backup.sql", "site.sql",
+    "users.sql", "data.sql", "wordpress.sql", "drupal.sql",
+    "dump.rdb", "redis.rdb", "backup.db", "site.db", "app.db",
+    # Tier 3: app config/code
+    "config.json", "config.yaml", "config.yml", "config.ini",
+    "config.inc.php", "connect.php", "db.php", "dbconn.php",
+    "dbconfig.php", "database.php", "database.yml", "connection.php",
+    "package.json", "composer.json", "requirements.txt",
+    "docker-compose.yml", "Dockerfile", ".htaccess",
+    "localsettings.py", "settings.ini",
+    "wp-config-sample.php",
+    # Tier 4: entry points
+    "index.php", "index.html", "main.py", "app.py", "server.js",
+    "web.config",
+    # Tier 5: misc
+    "passwd", "shadow", "mongodump",
+]
 
 DIRECT_PATHS = [
     "/backup.zip", "/backup.tar.gz", "/backup.tgz", "/site.zip",
     "/www.zip", "/public_html.zip", "/db_backup.sql", "/backup_db.sql",
     "/website.bak", "/old.zip", "/bak.zip",
+    # NEW: more well-known backup/archive paths
+    "/backup.tar", "/backup.7z", "/backup.rar", "/site.tar.gz",
+    "/site.tar", "/www.tar.gz", "/public_html.tar.gz",
+    "/database.zip", "/db.zip", "/dump.zip", "/sql.zip",
+    "/backup.sql.gz", "/db.sql.gz", "/site.sql.gz",
+    "/old-site.zip", "/oldsite.zip", "/backup-old.zip",
+    "/wp-content.zip", "/wp-content.tar.gz", "/uploads.zip",
+    "/backup/", "/backups/", "/bak/", "/old/", "/tmp/backup.zip",
+    "/.git/HEAD", "/.git/config", "/.svn/entries",
+    "/server-status", "/server-info",
 ]
 
 SECRET_MARKERS = ["password", "secret", "api_key", "apikey", "private key",

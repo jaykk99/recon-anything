@@ -19,9 +19,17 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 # Pages likely to contain contact emails
 CONTACT_PATHS = [
-    "/", "/contact", "/contact-us", "/about", "/about-us",
-    "/team", "/support", "/help", "/privacy", "/terms",
+    "/", "/contact", "/contact-us", "/contactus", "/about", "/about-us",
+    "/aboutus", "/team", "/our-team", "/staff", "/people", "/directory",
+    "/support", "/help", "/privacy", "/terms", "/privacy-policy",
+    "/careers", "/jobs", "/press", "/media", "/news", "/newsroom",
+    "/partners", "/investors", "/legal", "/imprint", "/impressum",
+    "/footer", "/sitemap",
 ]
+# mailto: links and JSON-LD structured data
+MAILTO_RE = re.compile(r"(?i)mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,24})")
+JSONLD_EMAIL_RE = re.compile(
+    r"(?i)\"email\"\s*:\s*\"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,24})\"")
 
 
 class EmailsPlugin(Plugin):
@@ -55,7 +63,12 @@ class EmailsPlugin(Plugin):
                 r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
                 if r.status_code != 200:
                     return []
-                return [m.group(0).lower() for m in EMAIL_RE.finditer(r.text)]
+                found = [m.group(0).lower() for m in EMAIL_RE.finditer(r.text)]
+                # NEW: mailto: links
+                found += [m.group(1).lower() for m in MAILTO_RE.finditer(r.text)]
+                # NEW: JSON-LD structured data emails
+                found += [m.group(1).lower() for m in JSONLD_EMAIL_RE.finditer(r.text)]
+                return found
             except Exception:
                 return []
 
