@@ -153,7 +153,7 @@ class AssetGraphPlugin(Plugin):
                       "remediation": REMEDIATION_GRAPH,
                       "graph": graph,
                       "node_count": len(nodes),
-                      "edge_count": len(edges)}}))
+                      "edge_count": len(edges)}))
 
         for nid, deg in top_pivots:
             node = nodes.get(nid, {})
@@ -169,7 +169,7 @@ class AssetGraphPlugin(Plugin):
                                              "valuable pivot targets.",
                               "node_type": node.get("type"),
                               "node_label": node.get("label"),
-                              "degree": deg}}))
+                              "degree": deg}))
 
         reason = f"graph built: {len(nodes)} nodes, {len(edges)} edges"
         res = self._ok(findings, reason)

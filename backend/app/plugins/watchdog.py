@@ -120,7 +120,7 @@ class WatchdogPlugin(Plugin):
                         evidence={"severity": "medium",
                                   "remediation": REMEDIATION_ALERT,
                                   "subdomain": sub,
-                                  "alert_type": "new_subdomain"}}))
+                                  "alert_type": "new_subdomain"}))
         except Exception:
             pass  # crt.sh hiccups should not fail the watchdog
 
