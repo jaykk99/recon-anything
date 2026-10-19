@@ -164,11 +164,13 @@ class SsrfPlugin(Plugin):
                     seen_meta.add((pat, where))
                     findings.append(self._f(
                         "leak", "cloud_metadata_ref",
-                        f"CRITICAL: cloud metadata reference ({label}) in {where}. "
-                        f"May indicate SSRF-reachable metadata service.",
+                        f"HIGH: cloud metadata reference ({label}) in {where}. "
+                        f"May indicate SSRF-reachable metadata service - verify manually.",
                         source=f"metadata scan: {where}", source_url=url,
-                        confidence=75, passive=passive,
-                        evidence={"severity": "critical", "reference": label,
+                        confidence=60, passive=passive,
+                        evidence={"severity": "high", "reference": label,
+                                  "note": "String reference only - not confirmed reachable. "
+                                          "Test SSRF manually on authorized targets.",
                                   "remediation": REMEDIATION,
                                   "scope_note": "Authorized testing only."}))
 

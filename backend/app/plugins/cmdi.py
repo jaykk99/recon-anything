@@ -82,6 +82,33 @@ class CmdInjectionPlugin(Plugin):
             params = parse_qsl(parts.query)
             if not params:
                 continue
+
+            # --- Baseline timing ---
+            # False-positive guard: measure the normal response time first.
+            # A slow server or congested network adds latency to every
+            # request - only flag delays clearly ABOVE the baseline.
+            baseline_t = 0.0
+            try:
+                b0 = time.monotonic()
+                await fetch(ctx.http, ctx.limiter, "GET", u, timeout=15)
+                baseline_t = time.monotonic() - b0
+            except Exception:
+                pass
+
+            # --- Baseline body for error-pattern FP guard ---
+            # Only flag command-output patterns that appear AFTER our
+            # payload, not in the normal response.
+            baseline_body = ""
+            try:
+                br = await fetch(ctx.http, ctx.limiter, "GET", u, timeout=15)
+                baseline_body = br.text[:200000]
+            except Exception:
+                pass
+            baseline_cmd_hits = set()
+            for pat, _label in CMD_OUTPUT_PATTERNS:
+                if re.search(pat, baseline_body, re.I | re.M):
+                    baseline_cmd_hits.add(pat)
+
             for name, val in params[:3]:
                 found = False
 
@@ -96,7 +123,8 @@ class CmdInjectionPlugin(Plugin):
                         delta = time.monotonic() - p0
                     except Exception:
                         continue
-                    if delta >= 4.0:
+                    # Require absolute delay >= 4s AND >= 3s above baseline.
+                    if delta >= 4.0 and (delta - baseline_t) >= 3.0:
                         findings.append(self._f(
                             "leak", "cmdi_time_based",
                             f"CRITICAL: time-based command injection in "
@@ -129,6 +157,8 @@ class CmdInjectionPlugin(Plugin):
                     except Exception:
                         continue
                     for pat, label in CMD_OUTPUT_PATTERNS:
+                        if pat in baseline_cmd_hits:
+                            continue
                         if re.search(pat, body, re.I | re.M):
                             findings.append(self._f(
                                 "leak", "cmdi_error_based",

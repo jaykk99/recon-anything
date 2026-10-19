@@ -173,6 +173,29 @@ class SqliPlugin(Plugin):
             params = parse_qsl(parts.query)
             if not params:
                 return
+
+            # --- Baseline: fetch the normal response first ---
+            # False-positive guard: only flag DB error strings, timing
+            # delays, or content diffs that appear AFTER our payload but
+            # NOT in the normal response. Normal pages (docs, blogs about
+            # databases) legitimately contain strings like "MySQL" or
+            # "SQL syntax" - those are not vulnerabilities.
+            baseline_body = ""
+            baseline_t = 0.0
+            try:
+                b0 = time.monotonic()
+                br = await fetch(ctx.http, ctx.limiter, "GET", u, rotate_ua=True,
+                                 timeout=15, max_retries=1)
+                baseline_t = time.monotonic() - b0
+                baseline_body = br.text[:200000]
+            except Exception:
+                pass
+            # Which error patterns already exist in normal traffic?
+            baseline_hits = set()
+            for pat, db in SQL_ERRORS:
+                if re.search(pat, baseline_body, re.I | re.S):
+                    baseline_hits.add(pat)
+
             for name, val in params[:3]:
                 found = False
 
@@ -189,6 +212,9 @@ class SqliPlugin(Plugin):
                     except Exception:
                         continue
                     for pat, db in SQL_ERRORS:
+                        # Skip patterns already present in baseline (not caused by us)
+                        if pat in baseline_hits:
+                            continue
                         if re.search(pat, body, re.I | re.S):
                             findings.append(self._f(
                                 "leak", "sqli_error_based",
@@ -249,6 +275,9 @@ class SqliPlugin(Plugin):
                     continue
 
                 # --- Method 3: Time-based blind ---
+                # Baseline-aware: only flag if the delay clearly exceeds the
+                # normal response time. A slow server or congested network can
+                # add seconds of latency to ANY request - that's not SQLi.
                 for payload, db in SQLI_TIME_PAYLOADS:
                     tested[0] += 1
                     probe = [(n, (v + payload) if n == name else v)
@@ -261,7 +290,9 @@ class SqliPlugin(Plugin):
                         delta = time.monotonic() - p0
                     except Exception:
                         continue
-                    if delta >= 4.0:
+                    # Require: absolute delay >= 4s AND at least 3s above
+                    # the baseline response time. Filters out slow servers.
+                    if delta >= 4.0 and (delta - baseline_t) >= 3.0:
                         findings.append(self._f(
                             "leak", "sqli_time_blind",
                             f"CRITICAL: time-based blind SQL injection in "
@@ -282,9 +313,23 @@ class SqliPlugin(Plugin):
                     continue
 
                 # --- Method 4: Boolean-based blind ---
+                # Stability guard: fetch the baseline URL twice. If the two
+                # baseline responses already differ by >15%, the page has
+                # dynamic content (timestamps, CSRF tokens, ads) and any
+                # true/false diff is meaningless - skip to avoid FPs.
                 # Compare AND 1=1 (true) vs AND 1=2 (false) response lengths
                 tested[0] += 2
                 try:
+                    b1r = await fetch(ctx.http, ctx.limiter, "GET", u, rotate_ua=True,
+                                      timeout=15, max_retries=1)
+                    b2r = await fetch(ctx.http, ctx.limiter, "GET", u, rotate_ua=True,
+                                      timeout=15, max_retries=1)
+                    b1_len, b2_len = len(b1r.text), len(b2r.text)
+                    if b1_len > 0 and b2_len > 0:
+                        base_diff = abs(b1_len - b2_len) / max(b1_len, b2_len)
+                        if base_diff > 0.15:
+                            # Page is dynamic - boolean test unreliable
+                            continue
                     true_probe = [(n, (v + "' AND '1'='1") if n == name else v)
                                   for n, v in params]
                     false_probe = [(n, (v + "' AND '1'='2") if n == name else v)
@@ -299,10 +344,12 @@ class SqliPlugin(Plugin):
                                      timeout=15, max_retries=1)
                     true_len = len(tr.text)
                     false_len = len(fr.text)
-                    # Significant difference suggests boolean-based SQLi
+                    # Significant difference suggests boolean-based SQLi.
+                    # Raised from 0.3 to 0.5: small diffs are normal page
+                    # variance; only large structural changes count.
                     if true_len > 0 and false_len > 0:
                         diff_ratio = abs(true_len - false_len) / max(true_len, false_len)
-                        if diff_ratio > 0.3:
+                        if diff_ratio > 0.5:
                             findings.append(self._f(
                                 "leak", "sqli_boolean_blind",
                                 f"HIGH: possible boolean-based blind SQL injection "
