@@ -603,9 +603,9 @@ export default function RunPage({ params }: { params: { id: string } }) {
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "aihunter", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).filter((t) => t !== "atm" || sourceType === "atm").map((t) => (
+        {(["findings", "vulns", "assistant", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).filter((t) => t !== "atm" || sourceType === "atm").map((t) => (
           <button key={t} onClick={() => setTab(t)}
-            className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t}</button>
+            className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t === "assistant" ? "Assistant" : t}</button>
         ))}
       </div>
       <div className="flex gap-2 flex-wrap">
@@ -721,7 +721,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       )}
 
       {tab === "vulns" && <VulnsView runId={id} />}
-      {tab === "aihunter" && <AIHunterView runId={id} />}
+      {tab === "assistant" && <AssistantView runId={id} />}
       {tab === "atm" && <AtmView runId={id} findings={findings} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
       {tab === "subdomains" && <SubdomainsView runId={id} findings={findings} />}
@@ -1249,224 +1249,234 @@ function VulnsView({ runId }: { runId: string }) {
   );
 }
 
-function AIHunterView({ runId }: { runId: string }) {
-  const [state, setState] = useState<{ status: string; results: any; provider: string; error: string } | null>(null);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [wafPayload, setWafPayload] = useState("");
-  const [wafOut, setWafOut] = useState<any>(null);
-  const [wafBusy, setWafBusy] = useState(false);
-  const pollRef = useRef<any>(null);
+// ---------- Uncensored Assistant tab ----------
+// Two modes: Chat (free-form Q&A over the current run) and Agent (gap
+// analysis + deep-run follow-ups). Plain pre-wrapped text, no markdown lib.
+interface ChatMsg { role: "user" | "assistant"; text: string }
 
-  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+function AssistantView({ runId }: { runId: string }) {
+  const [mode, setMode] = useState<"chat" | "agent">("chat");
 
-  async function fetchState() {
+  // --- chat mode ---
+  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [chatErr, setChatErr] = useState("");
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, sending]);
+
+  async function sendChat() {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setDraft("");
+    setChatErr("");
+    const history = [...msgs, { role: "user" as const, text }];
+    setMsgs(history);
+    setSending(true);
     try {
-      const r = await fetch(`/api/runs/${runId}/ai-hunter`, { headers: { "X-Access-Code": getCode() } });
-      const d = await r.json();
-      setState(d);
-      return d.status;
-    } catch {
-      return "failed";
-    }
-  }
-
-  async function start() {
-    try {
-      await fetch(`/api/runs/${runId}/ai-hunter`, {
+      const r = await fetch("/api/assistant/chat", {
         method: "POST",
         headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: history.map((m) => ({ role: m.role, content: m.text })),
+          run_id: runId,
+        }),
       });
-    } catch {}
-    fetchState();
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const s = await fetchState();
-      if (cancelled) return;
-      // Auto-start analysis when the tab is opened and nothing is running yet.
-      // The scan also auto-triggers this in the background when it finishes.
-      if (s === "idle" || s === "failed") {
-        start();
-      }
-    })();
-    pollRef.current = setInterval(async () => {
-      const s = await fetchState();
-      if (s === "ready" || s === "failed") {
-        clearInterval(pollRef.current);
-      }
-    }, 5000);
-    return () => { cancelled = true; clearInterval(pollRef.current); };
-  }, [runId]);
-
-  async function runWafBypass() {
-    if (!wafPayload.trim()) return;
-    setWafBusy(true);
-    setWafOut(null);
-    try {
-      const r = await fetch(`/api/runs/${runId}/ai-hunter/waf-bypass?payload=${encodeURIComponent(wafPayload)}`, {
-        headers: { "X-Access-Code": getCode() },
-      });
-      setWafOut(await r.json());
+      const d = await r.json();
+      const reply = d.reply || d.message || d.error || "No reply.";
+      setMsgs((m) => [...m, { role: "assistant" as const, text: String(reply) }]);
+      if (d.error && !d.reply && !d.message) setChatErr(d.error);
     } catch (e: any) {
-      setWafOut({ error: e.message });
+      setChatErr(e.message || "Chat request failed.");
     } finally {
-      setWafBusy(false);
+      setSending(false);
     }
   }
 
-  const res = state?.results;
-  const tests: any[] = res?.tests || [];
+  // --- agent mode ---
+  const [agentRunId, setAgentRunId] = useState(runId);
+  const [instruction, setInstruction] = useState("");
+  const [agentRes, setAgentRes] = useState<any>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentErr, setAgentErr] = useState("");
+  const [deepBusy, setDeepBusy] = useState(false);
+
+  async function runAgent() {
+    if (!instruction.trim() || agentBusy) return;
+    setAgentBusy(true);
+    setAgentErr("");
+    setAgentRes(null);
+    try {
+      const r = await fetch("/api/assistant/agent", {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: agentRunId, instruction: instruction.trim() }),
+      });
+      const d = await r.json();
+      if (d.error) setAgentErr(d.error);
+      else setAgentRes(d);
+    } catch (e: any) {
+      setAgentErr(e.message || "Agent request failed.");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function deepRun() {
+    const ids: string[] = agentRes?.suggested_plugins || [];
+    if (!ids.length || deepBusy) return;
+    setDeepBusy(true);
+    try {
+      const r = await fetch("/api/assistant/deep-run", {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: agentRunId, plugin_ids: ids }),
+      });
+      const d = await r.json();
+      const newId = d.run_id || d.id;
+      if (newId) window.location.href = `/run/${newId}`;
+      else setAgentErr(d.error || "Deep run started but no new run id was returned.");
+    } catch (e: any) {
+      setAgentErr(e.message || "Deep run failed.");
+    } finally {
+      setDeepBusy(false);
+    }
+  }
+
+  const gaps: any[] = agentRes?.gaps || [];
+  const suggested: string[] = agentRes?.suggested_plugins || [];
+  const manual: string[] = agentRes?.manual_tests || [];
 
   return (
     <div className="space-y-3">
       <div className="card p-4">
-        <h2 className="font-semibold text-violet-300">AI Hunter</h2>
+        <h2 className="font-semibold text-violet-300">Uncensored Assistant</h2>
         <p className="text-xs text-slate-500 mt-1">
-          Uncensored AI reads your completed scan and writes a manual test plan for what
-          scanners miss: RCE, auth bypass, business logic, IDOR, WAF bypasses.
-          Analysis runs in the background and never slows your scan.
+          Ask about this scan, or let the agent find coverage gaps and go deeper.
         </p>
-        {(!state || state.status === "idle" || state.status === "analyzing") && (
-          <div className="mt-3 flex items-center gap-2 text-sm text-violet-300">
-            <span className="animate-pulse">AI analyzing scan results in the background...</span>
+        <div className="flex gap-2 mt-3">
+          {(["chat", "agent"] as const).map((m) => (
+            <button key={m} onClick={() => setMode(m)}
+              className={`chip px-4 py-2.5 min-h-[44px] text-sm capitalize ${mode === m ? "bg-violet-900 text-violet-200" : "text-slate-400"}`}>
+              {m}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === "chat" && (
+        <div className="card p-4">
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto mb-3">
+            {msgs.length === 0 && !sending && (
+              <p className="text-xs text-slate-500">
+                Ask anything about this scan: what the findings mean, what to check next, how to test a vulnerability manually.
+              </p>
+            )}
+            {msgs.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                  m.role === "user" ? "bg-violet-900 text-violet-100" : "bg-slate-800 text-slate-200"
+                }`}>{m.text}</div>
+              </div>
+            ))}
+            {sending && (
+              <div className="flex justify-start">
+                <div className="rounded-lg px-3 py-2 text-sm text-violet-300 bg-slate-800 animate-pulse">typing...</div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
           </div>
-        )}
-        {state?.status === "failed" && (
-          <div className="mt-3">
-            <p className="text-sm text-red-400">AI analysis failed{state.error ? `: ${state.error}` : "."}</p>
-            <button onClick={start}
-              className="mt-2 chip px-4 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50">
-              Retry AI analysis
+          {chatErr && <p className="text-xs text-red-400 mb-2">{chatErr}</p>}
+          <div className="flex gap-2">
+            <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]"
+              placeholder="Ask about this scan..."
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }} />
+            <button onClick={sendChat} disabled={sending || !draft.trim()}
+              className="chip px-5 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50 disabled:opacity-50">
+              {sending ? "..." : "Send"}
             </button>
           </div>
-        )}
-        {state?.status === "ready" && (
-          <p className="text-[11px] text-slate-500 mt-2">
-            Test plan ready{state.provider ? ` (via ${state.provider})` : ""} for {res?.target || "target"}.
-            <span className="text-amber-300"> {res?.disclaimer}</span>
-          </p>
-        )}
-      </div>
+        </div>
+      )}
 
-      {state?.status === "ready" && tests.length > 0 && (
+      {mode === "agent" && (
         <div className="space-y-3">
-          {tests.map((t: any, i: number) => {
-            const key = `t${i}`;
-            const open = !!expanded[key];
-            return (
-              <div key={key} className="card p-4">
-                <button onClick={() => setExpanded({ ...expanded, [key]: !open })}
-                  className="w-full text-left flex items-center justify-between gap-2 min-h-[44px]">
-                  <span>
-                    <span className="text-[10px] uppercase tracking-wide text-violet-400">{t.type}</span>
-                    <span className="block font-semibold text-slate-200">{t.title}</span>
-                  </span>
-                  <span className="text-xs text-slate-500 shrink-0">{t.difficulty} {open ? "▲" : "▼"}</span>
-                </button>
-                <p className="text-xs text-slate-400 mt-1">{t.why}</p>
-                {open && (
-                  <div className="mt-3 space-y-3">
-                    <div>
-                      <p className="text-xs font-semibold text-slate-300 mb-1">Steps</p>
-                      <ol className="list-decimal list-inside text-xs text-slate-400 space-y-1">
-                        {(t.steps || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
-                      </ol>
-                    </div>
-                    {(t.payloads || []).length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-slate-300 mb-1">Payloads</p>
-                        <div className="space-y-2">
-                          {(t.payloads || []).map((p: string, j: number) => (
-                            <div key={j} className="flex items-start gap-2">
-                              <code className="flex-1 text-[11px] bg-slate-900 rounded p-2 break-all text-emerald-300">{p}</code>
-                              <button onClick={() => copy(p)}
-                                className="chip px-3 py-2 min-h-[44px] text-xs text-slate-300 shrink-0">copy</button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {state?.status === "ready" && res?.auth_playbook?.length > 0 && (
-        <div className="card p-4">
-          <h3 className="font-semibold text-violet-300 text-sm">Auth bypass playbook</h3>
-          <p className="text-[11px] text-slate-500 mt-1">Matched to the auth mechanisms your scan detected.</p>
-          <div className="mt-2 space-y-2">
-            {res.auth_playbook.map((a: any, i: number) => (
-              <div key={i} className="border border-slate-800 rounded p-3">
-                <p className="text-xs font-semibold text-slate-200">{a.title} <span className="text-slate-500 font-normal">({a.when})</span></p>
-                <ol className="list-decimal list-inside text-[11px] text-slate-400 mt-1 space-y-0.5">
-                  {(a.steps || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
-                </ol>
-              </div>
-            ))}
+          <div className="card p-4">
+            <h3 className="font-semibold text-violet-300 text-sm">Gap analysis</h3>
+            <div className="space-y-2 mt-2">
+              <input className="input text-sm px-3 py-2.5 min-h-[44px] w-full"
+                placeholder="Run ID"
+                value={agentRunId}
+                onChange={(e) => setAgentRunId(e.target.value)} />
+              <textarea className="input text-sm px-3 py-2.5 w-full min-h-[88px]"
+                placeholder="What should I look for?"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)} />
+              <button onClick={runAgent} disabled={agentBusy || !instruction.trim()}
+                className="chip px-5 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50 disabled:opacity-50">
+                {agentBusy ? "Analyzing..." : "Analyze"}
+              </button>
+            </div>
+            {agentErr && <p className="text-xs text-red-400 mt-2">{agentErr}</p>}
           </div>
-        </div>
-      )}
 
-      {state?.status === "ready" && res?.business_logic?.length > 0 && (
-        <div className="card p-4">
-          <h3 className="font-semibold text-violet-300 text-sm">Business logic targets</h3>
-          <p className="text-[11px] text-slate-500 mt-1">Money/logic parameters found in the scan, with manual test ideas.</p>
-          <div className="mt-2 space-y-2">
-            {res.business_logic.map((b: any, i: number) => (
-              <div key={i} className="border border-slate-800 rounded p-3">
-                <p className="text-xs font-semibold text-slate-200">{b.kind} <span className="text-slate-500 font-normal break-all">{b.where}</span></p>
-                <ul className="list-disc list-inside text-[11px] text-slate-400 mt-1 space-y-0.5">
-                  {(b.test_ideas || []).map((s: string, j: number) => <li key={j}>{s}</li>)}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="card p-4">
-        <h3 className="font-semibold text-violet-300 text-sm">WAF bypass helper</h3>
-        <p className="text-[11px] text-slate-500 mt-1">
-          Instant, no AI needed. Mutates your payload with common evasion transforms,
-          tuned to the WAF detected in this run (if any).
-        </p>
-        <div className="flex gap-2 mt-2">
-          <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]"
-            placeholder="<script>alert(1)</script> or ' OR '1'='1"
-            value={wafPayload} onChange={(e) => setWafPayload(e.target.value)} />
-          <button onClick={runWafBypass} disabled={wafBusy}
-            className="chip px-4 py-2.5 min-h-[44px] text-sm text-violet-300 disabled:opacity-50">
-            {wafBusy ? "..." : "Mutate"}
-          </button>
-        </div>
-        {wafOut && !wafOut.error && (
-          <div className="mt-3 space-y-2">
-            <p className="text-[11px] text-slate-500">WAF: <span className="text-slate-300">{wafOut.waf}</span></p>
-            {(wafOut.notes || []).map((n: string, i: number) => (
-              <p key={i} className="text-[11px] text-amber-300/80">{n}</p>
-            ))}
-            {(wafOut.variants || []).map((v: any, i: number) => (
-              <div key={i} className="flex items-start gap-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-semibold text-slate-300">{v.name}</p>
-                  <code className="block text-[11px] bg-slate-900 rounded p-2 break-all text-emerald-300 mt-0.5">{v.payload}</code>
-                  <p className="text-[10px] text-slate-500 mt-0.5">{v.note}</p>
+          {agentRes && (
+            <>
+              {agentRes.summary && (
+                <div className="card p-4">
+                  <h3 className="font-semibold text-violet-300 text-sm mb-1">Summary</h3>
+                  <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">{agentRes.summary}</p>
                 </div>
-                <button onClick={() => copy(v.payload)}
-                  className="chip px-3 py-2 min-h-[44px] text-xs text-slate-300 shrink-0">copy</button>
-              </div>
-            ))}
-            <p className="text-[10px] text-slate-600">{wafOut.disclaimer}</p>
-          </div>
-        )}
-        {wafOut?.error && <p className="text-xs text-red-400 mt-2">{wafOut.error}</p>}
-      </div>
+              )}
+              {gaps.length > 0 && (
+                <div className="card p-4">
+                  <h3 className="font-semibold text-violet-300 text-sm mb-2">Coverage gaps <span className="text-slate-500 text-xs">({gaps.length})</span></h3>
+                  <div className="space-y-2">
+                    {gaps.map((g: any, i: number) => (
+                      <div key={i} className="border border-slate-800 rounded p-3">
+                        <p className="text-xs font-semibold text-slate-200">
+                          {typeof g === "string" ? g : g.title || JSON.stringify(g)}
+                        </p>
+                        {typeof g !== "string" && g.description && (
+                          <p className="text-[11px] text-slate-400 mt-1 whitespace-pre-wrap break-words">{g.description}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {suggested.length > 0 && (
+                <div className="card p-4">
+                  <h3 className="font-semibold text-violet-300 text-sm mb-2">Suggested plugins</h3>
+                  <div className="flex gap-2 flex-wrap mb-3">
+                    {suggested.map((p, i) => (
+                      <span key={i} className="text-xs px-2 py-1.5 rounded bg-violet-900/40 text-violet-200 border border-violet-800/50">{p}</span>
+                    ))}
+                  </div>
+                  <button onClick={deepRun} disabled={deepBusy}
+                    className="chip px-5 py-2.5 min-h-[44px] text-sm text-violet-300 border border-violet-800/50 disabled:opacity-50">
+                    {deepBusy ? "Starting deep run..." : "Run these plugins deeper"}
+                  </button>
+                </div>
+              )}
+              {manual.length > 0 && (
+                <div className="card p-4">
+                  <h3 className="font-semibold text-violet-300 text-sm mb-2">Manual tests</h3>
+                  <ol className="list-decimal list-inside text-xs text-slate-400 space-y-1">
+                    {manual.map((t: any, i: number) => (
+                      <li key={i} className="whitespace-pre-wrap break-words">{typeof t === "string" ? t : t.title || JSON.stringify(t)}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
