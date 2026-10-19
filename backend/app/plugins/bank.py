@@ -1,12 +1,14 @@
-"""Bank security assessment (AUTHORIZED engagements only).
+"""Bank infrastructure detection plugin.
 
-Recon/assessment only: core banking platform fingerprints, online banking
-login posture, public CVE matching on detected tech, PCI DSS indicators.
-Read-only GETs, 15s timeouts. Skips unless
-module_overrides["bank"] = "authorized".
+Detection-only recon: core banking platform fingerprints, online banking
+portal discovery, exposed admin panels, banking API surface, security
+header audit, public CVE matching, PCI DSS indicators. Read-only GETs,
+connect-only checks. Never attempts logins, never cracks credentials,
+never accesses accounts.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import re
 import time
@@ -31,8 +33,49 @@ MFA_HINTS = [r"two[-\s]?factor", r"one[-\s]?time\s*(passcode|password|code)",
 MOBILE_HINTS = [r"mobile[_\-]?banking", r"user[_\-]?agent", r"android",
                 r"\bios\b", r"app[_\-]?token"]
 
+# Online-banking / portal paths probed with GET only. A 200 means the
+# portal exists and is reachable; we never submit credentials.
+BANKING_PORTAL_PATHS = (
+    "/online-banking", "/onlinebanking", "/ebanking", "/e-banking",
+    "/internet-banking", "/digital-banking", "/login", "/signon",
+    "/sign-in", "/myaccount", "/my-account", "/retail", "/personal",
+    "/personal-banking", "/business-banking", "/business",
+)
+
+# Admin-panel paths probed with GET only (existence check, no login).
+ADMIN_PATHS = (
+    "/admin", "/administrator", "/admin-panel", "/admin/login",
+    "/manager", "/console", "/wp-admin", "/phpmyadmin", "/admincp",
+)
+
+# API endpoint patterns extracted from page HTML.
+API_PATTERNS = (
+    r"/api/[a-z0-9_\-/]+", r"/v1/[a-z0-9_\-/]+", r"/v2/[a-z0-9_\-/]+",
+    r"/rest/[a-z0-9_\-/]+",
+)
+API_FILES = ("/openapi.json", "/swagger.json", "/swagger/v1/swagger.json",
+             "/api-docs", "/api/docs", "/graphql", "/graphiql")
+
+# Security headers audited on financial sites: missing = finding.
+SEC_HEADERS = (
+    ("strict-transport-security",
+     "HSTS missing - HTTPS not enforced at the header level", 80,
+     "Add Strict-Transport-Security: max-age=31536000; includeSubDomains"),
+    ("content-security-policy",
+     "CSP missing - XSS/clickjacking mitigations absent", 75,
+     "Add a Content-Security-Policy header"),
+    ("x-frame-options",
+     "X-Frame-Options missing - clickjacking possible", 75,
+     "Add X-Frame-Options: DENY or SAMEORIGIN"),
+    ("x-content-type-options",
+     "X-Content-Type-Options missing - MIME sniffing possible", 70,
+     "Add X-Content-Type-Options: nosniff"),
+    ("referrer-policy",
+     "Referrer-Policy missing - referrer leakage possible", 60,
+     "Add Referrer-Policy: strict-origin-when-cross-origin"),
+)
+
 # tech marker -> verified public CVE, emitted only when marker is found.
-# All verified real; all exploited against financial institutions.
 TECH_CVES = [
     ("log4j", "CVE-2021-44228", "Log4Shell RCE in Apache Log4j 2"),
     ("citrix", "CVE-2023-4966", "CitrixBleed session theft in NetScaler"),
@@ -43,29 +86,21 @@ TECH_CVES = [
 ]
 CARD_INPUT = re.compile(r"<input[^>]*(?:card[_-]?number|cardnumber|cc[_-]?num|credit[_-]?card)[^>]*>", re.IGNORECASE)
 RL_HEADERS = ("x-ratelimit-limit", "x-rate-limit-limit", "x-ratelimit-remaining", "x-requests-remaining", "x-request-limit", "retry-after")
-AUTH_MSG = "Bank module requires explicit authorization (module_overrides bank=authorized)"
 
 
 class BankPlugin(Plugin):
     id = "bank"
-    label = "Bank Security Assessment"
+    label = "Bank Infrastructure Detection"
     accepts = ["domain", "url", "poi"]
     passive = True
     cost = Cost.FREE
     group = "financial"
-    description = ("Banking platform detection + online banking posture "
-                   "(authorized only).")
+    description = ("Banking portals, admin panels, API surface, header "
+                   "audit, platform fingerprints. Detection only.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
-        # Source-type plugin: only runs in bank source mode. During website
-        # or ATM runs it stays completely silent (ok, zero findings).
-        if getattr(ctx, "source_type", "website") != "bank":
-            res = self._ok([], "not applicable: bank plugin only runs in bank source mode")
-            res.duration_ms = 0
-            return res
-        if ctx.module_overrides.get("bank") != "authorized":
-            return self._skipped(AUTH_MSG)
+        mode = ctx.mode
         findings: List[Finding] = []
         domain = domain_from_target(target.type, target.normalized)
         # POI targets: use the operator website if present, else record
@@ -79,15 +114,15 @@ class BankPlugin(Plugin):
                     f"Bank location: {poi.get('name', 'unknown')} - "
                     f"{poi.get('address', 'no address')} "
                     f"({poi.get('lat')},{poi.get('lon')})",
-                    source="OpenStreetMap", confidence=100, passive=True,
-                    evidence={"severity": "info", "lat": poi.get("lat"),
+                    source="OpenStreetMap", confidence=100,
+                    passive=True,
+                    evidence={"severity": "low", "lat": poi.get("lat"),
                               "lon": poi.get("lon"),
                               "operator": poi.get("operator", ""),
                               "website": poi.get("website", ""),
                               "phone": poi.get("phone", "")}))
                 website = (poi.get("website") or "").strip()
                 if website:
-                    # Assess the operator website instead.
                     domain = domain_from_target("url", website) or \
                         domain_from_target("domain", website)
                     if domain:
@@ -96,8 +131,7 @@ class BankPlugin(Plugin):
                     else:
                         res = self._ok(
                             findings, "bank POI recorded, no website to assess")
-                        res.duration_ms = int(
-                            (time.monotonic() - t0) * 1000)
+                        res.duration_ms = int((time.monotonic() - t0) * 1000)
                         return res
                 else:
                     res = self._ok(
@@ -112,16 +146,13 @@ class BankPlugin(Plugin):
             base = (target.normalized if target.type == "url"
                     else f"https://{domain}/")
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
-        findings.append(self._f("financial", "bank_auth_claim",
-                                f"Authorization claimed for bank assessment "
-                                f"at {ts}", source="bank plugin",
-                                confidence=100, passive=True))
         page = await ctx.fetch_page(base, timeout=TIMEOUT)
         if page is None:
             findings.append(self._f("financial", "bank_fetch_failed",
                                     f"Could not fetch {base}",
                                     source="bank plugin", confidence=100,
-                                    passive=True))
+                                    passive=True,
+                                    evidence={"severity": "low"}))
             res = self._ok(findings, "fetch failed, audit kept")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
@@ -140,8 +171,20 @@ class BankPlugin(Plugin):
                                         f"Banking platform fingerprint: "
                                         f"{label}", source="bank plugin",
                                         source_url=final, confidence=conf,
-                                        passive=True))
-        # 2) online banking login posture
+                                        passive=True,
+                                        evidence={"severity": "medium"}))
+        # 2) online banking portal discovery (GET existence checks)
+        findings.extend(
+            await self._portal_discovery(base, domain, mode, ctx))
+        # 3) exposed admin panels (GET existence checks, no login)
+        findings.extend(
+            await self._admin_panels(base, domain, mode, ctx))
+        # 4) banking API surface: HTML patterns + well-known API files
+        findings.extend(
+            await self._api_surface(base, domain, html, final, mode, ctx))
+        # 5) security header audit (financial-site bar)
+        findings.extend(self._header_audit(headers, final))
+        # 6) online banking login posture
         forms = re.findall(r"<form[^>]*>.*?</form>", html,
                            re.IGNORECASE | re.DOTALL)
         logins = [f for f in forms if re.search(
@@ -174,23 +217,9 @@ class BankPlugin(Plugin):
         findings.append(self._f("financial", "bank_login_posture",
                                 "Login posture: " + "; ".join(notes),
                                 source="bank plugin", source_url=final,
-                                confidence=80, passive=True))
-        # 3) mobile banking API surface hints
-        api = sorted({m.group(0) for m in
-                      re.finditer(r"/api/[a-z0-9_\-/]+", html,
-                                  re.IGNORECASE)})[:20]
-        mob = [h for h in MOBILE_HINTS
-               if re.search(h, html, re.IGNORECASE)]
-        if api or mob:
-            findings.append(self._f("financial", "bank_api_surface",
-                                    f"API hints: {len(api)} /api/ paths, "
-                                    f"mobile hints: "
-                                    f"{', '.join(mob) if mob else 'none'}",
-                                    source="bank plugin", source_url=final,
-                                    confidence=70, passive=True,
-                                    evidence={"api_paths": api[:10],
-                                              "mobile_hints": mob}))
-        # 4) CVE matching on detected tech
+                                confidence=80, passive=True,
+                                evidence={"severity": "medium"}))
+        # 7) CVE matching on detected tech
         for marker, cve, title in TECH_CVES:
             hit = marker in low
             if not hit and marker == "log4j" and \
@@ -203,9 +232,12 @@ class BankPlugin(Plugin):
                                         source="bank plugin",
                                         source_url=final, confidence=70,
                                         passive=True,
-                                        evidence={"severity": "critical",
-                                                  "cve": cve}))
-        # 5) PCI DSS indicators
+                                        evidence={"severity": "high",
+                                                  "cve": cve,
+                                                  "remediation": "Patch to "
+                                                  "the vendor-fixed version "
+                                                  "immediately."}))
+        # 8) PCI DSS indicators
         pci = []
         for m in CARD_INPUT.finditer(html):
             if "mask" not in m.group(0).lower():
@@ -225,8 +257,130 @@ class BankPlugin(Plugin):
                                     "PCI indicators: " + "; ".join(pci),
                                     source="bank plugin", source_url=final,
                                     confidence=85, passive=True,
-                                    evidence={"severity": "high"}))
+                                    evidence={"severity": "high",
+                                              "remediation": "Never put "
+                                              "card data in URLs; mask "
+                                              "card inputs; serve all "
+                                              "forms over HTTPS."}))
+        if not findings:
+            findings.append(self._f(
+                "financial", "bank_no_footprint",
+                f"No banking infrastructure footprint on {domain} at {ts}: "
+                f"no platform fingerprints, portals, admin panels, API "
+                f"surface, or CVEs detected",
+                source="bank plugin", confidence=70, passive=True,
+                evidence={"severity": "low",
+                          "note": "Clean result is still a result."}))
         res = self._ok(findings,
                        f"bank assessment done ({len(findings)} findings)")
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res
+
+    async def _portal_discovery(self, base: str, domain: str, mode: str,
+                                ctx: Ctx) -> List[Finding]:
+        out = []
+        passive = (mode == "passive")
+        root = base.rstrip("/")
+        probes = await asyncio.gather(
+            *[ctx.probe(root + p) for p in BANKING_PORTAL_PATHS])
+        for path, pr in zip(BANKING_PORTAL_PATHS, probes):
+            if pr.get("status") == 200:
+                url = root + path
+                ctx.publish("endpoints", url)
+                title = self._title(pr.get("text", ""))
+                out.append(self._f(
+                    "financial", "bank_portal",
+                    f"Online banking portal reachable on {domain}: {path}"
+                    + (f" ({title})" if title else ""),
+                    source="bank portal discovery", source_url=url,
+                    confidence=85, passive=passive,
+                    evidence={"severity": "medium", "path": path,
+                              "remediation": "Confirm the portal enforces "
+                              "MFA, rate limiting, and account lockout. "
+                              "Detection only: no credentials submitted."}))
+        return out
+
+    async def _admin_panels(self, base: str, domain: str, mode: str,
+                            ctx: Ctx) -> List[Finding]:
+        out = []
+        passive = (mode == "passive")
+        root = base.rstrip("/")
+        probes = await asyncio.gather(
+            *[ctx.probe(root + p) for p in ADMIN_PATHS])
+        for path, pr in zip(ADMIN_PATHS, probes):
+            if pr.get("status") == 200:
+                url = root + path
+                title = self._title(pr.get("text", ""))
+                out.append(self._f(
+                    "financial", "bank_admin_panel",
+                    f"Admin panel reachable on {domain}: {path}"
+                    + (f" ({title})" if title else ""),
+                    source="bank admin probe", source_url=url,
+                    confidence=80, passive=passive,
+                    evidence={"severity": "high",
+                              "remediation": "Admin panels on financial "
+                              "sites must be IP-restricted / VPN-only. "
+                              "Detection only: existence check, no login "
+                              "attempted."}))
+        return out
+
+    async def _api_surface(self, base: str, domain: str, html: str,
+                           final: str, mode: str, ctx: Ctx) -> List[Finding]:
+        out = []
+        passive = (mode == "passive")
+        api = set()
+        for pat in API_PATTERNS:
+            api.update(m.group(0) for m in
+                       re.finditer(pat, html, re.IGNORECASE))
+        api = sorted(api)[:20]
+        mob = [h for h in MOBILE_HINTS
+               if re.search(h, html, re.IGNORECASE)]
+        if api or mob:
+            for p in api[:10]:
+                ctx.publish("endpoints", p)
+            out.append(self._f("financial", "bank_api_surface",
+                               f"API hints: {len(api)} API paths, "
+                               f"mobile hints: "
+                               f"{', '.join(mob) if mob else 'none'}",
+                               source="bank plugin", source_url=final,
+                               confidence=70, passive=True,
+                               evidence={"severity": "medium",
+                                         "api_paths": api[:10],
+                                         "mobile_hints": mob}))
+        root = base.rstrip("/")
+        probes = await asyncio.gather(
+            *[ctx.probe(root + p) for p in API_FILES])
+        for path, pr in zip(API_FILES, probes):
+            if pr.get("status") == 200:
+                url = root + path
+                ctx.publish("endpoints", url)
+                out.append(self._f(
+                    "financial", "bank_api_doc",
+                    f"API definition/schema exposed on {domain}: {path}",
+                    source="bank API probe", source_url=url,
+                    confidence=90, passive=passive,
+                    evidence={"severity": "medium", "path": path,
+                              "remediation": "API schemas expose your "
+                              "full attack surface; restrict to "
+                              "authenticated developers."}))
+        return out
+
+    def _header_audit(self, headers: dict, final: str) -> List[Finding]:
+        out = []
+        lowered = {k.lower(): v for k, v in headers.items()}
+        for hdr, msg, conf, fix in SEC_HEADERS:
+            if hdr not in lowered:
+                out.append(self._f(
+                    "financial", "bank_missing_header",
+                    f"Banking site missing security header: {msg}",
+                    source="bank header audit", source_url=final,
+                    confidence=conf, passive=True,
+                    evidence={"severity": "medium", "header": hdr,
+                              "remediation": fix}))
+        return out
+
+    @staticmethod
+    def _title(html: str) -> str:
+        m = re.search(r"<title[^>]*>(.*?)</title>", html,
+                      re.IGNORECASE | re.DOTALL)
+        return (m.group(1).strip()[:80] if m else "")
