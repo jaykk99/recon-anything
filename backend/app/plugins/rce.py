@@ -17,7 +17,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import sample_urls
+from .injutil import sample_urls, fetch_baseline, baseline_pattern_hits, \
+    over_budget
 
 REMEDIATION = ("Never pass user input to shell commands. Use argument "
                "arrays instead of shell strings, apply strict allowlists, "
@@ -101,6 +102,8 @@ class RcePlugin(Plugin):
         tested = 0
         error_tested = 0
         for u in sample_urls(urls, 12):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             interesting = [(n, v) for n, v in params
@@ -108,13 +111,23 @@ class RcePlugin(Plugin):
             if not interesting:
                 continue
             for name, _v in interesting[:2]:
+                if over_budget(t0):
+                    break
                 # --- Method 1: time-based canary ---
-                try:
-                    b0 = time.monotonic()
-                    await fetch(ctx.http, ctx.limiter, "GET", u, timeout=30)
-                    base_t = time.monotonic() - b0
-                except Exception:
+                # Baseline: two normal requests. Only flag when the probe
+                # delay is >=4.5s ABOVE the baseline - random slowness on
+                # a congested server does not produce that.
+                base_samples = []
+                for _ in range(2):
+                    try:
+                        b0 = time.monotonic()
+                        await fetch(ctx.http, ctx.limiter, "GET", u, timeout=30)
+                        base_samples.append(time.monotonic() - b0)
+                    except Exception:
+                        pass
+                if not base_samples:
                     continue
+                base_t = sum(base_samples) / len(base_samples)
                 tested += 1
                 for tmpl, delay, os_label in TIME_PAYLOADS[:4]:
                     payload = tmpl.format(S=SLEEP_S)
@@ -147,18 +160,26 @@ class RcePlugin(Plugin):
                         break
                 else:
                     # --- Method 2: error-based (only if time-based missed) ---
+                    # FP guard: these output patterns (passwd lines, uid=
+                    # dumps) can appear in normal content (docs, tutorials).
+                    # Only flag patterns ABSENT from the baseline response.
                     error_tested += 1
                     err_payload = "test; id; echo"
                     probe = [(n, err_payload if n == name else v)
                              for n, v in params]
                     purl = urlunparse(parts._replace(query=urlencode(probe)))
                     try:
+                        base_body, _ = await fetch_baseline(ctx, u, timeout=15)
+                        base_err_hits = baseline_pattern_hits(base_body,
+                                                              ERROR_PATTERNS)
                         pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
                                          timeout=15)
                         body = pr.text[:200000]
                     except Exception:
                         continue
                     for pat, label in ERROR_PATTERNS:
+                        if pat in base_err_hits:
+                            continue
                         if re.search(pat, body):
                             findings.append(self._f(
                                 "leak", "rce_error_based",

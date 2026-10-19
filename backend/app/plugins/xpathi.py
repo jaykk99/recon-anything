@@ -16,7 +16,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url, sample_urls
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls, \
+    fetch_baseline, baseline_pattern_hits, over_budget
 
 REMEDIATION = ("Never build XPath expressions by string concatenation. "
                "Use parameterized XPath queries (variable binding), "
@@ -81,10 +82,18 @@ class XpathInjectionPlugin(Plugin):
 
         tested = 0
         for u in sample_urls(urls, 8):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
                 continue
+            # Baseline FP guard: XPath error strings can appear in normal
+            # content (docs, changelogs). Only flag error text that appears
+            # AFTER the probe, not in the baseline.
+            baseline_body, _ = await fetch_baseline(ctx, u)
+            baseline_err_hits = baseline_pattern_hits(baseline_body,
+                                                      XPATH_ERRORS)
             for name, val in params[:3]:
                 found = False
                 for payload in XPATH_PAYLOADS:
@@ -97,6 +106,8 @@ class XpathInjectionPlugin(Plugin):
                     except Exception:
                         continue
                     for pat, label in XPATH_ERRORS:
+                        if pat in baseline_err_hits:
+                            continue
                         if re.search(pat, body, re.I | re.S):
                             findings.append(self._f(
                                 "leak", "xpath_injection",

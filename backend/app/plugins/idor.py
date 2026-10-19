@@ -19,6 +19,11 @@ from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # (pattern, label, risk)
+# Only object references tied to accounts/orders/APIs are flagged.
+# Plain numeric query params (?id=123), document/file paths, blog post
+# IDs and product IDs are NORMAL on benign sites - flagging them was
+# pure noise, so those patterns were removed. UUIDs are not guessable
+# and are never flagged (below the confidence floor by design).
 ID_PATTERNS = [
     (r"/(users?|accounts?|profiles?|customers?|members?)/(\d{1,10})([/\"'?\s]|$)",
      "user object with numeric ID", "high"),
@@ -26,19 +31,6 @@ ID_PATTERNS = [
      "order object with numeric ID", "high"),
     (r"/api/(?:v\d+/)?([a-z_]+)/(\d{1,10})([/\"'?\s]|$)",
      "API object with numeric ID", "high"),
-    (r"[?&](id|user_id|account_id|order_id|uid|customer_id|profile_id)=(\d{1,10})(&|\"|'|\s|$)",
-     "numeric ID query param", "high"),
-    (r"/(documents?|files?|reports?|attachments?)/(\d{1,10})([/\"'?\s]|$)",
-     "document object with numeric ID", "high"),
-    (r"/(users?|accounts?|orders?)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})([/\"'?\s]|$)",
-     "object with UUID (low predictability)", "low"),
-]
-
-# JSON API response ID mining
-JSON_ID_PATTERNS = [
-    (r'"id"\s*:\s*(\d{1,10})', "numeric id in JSON"),
-    (r'"user_id"\s*:\s*(\d{1,10})', "numeric user_id in JSON"),
-    (r'"account_id"\s*:\s*(\d{1,10})', "numeric account_id in JSON"),
 ]
 
 REMEDIATION = ("Enforce server-side authorization on every object access: "
@@ -73,7 +65,6 @@ class IdorPlugin(Plugin):
                 raise RuntimeError("homepage fetch failed")
             html = page["text"][:400000]
             page_url = page["url"]
-            ctype = r.headers.get("content-type", "")
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -86,19 +77,13 @@ class IdorPlugin(Plugin):
             if key in seen or len(seen) >= 25:
                 return
             seen.add(key)
-            sev = "high" if risk == "high" else "medium"
-            conf = 65 if risk == "high" else 45
-            risk_note = ("SEQUENTIAL IDs are trivially enumerable. "
-                         "Test ID+1, ID-1 with two accounts."
-                         if risk == "high" else
-                         "UUIDs are not guessable, but authz must still "
-                         "be enforced server-side.")
             findings.append(self._f(
                 "web", "idor_candidate",
-                f"{sev.upper()}: {label} like '{sample.strip()}'. {risk_note}",
+                f"HIGH: {label} like '{sample.strip()}'. SEQUENTIAL IDs "
+                f"are trivially enumerable. Test ID+1, ID-1 with two accounts.",
                 source="IDOR pattern mining", source_url=page_url,
-                confidence=conf, passive=passive,
-                evidence={"severity": sev, "pattern": label,
+                confidence=65, passive=passive,
+                evidence={"severity": "high", "pattern": label,
                           "sample": sample.strip(),
                           "id_risk": risk,
                           "remediation": REMEDIATION,
@@ -110,12 +95,7 @@ class IdorPlugin(Plugin):
             for m in re.finditer(pat, html):
                 emit_idor(label, m.group(0)[:80], risk)
 
-        # 2. JSON API response mining (if homepage is JSON or has JSON blobs)
-        for pat, label in JSON_ID_PATTERNS:
-            for m in re.finditer(pat, html):
-                emit_idor(label, m.group(0)[:60], "high")
-
-        # 3. Check JS files for API endpoints with IDs
+        # 2. Check JS files for API endpoints with IDs
         if not passive or True:  # lightweight, always try
             for sm in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']',
                                   html, re.I):
@@ -127,7 +107,7 @@ class IdorPlugin(Plugin):
                                          timeout=10)
                         if jr.status_code == 200:
                             js = jr.text[:300000]
-                            for pat, label, risk in ID_PATTERNS[:4]:
+                            for pat, label, risk in ID_PATTERNS:
                                 for m in re.finditer(pat, js):
                                     emit_idor(f"JS: {label}",
                                               m.group(0)[:80], risk)

@@ -16,7 +16,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls, \
+    fetch_baseline, baseline_pattern_hits, over_budget
 
 REMEDIATION = ("Sanitize LDAP search filters: escape special characters "
                "(*, (, ), \\, NUL) per RFC 4515, use allowlists for "
@@ -76,11 +77,19 @@ class LdapInjectionPlugin(Plugin):
         urls = param_urls(html, page_url, domain, ctx)
 
         tested = 0
-        for u in list(urls)[:8]:
+        for u in sample_urls(urls, 8):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
                 continue
+            # Baseline FP guard: LDAP error strings can appear in normal
+            # content (docs, changelogs). Only flag error text that appears
+            # AFTER the probe, not in the baseline.
+            baseline_body, _ = await fetch_baseline(ctx, u)
+            baseline_err_hits = baseline_pattern_hits(baseline_body,
+                                                      LDAP_ERRORS)
             for name, val in params[:3]:
                 found = False
                 for payload in LDAP_PAYLOADS:
@@ -93,6 +102,8 @@ class LdapInjectionPlugin(Plugin):
                     except Exception:
                         continue
                     for pat, label in LDAP_ERRORS:
+                        if pat in baseline_err_hits:
+                            continue
                         if re.search(pat, body, re.I | re.S):
                             findings.append(self._f(
                                 "leak", "ldap_injection",

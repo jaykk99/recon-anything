@@ -15,7 +15,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url, sample_urls
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls, \
+    fetch_baseline, baseline_pattern_hits, over_budget
 
 REMEDIATION = ("Never pass user input to a shell. Use argument arrays "
                "instead of shell strings, strict allowlists for params, "
@@ -78,6 +79,8 @@ class CmdInjectionPlugin(Plugin):
 
         tested = 0
         for u in sample_urls(urls, 12):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
@@ -87,27 +90,10 @@ class CmdInjectionPlugin(Plugin):
             # False-positive guard: measure the normal response time first.
             # A slow server or congested network adds latency to every
             # request - only flag delays clearly ABOVE the baseline.
-            baseline_t = 0.0
-            try:
-                b0 = time.monotonic()
-                await fetch(ctx.http, ctx.limiter, "GET", u, timeout=15)
-                baseline_t = time.monotonic() - b0
-            except Exception:
-                pass
-
-            # --- Baseline body for error-pattern FP guard ---
-            # Only flag command-output patterns that appear AFTER our
-            # payload, not in the normal response.
-            baseline_body = ""
-            try:
-                br = await fetch(ctx.http, ctx.limiter, "GET", u, timeout=15)
-                baseline_body = br.text[:200000]
-            except Exception:
-                pass
-            baseline_cmd_hits = set()
-            for pat, _label in CMD_OUTPUT_PATTERNS:
-                if re.search(pat, baseline_body, re.I | re.M):
-                    baseline_cmd_hits.add(pat)
+            baseline_body, baseline_t = await fetch_baseline(ctx, u)
+            # Which error patterns already exist in normal traffic?
+            baseline_cmd_hits = baseline_pattern_hits(baseline_body,
+                                                      CMD_OUTPUT_PATTERNS)
 
             for name, val in params[:3]:
                 found = False

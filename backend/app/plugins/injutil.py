@@ -7,6 +7,7 @@ injection plugin needs.
 from __future__ import annotations
 
 import re
+import time
 from typing import Set, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -44,6 +45,50 @@ def probe_url(parts, params, name: str, value: str) -> str:
     return urlunparse(parts._replace(query=urlencode(probe)))
 
 
+async def fetch_baseline(ctx: Ctx, url: str, timeout: int = 15) -> Tuple[str, float]:
+    """Fetch the normal (unprobed) response for baseline comparison.
+
+    Every injection probe must be judged against what the endpoint
+    returns WITHOUT our payload. Returns (body_head, seconds).
+    A ("", 0.0) means the baseline fetch failed - callers should
+    treat error-pattern/timing signals as unjudgeable (skip or
+    downgrade), never as confirmed.
+    """
+    try:
+        b0 = time.monotonic()
+        br = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=timeout,
+                         max_retries=1)
+        return br.text[:200000], time.monotonic() - b0
+    except Exception:
+        return "", 0.0
+
+
+def baseline_pattern_hits(body: str, patterns) -> Set[str]:
+    """Which error patterns are already present in normal traffic?
+
+    A page that mentions "MySQL" in its normal content (docs, blogs)
+    is not vulnerable. Only flag patterns that appear AFTER the probe
+    but NOT in the baseline - the set returned here must be skipped.
+    """
+    hits = set()
+    for pat, _label in patterns:
+        try:
+            if re.search(pat, body, re.I | re.S | re.M):
+                hits.add(pat)
+        except Exception:
+            continue
+    return hits
+
+
+def over_budget(t0: float, budget_s: float = 25.0) -> bool:
+    """True when the plugin has spent its time budget (hard cap is 30s).
+
+    Heavy probe loops should `break` when this is True so the plugin
+    exits cleanly with partial findings instead of being killed.
+    """
+    return (time.monotonic() - t0) > budget_s
+
+
 # Parameter names historically tied to injection sinks. URLs carrying
 # these are tested first when a plugin caps how many URLs it probes.
 INTERESTING_PARAMS = frozenset({
@@ -79,9 +124,16 @@ def _interesting_score(url: str) -> int:
 
 
 def _path_key(url: str) -> str:
+    # Dedup key: path + SORTED PARAM NAMES. Two URLs are the same sink
+    # only if they hit the same path with the same parameter names.
+    # (The old key was path-only, which collapsed /?a=1 and /?b=2 into
+    # one entry and silently dropped every param but one arbitrary
+    # survivor - a massive false-negative hole on real targets.)
     try:
         p = urlparse(url)
-        return f"{p.scheme}://{p.netloc}{p.path}"
+        names = tuple(sorted(n for n, _ in
+                             parse_qsl(p.query, keep_blank_values=True)))
+        return f"{p.scheme}://{p.netloc}{p.path}?{'&'.join(names)}"
     except Exception:
         return url
 

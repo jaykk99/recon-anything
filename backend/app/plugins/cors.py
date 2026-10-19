@@ -87,7 +87,10 @@ class CorsPlugin(Plugin):
             if _f:
                 findings.append(_f)
 
-        # Preflight check
+        # Preflight check. Listing PUT/DELETE in Access-Control-Allow-Methods
+        # is normal for REST APIs, so only flag when the preflight ALSO
+        # reflects our origin or allows credentials - that combination is
+        # what makes cross-origin writes actually exploitable.
         try:
             r = await fetch(ctx.http, ctx.limiter, "OPTIONS", url, timeout=10,
                             headers={
@@ -96,10 +99,14 @@ class CorsPlugin(Plugin):
                                 "Access-Control-Request-Headers": "X-Custom",
                             })
             acam = r.headers.get("access-control-allow-methods", "")
-            if "PUT" in acam or "DELETE" in acam:
+            acao = r.headers.get("access-control-allow-origin", "")
+            acac = r.headers.get("access-control-allow-credentials", "").lower()
+            if ("PUT" in acam or "DELETE" in acam) and \
+                    (acao == "https://evil.com" or acac == "true"):
                 findings.append(self._f(
                     "web", "cors_methods",
-                    f"CORS preflight allows dangerous methods: {acam}",
+                    f"CORS preflight reflects evil origin / allows "
+                    f"credentials AND allows dangerous methods: {acam}",
                     source="CORS tester", source_url=url,
                     confidence=70, passive=True))
         except Exception:
@@ -113,11 +120,7 @@ class CorsPlugin(Plugin):
                                      "CORS posture unknown")
                 res.duration_ms = int((time.monotonic() - t0) * 1000)
                 return res
-            findings.append(self._f(
-                "web", "cors_ok",
-                f"CORS properly configured - no misconfigurations in {len(test_origins)} origin tests",
-                source="CORS tester", source_url=url,
-                confidence=70, passive=True))
+            # Clean result: no finding. "CORS is fine" is not a vuln.
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"tested {len(test_origins)} origins")

@@ -10,7 +10,6 @@ a response as if smuggling worked.
 """
 from __future__ import annotations
 
-import statistics
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -31,7 +30,11 @@ class SmugglingPlugin(Plugin):
     description = ("Timing-based HTTP request-smuggling/desync detection "
                    "with harmless conflicting-header probes.")
     phase = 2
-    timeout_s = 150
+    # The runner hard-kills plugins at 30s (MAX_PLUGIN_TIMEOUT_S). This
+    # plugin's timing probes are slow by design, so the whole probe
+    # sequence is budgeted: 1 baseline + 3 variant probes with tight
+    # timeouts, sequential (timing signals must not interfere).
+    timeout_s = 30
 
     async def _timed_post(self, ctx: Ctx, url: str, *,
                           headers: Dict[str, str],
@@ -41,12 +44,20 @@ class SmugglingPlugin(Plugin):
         Single attempt (no retries): a server that honors a bogus
         Content-Length will hold the connection until the timeout, and
         that delay IS the signal we are measuring.
+
+        Connection: close is forced: a timed-out probe leaves the pooled
+        connection in a dirty state (the server is still waiting for the
+        declared body), and the NEXT probe on that pooled connection
+        dies instantly with LocalProtocolError - which would corrupt the
+        control-probe comparison.
         """
         t0 = time.monotonic()
+        hdrs = dict(headers or {})
+        hdrs.setdefault("Connection", "close")
         try:
             r = await fetch(ctx.http, ctx.limiter, "POST", url, timeout=timeout,
                             max_retries=0, follow_redirects=False,
-                            content=HARMLESS, headers=headers)
+                            content=HARMLESS, headers=hdrs)
             return r.status_code, time.monotonic() - t0, ""
         except Exception as e:
             name = type(e).__name__
@@ -62,13 +73,14 @@ class SmugglingPlugin(Plugin):
 
         findings: List[Finding] = []
 
-        # --- baseline: two clean small POSTs --------------------------------
-        baseline: List[float] = []
-        for _ in range(2):
-            st, el, _ = await self._timed_post(ctx, url, headers={})
-            if el is not None:
-                baseline.append(el)
-        base_med = statistics.median(baseline) if baseline else 1.0
+        # --- baseline: one clean small POST --------------------------------
+        # Single baseline keeps the whole probe sequence inside the 30s
+        # budget (probes below can hold the connection for seconds each).
+        bstatus, bel, _ = await self._timed_post(ctx, url, headers={},
+                                                 timeout=5)
+        base_med = bel if bel is not None else 1.0
+        # A desync candidate must be >4s above the baseline. Anything less
+        # is normal jitter on a shared front-end.
         threshold = max(base_med * 2.5, base_med + 4.0, 4.0)
 
         async def check(variant: str, hdrs: Dict[str, str], desc: str,
@@ -80,8 +92,16 @@ class SmugglingPlugin(Plugin):
             the precondition for desync. It is reported as possible
             (theoretical) with manual confirmation in the remediation,
             never as confirmed smuggling.
+
+            FP note on the TE.CL probe: it only fires when the server
+            actually WAITS >4s on the contradictory framing. Per
+            RFC 9112 a server MUST ignore Content-Length when
+            Transfer-Encoding is present, so waiting on the bogus CL is
+            genuinely anomalous - the exact ambiguity TE.CL desyncs
+            need. RFC-compliant servers answer fast and never flag.
             """
-            st, el, note = await self._timed_post(ctx, url, headers=hdrs)
+            st, el, note = await self._timed_post(ctx, url, headers=hdrs,
+                                                  timeout=5)
             if el is not None and el > threshold:
                 findings.append(self._f(
                     "web", f"smuggling_{variant}",
@@ -108,7 +128,8 @@ class SmugglingPlugin(Plugin):
                     "conflicting CL(4)/TE:chunked probe", 60)
 
         # --- TE.CL: front uses TE, back uses CL --------------------------------
-        # CL claims far more than is sent; a CL-honoring server waits.
+        # CL claims far more than is sent; a server that honors the bogus
+        # CL over TE waits (RFC 9112 says TE wins - waiting is anomalous).
         await check("te_cl",
                     {"Content-Length": "100000", "Transfer-Encoding": "chunked"},
                     "CL(100000)/TE:chunked probe", 60)
@@ -118,20 +139,10 @@ class SmugglingPlugin(Plugin):
                     {"Transfer-Encoding": "chunked, chunked"},
                     "duplicate Transfer-Encoding probe", 55)
 
-        # Healthy behavior note: server that rejects ambiguous requests.
-        if not findings:
-            findings.append(self._f(
-                "web", "smuggling_clean",
-                f"No desync timing anomalies: CL.TE / TE.CL / TE.TE probes "
-                f"all responded within normal bounds of the {base_med:.1f}s "
-                "baseline",
-                source="Request smuggling detector", source_url=url,
-                confidence=70, passive=True,
-                evidence={"severity": "low", "exploitability": "unknown",
-                          "remediation": "No action needed. Keep rejecting "
-                          "ambiguous CL/TE requests at the edge."}))
-
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"baseline {base_med:.1f}s; 3 desync probes")
+        note = f"baseline {base_med:.1f}s; 3 desync probes"
+        if not findings:
+            note += " - no desync timing anomalies"
+        res = self._ok(findings, note)
         res.duration_ms = dur
         return res

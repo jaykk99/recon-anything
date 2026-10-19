@@ -29,22 +29,6 @@ REMEDIATION = ("Encode all user input on output (context-aware encoding), "
                "on the server side. For DOM XSS, avoid innerHTML/eval; "
                "use textContent and safe DOM APIs.")
 
-# Dangerous DOM sinks that indicate DOM XSS risk
-DOM_SINKS = [
-    (r"\.innerHTML\s*=", "innerHTML assignment"),
-    (r"\.outerHTML\s*=", "outerHTML assignment"),
-    (r"document\.write\s*\(", "document.write"),
-    (r"document\.writeln\s*\(", "document.writeln"),
-    (r"\beval\s*\(", "eval()"),
-    (r"new\s+Function\s*\(", "Function constructor"),
-    (r"\.insertAdjacentHTML\s*\(", "insertAdjacentHTML"),
-    (r"setTimeout\s*\(\s*[\"']", "setTimeout with string"),
-    (r"setInterval\s*\(\s*[\"']", "setInterval with string"),
-    (r"location\.hash", "location.hash read (DOM XSS source)"),
-    (r"location\.search", "location.search read (DOM XSS source)"),
-    (r"\$\(.*\)\.html\s*\(", "jQuery .html()"),
-]
-
 # Context probes: inert canary wrapped for specific reflection contexts.
 # Each entry: (wrapper template with {C} placeholder, context label,
 # encoding form: "raw" | "url2x" | "entity")
@@ -132,67 +116,6 @@ class XssPlugin(Plugin):
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
-
-        # --- Method 3: DOM sink analysis (passive, homepage + linked pages + JS) ---
-        # Sinks often live on non-homepage pages (P0 false-negative fix:
-        # previously only the homepage was analyzed, so sinks elsewhere
-        # were silently missed). Fetch a small sample of same-domain
-        # linked pages plus their scripts; GET only.
-        from urllib.parse import urljoin
-        page_texts = [(html, page_url)]  # (text, source_url)
-        linked_pages = set()
-        for lm in re.finditer(r'href=["\']([^"\']+)["\']', html, re.I):
-            lu = urljoin(page_url, lm.group(1).split("#")[0].strip())
-            lp = urlparse(lu)
-            if lp.scheme in ("http", "https") and domain in lp.netloc \
-                    and lu != page_url:
-                linked_pages.add(lu)
-        # fetch cap (not collection cap): collect all, fetch most relevant
-        for lu in sorted(linked_pages)[:12]:
-            try:
-                lr = await fetch(ctx.http, ctx.limiter, "GET", lu, rotate_ua=True,
-                                 timeout=15, follow_redirects=True)
-                if lr.status_code == 200 and "text/html" in \
-                        lr.headers.get("content-type", ""):
-                    page_texts.append((lr.text[:300000], str(lr.url)))
-            except Exception:
-                continue
-
-        js_texts = []  # (text, source_url)
-        for page_html, purl in page_texts:
-            js_texts.append((page_html, purl))
-            for sm in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']',
-                                  page_html, re.I):
-                full = urljoin(purl, sm.group(1))
-                if urlparse(full).netloc.endswith(domain):
-                    try:
-                        jr = await fetch(ctx.http, ctx.limiter, "GET", full,
-                                         rotate_ua=True, timeout=15)
-                        if jr.status_code == 200:
-                            js_texts.append((jr.text[:500000], full))
-                    except Exception:
-                        continue
-                if len(js_texts) > 12:
-                    break
-            if len(js_texts) > 12:
-                break
-
-        seen_sinks = set()
-        for js, js_url in js_texts:
-            for pat, label in DOM_SINKS:
-                if re.search(pat, js) and label not in seen_sinks:
-                    seen_sinks.add(label)
-                    findings.append(self._f(
-                        "web", "xss_dom_sink",
-                        f"MEDIUM: DOM XSS sink '{label}' found in JavaScript "
-                        f"at {js_url}. "
-                        f"If user input reaches this sink, DOM XSS is possible.",
-                        source="DOM sink analysis", source_url=js_url,
-                        confidence=55, passive=False,
-                        evidence={"severity": "medium",
-                                  "sink": label,
-                                  "remediation": REMEDIATION,
-                                  "scope_note": "Candidate: trace data flow to confirm exploitability."}))
 
         # --- Methods 1+2: Reflected XSS with context analysis ---
         urls = set()
@@ -308,7 +231,6 @@ class XssPlugin(Plugin):
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested[0]} params, "
-                                 f"{len(seen_sinks)} DOM sinks, "
                                  f"{len(findings)} XSS findings")
         res.duration_ms = dur
         return res

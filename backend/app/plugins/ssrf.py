@@ -290,22 +290,6 @@ class SsrfPlugin(Plugin):
                                                 "response; the plugin itself "
                                                 "never requested internal "
                                                 "addresses."}))
-        elif not passive:
-            findings.append(self._f(
-                "web", "ssrf_canary_note",
-                "No SSRF-prone params found to canary-test. To enable "
-                f"real out-of-band confirmation, export {OOB_ENV_VAR} to "
-                "your own callback URL (e.g. https://xyz.interactsh.com).",
-                source="SSRF canary test", confidence=40, passive=False))
-        else:
-            findings.append(self._f(
-                "web", "ssrf_canary_note",
-                "Canary test skipped (passive mode). Run in active mode to "
-                "test URL-ish params with a safe canary value, or export "
-                f"{OOB_ENV_VAR} to your own callback URL (e.g. "
-                "https://xyz.interactsh.com) for real out-of-band "
-                "confirmation.",
-                source="SSRF canary test", confidence=40, passive=True))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(seen_params)} SSRF-prone params, "

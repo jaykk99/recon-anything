@@ -18,7 +18,8 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .injutil import fetch_homepage, param_urls, probe_url, sample_urls
+from .injutil import fetch_homepage, param_urls, probe_url, sample_urls, \
+    fetch_baseline, baseline_pattern_hits, over_budget
 
 REMEDIATION = ("Never render user input as a template. Use logic-less "
                "templates or sandboxed engines with code execution "
@@ -81,10 +82,19 @@ class SstiPlugin(Plugin):
 
         tested = 0
         for u in sample_urls(urls, 8):
+            if over_budget(t0):
+                break
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
                 continue
+            # Baseline: the computed canary result (9352) or template error
+            # strings may appear in the page's normal content (docs, blogs).
+            # Only flag what appears AFTER our payload, not in the baseline.
+            baseline_body, _ = await fetch_baseline(ctx, u)
+            baseline_err_hits = baseline_pattern_hits(baseline_body,
+                                                      SSTI_ERRORS)
+            result_in_baseline = RESULT in baseline_body
             for name, val in params[:3]:
                 found = False
                 for payload, engine in SSTI_PAYLOADS:
@@ -97,7 +107,9 @@ class SstiPlugin(Plugin):
                     except Exception:
                         continue
                     # --- Method 1: math canary evaluated ---
-                    if RESULT in body and payload not in body:
+                    # FP guard: the result must NOT be in the baseline.
+                    if (RESULT in body and payload not in body
+                            and not result_in_baseline):
                         findings.append(self._f(
                             "leak", "ssti_template_evaluated",
                             f"CRITICAL: server-side template injection in "
@@ -117,7 +129,10 @@ class SstiPlugin(Plugin):
                         found = True
                         break
                     # --- Method 2: template engine error leak ---
+                    # FP guard: skip error strings already in the baseline.
                     for pat, label in SSTI_ERRORS:
+                        if pat in baseline_err_hits:
+                            continue
                         if re.search(pat, body, re.I | re.S):
                             findings.append(self._f(
                                 "leak", "ssti_error_based",

@@ -77,37 +77,14 @@ class CachePoisoningPlugin(Plugin):
             if page is None:
                 raise RuntimeError("homepage fetch failed")
             headers = page["headers"]
-            page_url = page["url"]
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 
-        state = _cache_state(headers)
-        if state["cache_headers_present"]:
-            findings.append(self._f(
-                "web", "cache_detected",
-                f"Cache tier visible ({', '.join(state['cache_headers_present'][:6])}). "
-                f"Cache-Control: {state['cache_control'] or 'none'}; "
-                f"Vary: {state['vary'] or 'none'}. "
-                "A cache that stores responses without keying all inputs "
-                "is poisonable - see active-mode checks.",
-                source="cache header analysis", source_url=page_url,
-                confidence=75, passive=passive,
-                evidence={"severity": "low",
-                          "cache_headers": state["cache_headers_present"],
-                          "cache_control": state["cache_control"],
-                          "vary": state["vary"],
-                          "remediation": REMEDIATION}))
-        if (not passive) and (not state["cache_headers_present"]):
-            findings.append(self._f(
-                "web", "no_cache_detected",
-                "No cache headers seen on the homepage, so there is no "
-                "cache to poison here. Retest authenticated/personalized "
-                "pages if they exist.",
-                source="cache header analysis", source_url=page_url,
-                confidence=60, passive=False,
-                evidence={"severity": "low", "remediation": REMEDIATION}))
+        # Note: a visible cache tier is NOT a finding on its own - nearly
+        # every site sits behind a CDN. Only reflection of unkeyed input
+        # inside a cached response (active mode, below) is flagged.
 
         if not passive:
             token = "cp" + secrets.token_hex(4)  # short canary
@@ -139,6 +116,10 @@ class CachePoisoningPlugin(Plugin):
                 ("X-Rewrite-URL",
                  base, {"X-Rewrite-URL": f"/?{token}=1"}),
             ]
+            # Note: the unique canary proves unkeyed input reaches the
+            # response; the cached flag proves it is served from a cache
+            # tier. That combination is the classic poisonable-cache
+            # signal - flagged only when both hold.
             for result in await asyncio.gather(
                     *(probe(*t) for t in tests)):
                 if not result:
@@ -174,18 +155,6 @@ class CachePoisoningPlugin(Plugin):
                         confidence=60, passive=False,
                         evidence={"severity": "medium", "vector": label,
                                   "remediation": REMEDIATION}))
-
-            if not state["vary"] and state["cache_headers_present"]:
-                findings.append(self._f(
-                    "web", "cache_missing_vary",
-                    "MEDIUM: cache tier present but responses carry no "
-                    "Vary header. Responses that depend on request headers "
-                    "can be served to the wrong visitor - audit which "
-                    "inputs the cache keys on.",
-                    source="cache header analysis", source_url=page_url,
-                    confidence=55, passive=False,
-                    evidence={"severity": "medium",
-                              "remediation": REMEDIATION}))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(findings)} cache findings "
