@@ -82,7 +82,7 @@ def gate(x_access_code: Optional[str] = Header(default=None),
 
 
 @app.on_event("startup")
-def _startup():
+async def _startup():
     # Fail fast on an unreachable database: a bad DATABASE_URL must crash
     # the deploy with a clear error, not surface later as empty scans.
     check_db()
@@ -92,14 +92,22 @@ def _startup():
             "Set DATABASE_URL to a persistent Postgres (Neon/Supabase free "
             "tier) to keep scans across restarts.", DATABASE_URL)
     init_db()
-    # Reap runs stuck in "running": a restart (deploy) kills the in-memory
-    # asyncio task, leaving the SQLite row behind forever. Mark them failed
-    # so the UI stops spinning and Jay can start a fresh scan.
+    # Queue recovery: jobs orphaned by a dead worker go back to queued;
+    # runs that still have jobs stay "running" so the worker resumes them.
+    # Only legacy stuck runs (no jobs at all - pre-queue scans) are marked
+    # failed so the UI stops spinning.
     try:
+        from .runner import (reset_stale_queue_jobs, start_queue_worker)
+        from .models import PluginJob
+        reset_stale_queue_jobs()
         session = get_session()
         try:
             stuck = session.query(Run).filter_by(status="running").all()
             for r in stuck:
+                has_jobs = (session.query(PluginJob)
+                            .filter_by(run_id=r.id).count() > 0)
+                if has_jobs:
+                    continue  # the queue worker resumes this run
                 r.status = "failed"
                 r.finished_at = dt.datetime.now(dt.timezone.utc)
                 summary = dict(r.summary or {})
@@ -110,6 +118,7 @@ def _startup():
                 session.commit()
         finally:
             session.close()
+        start_queue_worker()  # no-op when RECON_WORKER_ENABLED=0 (UI-only)
     except Exception:
         pass
     # Prune the SSE event log so run_events does not grow forever.

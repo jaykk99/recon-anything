@@ -104,16 +104,48 @@ targets: {html.escape(", ".join(t.normalized for t in targets))}</p>
 
 
 def run_progress(session, run_id: str) -> Dict:
-    """Live progress for a run, computed from the durable event log.
+    """Live progress for a run.
 
-    The UI's 4s poll fallback uses this when SSE is unavailable: done/total
-    job counts, eta_s (from observed plugin durations at concurrency 5,
-    falling back to a linear burn-down of the pre-run estimate so the UI
-    shows an ETA from the very first poll), estimated_s (the pre-run
-    estimate, so the UI can show "~Z left" even before any plugin
-    finishes), and the plugins currently running. Read-only, no migration
-    needed.
+    Preferred source: the plugin_jobs queue table (exact done/total,
+    works across processes and restarts). Falls back to the durable
+    event log for pre-queue runs.
+
+    The UI's 4s poll fallback uses this when SSE is unavailable.
+    Read-only, no migration needed.
     """
+    # Queue-backed progress: exact counts straight from Postgres.
+    try:
+        from .models import PluginJob
+        total = session.query(PluginJob).filter_by(run_id=run_id).count()
+        if total:
+            try:
+                from . import config as _config
+                _concurrency = max(getattr(_config, "MAX_CONCURRENCY", 5), 1)
+            except Exception:
+                _concurrency = 5
+            done = (session.query(PluginJob)
+                    .filter(PluginJob.run_id == run_id,
+                            PluginJob.status.in_(("done", "skipped",
+                                                  "failed"))).count())
+            running = [r.plugin_id for r in
+                       session.query(PluginJob)
+                       .filter_by(run_id=run_id, status="running").all()]
+            ms_vals = [r.result.get("ms", 0) for r in
+                       session.query(PluginJob)
+                       .filter(PluginJob.run_id == run_id,
+                               PluginJob.status.in_(("done", "failed")))
+                       .all()
+                       if isinstance(r.result, dict)
+                       and (r.result.get("ms") or 0) > 0]
+            eta_s = None
+            if done < total and ms_vals:
+                avg = sum(ms_vals) / len(ms_vals) / 1000.0
+                eta_s = round(max(total - done, 0) * avg / _concurrency, 1)
+            return {"done": done, "total": total, "eta_s": eta_s,
+                    "estimated_s": None, "running": sorted(set(running))[:10]}
+    except Exception:
+        pass
+    # Fallback: event-log progress for pre-queue runs.
     try:
         from . import config as _config
         _concurrency = max(getattr(_config, "MAX_CONCURRENCY", 5), 1)
