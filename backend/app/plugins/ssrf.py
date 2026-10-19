@@ -4,12 +4,25 @@ Non-destructive and honest about limits: without a callback server we
 cannot confirm server-side fetching, so this plugin finds SSRF-prone
 parameters (url=, redirect=, image=, etc.), checks whether the app
 reflects or acts on them, and flags cloud-metadata references in JS.
-All findings are "verify manually" candidates, never confirmed
-exploitation. Authorized testing only.
+
+Active mode adds a safe OOB canary test: URL-ish params get a unique
+canary value (your own callback server via OOB_CALLBACK_BASE, or a
+harmless https://example.com/?recon_canary=<token> URL). Detection is
+based on reflection / redirect / error-message leakage only - the
+plugin never requests internal addresses itself.
+
+OOB_CALLBACK_BASE: export it to your own callback endpoint (e.g. a
+Burp Collaborator / interactsh URL) for real out-of-band confirmation:
+    export OOB_CALLBACK_BASE="https://abc123.interactsh.com"
+Without it, canary tests fall back to the example.com reflection check
+(which detects echo/redirect sinks but not silent server-side fetches).
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import re
+import secrets
 import time
 from typing import List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -46,6 +59,20 @@ CLOUD_METADATA_URLS = [
     "http://169.254.169.123/opc/v1/instance/ (Oracle)",
     "http://169.254.170.2/v2/credentials/ (AWS ECS)",
 ]
+
+# Internal-IP / metadata indicators that show up in error messages or
+# page sources when an app has tried to reach internal addresses.
+# Never requested by this plugin - only pattern-matched in responses.
+INTERNAL_IP_PATTERNS = [
+    (r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "RFC1918 10.x address"),
+    (r"\b192\.168\.\d{1,3}\.\d{1,3}\b", "RFC1918 192.168.x address"),
+    (r"\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b", "RFC1918 172.16-31.x address"),
+    (r"169\.254\.169\.254", "cloud metadata IP"),
+    (r"metadata\.google\.internal", "GCP metadata hostname"),
+    (r"instance\.metadata\.azure\.com", "Azure metadata hostname"),
+]
+
+OOB_ENV_VAR = "OOB_CALLBACK_BASE"
 
 REMEDIATION = ("Allowlist fetch destinations, block cloud metadata IPs "
                "(169.254.169.254) and RFC1918 ranges at the egress layer, "
@@ -84,8 +111,17 @@ class SsrfPlugin(Plugin):
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
 
-        # 1. SSRF-prone parameter names in links and forms
+        # 1. SSRF-prone parameter names in links and forms.
+        # Also pull params published on the discovery bus by the
+        # param-discovery plugin, so canary tests cover found params.
         seen_params = set()
+        for bp in ctx.consume("params"):
+            try:
+                bn = str(bp.get("name", "") if isinstance(bp, dict) else bp).lower()
+            except Exception:
+                bn = ""
+            if bn in SSRF_PARAMS:
+                seen_params.add(bn)
         for m in re.finditer(r'[?&]([a-zA-Z_][a-zA-Z0-9_]*)=', html):
             pname = m.group(1).lower()
             if pname in SSRF_PARAMS and pname not in seen_params:
@@ -136,8 +172,142 @@ class SsrfPlugin(Plugin):
                                   "remediation": REMEDIATION,
                                   "scope_note": "Authorized testing only."}))
 
+        # 3. Internal-IP / metadata indicators in page sources and error
+        # messages (passive): an app that echoes RFC1918 or metadata IPs
+        # has likely tried to reach internal addresses.
+        seen_internal = set()
+        for where, text, url in texts:
+            for pat, label in INTERNAL_IP_PATTERNS:
+                if pat in [p for p, _ in METADATA_PATTERNS]:
+                    continue  # already covered above
+                for m in re.finditer(pat, text):
+                    key = (m.group(0), where)
+                    if key in seen_internal:
+                        continue
+                    seen_internal.add(key)
+                    findings.append(self._f(
+                        "leak", "internal_ip_indicator",
+                        f"MEDIUM: internal address reference ({label}: "
+                        f"{m.group(0)}) in {where}. May indicate the app "
+                        f"touches internal network ranges - check for SSRF "
+                        f"or internal exposure.",
+                        source=f"internal-IP scan: {where}", source_url=url,
+                        confidence=50, passive=passive,
+                        evidence={"severity": "medium", "indicator": m.group(0),
+                                  "indicator_type": label,
+                                  "remediation": REMEDIATION,
+                                  "scope_note": "Indicator only: no internal "
+                                                "address was requested by "
+                                                "this plugin."}))
+
+        # 4. Safe OOB canary test (active mode only): set URL-ish params to
+        # a unique canary and look for reflection / redirect / error leaks.
+        # Never requests an internal address.
+        if not passive and seen_params:
+            oob_base = os.environ.get(OOB_ENV_VAR, "").strip().rstrip("/")
+            token = "rc" + secrets.token_hex(6)
+            canary = (f"{oob_base}/{token}" if oob_base
+                      else f"https://example.com/?recon_canary={token}")
+            oob_note = (f"using your callback {oob_base} - check it for a "
+                        f"hit on /{token}"
+                        if oob_base else
+                        "no OOB_CALLBACK_BASE set - reflection/redirect "
+                        "check only. Set OOB_CALLBACK_BASE to your own "
+                        "callback URL (e.g. interactsh) for real "
+                        "out-of-band confirmation.")
+            sem = asyncio.Semaphore(5)
+            test_params = list(seen_params)[:5]
+
+            async def canary_test(pname: str):
+                async with sem:
+                    try:
+                        parts = urlparse(page_url)
+                        q = dict(parse_qsl(parts.query, keep_blank_values=True))
+                        q[pname] = canary
+                        test_url = urlunparse(parts._replace(
+                            query=urlencode(q)))
+                        r = await fetch(ctx.http, ctx.limiter, "GET", test_url,
+                                        timeout=10, follow_redirects=False,
+                                        max_retries=1)
+                    except Exception:
+                        return None
+                    body = ""
+                    try:
+                        body = r.text[:20000]
+                    except Exception:
+                        pass
+                    loc = r.headers.get("location", "")
+                    return pname, r.status_code, body, loc, test_url
+
+            for result in await asyncio.gather(
+                    *(canary_test(p) for p in test_params)):
+                if not result:
+                    continue
+                pname, status, body, loc, test_url = result
+                if token in body:
+                    findings.append(self._f(
+                        "web", "ssrf_canary_reflected",
+                        f"MEDIUM: canary token reflected in response body "
+                        f"when '{pname}' was set to {canary[:60]}. "
+                        f"The param value is echoed - may be a fetch/echo "
+                        f"sink. {oob_note}",
+                        source="SSRF canary test", source_url=test_url,
+                        confidence=65, passive=False,
+                        evidence={"severity": "medium", "parameter": pname,
+                                  "canary_token": token,
+                                  "remediation": REMEDIATION,
+                                  "scope_note": "Reflection only - no "
+                                                "internal request was made."}))
+                if token in loc or "example.com" in loc:
+                    findings.append(self._f(
+                        "web", "ssrf_open_redirect",
+                        f"MEDIUM: setting '{pname}' to the canary URL "
+                        f"redirects to {loc[:120]} - open redirect / "
+                        f"redirect sink. {oob_note}",
+                        source="SSRF canary test", source_url=test_url,
+                        confidence=80, passive=False,
+                        evidence={"severity": "medium", "parameter": pname,
+                                  "redirect_to": loc[:200],
+                                  "remediation": REMEDIATION}))
+                leak = next((m.group(0) for pat, _ in INTERNAL_IP_PATTERNS
+                             for m in [re.search(pat, body)] if m), None)
+                if leak:
+                    findings.append(self._f(
+                        "web", "ssrf_error_leak",
+                        f"HIGH: error response for '{pname}={canary[:40]}...' "
+                        f"leaks internal indicator ({leak}). The server "
+                        f"attempted or resolved an internal address - "
+                        f"strong SSRF signal. Verify manually.",
+                        source="SSRF canary test", source_url=test_url,
+                        confidence=75, passive=False,
+                        exploitability="public_poc",
+                        evidence={"severity": "high", "parameter": pname,
+                                  "leaked_indicator": leak,
+                                  "remediation": REMEDIATION,
+                                  "scope_note": "Leak observed in an error "
+                                                "response; the plugin itself "
+                                                "never requested internal "
+                                                "addresses."}))
+        elif not passive:
+            findings.append(self._f(
+                "web", "ssrf_canary_note",
+                "No SSRF-prone params found to canary-test. To enable "
+                f"real out-of-band confirmation, export {OOB_ENV_VAR} to "
+                "your own callback URL (e.g. https://xyz.interactsh.com).",
+                source="SSRF canary test", confidence=40, passive=False))
+        else:
+            findings.append(self._f(
+                "web", "ssrf_canary_note",
+                "Canary test skipped (passive mode). Run in active mode to "
+                "test URL-ish params with a safe canary value, or export "
+                f"{OOB_ENV_VAR} to your own callback URL (e.g. "
+                "https://xyz.interactsh.com) for real out-of-band "
+                "confirmation.",
+                source="SSRF canary test", confidence=40, passive=True))
+
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{len(seen_params)} SSRF-prone params, "
-                                 f"{len(seen_meta)} metadata refs")
+                                 f"{len(seen_meta)} metadata refs, "
+                                 f"{len(seen_internal)} internal-IP indicators")
         res.duration_ms = dur
         return res
