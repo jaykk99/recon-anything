@@ -215,6 +215,14 @@ class JsDeepPlugin(Plugin):
 
         await asyncio.gather(*[analyze(u) for u in queue])
 
+        # --- chain: maps confirmed by sourcemap.py (phase 2) are published
+        # to "recovered_sources"; fold them into the reconstruction set so
+        # recovered original sources get the full deep analysis
+        # (sourcemap_chain in backend/app/chains.py).
+        for item in ctx.consume("recovered_sources"):
+            if isinstance(item, str) and item.startswith(("http://", "https://")):
+                sourcemaps.add(item)
+
         # --- source map reconstruction: download each .map, recover the
         # original source tree, and mine sourcesContent for secrets/endpoints
         map_sem = asyncio.Semaphore(6)

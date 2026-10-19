@@ -634,6 +634,23 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                     except Exception:
                         session.rollback()
                 for f, r in zip(result.findings, rows):
+                    # Feed the finding bus: dedup + pocgen (phase 2) consume
+                    # "poc_findings" for cross-plugin dedup and PoC guides.
+                    try:
+                        ctx.publish("poc_findings", {
+                            "plugin_id": f.plugin_id,
+                            "category": f.category,
+                            "key": f.key,
+                            "value": f.value,
+                            "source": f.source,
+                            "source_url": f.source_url,
+                            "confidence": f.confidence,
+                            "evidence": dict(f.evidence or {}),
+                            "passive": f.passive,
+                            "bounty_value": getattr(f, "bounty_value", "low"),
+                        })
+                    except Exception:
+                        pass
                     await _emit(run_id, "finding",
                                 {"fid": r.id,
                                  "plugin": f.plugin_id, "category": f.category,
@@ -761,7 +778,35 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
 
         skipped_budget = 0
         results = await run_phase(phase1, 1)
+        # Chain pass: phase-1 producers (tech_fingerprint, graphql,
+        # apidiscover) -> phase-2 consumers (cms_probes, graphql_deep,
+        # param_discovery). Detects triggers on the discovery bus, publishes
+        # "chain" signals, and emits one SSE event per triggered chain so
+        # the UI can show what fired (backend/app/chains.py).
+        try:
+            from . import chains as _chains
+            for _t in _chains.evaluate_chains(ctx):
+                await _emit(run_id, "chain",
+                            {"chain": _t["chain"], "name": _t["name"],
+                             "producer": _t["producer"],
+                             "consumer": _t["consumer"],
+                             "signals": _t["signals"]})
+        except Exception:
+            pass
         results = list(results) + await run_phase(phase2, 2)
+        # Second chain pass for phase-2 producers (sourcemap_chain:
+        # sourcemap.py -> jsdeep, which consumes "recovered_sources"
+        # directly). Emits the event even though the consumer already ran.
+        try:
+            from . import chains as _chains2
+            for _t in _chains2.evaluate_chains(ctx):
+                await _emit(run_id, "chain",
+                            {"chain": _t["chain"], "name": _t["name"],
+                             "producer": _t["producer"],
+                             "consumer": _t["consumer"],
+                             "signals": _t["signals"]})
+        except Exception:
+            pass
 
     # Findings were already persisted + streamed live as each plugin
     # finished. Here we just tally per-plugin statuses for the summary.

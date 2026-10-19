@@ -260,6 +260,14 @@ class TechFingerprintPlugin(Plugin):
         for name, info in sorted(detected.items()):
             ver = info["version"]
             label = f"{name} {ver}" if ver else name
+            # Chain: publish detected tech + CMS names to the discovery bus
+            # so tech-triggered chains fire (cms_chain in backend/app/chains.py).
+            ctx.publish("tech", name.lower())
+            low_name = name.lower()
+            if low_name in ("wordpress", "drupal", "joomla", "shopify",
+                            "magento", "ghost", "typo3", "prestashop",
+                            "opencart", "squarespace", "wix"):
+                ctx.publish("cms", low_name)
             sev = "medium"
             extra = ""
             # EOL check

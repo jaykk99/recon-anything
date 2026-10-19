@@ -74,6 +74,10 @@ class GraphqlPlugin(Plugin):
                               "remediation": "Inventory this endpoint, enforce "
                               "authentication and rate limiting on it, and "
                               "decide whether it needs to be public."}))
+                # Chain: publish the live endpoint so graphql_deep (phase 2)
+                # runs deeper read-only introspection on it
+                # (graphql_chain in backend/app/chains.py).
+                ctx.publish("graphql_endpoints", url)
 
                 # Single safe introspection POST (read-only, no mutations).
                 try:

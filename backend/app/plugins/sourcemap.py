@@ -153,6 +153,13 @@ class SourcemapPlugin(Plugin):
                 "has_sources_content": bool(contents),
             }
 
+            # Chain: publish the recovered map so jsdeep (phase 2) can run
+            # deep analysis over the original sources
+            # (sourcemap_chain in backend/app/chains.py).
+            ctx.publish("recovered_sources", map_url)
+            ctx.publish("js", {"url": map_url, "recovered": True,
+                               "js_file": js})
+
             # 1) Source tree summary.
             interesting = [s for s in sources
                            if not s.startswith("webpack://") or "/src/" in s or "/app/" in s][:20]
