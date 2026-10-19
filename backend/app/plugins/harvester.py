@@ -10,6 +10,7 @@ Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Set
@@ -46,55 +47,68 @@ class HarvesterPlugin(Plugin):
         emails: Set[str] = set()
         subdomains: Set[str] = set()
 
-        # 1. crt.sh certificate transparency (subdomains + sometimes emails in SANs)
-        try:
-            r = await fetch(
-                ctx.http, ctx.limiter, "GET",
-                f"https://crt.sh/?q=%25.{quote(domain)}&output=json",
-                timeout=20)
-            for entry in safe_json_list(r):
-                nv = str(entry.get("name_value", ""))
-                for part in nv.split("\n"):
-                    part = part.strip().lower().lstrip("*.")
-                    if part.endswith(domain) and part != domain:
-                        subdomains.add(part)
-        except Exception:
-            pass
-
-        # 2. HackerTarget hostsearch (keyless)
-        try:
-            r = await fetch(
-                ctx.http, ctx.limiter, "GET",
-                f"https://api.hackertarget.com/hostsearch/?q={quote(domain)}",
-                timeout=20)
-            if r.status_code == 200:
-                for line in r.text.splitlines():
-                    host = line.split(",")[0].strip().lower()
-                    if host.endswith(domain) and host != domain:
-                        subdomains.add(host)
-        except Exception:
-            pass
-
-        # 3. ThreatCrowd (keyless)
-        try:
-            r = await fetch(
-                ctx.http, ctx.limiter, "GET",
-                f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={quote(domain)}",
-                timeout=20)
+        # 1-3. External OSINT sources in parallel (were sequential: 3 x 20s
+        # timeout = 60s worst case; now one 20s window).
+        async def _crt():
             try:
-                data = r.json()
-                for sub in data.get("subdomains", []) or []:
-                    sub = str(sub).strip().lower()
-                    if sub.endswith(domain):
-                        subdomains.add(sub)
-                for em in data.get("emails", []) or []:
-                    em = str(em).strip().lower()
-                    if "@" in em:
-                        emails.add(em)
+                r = await fetch(
+                    ctx.http, ctx.limiter, "GET",
+                    f"https://crt.sh/?q=%25.{quote(domain)}&output=json",
+                    timeout=20)
+                subs = set()
+                for entry in safe_json_list(r):
+                    nv = str(entry.get("name_value", ""))
+                    for part in nv.split("\n"):
+                        part = part.strip().lower().lstrip("*.")
+                        if part.endswith(domain) and part != domain:
+                            subs.add(part)
+                return subs, set()
             except Exception:
-                pass
-        except Exception:
-            pass
+                return set(), set()
+
+        async def _hackertarget():
+            try:
+                r = await fetch(
+                    ctx.http, ctx.limiter, "GET",
+                    f"https://api.hackertarget.com/hostsearch/?q={quote(domain)}",
+                    timeout=20)
+                subs = set()
+                if r.status_code == 200:
+                    for line in r.text.splitlines():
+                        host = line.split(",")[0].strip().lower()
+                        if host.endswith(domain) and host != domain:
+                            subs.add(host)
+                return subs, set()
+            except Exception:
+                return set(), set()
+
+        async def _threatcrowd():
+            try:
+                r = await fetch(
+                    ctx.http, ctx.limiter, "GET",
+                    f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={quote(domain)}",
+                    timeout=20)
+                subs, ems = set(), set()
+                try:
+                    data = r.json()
+                    for sub in data.get("subdomains", []) or []:
+                        sub = str(sub).strip().lower()
+                        if sub.endswith(domain):
+                            subs.add(sub)
+                    for em in data.get("emails", []) or []:
+                        em = str(em).strip().lower()
+                        if "@" in em:
+                            ems.add(em)
+                except Exception:
+                    pass
+                return subs, ems
+            except Exception:
+                return set(), set()
+
+        for subs, ems in await asyncio.gather(_crt(), _hackertarget(),
+                                              _threatcrowd()):
+            subdomains.update(subs)
+            emails.update(ems)
 
         # 4. Email extraction from homepage + common pages
         pages = [base]
