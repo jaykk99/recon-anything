@@ -202,7 +202,7 @@ class ThreatMonitorPlugin(Plugin):
             if k not in seen:
                 seen.add(k)
                 uniq_techs.append(t)
-        techs = uniq_techs[:10]  # cap: NVD rate limit is 5 req / 30s keyless
+        techs = uniq_techs[:8]  # cap: NVD rate limit is 5 req / 30s keyless
 
         if not techs:
             return self._ok([], "no technologies detected to monitor")
@@ -216,73 +216,91 @@ class ThreatMonitorPlugin(Plugin):
         checked = 0
         new_cves = 0
 
+        # Build the NVD query list first, then fetch in parallel chunks of 5
+        # (NVD keyless limit is 5 req / 30s). The old code slept 7s between
+        # every sequential request, burning ~60s of pure sleep and stalling
+        # the whole scan.
+        queries: List[Tuple[str, str]] = []
         for tech in techs:
-            name, version = _parse_tech(tech)
+            name, _version = _parse_tech(tech)
             keywords = _keywords_for(name)
             for kw in keywords[:1]:  # one keyword per tech to respect rate limit
-                checked += 1
-                try:
-                    # Pace requests: NVD allows 5 per 30s without a key
-                    if checked > 1:
-                        await asyncio.sleep(7)
-                    url = (f"{NVD_API}?keywordSearch={kw}"
-                           f"&resultsPerPage=20")
-                    resp = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                       timeout=15,
-                                       headers={"User-Agent": "ReconAnything-threat-monitor/1.0"})
-                    if resp.status_code == 403:
-                        return self._rate_limited("NVD rate limited (403) - try again later")
-                    if resp.status_code != 200:
-                        continue
-                    data = safe_json_dict(resp)
-                    vulns = data.get("vulnerabilities") or []
-                    # Sort newest first client-side (NVD default order is oldest)
-                    vulns.sort(key=lambda v: ((v or {}).get("cve") or {}).get("published", ""),
-                               reverse=True)
-                    vulns = vulns[:10]  # newest 10 only
-                    for item in vulns:
-                        cve = (item or {}).get("cve") or {}
-                        cve_id = cve.get("id") or ""
-                        if not cve_id or cve_id in reported:
-                            continue
-                        score, sev = _cvss_and_severity(cve)
-                        # Only flag meaningful vulns (CVSS 4.0+)
-                        if score < 4.0:
-                            continue
-                        pub_dt = _published_dt(cve)
-                        is_new = bool(pub_dt and (now - pub_dt) <= new_window)
-                        desc = _description(cve)
-                        refs = [r.get("url", "") for r in (cve.get("references") or [])[:3]]
-                        ref_str = refs[0] if refs else f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-                        when = pub_dt.strftime("%Y-%m-%d") if pub_dt else "unknown date"
-                        tag = "NEW" if is_new else "unpatched"
-                        value = (f"[{tag}] {cve_id} (CVSS {score}) affects {tech} "
-                                 f"- published {when}")
-                        if is_new:
-                            new_cves += 1
-                        severity = "high" if score >= 7.0 else "medium"
-                        exploit = "public_poc" if score >= 9.0 else "theoretical"
-                        findings.append(self._f(
-                            "infra", "new_cve", value,
-                            "threat_monitor: NVD public feed",
-                            source_url=ref_str,
-                            confidence=90 if is_new else 75,
-                            evidence={
-                                "severity": severity,
-                                "exploitability": exploit,
-                                "remediation": REMEDIATION,
-                                "cve_id": cve_id,
-                                "cvss": score,
-                                "published": when,
-                                "is_new": is_new,
-                                "tech": tech,
-                                "description": desc,
-                            },
-                            bounty_value="high" if score >= 7.0 else "medium",
-                        ))
-                        reported.add(cve_id)
-                except Exception:
+                url = (f"{NVD_API}?keywordSearch={kw}"
+                       f"&resultsPerPage=20")
+                queries.append((tech, url))
+
+        from ..ratelimit import fetch_many
+        responses: List[Tuple[str, object]] = []
+        for i in range(0, len(queries), 5):
+            chunk = queries[i:i + 5]
+            if i > 0:
+                # NVD keyless: 5 requests per 30s rolling window
+                await asyncio.sleep(7)
+            resps = await fetch_many(
+                ctx.http, ctx.limiter,
+                [("GET", url) for _, url in chunk],
+                concurrency=5, max_retries=1, timeout=15,
+                headers={"User-Agent": "ReconAnything-threat-monitor/1.0"})
+            responses.extend(zip([t for t, _ in chunk], resps))
+
+        for tech, resp in responses:
+            if resp is None:
+                continue
+            checked += 1
+            try:
+                if resp.status_code == 403:
+                    return self._rate_limited("NVD rate limited (403) - try again later")
+                if resp.status_code != 200:
                     continue
+                data = safe_json_dict(resp)
+                vulns = data.get("vulnerabilities") or []
+                # Sort newest first client-side (NVD default order is oldest)
+                vulns.sort(key=lambda v: ((v or {}).get("cve") or {}).get("published", ""),
+                           reverse=True)
+                vulns = vulns[:10]  # newest 10 only
+                for item in vulns:
+                    cve = (item or {}).get("cve") or {}
+                    cve_id = cve.get("id") or ""
+                    if not cve_id or cve_id in reported:
+                        continue
+                    score, sev = _cvss_and_severity(cve)
+                    # Only flag meaningful vulns (CVSS 4.0+)
+                    if score < 4.0:
+                        continue
+                    pub_dt = _published_dt(cve)
+                    is_new = bool(pub_dt and (now - pub_dt) <= new_window)
+                    desc = _description(cve)
+                    refs = [r.get("url", "") for r in (cve.get("references") or [])[:3]]
+                    ref_str = refs[0] if refs else f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+                    when = pub_dt.strftime("%Y-%m-%d") if pub_dt else "unknown date"
+                    tag = "NEW" if is_new else "unpatched"
+                    value = (f"[{tag}] {cve_id} (CVSS {score}) affects {tech} "
+                             f"- published {when}")
+                    if is_new:
+                        new_cves += 1
+                    severity = "high" if score >= 7.0 else "medium"
+                    exploit = "public_poc" if score >= 9.0 else "theoretical"
+                    findings.append(self._f(
+                        "infra", "new_cve", value,
+                        "threat_monitor: NVD public feed",
+                        source_url=ref_str,
+                        confidence=90 if is_new else 75,
+                        evidence={
+                            "severity": severity,
+                            "exploitability": exploit,
+                            "remediation": REMEDIATION,
+                            "cve_id": cve_id,
+                            "cvss": score,
+                            "published": when,
+                            "is_new": is_new,
+                            "tech": tech,
+                            "description": desc,
+                        },
+                        bounty_value="high" if score >= 7.0 else "medium",
+                    ))
+                    reported.add(cve_id)
+            except Exception:
+                continue
 
         # 3. Persist reported CVE IDs so repeat scans don't re-report
         try:

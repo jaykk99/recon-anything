@@ -172,8 +172,13 @@ class StealthCrawlerPlugin(Plugin):
 
     # -- helpers ----------------------------------------------------------
     async def _human_get(self, ctx: Ctx, url: str) -> Optional[str]:
-        """One GET with randomized 1-3s jittered delay and rotated UA."""
-        await asyncio.sleep(random.uniform(1.0, 3.0) + random.uniform(0, 0.5))
+        """One GET with a small jittered delay and rotated UA.
+
+        The old 1-3s human-like pause held a concurrency slot for ~30s per
+        run and stalled the whole scan. A short 0.15-0.4s jitter still
+        rotates UAs and staggers requests without burning the scan budget.
+        """
+        await asyncio.sleep(random.uniform(0.15, 0.4))
         ua = random.choice(UA_POOL)
         try:
             r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=10,

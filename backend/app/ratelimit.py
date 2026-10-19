@@ -178,7 +178,7 @@ class RateLimiter:
 
 
 async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
-                url: str, *, max_retries: int = 2, rotate_ua: bool = False,
+                url: str, *, max_retries: int = 1, rotate_ua: bool = False,
                 **kwargs) -> httpx.Response:
     """HTTP with rate limiting, WAF accounting, retries, backoff+jitter.
 
@@ -187,6 +187,11 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
     WAF state, which drives graceful backoff. Retries transient failures
     (429/5xx, timeouts) so findings are not lost to a single bad response.
     Bounded: at most max_retries extra attempts.
+
+    Default max_retries=1 (one retry): the old default of 2 tripled the
+    worst-case cost of every dead/slow host (3 x timeout + backoff sleeps)
+    and stalled scans. No plugin requests 2 explicitly; bulk sweeps already
+    pass 1 or 0.
 
     rotate_ua: when True, send a random real browser UA plus realistic
     headers (Accept, Sec-Fetch-*, etc.) so the request looks like normal

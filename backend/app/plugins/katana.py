@@ -21,7 +21,7 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-MAX_PAGES = 50
+MAX_PAGES = 30
 MAX_DEPTH = 4
 CONCURRENCY = 10
 
@@ -82,15 +82,13 @@ class KatanaPlugin(Plugin):
 
         async def fetch_page(url: str):
             async with sem:
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                    timeout=12, follow_redirects=True,
-                                    max_retries=1)
-                    ctype = r.headers.get("content-type", "")
-                    if r.status_code == 200 and "text/html" in ctype:
-                        return str(r.url), r.text[:400000]
-                except Exception:
-                    pass
+                # ctx.fetch_page: cross-plugin cache + singleflight, so
+                # URLs already crawled by another plugin are instant cache
+                # hits instead of redundant network fetches.
+                page = await ctx.fetch_page(url, timeout=12)
+                if page and page["status_code"] == 200 and "text/html" in \
+                        page["headers"].get("content-type", ""):
+                    return page["url"], page["text"][:400000]
             return None, None
 
         while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 26:

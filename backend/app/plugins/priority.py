@@ -46,6 +46,11 @@ LOW_PRIORITY = {
     "tokenapproval", "walletcheck", "wallets", "crypto", "cryptoconfig",
     "smartcontract", "cards", "credential_strength", "hashid",
     "asn_scan", "rdap", "pivots", "registry", "cloud", "ldapi",
+    # Native crawler/enumerator tools: heavy by nature, run last so
+    # findings lead and enumeration trails. (Jay's order 2026-10-18.)
+    "katana", "hakrawler", "wget", "httrack", "gobuster", "feroxbuster",
+    "gau", "waybackurls", "stealth_crawler", "threat_monitor",
+    "subdomain_brute", "port_scan", "port_audit",
 }
 
 

@@ -158,35 +158,46 @@ class GobusterPlugin(Plugin):
                 probes.append(f"{base}/{quote(p)}")
 
         findings: List[Finding] = []
-        reqs = [("GET", u, {"timeout": 10, "max_retries": 0,
-                            "follow_redirects": False})
-                for u in probes]
-        resps = await fetch_many(ctx.http, ctx.limiter, reqs,
-                                 concurrency=20)
-
-        for u, r in zip(probes, resps):
-            if r is None:
-                continue
-            try:
-                if self._is_hit(r.status_code, r.text[:3000], baseline):
-                    path = "/" + u.rsplit("/", 1)[-1]
-                    findings.append(self._f(
-                        "web", "hidden_path", u,
-                        "gobuster", source_url=u, confidence=80,
-                        evidence={"severity": "medium",
-                                  "status": r.status_code,
-                                  "size": len(r.content),
-                                  "remediation": "Hidden paths should not be "
-                                                 "guessable. Remove unused "
-                                                 "ones; protect the rest "
-                                                 "with auth."},
-                        passive=False))
-                    ctx.publish("endpoints", u)
-            except Exception:
-                continue
+        # Chunked sweep with internal time budget: 2,457 probes at once
+        # would burn the full 30s plugin cap. Probe in chunks and stop
+        # launching new chunks after 20s; words are priority-ordered so
+        # the highest-value paths are checked first.
+        BUDGET_S = 20
+        CHUNK = 300
+        t_start = time.monotonic()
+        swept = 0
+        for i in range(0, len(probes), CHUNK):
+            if time.monotonic() - t_start >= BUDGET_S:
+                break
+            chunk = probes[i:i + CHUNK]
+            reqs = [("GET", u, {"timeout": 10, "max_retries": 0,
+                                "follow_redirects": False})
+                    for u in chunk]
+            resps = await fetch_many(ctx.http, ctx.limiter, reqs,
+                                     concurrency=20)
+            swept += len(chunk)
+            for u, r in zip(chunk, resps):
+                if r is None:
+                    continue
+                try:
+                    if self._is_hit(r.status_code, r.text[:3000], baseline):
+                        findings.append(self._f(
+                            "web", "hidden_path", u,
+                            "gobuster", source_url=u, confidence=80,
+                            evidence={"severity": "medium",
+                                      "status": r.status_code,
+                                      "size": len(r.content),
+                                      "remediation": "Hidden paths should not be "
+                                                   "guessable. Remove unused "
+                                                   "ones; protect the rest "
+                                                   "with auth."},
+                            passive=False))
+                        ctx.publish("endpoints", u)
+                except Exception:
+                    continue
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
-                       f"probed {len(probes)} paths, {len(findings)} hits")
+                       f"probed {swept} paths, {len(findings)} hits")
         res.duration_ms = dur
         return res

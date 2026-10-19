@@ -17,7 +17,7 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-MAX_PAGES = 200
+MAX_PAGES = 80
 MAX_DEPTH = 6
 CONCURRENCY = 10
 

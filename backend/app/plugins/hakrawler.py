@@ -65,15 +65,13 @@ class HakrawlerPlugin(Plugin):
 
         async def grab(url: str):
             async with sem:
-                try:
-                    r = await fetch(ctx.http, ctx.limiter, "GET", url,
-                                    timeout=10, follow_redirects=True,
-                                    max_retries=1)
-                    if r.status_code == 200 and "text/html" in \
-                            r.headers.get("content-type", ""):
-                        return str(r.url), r.text[:200000]
-                except Exception:
-                    pass
+                # ctx.fetch_page: cross-plugin cache + singleflight, so
+                # URLs already crawled by another plugin are instant cache
+                # hits instead of redundant network fetches.
+                page = await ctx.fetch_page(url, timeout=10)
+                if page and page["status_code"] == 200 and "text/html" in \
+                        page["headers"].get("content-type", ""):
+                    return page["url"], page["text"][:200000]
             return None, None
 
         while queue and pages < MAX_PAGES and (time.monotonic() - t0) < 24:

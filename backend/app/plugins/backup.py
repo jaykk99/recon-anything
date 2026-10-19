@@ -220,12 +220,19 @@ class BackupPlugin(Plugin):
                               "remediation": "Remove backup files from web roots. "
                                              "Block backup extensions at the web server."}))
         else:
-            # Concurrent sweep: 228 candidates at ~10 RPS = ~25s.
-            # Short timeout + single retry: a blackholed path on a WAF
-            # means "blocked", retrying just burns the time budget.
+            # Concurrent tiered sweep: candidates are already priority-ordered
+            # (secrets/config first, bulk backup extensions last). Probe in
+            # chunks with a hard internal time budget: the old code launched
+            # all ~5,800 probes at once and always burned the full 30s
+            # plugin cap, stalling a whole concurrency slot. Now the
+            # highest-value tiers finish in ~8-12s and the bulk tail only
+            # runs if budget remains.
             # Uses ctx.probe: responses are shared per-run with artifacts.py
             # and hiddenpaths.py, so overlapping paths are fetched once.
+            SWEEP_BUDGET_S = 18
+            CHUNK = 150
             sem = asyncio.Semaphore(12)
+            t_start = time.monotonic()
 
             async def probe(path: str):
                 full = base + path
@@ -242,27 +249,36 @@ class BackupPlugin(Plugin):
                     return (path, full, text, probed["length"])
                 return None
 
-            probed = await asyncio.gather(*[probe(p) for p in candidates])
-            for item in probed:
-                if not item:
-                    continue
-                path, full, body, length = item
-                note = sniff(body)
-                findings.append(self._f(
-                    "leak", "backup_exposed",
-                    f"CRITICAL: backup file {path} is downloadable ({length} bytes)."
-                    + note,
-                    source="backup sweep", source_url=full,
-                    confidence=90, passive=False,
-                    evidence={"severity": "critical",
-                              "size": length,
-                              "remediation": "Remove backup files from web roots immediately. "
-                                             "Block backup extensions at the web server and audit what was exposed."}))
+            swept = 0
+            for i in range(0, len(candidates), CHUNK):
+                if time.monotonic() - t_start >= SWEEP_BUDGET_S:
+                    break
+                chunk = candidates[i:i + CHUNK]
+                probed = await asyncio.gather(*[probe(p) for p in chunk])
+                swept += len(chunk)
+                for item in probed:
+                    if not item:
+                        continue
+                    path, full, body, length = item
+                    note = sniff(body)
+                    findings.append(self._f(
+                        "leak", "backup_exposed",
+                        f"CRITICAL: backup file {path} is downloadable ({length} bytes)."
+                        + note,
+                        source="backup sweep", source_url=full,
+                        confidence=90, passive=False,
+                        evidence={"severity": "critical",
+                                  "size": length,
+                                  "remediation": "Remove backup files from web roots immediately. "
+                                                 "Block backup extensions at the web server and audit what was exposed."}))
+                    if len(findings) >= 30:
+                        break
                 if len(findings) >= 30:
                     break
 
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings, f"swept {len(candidates)} backup paths, "
+        swept_n = swept if not passive else len(candidates)
+        res = self._ok(findings, f"swept {swept_n} backup paths, "
                                  f"{len(findings)} hits")
         res.duration_ms = dur
         return res

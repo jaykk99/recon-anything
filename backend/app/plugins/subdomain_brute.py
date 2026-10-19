@@ -154,7 +154,7 @@ class SubdomainBrutePlugin(Plugin):
             return self._skipped("no domain for this target type")
         findings: List[Finding] = []
 
-        max_names = int(os.environ.get("RECON_SUBDOMAIN_MAX", "2500"))
+        max_names = int(os.environ.get("RECON_SUBDOMAIN_MAX", "800"))
         rps = float(os.environ.get("RECON_SUBDOMAIN_RPS", "20"))
         words = build_wordlist(max_names)
 
@@ -195,27 +195,28 @@ class SubdomainBrutePlugin(Plugin):
                 return word, ips
 
         hits = 0
-        batch = 100
-        for i in range(0, len(words), batch):
-            results = await asyncio.gather(
-                *[paced(w) for w in words[i:i + batch]])
-            for word, ips in results:
-                if ips and not set(ips) <= wildcard_ips:
-                    hits += 1
-                    findings.append(self._f(
-                        "dns", "subdomain_brute",
-                        f"Subdomain {word}.{domain} resolves to "
-                        f"{', '.join(ips[:4])}",
-                        source="DNS brute force", confidence=95,
-                        passive=True,
-                        evidence={"severity": "medium",
-                                  "subdomain": f"{word}.{domain}",
-                                  "ips": ips[:8],
-                                  "remediation": ("Inventory this subdomain: "
-                                                  "confirm it is intentional, "
-                                                  "patched, and behind the "
-                                                  "same security controls.")}))
-                    ctx.publish("subdomains", f"{word}.{domain}")
+        # One gather over the whole wordlist: the semaphore (25) already
+        # bounds in-flight DNS. The old batch-of-100 chunking serialized
+        # batches behind the slowest resolver in each batch (4s lifetime),
+        # which made even small wordlists crawl.
+        results = await asyncio.gather(*[paced(w) for w in words])
+        for word, ips in results:
+            if ips and not set(ips) <= wildcard_ips:
+                hits += 1
+                findings.append(self._f(
+                    "dns", "subdomain_brute",
+                    f"Subdomain {word}.{domain} resolves to "
+                    f"{', '.join(ips[:4])}",
+                    source="DNS brute force", confidence=95,
+                    passive=True,
+                    evidence={"severity": "medium",
+                              "subdomain": f"{word}.{domain}",
+                              "ips": ips[:8],
+                              "remediation": ("Inventory this subdomain: "
+                                              "confirm it is intentional, "
+                                              "patched, and behind the "
+                                              "same security controls.")}))
+                ctx.publish("subdomains", f"{word}.{domain}")
             if hits >= 200:
                 break  # enough; avoid runaway on huge zones
 
