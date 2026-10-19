@@ -45,21 +45,79 @@ class RobotsPlugin(Plugin):
                     confidence=80, passive=True))
                 for line in r.text.splitlines():
                     line = line.strip()
-                    if line.lower().startswith("disallow:"):
+                    low = line.lower()
+                    if low.startswith("disallow:"):
                         path = line.split(":", 1)[1].strip()
                         if path and path != "/":
+                            sev = "high" if any(
+                                k in path.lower() for k in
+                                ("admin", "backup", "config", ".env", "private",
+                                 "secret", "db", "sql", "internal")) else "low"
                             findings.append(self._f(
                                 "web", "robots_disallow",
                                 f"Disallowed path (may hide interesting content): {path}",
                                 source="robots parser", source_url=base + "/robots.txt",
-                                confidence=65, passive=True))
-                    elif line.lower().startswith("sitemap:"):
+                                confidence=65, passive=True,
+                                evidence={"severity": sev}))
+                    elif low.startswith("sitemap:"):
                         sm = line.split(":", 1)[1].strip()
                         findings.append(self._f(
                             "web", "robots_sitemap",
                             f"Sitemap declared: {sm}",
                             source="robots parser", source_url=base + "/robots.txt",
                             confidence=70, passive=True))
+                    elif low.startswith("allow:"):
+                        path = line.split(":", 1)[1].strip()
+                        if path:
+                            findings.append(self._f(
+                                "web", "robots_allow",
+                                f"Explicitly allowed path: {path}",
+                                source="robots parser",
+                                source_url=base + "/robots.txt",
+                                confidence=55, passive=True))
+                    elif low.startswith("crawl-delay:"):
+                        findings.append(self._f(
+                            "web", "robots_crawl_delay",
+                            f"Crawl-delay set: {line}",
+                            source="robots parser",
+                            source_url=base + "/robots.txt",
+                            confidence=60, passive=True))
+        except Exception:
+            pass
+
+        # Also check common alternative locations
+        for alt in ("/sitemap_index.xml", "/sitemap-index.xml",
+                    "/wp-sitemap.xml", "/sitemap.php"):
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "GET", base + alt, timeout=10)
+                if r.status_code == 200 and "<url" in r.text[:2000]:
+                    findings.append(self._f(
+                        "web", "sitemap_alt",
+                        f"Alternative sitemap found: {alt}",
+                        source="sitemap parser", source_url=base + alt,
+                        confidence=75, passive=True))
+                    break
+            except Exception:
+                continue
+
+        # security.txt (RFC 9116) - bug bounty contact info
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            base + "/.well-known/security.txt", timeout=10)
+            if r.status_code == 200 and r.text.strip():
+                findings.append(self._f(
+                    "web", "security_txt",
+                    "security.txt found - bug bounty/contact info disclosed",
+                    source="security.txt", source_url=base + "/.well-known/security.txt",
+                    confidence=85, passive=True))
+                for line in r.text.splitlines()[:20]:
+                    if line.strip().lower().startswith("contact:"):
+                        findings.append(self._f(
+                            "web", "security_txt_contact",
+                            f"Security contact: {line.split(':', 1)[1].strip()[:150]}",
+                            source="security.txt",
+                            source_url=base + "/.well-known/security.txt",
+                            confidence=80, passive=True))
         except Exception:
             pass
 
@@ -78,7 +136,13 @@ class RobotsPlugin(Plugin):
                         confidence=80, passive=True))
                     interesting = [u.text for u in urls[:500] if u.text and
                                    any(k in u.text.lower() for k in
-                                       ["admin", "login", "api", "dashboard", "private", "test"])]
+                                       ["admin", "login", "api", "dashboard",
+                                        "private", "test", "dev", "staging",
+                                        "backup", "config", "internal",
+                                        "debug", "console", "manage",
+                                        "upload", "download", "export",
+                                        "report", "user", "account",
+                                        "settings", "profile", "wp-admin"])]
                     for u in interesting[:20]:
                         findings.append(self._f(
                             "web", "sitemap_interesting",

@@ -40,6 +40,16 @@ class CorsPlugin(Plugin):
             f"https://{domain}.evil.com",
             f"https://evil{domain}",
             f"https://{domain}.attacker.com",
+            f"https://attacker-{domain}.com",
+            f"https://{domain}-attacker.com",
+            f"https://sub.{domain}",
+            f"https://{domain}/evil",
+            "https://127.0.0.1",
+            "https://localhost",
+            f"https://{domain}:443",
+            f"http://{domain}",
+            f"https://www.{domain}.evil.com",
+            "https://evil!.com",
         ]
 
         _cors_sem = asyncio.Semaphore(5)
