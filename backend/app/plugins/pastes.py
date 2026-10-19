@@ -31,15 +31,20 @@ class PastesPlugin(Plugin):
         findings: List[Finding] = []
 
         # Generate search URLs for manual checking
-        searches = [
-            ("Google", "https://www.google.com/search?q=" +
-             quote_plus(f'site:pastebin.com "{query}"')),
-            ("Google", "https://www.google.com/search?q=" +
-             quote_plus(f'site:ghostbin.com "{query}"')),
-            ("Google", "https://www.google.com/search?q=" +
-             quote_plus(f'site:hastebin.com "{query}"')),
-            ("psbdmp", f"https://psbdmp.ws/api/search/{quote_plus(query)}"),
+        paste_sites = [
+            "pastebin.com", "ghostbin.com", "hastebin.com",
+            "paste.rs", "ix.io", "termbin.com", "sprunge.us",
+            "paste.ee", "privatebin.net", "rentry.co",
+            "controlc.com", "paste2.org", "dpaste.org",
+            "paste.debian.net", "paste.ubuntu.com",
         ]
+        searches = []
+        for site in paste_sites:
+            searches.append(
+                ("Google", "https://www.google.com/search?q=" +
+                 quote_plus(f'site:{site} "{query}"')))
+        searches.append(
+            ("psbdmp", f"https://psbdmp.ws/api/search/{quote_plus(query)}"))
         for name, url in searches:
             if name == "Google":
                 findings.append(self._f(

@@ -24,6 +24,26 @@ GIT_FILES = [
     ("/.git/index", "staging index (file list)", 88, "DIRC"),
     ("/.git/packed-refs", "packed refs (branches/tags)", 88, "# pack-refs"),
     ("/.git/COMMIT_EDITMSG", "last commit message", 85, None),
+    ("/.git/description", "repo description", 80, None),
+    ("/.git/info/exclude", "exclude patterns", 80, None),
+    ("/.git/info/refs", "info refs (dumb HTTP transport)", 85, None),
+    ("/.git/FETCH_HEAD", "fetch head", 85, None),
+    ("/.git/ORIG_HEAD", "orig head", 85, None),
+    ("/.git/MERGE_HEAD", "merge head", 80, None),
+    ("/.git/refs/heads/master", "master branch ref", 90, None),
+    ("/.git/refs/heads/main", "main branch ref", 90, None),
+    # SVN
+    ("/.svn/entries", "SVN entries", 90, None),
+    ("/.svn/wc.db", "SVN working copy DB", 90, None),
+    # Mercurial
+    ("/.hg/requires", "Mercurial requires", 85, None),
+    ("/.hg/dirstate", "Mercurial dirstate", 85, None),
+    # Bazaar
+    ("/.bzr/branch.conf", "Bazaar branch config", 85, None),
+    # CVS
+    ("/CVS/Entries", "CVS entries", 85, None),
+    # Darcs
+    ("/_darcs/index", "Darcs index", 80, None),
 ]
 
 REMEDIATION = ("Block /.git at the web server or WAF immediately, redeploy "
