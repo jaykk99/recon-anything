@@ -182,7 +182,7 @@ async def check_staleness(sub: str, ctx: Ctx) -> List[str]:
 
 
 class SubdomainsPlugin(Plugin):
-    timeout_s = 180  # slow enumerator: needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "subdomains"
     label = "Subdomain Enum"
     accepts = ["domain", "url"]

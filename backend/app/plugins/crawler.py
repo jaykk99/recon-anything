@@ -30,7 +30,7 @@ COMMENT_SECRET_HINTS = re.compile(
 
 
 class CrawlerPlugin(Plugin):
-    timeout_s = 180  # slow enumerator: needs headroom
+    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
     id = "crawler"
     label = "Site Crawler"
     accepts = ["domain", "url"]

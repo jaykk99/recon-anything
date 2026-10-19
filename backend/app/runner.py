@@ -25,6 +25,7 @@ from .classifier import classify_batch
 from .models import Finding as FindingRow, Run, RunEvent, Target as TargetRow, get_session, init_db
 from .plugins.base import Ctx, PluginResult, Target
 from .plugins.registry import all_plugins, discover
+from .plugins.priority import priority_for, HIGH as HIGH_TIER
 from .ratelimit import RateLimiter
 
 _cache = Cache()
@@ -145,74 +146,6 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
                 yield ": ping\n\n"
 
 
-def _host_of_target(target) -> str:
-    """Host key used by the rate limiter for a target."""
-    try:
-        from urllib.parse import urlparse
-        return urlparse(target.normalized).netloc or target.normalized
-    except Exception:
-        return target.normalized
-
-
-async def _report_waf_summary(run_id: str, session, limiter, targets,
-                              start_stats: Dict[str, Dict]) -> Dict:
-    """Persist + stream a per-host WAF summary at end of run.
-
-    For every target host that entered WAF graceful mode: one persisted
-    finding (so it shows in the findings list) and a summary dict of
-    blocked-vs-clean counts. Returns the summary dict for run metadata.
-    """
-    report: Dict[str, Dict] = {}
-    for t in targets:
-        host = _host_of_target(t)
-        if host in report or not limiter.waf_active(host):
-            continue
-        end = limiter.waf_stats(host)
-        start = start_stats.get(host, {})
-        blocked = max(end["blocked"] - start.get("blocked", 0), 0)
-        succeeded = max(end["succeeded"] - start.get("succeeded", 0), 0)
-        vendor = end["vendor"] or "WAF"
-        report[host] = {"vendor": vendor, "blocked": blocked,
-                        "succeeded": succeeded,
-                        "not_found": end["not_found"],
-                        "server_error": end["server_error"]}
-        value = (f"{vendor} protection on {host}: {blocked} probes "
-                 f"blocked, {succeeded} clean")
-        row = FindingRow(
-            run_id=run_id, target_id=t.id, plugin_id="waf",
-            category="web", key="waf_blocking_active", value=value,
-            source="WAF handler", source_url="",
-            evidence={"severity": "low", "risk": "low", "vendor": vendor,
-                      "host": host, "blocked": blocked,
-                      "succeeded": succeeded,
-                      "remediation": "The WAF is doing its job. Re-scan "
-                      "with fewer aggressive modules, or test from an "
-                      "allowlisted IP if authorized."},
-            confidence=90, passive=True,
-            first_seen=dt.datetime.now(dt.timezone.utc),
-            bounty_value="low")
-        session.add(row)
-        try:
-            session.commit()
-        except Exception:
-            session.rollback()
-        await _emit(run_id, "finding",
-                    {"fid": row.id, "plugin": "waf", "category": "web",
-                     "key": "waf_blocking_active", "value": value,
-                     "source": "WAF handler", "source_url": "",
-                     "evidence": row.evidence, "confidence": 90,
-                     "passive": True, "target": t.normalized})
-    return report
-
-
-def _waf_summary_line(report: Dict[str, Dict]) -> str:
-    parts = []
-    for host, st in report.items():
-        parts.append(f"{st['vendor']} on {host}: {st['blocked']} blocked, "
-                     f"{st['succeeded']} succeeded")
-    return "; ".join(parts)
-
-
 def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
     return FindingRow(
         run_id=run_id, target_id=target_id, plugin_id=f.plugin_id, category=f.category,
@@ -224,12 +157,44 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
 
 
 # Default per-plugin timeout ceiling (seconds). Individual plugins override
-# via their timeout_s class attribute. Kept for reference; the runner reads
-# plugin.timeout_s directly.
-DEFAULT_PLUGIN_TIMEOUT_S = 90
+# via their timeout_s class attribute. 30s is the hard per-plugin cap
+# (Jay's order 2026-10-18 - speed is top priority): if a plugin hasn't
+# produced anything in 30s it is killed gracefully with a "skipped:
+# timeout" note. Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
+DEFAULT_PLUGIN_TIMEOUT_S = 30
+MAX_PLUGIN_TIMEOUT_S = 30
+
+# Global scan time budget (seconds). A full scan has a HARD 80s ceiling
+# (Jay's order 2026-10-18 - speed is top priority). The dispatcher:
+#  - runs plugins in priority order (high-signal first, so the first
+#    critical finding lands in <15s),
+#  - after SCAN_SOFT_STOP_S only HIGH-priority plugins start (the rest are
+#    recorded as ok(0) "skipped: time budget", never an error),
+#  - after SCAN_HARD_STOP_S no new plugin starts,
+#  - caps every in-flight plugin's timeout at the remaining budget, so the
+#    last job always finishes by the deadline.
+# All are env-overridable for tuning.
+SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "80"))
+SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "65"))
+SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "72"))
+# Seconds reserved at the end of the budget for the correlation graph,
+# summary persistence, and run_done emission. In-flight plugins are killed
+# by (budget - SCAN_TAIL_RESERVE_S) so run_done always lands < 80s.
+SCAN_TAIL_RESERVE_S = float(__import__("os").environ.get("RECON_SCAN_TAIL_RESERVE_S", "14"))
 
 
-async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
+async def _run_plugin(plugin, target: Target, ctx: Ctx,
+                    deadline: Optional[float] = None) -> PluginResult:
+    """Run one plugin with hang protection + scan-budget awareness.
+
+    deadline: monotonic timestamp of the scan's hard budget end. The
+    plugin's effective timeout is the smallest of (a) its own timeout_s,
+    (b) the 60s per-plugin cap, and (c) the time left in the scan budget.
+    A plugin that cannot finish in the remaining window is killed
+    gracefully: ok(0) with a "skipped: timeout" note - never an error,
+    never a hang. Findings always win over speed, but a timeout with a
+    clear note beats a stalled scan.
+    """
     if plugin.missing_keys(ctx):
         return plugin._skipped(
             "needs API key: " + ", ".join(plugin.missing_keys(ctx)) +
@@ -237,42 +202,23 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
     await _emit(ctx.run_id, "plugin_start",
                 {"plugin": plugin.id, "label": plugin.label, "target": target.normalized})
     t0 = time.monotonic()
-    # Per-plugin timeout ceiling from the plugin itself (default 90s).
-    # This is hang protection only: a plugin is never killed to hit a
-    # speed budget. Findings always win over speed.
-    timeout = getattr(plugin, "timeout_s", 90) or 90
-    # WAF graceful mode: the host is fighting back, so aggressive
-    # (payload / brute-force) plugins stand down for this host instead of
-    # burning the scan budget on blocked endpoints. Reported as ok with a
-    # note (no skips ever); lightweight checks keep running.
-    try:
-        from urllib.parse import urlparse as _urlparse
-        _host = _urlparse(target.normalized).netloc or target.normalized
-    except Exception:
-        _host = target.normalized
-    _lim = getattr(ctx, "limiter", None)
-    if getattr(plugin, "aggressive", False) and _lim is not None \
-            and _lim.waf_active(_host):
-        _vendor = _lim.waf_vendor(_host) or "WAF"
-        result = plugin._skipped(
-            f"WAF mode: {_vendor} protection active on {_host} - aggressive "
-            "probes suppressed, lightweight checks continue")
-        result.duration_ms = 0
-        ctx.shared.setdefault("_waf_suppressed", []).append(plugin.id)
-        await _emit(ctx.run_id, "plugin_done",
-                    {"plugin": plugin.id, "status": result.status.value,
-                     "reason": result.reason, "findings": 0, "ms": 0})
-        await _emit(ctx.run_id, "waf_probe_suppressed",
-                    {"plugin": plugin.id, "host": _host, "vendor": _vendor})
-        return result
+    # Per-plugin timeout ceiling from the plugin itself (default 60s),
+    # clamped to the 60s hard cap no matter what a plugin asks for.
+    timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
+                  or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+    if deadline is not None:
+        # Never let an in-flight plugin push the scan past its budget.
+        timeout = min(timeout, max(deadline - time.monotonic(), 2))
     try:
         result = await asyncio.wait_for(plugin.run(target, ctx),
                                         timeout=timeout)
     except asyncio.TimeoutError:
-        # Jay's rule: no errors ever. A timeout degrades to ok(0) with a note.
-        result = plugin._degraded(f"timed out after {timeout}s: findings may be incomplete")
+        # Jay's rule: no errors ever. A timeout degrades to ok(0) with a
+        # note. Partial work is lost, but the scan keeps moving.
+        result = plugin._degraded(
+            f"skipped: timeout after {timeout:.0f}s - findings may be incomplete")
         await _emit(ctx.run_id, "plugin_timeout",
-                    {"plugin": plugin.id, "timeout_s": timeout,
+                    {"plugin": plugin.id, "timeout_s": round(timeout, 1),
                      "target": target.normalized})
     except Exception as e:  # never let one plugin kill the run
         # Environmental network failures degrade gracefully (ok with a note);
@@ -286,26 +232,21 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx) -> PluginResult:
                 {"plugin": plugin.id, "status": result.status.value,
                  "reason": result.reason, "findings": len(result.findings),
                  "ms": result.duration_ms})
-    # WAF visibility: the host flipped into graceful mode. Tell Jay once
-    # per run per host, with vendor + blocked-vs-clean counts, instead of
-    # silently burning requests on challenge pages. Findings still win.
+    # WAF visibility (Task 4): if the target host has served 3+ protection
+    # pages, tell Jay once per run instead of silently burning requests on
+    # challenge pages. Does not change plugin behavior - findings still win.
     try:
+        from urllib.parse import urlparse as _urlparse
+        _host = _urlparse(target.normalized).netloc or target.normalized
         _lim = getattr(ctx, "limiter", None)
-        if _lim is not None and _lim.waf_active(_host):
-            _ann = ctx.shared.setdefault("_waf_announced", [])
-            if _host not in _ann:
-                _ann.append(_host)
-                _st = _lim.waf_stats(_host)
-                _vendor = _st.get("vendor") or "WAF"
-                _note = (f"{_vendor} protection on {_host}: "
-                         f"{_st['blocked']} probes blocked, "
-                         f"{_st['succeeded']} clean. Aggressive probes "
-                         "suppressed; lightweight checks continue.")
-                await _emit(ctx.run_id, "waf_detected",
-                            {"host": _host, "vendor": _vendor,
-                             "blocked": _st["blocked"],
-                             "succeeded": _st["succeeded"],
-                             "note": _note})
+        if _lim and _lim.protection_hits(_host) >= 3 \
+                and not ctx.shared.get("_waf_announced"):
+            ctx.shared["_waf_announced"] = True
+            await _emit(ctx.run_id, "waf_detected",
+                        {"host": _host, "hits": _lim.protection_hits(_host),
+                         "note": "target is behind WAF/challenge protection - "
+                                 "active probes may return challenge pages; "
+                                 "passive findings are unaffected"})
     except Exception:
         pass
     return result
@@ -335,7 +276,6 @@ PLUGIN_TIME_ESTIMATES = {
     "supplychain": 20, "enterprise": 15, "iot": 15, "k8s": 12,
     "docker": 12, "hypervisor": 12, "cloud": 15, "fingerprint": 15,
     "hiddenpaths": 25, "bola": 15, "blogic": 15,
-    "race_detect": 20, "stealth_crawler": 45, "jwt_audit": 12,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
@@ -589,12 +529,6 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                               type=t.type, normalized=t.normalized))
     session.commit()
 
-    # WAF accounting baseline: the limiter is shared across runs, so
-    # snapshot per-host counters now and diff at the end for this run's
-    # blocked-vs-clean numbers.
-    _waf_start = {h: dict(_limiter.waf_stats(h))
-                  for h in {_host_of_target(t) for t in trobj}}
-
     # Time estimate: sum of per-plugin estimates x targets, capped by concurrency.
     n_targets = max(len(trobj), 1)
     total_plugin_s = sum(PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S)
@@ -652,23 +586,35 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                 factor = min(max(eta_done_actual / eta_done_est, 0.5), 3.0)
             return max(remaining * factor / max(concurrency, 1), 0.0)
 
-        # Simpler: wrap each job with progress counting.
-        # Global exception guard (belt and suspenders): NOTHING inside a
-        # job may propagate out of wrap() except cancellation. _run_plugin
-        # already guards the plugin body, but the bookkeeping below
-        # (finding conversion, DB writes, event emission, ETA math) also
-        # runs per-job: if any of it throws, asyncio.gather would abort
-        # the whole phase and kill the scan. Instead the one job degrades
-        # to an error note and the scan marches on. No single plugin
-        # failure may ever kill a scan.
+        # Run clock + budget for this scan. dispatch() below enforces the
+        # 120s hard ceiling (SCAN_BUDGET_S): priority-ordered starts,
+        # soft/hard stops, and per-job timeouts capped at the remaining
+        # budget so the last job always lands by the deadline.
+        run_clock = time.monotonic()
+        # The plugin deadline leaves SCAN_TAIL_RESERVE_S at the end of the
+        # budget for the correlation graph + summary, so run_done always
+        # lands inside the 120s ceiling even when the last plugin uses its
+        # full remaining window.
+        deadline = run_clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
+        soft_stop = run_clock + SCAN_SOFT_STOP_S
+        hard_stop = run_clock + SCAN_HARD_STOP_S
+
+        # NOTE: no blocking homepage prefetch here. ctx.fetch_page has
+        # singleflight + a shared cache, so the first plugin to read the
+        # homepage pays once and the other ~35 read from cache - without
+        # delaying the first plugin start (first finding lands in seconds,
+        # not after a warm-up).
+
+        # Simpler: wrap each job with progress counting
         async def wrap(plugin, target):
             nonlocal completed_jobs, eta_done_est, eta_done_actual
             try:
                 async with sem:
-                    result = await _run_plugin(plugin, target, ctx)
+                    result = await _run_plugin(plugin, target, ctx,
+                                               deadline=deadline)
             except asyncio.CancelledError:
-                raise  # phase timeout must propagate
-            except BaseException as e:  # _run_plugin should never raise; guard anyway
+                raise
+            except BaseException as e:
                 result = plugin._error(
                     f"runner guard: {type(e).__name__}: {str(e)[:150]}")
                 result.duration_ms = 0
@@ -696,28 +642,22 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                                  "evidence": f.evidence,
                                  "confidence": f.confidence,
                                  "passive": f.passive, "target": target.normalized})
-            except asyncio.CancelledError:
-                raise  # phase timeout must propagate
-            except BaseException as e:
-                # Bookkeeping failed for this one job: note it, keep going.
-                try:
-                    await _emit(run_id, "plugin_done",
-                                {"plugin": plugin.id, "status": "error",
-                                 "reason": "result handling failed: "
-                                           f"{type(e).__name__}: {str(e)[:150]}",
-                                 "findings": 0, "ms": result.duration_ms or 0})
-                except Exception:
-                    pass
-                result = plugin._error(
-                    "result handling failed: "
-                    f"{type(e).__name__}: {str(e)[:150]}")
-            try:
                 await _emit(run_id, "progress",
                             {"done": completed_jobs, "total": total_jobs,
                              "eta_s": round(_eta_s(), 1),
                              "plugin": plugin.id, "target": target.normalized})
-            except Exception:
-                pass  # progress must never kill a job; poll fallback covers it
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                try:
+                    await _emit(run_id, "plugin_done",
+                                {"plugin": plugin.id, "status": "error",
+                                 "reason": f"result handling failed: {type(e).__name__}: {str(e)[:150]}",
+                                 "findings": 0, "ms": result.duration_ms or 0})
+                except Exception:
+                    pass
+                result = plugin._error(
+                    f"result handling failed: {type(e).__name__}: {str(e)[:150]}")
             return plugin, target, result
 
         async def wrap_na(plugin, target):
@@ -735,22 +675,47 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                          "plugin": plugin.id, "target": target.normalized})
             return plugin, target, result
 
+        async def wrap_budget_cut(plugin, target):
+            """Time-budget cut: ok(0) with an explicit note, never an error.
+
+            Jay's call: a note saying plugins were "skipped: time budget"
+            beats a 5-minute scan. Findings are never dropped to go faster -
+            the plugin simply never started, and says so.
+            """
+            nonlocal completed_jobs, skipped_budget
+            skipped_budget += 1
+            result = plugin._skipped(
+                "skipped: time budget - cut to hold the "
+                f"{int(SCAN_BUDGET_S)}s scan ceiling")
+            result.duration_ms = 0
+            completed_jobs += 1
+            await _emit(run_id, "plugin_done",
+                        {"plugin": plugin.id, "status": result.status.value,
+                         "reason": result.reason, "findings": 0, "ms": 0})
+            await _emit(run_id, "progress",
+                        {"done": completed_jobs, "total": total_jobs,
+                         "eta_s": round(_eta_s(), 1),
+                         "plugin": plugin.id, "target": target.normalized})
+            return plugin, target, result
+
         async def run_phase(plist, phase_num):
-            # Prioritize: fastest plugins first so quick wins land early.
-            # Slow plugins run in background without blocking results.
+            # Dispatch order: priority tier first (high-signal plugins land
+            # early), then fastest-estimated within a tier. Slow
+            # enumerators run last so they are the ones cut if the budget
+            # runs out - findings lead, enumeration trails.
             plist = sorted(plist,
-                           key=lambda p: PLUGIN_TIME_ESTIMATES.get(
-                               p.id, DEFAULT_PLUGIN_ESTIMATE_S))
+                           key=lambda p: (priority_for(p.id),
+                                          PLUGIN_TIME_ESTIMATES.get(
+                                              p.id, DEFAULT_PLUGIN_ESTIMATE_S)))
             ids = {p.id for p in plist}
-            wrapped = []
+            # (plugin, target, applicable?) in dispatch order
+            job_list = []
             for (p, t) in pairs:
                 if p.id not in ids:
                     continue
-                if not p.accepts or t.type in p.accepts:
-                    wrapped.append(wrap(p, t))
-                else:
-                    wrapped.append(wrap_na(p, t))
-            if not wrapped:
+                applicable = not p.accepts or t.type in p.accepts
+                job_list.append((p, t, applicable))
+            if not job_list:
                 return []
             if phase_num == 2:
                 await _emit(run_id, "phase",
@@ -758,16 +723,43 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
                              "note": "chain phase: deeper probes on "
                                      "discovered assets",
                              "plugins": [p.id for p in plist]})
-            try:
-                return await asyncio.wait_for(
-                    asyncio.gather(*wrapped), timeout=RUN_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                await _emit(run_id, "progress",
-                            {"done": completed_jobs, "total": total_jobs,
-                             "eta_s": round(_eta_s(), 1),
-                             "note": f"phase {phase_num} timed out"})
-                return []
+            # Budget-aware worker pool: keep `concurrency` jobs in flight,
+            # but gate every new start on the scan clock. Past the soft
+            # stop only HIGH-priority jobs start; past the hard stop none
+            # do. Every started job's own timeout is capped at the
+            # remaining budget inside _run_plugin, so the last job lands
+            # by the deadline no matter what.
+            results = []
+            idx = 0
+            in_flight = set()
 
+            async def launch(p, t, applicable):
+                if not applicable:
+                    return await wrap_na(p, t)
+                now = time.monotonic()
+                if now >= hard_stop:
+                    return await wrap_budget_cut(p, t)
+                if now >= soft_stop and priority_for(p.id) > HIGH_TIER:
+                    return await wrap_budget_cut(p, t)
+                if deadline - now < 5:
+                    return await wrap_budget_cut(p, t)
+                return await wrap(p, t)
+
+            while idx < len(job_list) or in_flight:
+                while idx < len(job_list) and len(in_flight) < concurrency:
+                    p, t, applicable = job_list[idx]
+                    idx += 1
+                    in_flight.add(asyncio.create_task(launch(p, t, applicable)))
+                if not in_flight:
+                    break
+                done, _ = await asyncio.wait(in_flight,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                in_flight -= done
+                for d in done:
+                    results.append(d.result())
+            return results
+
+        skipped_budget = 0
         results = await run_phase(phase1, 1)
         results = list(results) + await run_phase(phase2, 2)
 
@@ -785,27 +777,23 @@ async def _execute_run_inner(run_id: str, targets_raw: str, mode: str,
     n_nodes, n_edges = build_graph(session, run_id)
     session.commit()
 
-    # WAF summary: blocked-vs-clean per host, persisted as findings +
-    # run metadata so Jay sees exactly what the WAF ate.
-    waf_report = await _report_waf_summary(run_id, session, _limiter,
-                                           trobj, _waf_start)
-    waf_line = _waf_summary_line(waf_report)
-    suppressed = sorted(set(ctx.shared.get("_waf_suppressed", [])))
-
     run.status = "done"
     run.finished_at = dt.datetime.now(dt.timezone.utc)
-    run.summary = {"findings": total, "nodes": n_nodes, "edges": n_edges,
-                   "targets": len(trobj),
-                   "plugins": {pid: r.status.value for pid, r in plugin_rows.items()},
-                   "waf": waf_report,
-                   "waf_summary": waf_line,
-                   "waf_suppressed_plugins": suppressed}
+    summary = {"findings": total, "nodes": n_nodes, "edges": n_edges,
+               "targets": len(trobj),
+               "plugins": {pid: r.status.value for pid, r in plugin_rows.items()}}
+    if skipped_budget:
+        summary["skipped_time_budget"] = skipped_budget
+        summary["note"] = (f"{skipped_budget} low-priority plugins skipped: "
+                           f"time budget ({int(SCAN_BUDGET_S)}s scan ceiling)")
+    run.summary = summary
     session.commit()
     session.close()
-    await _emit(run_id, "run_done",
-                {"run_id": run_id, "findings": total,
-                 "nodes": n_nodes, "edges": n_edges,
-                 "waf_summary": waf_line, "waf": waf_report})
+    run_done_data = {"run_id": run_id, "findings": total,
+                     "nodes": n_nodes, "edges": n_edges}
+    if skipped_budget:
+        run_done_data["skipped_time_budget"] = skipped_budget
+    await _emit(run_id, "run_done", run_done_data)
 
     # AI Hunter: kick off uncensored-AI test-plan analysis in the background.
     # Never blocks the scan; the UI polls for results when ready.

@@ -6,6 +6,7 @@ exchange APIs, billing endpoints. Shows ALL of it.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List
@@ -73,25 +74,46 @@ class FinancialPlugin(Plugin):
         for path in ["/pricing", "/billing", "/checkout", "/payment", "/subscribe"]:
             pages.append(base + path)
 
-        all_text = ""
-        for url in pages[:3]:  # limit to avoid hammering
+        # Fetch the pages concurrently (was sequential: each page plus its
+        # JS files fetched one at a time). Same pages, same parsing, same
+        # findings - just in parallel.
+        async def fetch_page_text(url):
+            texts = []
             try:
                 resp = await fetch(ctx.http, ctx.limiter, "GET", url)
                 if resp and resp.status_code == 200:
-                    all_text += resp.text[:200000] + "\n"
+                    texts.append(resp.text[:200000])
                     # Check JS files too
-                    for m in re.finditer(r'src=["\']([^"\']+\.js)["\']', resp.text):
-                        js_url = urljoin(url, m.group(1))
-                        try:
-                            jr = await fetch(ctx.http, ctx.limiter, "GET", js_url)
-                            if jr and jr.status_code == 200:
-                                all_text += jr.text[:100000] + "\n"
-                        except Exception:
-                            pass
-                        if len(all_text) > 500000:
-                            break
+                    js_urls = [urljoin(url, m.group(1)) for m in
+                               re.finditer(r'src=["\']([^"\']+\.js)["\']', resp.text)]
+                    js_sem = asyncio.Semaphore(4)
+
+                    async def fetch_js(js_url):
+                        async with js_sem:
+                            try:
+                                jr = await fetch(ctx.http, ctx.limiter,
+                                                 "GET", js_url)
+                                if jr and jr.status_code == 200:
+                                    return jr.text[:100000]
+                            except Exception:
+                                pass
+                            return ""
+
+                    js_texts = await asyncio.gather(
+                        *(fetch_js(u) for u in js_urls))
+                    texts.extend(t for t in js_texts if t)
             except Exception:
-                continue
+                pass
+            return texts
+
+        page_texts = await asyncio.gather(
+            *(fetch_page_text(url) for url in pages[:3]))  # limit to avoid hammering
+        all_text = ""
+        for texts in page_texts:
+            for t in texts:
+                all_text += t + "\n"
+                if len(all_text) > 500000:
+                    break
             if len(all_text) > 500000:
                 break
 

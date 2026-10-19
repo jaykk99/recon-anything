@@ -5,6 +5,7 @@ Custom-built, no API keys needed.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Set
@@ -45,40 +46,49 @@ class EmailsPlugin(Plugin):
         skip_patterns = ["example.com", "test.com", "email.com", "domain.com",
                          "sentry.io", "wixpress.com", ".png", ".jpg", ".gif"]
 
-        for path in CONTACT_PATHS:
+        # Fetch all contact pages concurrently (was sequential: 10 pages x
+        # 12s timeouts could stall this plugin for 2 minutes on a tarpit).
+        # Same pages, same parsing, same findings - just in parallel.
+        async def fetch_one(path):
             url = base + path if path != "/" else base
             try:
                 r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
                 if r.status_code != 200:
-                    continue
-                for m in EMAIL_RE.finditer(r.text):
-                    email = m.group(0).lower()
-                    if email in seen:
-                        continue
-                    if any(s in email for s in skip_patterns):
-                        continue
-                    if len(email) > 80:  # likely garbage
-                        continue
-                    seen.add(email)
-                    # Classify the email
-                    local, _, edomain = email.partition("@")
-                    note = ""
-                    if edomain == domain:
-                        note = " (company email)"
-                        conf = 85
-                    elif "gmail" in edomain or "yahoo" in edomain or "hotmail" in edomain:
-                        note = " (personal email on company site)"
-                        conf = 70
-                    else:
-                        conf = 60
-                    findings.append(self._f(
-                        "identity", "email_found",
-                        f"{email}{note} found on {path}",
-                        source="email harvester", source_url=url,
-                        confidence=conf, passive=True))
-                    ctx.publish("emails", email)
+                    return []
+                return [m.group(0).lower() for m in EMAIL_RE.finditer(r.text)]
             except Exception:
-                continue
+                return []
+
+        page_emails = await asyncio.gather(
+            *(fetch_one(p) for p in CONTACT_PATHS))
+
+        for path, emails_found in zip(CONTACT_PATHS, page_emails):
+            url = base + path if path != "/" else base
+            for email in emails_found:
+                if email in seen:
+                    continue
+                if any(s in email for s in skip_patterns):
+                    continue
+                if len(email) > 80:  # likely garbage
+                    continue
+                seen.add(email)
+                # Classify the email
+                local, _, edomain = email.partition("@")
+                note = ""
+                if edomain == domain:
+                    note = " (company email)"
+                    conf = 85
+                elif "gmail" in edomain or "yahoo" in edomain or "hotmail" in edomain:
+                    note = " (personal email on company site)"
+                    conf = 70
+                else:
+                    conf = 60
+                findings.append(self._f(
+                    "identity", "email_found",
+                    f"{email}{note} found on {path}",
+                    source="email harvester", source_url=url,
+                    confidence=conf, passive=True))
+                ctx.publish("emails", email)
 
         # Also check DNS TXT for SPF (reveals mail providers)
         try:

@@ -10,6 +10,7 @@ URL, so Jay knows where to point manual testing.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Optional, Tuple
@@ -82,8 +83,21 @@ class AuthSurfacePlugin(Plugin):
                 return full, r.text[:200]
             return None
 
-        for path, marker, key, title, sev, conf in AUTH_PROBES:
-            hit = await probe(path, marker)
+        # Probe all auth/platform paths concurrently (was sequential: each
+        # probe up to 10s, so a tarpit host stalled this plugin for a
+        # minute+). Same probes, same findings - just in parallel.
+        probe_sem = asyncio.Semaphore(8)
+
+        async def probe_capped(path, marker):
+            async with probe_sem:
+                return await probe(path, marker)
+
+        auth_hits = await asyncio.gather(
+            *(probe_capped(path, marker) for path, marker, *_ in AUTH_PROBES))
+        platform_hits = await asyncio.gather(
+            *(probe_capped(path, marker) for path, marker, *_ in PLATFORM_PROBES))
+
+        for (path, marker, key, title, sev, conf), hit in zip(AUTH_PROBES, auth_hits):
             if hit:
                 full, _ = hit
                 findings.append(self._f(
@@ -94,8 +108,8 @@ class AuthSurfacePlugin(Plugin):
                     confidence=conf, passive=True,
                     evidence={"severity": sev, "remediation": REMEDIATION_AUTH}))
 
-        for path, marker, key, title, sev, conf, remediation in PLATFORM_PROBES:
-            hit = await probe(path, marker)
+        for (path, marker, key, title, sev, conf, remediation), hit in zip(
+                PLATFORM_PROBES, platform_hits):
             if hit:
                 full, _ = hit
                 findings.append(self._f(

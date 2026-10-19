@@ -100,23 +100,30 @@ class CloudBucketsPlugin(Plugin):
         name = _short_name(domain)
 
         candidates = [name + s for s in BUCKET_SUFFIXES[:10]] + [name]
-        # Concurrent: 33 bucket x provider checks. The old sequential loop
-        # took 33 x retry-backoff on a dead network, blowing past the 90s
-        # timeout with zero findings. Same checks, same findings, bounded.
-        sem = asyncio.Semaphore(8)
+        # Probe all bucket/provider combos concurrently (was sequential:
+        # 33 x 10s timeouts could stall this plugin for 5+ minutes).
+        # Same probes, same findings - just in parallel.
+        checks = [(bucket, provider, checker)
+                  for bucket in candidates
+                  for provider, checker in (("aws", _check_s3), ("gcp", _check_gcs),
+                                            ("azure", _check_azure))]
+        bucket_sem = asyncio.Semaphore(8)
 
-        async def check(bucket: str, provider: str, checker):
-            async with sem:
-                status, url = await checker(ctx, bucket)
-            return (bucket, provider, status, url)
+        async def check_one(bucket, provider, checker):
+            async with bucket_sem:
+                try:
+                    status, url = await checker(ctx, bucket)
+                except Exception:
+                    return None
+                return (bucket, provider, status, url)
 
-        jobs = [(b, p, c) for b in candidates
-                for p, c in (("aws", _check_s3), ("gcp", _check_gcs),
-                             ("azure", _check_azure))]
-        results = await asyncio.gather(*[check(b, p, c) for b, p, c in jobs])
-        checked = 0
-        for bucket, provider, status, url in results:
-            checked += 1
+        results = await asyncio.gather(
+            *(check_one(b, p, c) for b, p, c in checks))
+        checked = sum(1 for r in results if r is not None)
+        for item in results:
+            if not item:
+                continue
+            bucket, provider, status, url = item
             if len(findings) >= 12:
                 break  # enough signal; stay fast
             if status == "open":

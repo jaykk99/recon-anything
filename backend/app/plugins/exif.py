@@ -6,6 +6,7 @@ GPS data is a real OPSEC finding. Read-only GETs of public images.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import struct
 import time
@@ -154,10 +155,12 @@ class ExifPlugin(Plugin):
         passive = (mode == "passive")
 
         try:
-            r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
-                            follow_redirects=True)
-            html = r.text[:400000]
-            page_url = str(r.url)
+            # Shared homepage cache: first plugin pays, the rest read from cache.
+            page = await ctx.fetch_page(base, timeout=25)
+            if page is None:
+                raise RuntimeError("homepage fetch failed")
+            html = page["text"][:400000]
+            page_url = page["url"]
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -176,16 +179,33 @@ class ExifPlugin(Plugin):
             if len(imgs) >= 8:
                 break
 
-        for img_url in imgs:
+        # Fetch images concurrently (was sequential: 8 images x 15s timeouts
+        # could stall this plugin for 2 minutes on a slow host). Same
+        # images, same parsing, same findings - just in parallel.
+        async def fetch_meta(img_url):
             try:
-                ir = await fetch(ctx.http, ctx.limiter, "GET", img_url, timeout=15)
+                ir = await fetch(ctx.http, ctx.limiter, "GET", img_url,
+                                 timeout=15)
                 if ir.status_code != 200 or len(ir.content) < 100:
-                    continue
+                    return None
                 meta = parse_exif_jpeg(ir.content[:300000])
+                return (img_url, meta) if meta else None
             except Exception:
+                return None
+
+        img_sem = asyncio.Semaphore(4)
+
+        async def fetch_meta_capped(img_url):
+            async with img_sem:
+                return await fetch_meta(img_url)
+
+        img_results = await asyncio.gather(
+            *(fetch_meta_capped(u) for u in imgs))
+
+        for item in img_results:
+            if not item:
                 continue
-            if not meta:
-                continue
+            img_url, meta = item
             for k, v in meta.items():
                 sev = "critical" if k == "gps" else "medium"
                 label = {"gps": "GPS coordinates in image EXIF",
