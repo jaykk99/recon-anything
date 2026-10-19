@@ -18,7 +18,7 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 HIDDEN_PATHS = """admin administrator admin-panel dashboard panel control
 login signin log-in auth authenticate sso oauth callback
-api v1 v2 v3 rest graphql graphiql playground
+api v1 v2 v3 v4 rest graphql graphiql playground
 internal private secret hidden test dev staging qa uat sandbox demo
 backup bak old tmp temp cache logs log debug
 config configuration settings env environment
@@ -35,6 +35,55 @@ phpmyadmin pma adminer
 actuator actuator/health actuator/env
 .env.local .env.production config.json
 server-status server-info
+manage management cms backend office
+portal client customer partner vendor
+register signup join subscribe
+profile account settings preferences
+billing payment checkout cart order
+search results list browse
+help support faq contact about
+news blog press media careers jobs
+legal privacy terms cookies
+sitemap robots.txt humans.txt
+crossdomain.xml clientaccesspolicy.xml
+.well-known/security.txt .well-known/change-password
+metrics prometheus grafana kibana
+elasticsearch/_cluster/health
+solr/admin/info/system
+jenkins/script console
+druid/coordinator/v1
+actuator/beans actuator/configprops actuator/mappings
+api/v1/users api/v1/admin api/users
+rest/api/2/user rest/api/2/serverInfo
+graphql/console graphiql/console
+admin/config admin/settings admin/users
+manager/html host-manager/html
+jmx-console web-console
+axis2/axis2-admin
+struts/showcase
+cgi-bin/test.cgi
+server-status?auto
+phpmyadmin/index.php
+myadmin adminer.php
+dbadmin sqlweb
+webalizer awstats
+plesk-site-preview
+cpanel whm webmail
+roundcube squirrelmail
+horde imp
+owa exchange/ ecp/
+autodiscover/autodiscover.xml
+remote/api jsonrpc
+xmlrpc.php?rsd
+wp-json/wp/v2/users
+wp-content/debug.log
+sites/default/settings.php
+administrator/index.php
+typo3/install.php
+umbraco/Umbraco
+sitecore/shell
+episerver
+aem/crx/de
 """.split()
 
 
