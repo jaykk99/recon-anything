@@ -1,5 +1,8 @@
 """AI Hunter: uncensored AI as a virtual human tester.
 
+NOTE (2026-10-18): superseded by uncensored_assistant.py. This module is kept
+for reference only; nothing imports it anymore.
+
 Automated scanners hit a wall on RCE, auth bypass, business logic flaws,
 IDOR that needs an account, login-walled areas, and WAF-blocked payloads.
 Those need human creativity. This module uses keyless uncensored LLM

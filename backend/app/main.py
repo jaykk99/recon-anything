@@ -620,69 +620,6 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
     return result
 
 
-# -- ai hunter ---------------------------------------------------------------
-# Uncensored AI as a virtual human tester. Analysis NEVER blocks the scan:
-# it runs in the background after the scan finishes and the UI polls for it.
-
-@app.post("/api/runs/{run_id}/ai-hunter", dependencies=[Depends(gate)])
-def api_ai_hunter_start(run_id: str):
-    """Trigger background AI analysis of a completed run.
-
-    Returns immediately with status=analyzing. Poll GET for results.
-    """
-    from .ai_assistant import get_ai_status, launch_ai_analysis
-    session = get_session()
-    try:
-        if not session.query(Run).filter_by(id=run_id).first():
-            raise missing_run(run_id)
-    finally:
-        session.close()
-    state = get_ai_status(run_id)
-    if state["status"] == "analyzing":
-        return {"run_id": run_id, "status": "analyzing"}
-    if state["status"] == "ready" and state["results"]:
-        return {"run_id": run_id, "status": "ready",
-                "provider": state["provider"]}
-    launch_ai_analysis(run_id)
-    return {"run_id": run_id, "status": "analyzing"}
-
-
-@app.get("/api/runs/{run_id}/ai-hunter", dependencies=[Depends(gate)])
-def api_ai_hunter_status(run_id: str):
-    """Poll AI Hunter state: idle | analyzing | ready | failed."""
-    from .ai_assistant import get_ai_status
-    session = get_session()
-    try:
-        if not session.query(Run).filter_by(id=run_id).first():
-            raise missing_run(run_id)
-    finally:
-        session.close()
-    state = get_ai_status(run_id)
-    state["run_id"] = run_id
-    return state
-
-
-@app.get("/api/runs/{run_id}/ai-hunter/waf-bypass", dependencies=[Depends(gate)])
-def api_ai_hunter_waf_bypass(run_id: str, payload: str = Query(..., max_length=2000)):
-    """Instant WAF-bypass payload mutations for a given payload.
-
-    Local and instant (no AI call). Detects the WAF from the run's findings.
-    """
-    from .ai_assistant import waf_bypass_payloads
-    from .reporting import findings_dump
-    session = get_session()
-    try:
-        if not session.query(Run).filter_by(id=run_id).first():
-            raise missing_run(run_id)
-        rows = findings_dump(session, run_id)
-    finally:
-        session.close()
-    waf = ""
-    for r in rows:
-        if r.get("plugin_id") == "waf" or r.get("key") == "waf_detected":
-            waf = r.get("value") or ""
-            break
-    return waf_bypass_payloads(waf, payload)
 
 
 @app.get("/api/diff", dependencies=[Depends(gate)])
@@ -692,6 +629,95 @@ def api_diff(a: str, b: str):
         return diff_runs(session, a, b)
     finally:
         session.close()
+
+
+# -- assistant ---------------------------------------------------------------
+# Uncensored AI assistant (AI Horde keyless backend). Detection/analysis
+# only: it explains findings and suggests manual steps, never exploits.
+
+
+class AssistantChatIn(BaseModel):
+    messages: List[Dict[str, str]]
+    run_id: Optional[str] = None
+
+
+@app.post("/api/assistant/chat", dependencies=[Depends(gate)])
+async def api_assistant_chat(body: AssistantChatIn):
+    """Free-form chat, optionally grounded in a run's findings."""
+    if not body.messages:
+        raise HTTPException(400, "messages required")
+    from .uncensored_assistant import assistant_chat
+    reply = await assistant_chat(body.messages, body.run_id)
+    return {"reply": reply}
+
+
+class AssistantAgentIn(BaseModel):
+    run_id: str
+    instruction: str
+
+
+@app.post("/api/assistant/agent", dependencies=[Depends(gate)])
+async def api_assistant_agent(body: AssistantAgentIn):
+    """Structured AI review of a run: gaps, deeper plugins, manual tests.
+
+    Horde polling blocks on the network, so the review runs in a thread.
+    """
+    import asyncio
+    from .uncensored_assistant import agent_review
+    session = get_session()
+    try:
+        if not session.query(Run).filter_by(id=body.run_id).first():
+            raise missing_run(body.run_id)
+    finally:
+        session.close()
+    review = await asyncio.to_thread(
+        asyncio.run, agent_review(body.run_id, body.instruction))
+    return review
+
+
+class DeepRunIn(BaseModel):
+    run_id: str
+    plugin_ids: List[str]
+
+
+@app.post("/api/assistant/deep-run", dependencies=[Depends(gate)])
+async def api_assistant_deep_run(body: DeepRunIn):
+    """Launch a new run against the original run's targets, but only with
+    the specified detection plugins. Returns the new run id."""
+    if not body.plugin_ids:
+        raise HTTPException(400, "plugin_ids required")
+    from .plugins.registry import describe
+    known = {p["id"] for p in describe()}
+    unknown = [p for p in body.plugin_ids if p not in known]
+    if unknown:
+        raise HTTPException(400, f"unknown plugin ids: {', '.join(unknown)}")
+    plugin_ids = [p for p in body.plugin_ids if p in known]
+
+    session = get_session()
+    try:
+        orig = session.query(Run).filter_by(id=body.run_id).first()
+        if not orig:
+            raise missing_run(body.run_id)
+        targets = session.query(Target).filter_by(run_id=body.run_id).all()
+        targets_text = "\n".join(t.raw for t in targets if t.raw)
+        if not targets_text:
+            raise HTTPException(400, "original run has no targets")
+        new_run_id = uuid.uuid4().hex[:12]
+        mode = orig.mode or "passive"
+        source_type = getattr(orig, "source_type", None) or "website"
+        session.add(Run(id=new_run_id, mode=mode, status="running",
+                        source_type=source_type,
+                        summary={"note": f"deep-run of {body.run_id}",
+                                 "plugins": plugin_ids}))
+        session.commit()
+        keys = load_all(session)
+    finally:
+        session.close()
+    # launch_run accepts plugin_ids natively and filters the plugin list
+    # before launch; detection plugins only, nothing else changes.
+    await launch_run(new_run_id, targets_text, mode, plugin_ids, {}, keys,
+                     source_type=source_type)
+    return {"new_run_id": new_run_id}
 
 
 # -- ATM ---------------------------------------------------------------------
