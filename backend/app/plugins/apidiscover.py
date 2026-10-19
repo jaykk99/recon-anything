@@ -155,9 +155,44 @@ class ApiDiscoverPlugin(Plugin):
             await self._graphql_introspect(ctx, base + "/api/graphql", findings,
                                            api_map, passive)
 
+        # --- JS endpoint extraction: parse homepage + JS for fetch/axios calls ---
+        try:
+            home_page = await ctx.fetch_page(base, timeout=20)
+            if home_page:
+                js_text = home_page["text"][:500000]
+                # Find fetch() and axios calls with URL strings
+                fetch_urls = re.findall(r"""fetch\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                axios_urls = re.findall(r"""axios\.(?:get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                xhr_urls = re.findall(r"""\.open\s*\(\s*['"`](?:GET|POST|PUT|PATCH|DELETE)['"`]\s*,\s*['"`]([^'"`]{3,200})['"`]""", js_text)
+                for ep_url in set(fetch_urls + axios_urls + xhr_urls):
+                    if ep_url.startswith(("http", "//")):
+                        continue  # skip absolute URLs to other domains
+                    if not ep_url.startswith("/"):
+                        continue
+                    if len(ep_url) > 200:
+                        continue
+                    findings.append(self._f("api", "endpoint_js",
+                                            f"JS-referenced endpoint: {ep_url}",
+                                            source="JS fetch/axios parsing",
+                                            confidence=75, passive=passive))
+                    api_map[ep_url] = {"methods": ["GET"], "status": "js-referenced",
+                                       "auth": "unknown"}
+                    ctx.publish("endpoints", base + ep_url)
+        except Exception:
+            pass
+
         # --- REST version + wordlist probing (concurrent; same probes) ---
-        probe_paths = [f"/api/{w}" for w in API_WORDLIST[:30]] if passive \
-            else [f"/api/{w}" for w in API_WORDLIST] + [f"/v1/{w}" for w in API_WORDLIST[:20]]
+        # Aggressive: check /api/, /v1/, /v2/, /rest/ prefixes even in passive
+        probe_paths = []
+        prefixes = ["/api", "/v1", "/v2", "/rest"] if passive else ["/api", "/v1", "/v2", "/v3", "/rest"]
+        words = API_WORDLIST[:25] if passive else API_WORDLIST
+        for prefix in prefixes:
+            for w in words:
+                probe_paths.append(f"{prefix}/{w}")
+                if len(probe_paths) >= 120:  # cap total probes
+                    break
+            if len(probe_paths) >= 120:
+                break
 
         async def probe_path(path: str):
             url = base + path

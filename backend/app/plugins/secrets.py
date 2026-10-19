@@ -54,6 +54,14 @@ PATTERNS = [
     ("generic_api_key_assign", r"(?i)(?:api[_-]?key|apikey|client[_-]?secret|app[_-]?secret)\s*[:=]\s*['\"]([^'\"]{12,})['\"]", 65, "high"),
     ("generic_token_assign", r"(?i)(?:auth[_-]?token|access[_-]?token|bearer)\s*[:=]\s*['\"]([^'\"]{16,})['\"]", 65, "high"),
     ("sentry_dsn", r"https://[0-9a-f]{32}@[a-z0-9.\-]*sentry[a-z0-9.\-]*/\d+", 75, "medium"),
+    # Broader patterns: catch more variants
+    ("aws_session_token", r"ASIA[0-9A-Z]{16}", 90, "critical"),
+    ("gcp_service_account", r"\"type\"\s*:\s*\"service_account\"", 85, "critical"),
+    ("azure_client_secret", r"(?i)(?:client[_-]?secret)\s*[:=]\s*['\"][A-Za-z0-9~_.\-]{20,}['\"]", 70, "high"),
+    ("openai_org", r"org-[A-Za-z0-9]{20,}", 60, "medium"),
+    ("algolia_key", r"(?i)algolia.{0,30}['\"][A-Za-z0-9]{20,}['\"]", 60, "medium"),
+    ("mapbox_token", r"pk\.eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}", 65, "medium"),
+    ("firebase_config", r"\"apiKey\"\s*:\s*\"AIza[A-Za-z0-9\-_]{35}\"", 75, "high"),
 ]
 
 REMED_KEY = "api_key"
@@ -141,6 +149,51 @@ class SecretsPlugin(Plugin):
                     for m in re.finditer(pat, js):
                         val = m.group(1) if m.groups() and name.startswith("generic_") else m.group(0)
                         emit(name, val, f"JS bundle {host or 'inline'}", conf, sev, full)
+                except re.error:
+                    continue
+            # Check for source maps: append .map to JS URLs
+            try:
+                map_url = full + ".map"
+                mr = await fetch(ctx.http, ctx.limiter, "GET", map_url, timeout=10)
+                if mr.status_code == 200 and "sourcesContent" in mr.text[:5000]:
+                    for name, pat, conf, sev in PATTERNS:
+                        try:
+                            for m in re.finditer(pat, mr.text[:500000]):
+                                val = m.group(1) if m.groups() and name.startswith("generic_") else m.group(0)
+                                emit(name, val, f"source map {host or 'inline'}", conf, sev, map_url)
+                        except re.error:
+                            continue
+                    findings.append(self._f(
+                        "leak", "sourcemap_exposed",
+                        f"HIGH: source map exposed at {map_url} - contains original source code",
+                        source="source map check", source_url=map_url,
+                        confidence=85, passive=passive,
+                        evidence={"severity": "high",
+                                  "remediation": "Remove .map files from production or restrict access."}))
+            except Exception:
+                pass
+
+        # Scan HTML comments for secrets
+        comments = re.findall(r"<!--(.*?)-->", html, re.S)
+        for comment in comments[:50]:
+            if len(comment.strip()) < 10:
+                continue
+            for name, pat, conf, sev in PATTERNS:
+                try:
+                    for m in re.finditer(pat, comment):
+                        val = m.group(1) if m.groups() and name.startswith("generic_") else m.group(0)
+                        emit(name, val, "HTML comment", conf, sev, page_url)
+                except re.error:
+                    continue
+
+        # Scan meta tags for secrets
+        metas = re.findall(r'<meta[^>]+content=["\']([^"\']{20,})["\']', html, re.I)
+        for meta in metas[:30]:
+            for name, pat, conf, sev in PATTERNS:
+                try:
+                    for m in re.finditer(pat, meta):
+                        val = m.group(1) if m.groups() and name.startswith("generic_") else m.group(0)
+                        emit(name, val, "meta tag", conf, sev, page_url)
                 except re.error:
                     continue
 

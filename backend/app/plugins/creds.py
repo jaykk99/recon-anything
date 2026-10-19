@@ -100,8 +100,24 @@ class CredsPlugin(Plugin):
                 r = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=20)
                 if r.status_code == 200:
                     texts.append((f"JS bundle {host or 'inline'}", r.text[:800000], full))
+                    # Check source maps for creds too
+                    try:
+                        mr = await fetch(ctx.http, ctx.limiter, "GET", full + ".map", timeout=10)
+                        if mr.status_code == 200 and "sourcesContent" in mr.text[:5000]:
+                            texts.append((f"source map {host or 'inline'}", mr.text[:500000], full + ".map"))
+                    except Exception:
+                        pass
             except Exception:
                 continue
+
+        # Add HTML comments and meta tags as searchable text
+        comments = re.findall(r"<!--(.*?)-->", html, re.S)
+        for comment in comments[:50]:
+            if len(comment.strip()) >= 10:
+                texts.append(("HTML comment", comment[:10000], page_url))
+        metas = re.findall(r'<meta[^>]+content=["\']([^"\']{10,})["\']', html, re.I)
+        for meta in metas[:30]:
+            texts.append(("meta tag", meta[:5000], page_url))
 
         def emit(name: str, match: str, where: str, conf: int,
                  severity: str, url: str | None, remed: str = REMED_KEY):

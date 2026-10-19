@@ -21,7 +21,11 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .wayback import fetch_cdx
 
 EXTENSIONS = [".bak", ".backup", ".old", ".orig", ".save", ".swp",
-              ".tmp", "~", ".bkp", ".bac", ".copy", ".orig.bak"]
+              ".tmp", "~", ".bkp", ".bac", ".copy", ".orig.bak",
+              ".bak1", ".bak2", ".old1", ".orig1", ".txt", ".log",
+              ".sql.bak", ".db.bak", ".conf.bak", ".config.bak",
+              ".php.bak", ".js.bak", ".html.bak", "1", "2",
+              ".backup1", ".backup2", ".tmp1", ".swp1"]
 
 BASE_NAMES = ["index.php", "index.html", "wp-config.php", "config.php",
               "configuration.php", ".env", "settings.py", "settings.php",

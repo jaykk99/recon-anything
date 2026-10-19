@@ -56,12 +56,46 @@ class PortsPlugin(Plugin):
         mode = self.module_mode(ctx)
 
         if mode == "passive":
-            # Suggest ports based on common services, no packets to target
-            for port, service in COMMON_PORTS:
+            # Passive: lightweight TCP connect check on high-value ports only.
+            # Just a SYN/connect, no data sent. Short timeout.
+            RISKY_PORTS = [
+                (21, "FTP"), (22, "SSH"), (23, "Telnet"),
+                (3306, "MySQL"), (5432, "PostgreSQL"),
+                (6379, "Redis"), (27017, "MongoDB"),
+                (3389, "RDP"), (5900, "VNC"),
+                (1433, "MSSQL"), (1521, "Oracle"),
+            ]
+
+            async def quick_check(port: int, service: str) -> tuple:
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port), timeout=2)
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+                    return port, service, True
+                except Exception:
+                    return port, service, False
+
+            results = await asyncio.gather(
+                *[quick_check(p, s) for p, s in RISKY_PORTS])
+            found_open = False
+            for port, service, is_open in results:
+                if is_open:
+                    found_open = True
+                    findings.append(self._f(
+                        "infra", "port_open", f"Port {port} ({service}) is OPEN - exposed to internet",
+                        source="port scan", confidence=95, passive=True,
+                        evidence={"port": port, "service": service,
+                                  "severity": "high",
+                                  "remediation": f"Port {port} ({service}) should not be exposed. Restrict with firewall."}))
+            if not found_open:
                 findings.append(self._f(
-                    "infra", "port_suggestion",
-                    f"Port {port} ({service}) - commonly open, verify manually",
-                    source="port suggester", confidence=30, passive=True))
+                    "infra", "port_scan_clean",
+                    f"Top {len(RISKY_PORTS)} risky ports closed on {host}",
+                    source="port scan", confidence=80, passive=True))
         else:
             # Active: real TCP connects with short timeout, plus banner grab
             HTTP_PORTS = {80, 443, 8000, 8080, 8443, 3000, 5000, 9000, 9200, 5601}

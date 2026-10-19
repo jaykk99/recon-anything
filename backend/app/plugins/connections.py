@@ -27,6 +27,7 @@ class ConnectionsPlugin(Plugin):
     phase = 2  # runs after phase-1 populates the discovery bus
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        t0 = time.monotonic()
         findings: List[Finding] = []
         target_label = target.normalized
 
@@ -49,6 +50,51 @@ class ConnectionsPlugin(Plugin):
         ips = strs(ips)
         processors = strs(processors)
         techs = strs(techs)
+
+        # --- ALSO fetch the homepage directly and extract connections ---
+        # Don't rely solely on the bus; parse page content ourselves.
+        try:
+            from ..classifier import domain_from_target
+            from ..ratelimit import fetch as _fetch
+            from ..net import web_base
+            domain = domain_from_target(target.type, target.normalized)
+            if domain:
+                base = await web_base(ctx, target, domain)
+                page = await ctx.fetch_page(base, timeout=20)
+                if page:
+                    html = page["text"][:500000]
+                    # Extract external domains from links, scripts, images
+                    ext_domains = set(re.findall(
+                        r'''(?:src|href)=["']https?://([^/"']+)''', html, re.I))
+                    for d in list(ext_domains)[:30]:
+                        d = d.lower().strip()
+                        if d and d != domain and not d.endswith("." + domain):
+                            # Skip common CDNs/trackers to reduce noise
+                            if any(x in d for x in ("googleapis", "gstatic", "cloudflare",
+                                                    "facebook.net", "google-analytics")):
+                                continue
+                            findings.append(self._f(
+                                "graph", "connected_domain", d,
+                                f"connections: external domain {d} referenced on target",
+                                confidence=70, passive=True,
+                                evidence={"type": "domain", "relation": "references"}))
+                    # Extract emails from page
+                    page_emails = set(re.findall(
+                        r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", html))
+                    for e in list(page_emails)[:20]:
+                        if e not in emails:
+                            emails.append(e)
+                    # Extract IPs from page
+                    page_ips = set(re.findall(
+                        r"\b(?:\d{1,3}\.){3}\d{1,3}\b", html))
+                    for ip in list(page_ips)[:20]:
+                        # Skip private/reserved
+                        if ip.startswith(("10.", "192.168.", "172.16.", "127.", "0.")):
+                            continue
+                        if ip not in ips:
+                            ips.append(ip)
+        except Exception:
+            pass
 
         # -- devices: IPs and subdomains are "devices" in the map ------------
         devices: Set[str] = set()
@@ -122,4 +168,6 @@ class ConnectionsPlugin(Plugin):
             evidence={"severity": "info",
                       "why": "Everything connected to the target, mapped"}))
 
-        return self._ok(findings, f"mapped {total} connections")
+        res = self._ok(findings, f"mapped {total} connections")
+        res.duration_ms = int((time.monotonic() - t0) * 1000)
+        return res
