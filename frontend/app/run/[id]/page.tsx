@@ -209,6 +209,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
   const [cat, setCat] = useState("all");
+  const [sev, setSev] = useState("all");
+  const [sortBy, setSortBy] = useState("value");
   const [q, setQ] = useState("");
   // high-value findings view: weaponized/high first, noise collapsed
   const [highValueOnly, setHighValueOnly] = useState(false);
@@ -219,7 +221,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // reset paging when filters change
   useEffect(() => {
     setShownTop(50); setGroupShown({}); setOpenGroups({}); setExpanded({});
-  }, [q, cat, highValueOnly]);
+  }, [q, cat, sev, sortBy, highValueOnly]);
   // progress + ETA
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
@@ -450,13 +452,24 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
   const filtered = findings.filter((f) =>
     (cat === "all" || f.category === cat) &&
+    (sev === "all" || normSev(f) === sev || (sev === "critical" && sevOf(f) === "critical")) &&
     (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "") + (f.evidence?.exploitability || "")).toLowerCase().includes(q.toLowerCase())));
+
+  // sort: value (default rank), severity, plugin, confidence
+  const sortFindings = (list: Finding[]) => {
+    const sevRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+    const arr = [...list];
+    if (sortBy === "severity") arr.sort((a, b) => (sevRank[sevOf(a)] ?? 4) - (sevRank[sevOf(b)] ?? 4));
+    else if (sortBy === "plugin") arr.sort((a, b) => (a.plugin || "").localeCompare(b.plugin || ""));
+    else if (sortBy === "confidence") arr.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    return arr;
+  };
 
   // ---------- high-value-first layout ----------
   // top: high/medium + anything weaponized or with a public PoC, ranked by value.
   // noise: everything low/informational, grouped by (category, key) and collapsed.
-  const top = sortByValue(filtered.filter(isHighValue));
-  const noise = filtered.filter((f) => !isHighValue(f));
+  const top = sortFindings(sortByValue(filtered.filter(isHighValue)));
+  const noise = sortFindings(filtered.filter((f) => !isHighValue(f)));
   const sevCounts: Record<string, number> = { high: 0, medium: 0, low: 0 };
   const explCounts: Record<ExploitTier, number> = { weaponized: 0, public_poc: 0, theoretical: 0, unknown: 0 };
   filtered.forEach((f) => { sevCounts[normSev(f)]++; explCounts[exploitOf(f)]++; });
@@ -603,15 +616,47 @@ export default function RunPage({ params }: { params: { id: string } }) {
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
-        {(["findings", "vulns", "assistant", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const).filter((t) => t !== "atm" || sourceType === "atm").map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{t === "assistant" ? "Assistant" : t}</button>
-        ))}
+        {((() => {
+          const tabCount = (t: string): number => {
+            if (t === "findings") return findings.length;
+            if (t === "secrets") return findings.filter((f) => f.category === "leak").length;
+            if (t === "creds") return findings.filter((f) => /cred|password|key|token/i.test(f.key)).length;
+            if (t === "subdomains") return findings.filter((f) => /subdomain/i.test(f.key)).length;
+            if (t === "ports") return findings.filter((f) => /port|banner/i.test(f.key)).length;
+            if (t === "files") return findings.filter((f) => /file|backup|artifact|git_exposed|sourcemap/i.test(f.key)).length;
+            if (t === "vulns") return findings.filter((f) => f.category === "vuln").length;
+            return 0;
+          };
+          const tabLabel = (t: string) => {
+            const c = tabCount(t);
+            const name = t === "assistant" ? "Assistant" : t;
+            return c > 0 ? `${name} (${c})` : name;
+          };
+          return (["findings", "vulns", "assistant", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const)
+            .filter((t) => t !== "atm" || sourceType === "atm")
+            .map((t) => (
+              <button key={t} onClick={() => setTab(t)}
+                className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{tabLabel(t)}</button>
+            ));
+        })())}
       </div>
       <div className="flex gap-2 flex-wrap">
         <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={cat} onChange={(e) => setCat(e.target.value)}>
           <option value="all">all categories</option>
           {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sev} onChange={(e) => setSev(e.target.value)}>
+          <option value="all">all severities</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="value">sort: value</option>
+          <option value="severity">sort: severity</option>
+          <option value="confidence">sort: confidence</option>
+          <option value="plugin">sort: plugin</option>
         </select>
         <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]" placeholder="filter..." value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
@@ -643,6 +688,31 @@ export default function RunPage({ params }: { params: { id: string } }) {
               onClick={() => { setHighValueOnly(false); setNoiseOpen(true); }}
               className="chip px-4 py-2.5 min-h-[44px] text-sm text-slate-300">
               Show all
+            </button>
+            <button
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(filtered, null, 1)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = `findings-${id}.json`;
+                a.click();
+              }}
+              className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300">
+              Export JSON
+            </button>
+            <button
+              onClick={() => {
+                const esc = (s: any) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+                const rows = [["severity", "category", "key", "value", "plugin", "confidence", "exploitability"]];
+                filtered.forEach((f) => rows.push([sevOf(f), f.category, f.key, f.value, f.plugin, f.confidence, exploitOf(f)].map(esc)));
+                const blob = new Blob([rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = `findings-${id}.csv`;
+                a.click();
+              }}
+              className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300">
+              Export CSV
             </button>
           </div>
         </div>
