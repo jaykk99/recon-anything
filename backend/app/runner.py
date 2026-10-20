@@ -781,7 +781,7 @@ async def queue_worker_loop() -> None:
             await asyncio.sleep(0.5 if did_work else 2.0)
 
 
-def _enqueue_jobs(session, run_id: str, plugins, trobj) -> int:
+def _enqueue_jobs(session, run_id: str, plugins, trobj, bounty: bool = False) -> int:
     """Insert one PluginJob per (plugin x target) pair. Returns job count."""
     jobs = [PluginJob(run_id=run_id, target_id=t.id, plugin_id=p.id,
                       phase=getattr(p, "phase", 1),
@@ -960,7 +960,7 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                 "source_type": source_type}
         run.summary = {**(run.summary or {}), "queue_meta": meta}
         session.commit()
-        n_jobs = _enqueue_jobs(session, run_id, plugins, trobj)
+        n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty)
 
         await _emit(run_id, "run_start",
                     {"run_id": run_id,
