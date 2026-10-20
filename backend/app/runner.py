@@ -59,11 +59,11 @@ async def _emit(run_id: str, event: str, data: Dict):
     # broke live UI updates. A DB failure must never break a scan.
     # Self-healing: if the table is missing (wiped DB), recreate and retry.
     try:
-        _persist_event(run_id, event, data)
+        await asyncio.to_thread(_persist_event, run_id, event, data)
     except Exception:
         try:
             init_db()
-            _persist_event(run_id, event, data)
+            await asyncio.to_thread(_persist_event, run_id, event, data)
         except Exception:
             pass
 
@@ -106,38 +106,42 @@ async def subscribe(run_id: str) -> AsyncIterator[str]:
         yield msg
 
 
-async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
-    last_seq = 0
+def _fetch_events_sync(run_id: str, after_seq: int) -> list:
+    """Sync DB read of run_events after a sequence number. Called via
+    asyncio.to_thread so the blocking SQLAlchemy call never stalls the
+    event loop (it was starving the SSE stream into total silence)."""
     session = get_session()
     try:
-        rows = (session.query(RunEvent).filter_by(run_id=run_id)
+        rows = (session.query(RunEvent)
+                .filter(RunEvent.run_id == run_id,
+                        RunEvent.seq > after_seq)
                 .order_by(RunEvent.seq).all())
-        for r in rows:
-            last_seq = r.seq
-            yield _sse(r.event, r.data or {})
-            if r.event == RUN_DONE:
-                return
+        # Detach plain data before the session closes.
+        return [(r.seq, r.event, r.data or {}) for r in rows]
     finally:
         session.close()
+
+
+async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
+    last_seq = 0
+    rows = await asyncio.to_thread(_fetch_events_sync, run_id, 0)
+    for seq, event, data in rows:
+        last_seq = seq
+        yield _sse(event, data)
+        if event == RUN_DONE:
+            return
     # Follow live: poll for new rows. 1s granularity is plenty "live"
     # for the UI and is correct across processes.
     idle = 0
     while True:
         await asyncio.sleep(1)
-        session = get_session()
-        try:
-            rows = (session.query(RunEvent)
-                    .filter(RunEvent.run_id == run_id,
-                            RunEvent.seq > last_seq)
-                    .order_by(RunEvent.seq).all())
-        finally:
-            session.close()
+        rows = await asyncio.to_thread(_fetch_events_sync, run_id, last_seq)
         if rows:
             idle = 0
-            for r in rows:
-                last_seq = r.seq
-                yield _sse(r.event, r.data or {})
-                if r.event == RUN_DONE:
+            for seq, event, data in rows:
+                last_seq = seq
+                yield _sse(event, data)
+                if event == RUN_DONE:
                     return
         else:
             idle += 1
