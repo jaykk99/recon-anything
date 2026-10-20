@@ -522,16 +522,25 @@ def _attach_poi_meta(session, run_id: str, target) -> None:
 
 
 async def _run_one_job(job_id: int) -> None:
-    """Run a single claimed job: plugin -> findings -> DB -> events."""
+    """Run a single claimed job: plugin -> findings -> DB -> events.
+
+    The DB session is NOT held across plugin execution. Plugins run
+    network scans that can take minutes; holding a pooled connection for
+    the whole run starved the pool (16 concurrent jobs vs 15 pooled
+    connections) and every API request timed out waiting 30s for a
+    connection. Load -> close -> run -> persist on a fresh session.
+    """
+    # Phase 1: load everything needed, then release the connection.
     session = get_session()
     try:
         job = session.query(PluginJob).filter_by(id=job_id).first()
         if job is None or job.status != "running":
             return
         run_id = job.run_id
+        plugin_id = job.plugin_id
         run = session.query(Run).filter_by(id=run_id).first()
         trow = session.query(TargetRow).filter_by(id=job.target_id).first()
-        plugin_cls = discover().get(job.plugin_id)
+        plugin_cls = discover().get(plugin_id)
         if run is None or trow is None or plugin_cls is None:
             job.status = "failed"
             job.finished_at = dt.datetime.now(dt.timezone.utc)
@@ -540,15 +549,23 @@ async def _run_one_job(job_id: int) -> None:
                           "findings": 0, "ms": 0}
             session.commit()
             return
-        plugin = plugin_cls()
-        ctx = _get_run_ctx(run_id)
         target = Target(raw=trow.raw, type=trow.type,
                         normalized=trow.normalized)
         target.id = trow.id
         if target.type == "poi":
             _attach_poi_meta(session, run_id, target)
-        clock = _run_clocks.get(run_id, time.monotonic())
-        deadline = clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+    # Phase 2: run the plugin with no DB connection held.
+    plugin = plugin_cls()
+    ctx = _get_run_ctx(run_id)
+    clock = _run_clocks.get(run_id, time.monotonic())
+    deadline = clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
+    try:
         if plugin.accepts and target.type not in plugin.accepts:
             result = plugin._skipped(
                 f"not applicable to target type '{target.type}'")
@@ -559,7 +576,30 @@ async def _run_one_job(job_id: int) -> None:
                          "target": target.normalized})
             result = await _run_plugin(plugin, target, ctx,
                                        deadline=deadline)
-        # Persist + stream findings the moment the plugin finishes.
+    except Exception as e:
+        session = get_session()
+        try:
+            job = session.query(PluginJob).filter_by(id=job_id).first()
+            if job is not None and job.status == "running":
+                job.status = "failed"
+                job.finished_at = dt.datetime.now(dt.timezone.utc)
+                job.result = {"status": "failed",
+                              "reason": (f"worker error: "
+                                         f"{type(e).__name__}: {str(e)[:150]}"),
+                              "findings": 0, "ms": 0}
+                session.commit()
+        except Exception:
+            pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+        return
+
+    # Phase 3: persist findings + job outcome on a fresh session.
+    session = get_session()
+    try:
         rows = [_row_to_finding(f, run_id, target.id)
                 for f in result.findings]
         for r in rows:
@@ -586,40 +626,29 @@ async def _run_one_job(job_id: int) -> None:
                          "source_url": f.source_url, "evidence": f.evidence,
                          "confidence": f.confidence, "passive": f.passive,
                          "target": target.normalized})
+        job = session.query(PluginJob).filter_by(id=job_id).first()
         st = (result.status.value if hasattr(result.status, "value")
               else str(result.status))
-        job.status = "done" if st in ("ok", "skipped") else "failed"
-        job.finished_at = dt.datetime.now(dt.timezone.utc)
-        job.result = {"status": st, "reason": result.reason,
-                      "findings": len(rows),
-                      "ms": result.duration_ms or 0}
-        session.commit()
-        await _emit(run_id, "plugin_done",
-                    {"plugin": plugin.id, "status": st,
-                     "reason": result.reason, "findings": len(rows),
-                     "ms": result.duration_ms or 0})
+        if job is not None:
+            job.status = "done" if st in ("ok", "skipped") else "failed"
+            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            job.result = {"status": st, "reason": result.reason,
+                          "findings": len(rows),
+                          "ms": result.duration_ms or 0}
+            session.commit()
         counts = _job_counts(session, run_id)
-        await _emit(run_id, "progress",
-                    {"done": counts["done"], "total": counts["total"],
-                     "plugin": plugin.id, "target": target.normalized})
-    except Exception as e:
-        try:
-            job = session.query(PluginJob).filter_by(id=job_id).first()
-            if job is not None and job.status == "running":
-                job.status = "failed"
-                job.finished_at = dt.datetime.now(dt.timezone.utc)
-                job.result = {"status": "failed",
-                              "reason": (f"worker error: "
-                                         f"{type(e).__name__}: {str(e)[:150]}"),
-                              "findings": 0, "ms": 0}
-                session.commit()
-        except Exception:
-            pass
     finally:
         try:
             session.close()
         except Exception:
             pass
+    await _emit(run_id, "plugin_done",
+                {"plugin": plugin.id, "status": st,
+                 "reason": result.reason, "findings": len(rows),
+                 "ms": result.duration_ms or 0})
+    await _emit(run_id, "progress",
+                {"done": counts["done"], "total": counts["total"],
+                 "plugin": plugin.id, "target": target.normalized})
 
 
 async def _finalize_run(run_id: str) -> bool:

@@ -213,7 +213,17 @@ class PluginJob(Base):
 
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args=connect_args,
+                           pool_pre_ping=True)
+else:
+    # Postgres: the default pool (5 + 10 overflow, 30s wait) starved under
+    # the queue worker's concurrency and every API request 500'd after a
+    # 30s pool wait. Size the pool for the worker + API + SSE load and
+    # fail faster when it is genuinely exhausted.
+    engine = create_engine(DATABASE_URL, connect_args=connect_args,
+                           pool_pre_ping=True, pool_size=20, max_overflow=20,
+                           pool_timeout=10, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
