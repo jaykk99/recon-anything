@@ -785,7 +785,7 @@ def _enqueue_jobs(session, run_id: str, plugins, trobj) -> int:
     """Insert one PluginJob per (plugin x target) pair. Returns job count."""
     jobs = [PluginJob(run_id=run_id, target_id=t.id, plugin_id=p.id,
                       phase=getattr(p, "phase", 1),
-                      priority=priority_for(p.id), status="queued")
+                      priority=priority_for(p.id, bounty=bounty), status="queued")
             for t in trobj for p in plugins]
     if jobs:
         session.bulk_save_objects(jobs)
@@ -908,7 +908,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                       plugin_ids: Optional[List[str]] = None,
                       module_overrides: Optional[Dict[str, str]] = None,
                       keys: Optional[Dict[str, str]] = None,
-                      source_type: str = "website"):
+                      source_type: str = "website",
+                      bounty: bool = False):
     """Enqueue-only: insert every (plugin x target) job into Postgres and
     return immediately. The queue worker (in-process and/or standalone on
     Railway) claims and runs them; a restart resumes from the queue
@@ -999,8 +1000,9 @@ async def launch_run(run_id: str, targets_raw: str, mode: str,
                    plugin_ids: Optional[List[str]] = None,
                    module_overrides: Optional[Dict[str, str]] = None,
                    keys: Optional[Dict[str, str]] = None,
-                   source_type: str = "website") -> asyncio.Task:
+                   source_type: str = "website",
+                   bounty: bool = False) -> asyncio.Task:
     """Fire-and-forget: start execute_run as a background task."""
     return asyncio.create_task(
         execute_run(run_id, targets_raw, mode, plugin_ids, module_overrides,
-                    keys, source_type))
+                    keys, source_type, bounty))

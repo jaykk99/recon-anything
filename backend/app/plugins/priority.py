@@ -57,8 +57,25 @@ LOW_PRIORITY = {
 }
 
 
-def priority_for(plugin_id: str) -> int:
-    """1 = HIGH (run first), 2 = MEDIUM (default), 3 = LOW (run last)."""
+# Bounty mode (Jay's order 2026-10-19): high-impact vuln classes run FIRST.
+# These find the big stuff - RCE/SQLi/SSTI/SSRF/XXE/auth/IDOR/secrets.
+BOUNTY_BOOST = {
+    "sqli", "nosqli", "ssti", "ssrf", "rce", "cmdi", "xxe", "xpathi",
+    "idor", "bola", "idor_comparator", "auth", "auth_surface", "authscan",
+    "traversal", "logici", "deserialization",
+    "js_secrets", "secrets", "keyleak", "gitleaks_scan", "creds",
+    "graphql", "graphql_deep", "apidiscover", "param_discovery",
+    "endpointauth", "forms", "jsdeep",
+}
+
+
+def priority_for(plugin_id: str, bounty: bool = False) -> int:
+    """1 = HIGH (run first), 2 = MEDIUM (default), 3 = LOW (run last).
+
+    In bounty mode, high-impact vuln classes jump the queue.
+    """
+    if bounty and plugin_id in BOUNTY_BOOST:
+        return HIGH
     if plugin_id in HIGH_PRIORITY:
         return HIGH
     if plugin_id in LOW_PRIORITY:

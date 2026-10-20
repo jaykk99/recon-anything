@@ -306,6 +306,13 @@ def api_graph(run_id: str):
 
 @app.get("/api/runs/{run_id}/apimap", dependencies=[Depends(gate)])
 def api_apimap(run_id: str):
+    """Application attack-surface map, grouped.
+
+    Returns the legacy flat ``entries`` (backward compatible) plus
+    ``groups``: pages, api_routes, forms, js_endpoints, websockets,
+    graphql. Each entry: {url, method, status, auth, params, note}.
+    """
+    from urllib.parse import urlparse
     session = get_session()
     try:
         rows = session.query(Finding).filter_by(run_id=run_id).all()
@@ -322,7 +329,109 @@ def api_apimap(run_id: str):
         for f in rows:
             if f.key == "api_map_entries" and f.raw and isinstance(f.raw, dict):
                 entries.update(f.raw.get("map", {}))
-        return {"entries": entries, "count": len(entries)}
+
+        def _entry(url, method="", status="", auth="", params=None, note=""):
+            return {"url": url, "method": method, "status": status,
+                    "auth": auth, "params": params or [], "note": note or ""}
+
+        def _params_of(f):
+            ev = f.evidence if isinstance(f.evidence, dict) else {}
+            p = ev.get("params") or ev.get("parameters") or []
+            return [str(x)[:60] for x in p][:20] if isinstance(p, list) else []
+
+        def _auth_of(f):
+            ev = f.evidence if isinstance(f.evidence, dict) else {}
+            for k in ("auth", "auth_required", "verdict"):
+                v = ev.get(k)
+                if v:
+                    return str(v)[:60]
+            return ""
+
+        groups = {"pages": [], "api_routes": [], "forms": [],
+                  "js_endpoints": [], "websockets": [], "graphql": []}
+        seen = set()
+
+        def _add(group, url, **kw):
+            if not url or url in seen:
+                return
+            seen.add(url)
+            groups[group].append(_entry(url, **kw))
+
+        for f in rows:
+            key, val = f.key or "", f.value or ""
+            ev = f.evidence if isinstance(f.evidence, dict) else {}
+            # --- GraphQL (wire graphql_deep output into the map) ---
+            if key.startswith("graphql"):
+                if key in ("graphql_endpoint", "graphql_deep", "graphql",
+                           "graphql_introspection", "graphql_schema_enum"):
+                    fields = ev.get("fields") or ev.get("operations") or []
+                    _add("graphql", val or ev.get("endpoint", ""),
+                         note=f"{key}: {len(fields)} fields" if fields else key,
+                         params=[str(x)[:60] for x in fields][:25] if isinstance(fields, list) else [],
+                         auth=_auth_of(f))
+                continue
+            # --- forms (forms.py plugin) ---
+            if key in ("form_inventory", "interesting_form"):
+                for form in (ev.get("forms") or []):
+                    if not isinstance(form, dict):
+                        continue
+                    action = form.get("action", "")
+                    inputs = [i.get("name", "") for i in
+                              (form.get("inputs") or []) if isinstance(i, dict)]
+                    _add("forms", action or form.get("page", ""),
+                         method=str(form.get("method", "GET")).upper(),
+                         params=[str(x) for x in inputs if x][:20],
+                         note=f"on {form.get('page', '')}"[:120],
+                         auth=_auth_of(f))
+                if key == "interesting_form" and val and val not in seen:
+                    _add("forms", val, note=key, auth=_auth_of(f))
+                continue
+            # --- JS-discovered endpoints ---
+            if key in ("js_endpoint", "endpoint"):
+                url = val
+                if url.startswith(("ws://", "wss://")):
+                    _add("websockets", url, note=f.source or "")
+                else:
+                    _add("js_endpoints", url, params=_params_of(f),
+                         note=f.source or "", auth=_auth_of(f))
+                continue
+            # --- endpoint auth probe results ---
+            if key in ("unauthenticated_api", "auth_required_endpoint",
+                       "endpoint_error_leak"):
+                _add("api_routes", val, status=str(ev.get("status", "")),
+                     auth=ev.get("verdict", "") or _auth_of(f),
+                     params=_params_of(f), note=key)
+                continue
+            # --- API map entries from apidiscover ---
+            if f.category == "api" and key in ("api_route", "api_pattern",
+                                               "api_map_entries"):
+                _add("api_routes", val, params=_params_of(f),
+                     note=key, auth=_auth_of(f))
+                continue
+            # --- crawled pages ---
+            if key in ("page", "crawled_page", "crawl_summary"):
+                for u in (ev.get("pages") or ([val] if val.startswith("http") else [])):
+                    _add("pages", u, note=key)
+                continue
+
+        # fold legacy flat entries into api_routes (deduped via seen)
+        for url, meta in entries.items():
+            meta = meta if isinstance(meta, dict) else {}
+            if url.startswith(("ws://", "wss://")):
+                _add("websockets", url, note=str(meta.get("note", "")))
+            elif "/graphql" in url.lower():
+                _add("graphql", url, note=str(meta.get("note", "")))
+            else:
+                _add("api_routes", url,
+                     method=", ".join(meta.get("methods", [])) if isinstance(
+                         meta.get("methods"), list) else "",
+                     status=str(meta.get("status", "")),
+                     auth=str(meta.get("auth", "")),
+                     note=str(meta.get("note", "")))
+
+        counts = {g: len(v) for g, v in groups.items()}
+        return {"entries": entries, "count": len(entries),
+                "groups": groups, "counts": counts}
     finally:
         session.close()
 

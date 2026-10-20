@@ -26,18 +26,29 @@ def _mask(value: str) -> str:
 
 def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict]:
     rows: List[Finding] = session.query(Finding).filter_by(run_id=run_id).all()
+    # Impact scoring is read-time so old runs get it too (never raises).
+    try:
+        from .prioritizer import annotate_impact
+    except Exception:
+        annotate_impact = None
     out = []
     for f in rows:
         v = f.value
         if not show_secrets and f.key in SECRET_KEYS:
             v = _mask(v)
-        out.append({"id": f.id, "target_id": f.target_id, "plugin": f.plugin_id,
-                    "category": f.category, "key": f.key, "value": v,
-                    "source": f.source, "source_url": f.source_url,
-                    "evidence": f.evidence,
-                    "confidence": f.confidence, "passive": f.passive,
-                    "bounty_value": getattr(f, "bounty_value", "low"),
-                    "first_seen": f.first_seen.isoformat() if f.first_seen else None})
+        row = {"id": f.id, "target_id": f.target_id, "plugin": f.plugin_id,
+               "category": f.category, "key": f.key, "value": v,
+               "source": f.source, "source_url": f.source_url,
+               "evidence": f.evidence,
+               "confidence": f.confidence, "passive": f.passive,
+               "bounty_value": getattr(f, "bounty_value", "low"),
+               "first_seen": f.first_seen.isoformat() if f.first_seen else None}
+        out.append(row)
+    if annotate_impact:
+        try:
+            annotate_impact(out)
+        except Exception:
+            pass
     return out
 
 
