@@ -81,6 +81,7 @@ export async function GET(
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      "X-SSE-Route": "nextjs-proxy-v1",
     },
   });
 }
