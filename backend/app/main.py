@@ -21,10 +21,12 @@ Single-user gate: if RECON_ACCESS_CODE is set, every /api route except
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import re
 import uuid
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -204,6 +206,7 @@ class RunIn(BaseModel):
     plugins: Optional[List[str]] = None
     module_overrides: Optional[Dict[str, str]] = None
     source_type: str = "website"  # website | bank | atm
+    bounty: bool = False  # bounty mode: prioritize high-impact vuln classes
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
@@ -218,7 +221,8 @@ async def api_start_run(body: RunIn):
     session = get_session()
     try:
         session.add(Run(id=run_id, mode=body.mode, status="running",
-                        source_type=body.source_type))
+                        source_type=body.source_type,
+                        summary={"bounty": bool(body.bounty)}))
         session.commit()
         keys = load_all(session)
     finally:
@@ -232,7 +236,7 @@ async def api_start_run(body: RunIn):
         overrides["atm"] = "authorized"
     await launch_run(run_id, body.targets, body.mode,
                      body.plugins, overrides, keys,
-                     source_type=body.source_type)
+                     source_type=body.source_type, bounty=body.bounty)
     return {"run_id": run_id}
 
 
@@ -275,6 +279,7 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
                     "source_type": getattr(run, "source_type", None) or "website",
+                    "bounty": bool((run.summary or {}).get("bounty")),
                     "created_at": run.created_at.isoformat() if run.created_at else None,
                     "finished_at": run.finished_at.isoformat() if run.finished_at else None,
                     "summary": run.summary or {}},
@@ -975,3 +980,81 @@ def api_sched_del(sid: str):
         return {"ok": True}
     finally:
         session.close()
+
+
+# -- breach watch ------------------------------------------------------------
+# Defensive: Jay's own addresses checked against public breach dumps
+# (XposedOrNot, keyless). Never attempts logins.
+
+_BW_DIR = Path(__file__).resolve().parent
+_BW_EMAILS_FILE = _BW_DIR / "breachwatch_emails.json"
+_BW_CACHE_FILE = _BW_DIR / "breachwatch_cache.json"
+
+
+def _bw_load_emails() -> List[Dict]:
+    try:
+        data = json.loads(_BW_EMAILS_FILE.read_text())
+        out = []
+        for e in (data.get("emails") or []):
+            addr = str(e.get("email", "")).strip().lower()
+            if "@" in addr:
+                out.append({"email": addr,
+                            "label": str(e.get("label", ""))})
+        return out
+    except Exception:
+        return []
+
+
+def _bw_load_cache() -> Dict:
+    try:
+        return json.loads(_BW_CACHE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _bw_save_cache(cache: Dict) -> None:
+    try:
+        _BW_CACHE_FILE.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+
+class BreachCheckIn(BaseModel):
+    email: str
+
+
+@app.get("/api/breachwatch", dependencies=[Depends(gate)])
+def api_breachwatch_list():
+    emails = _bw_load_emails()
+    cache = _bw_load_cache()
+    return {"emails": [
+        {"email": e["email"], "label": e["label"],
+         "cached": cache.get(e["email"])} for e in emails],
+        "configured": bool(emails),
+        "hint": ("Copy backend/app/breachwatch_emails.json.example to "
+                 "breachwatch_emails.json and add your own addresses.")
+        if not emails else ""}
+
+
+@app.post("/api/breachwatch/check", dependencies=[Depends(gate)])
+async def api_breachwatch_check(body: BreachCheckIn):
+    from .plugins.breachwatch import check_email_breaches
+    email = (body.email or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="not a valid email")
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as http:
+        status, breaches, note = await check_email_breaches(email, http)
+    result = {
+        "email": email,
+        "status": status,  # breached | clean | rate_limited | unreachable | invalid
+        "breaches": breaches,
+        "note": note,
+        "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "guidance": ("If breached: change that password everywhere you reused "
+                     "it, starting with email and banking. Enable 2FA."),
+    }
+    cache = _bw_load_cache()
+    cache[email] = result
+    _bw_save_cache(cache)
+    return result

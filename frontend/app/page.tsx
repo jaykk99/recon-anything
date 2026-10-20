@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, getCode, setCode, clearCode, verifyCode, PluginInfo, ClassifyResult } from "../lib/api";
+import BreachWatch from "./breachwatch";
 
 const GROUPS: Record<string, string> = {
   network: "Network / DNS", web: "Web / Frontend", api: "API / Backend",
@@ -221,6 +222,8 @@ export default function Home() {
           </button>
         </div>
       </div>
+
+      <BreachWatch />
 
       <div className="card p-5">
         <h2 className="font-semibold mb-3">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>

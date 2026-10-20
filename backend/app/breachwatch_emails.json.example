@@ -1,0 +1,1 @@
+{"_note":"Copy to breachwatch_emails.json and put YOUR OWN addresses here. breachwatch_emails.json is git-ignored and never committed.","emails":[{"email":"you@example.com","label":"Personal"},{"email":"business1@example.com","label":"Business 1"},{"email":"business2@example.com","label":"Business 2"}]}

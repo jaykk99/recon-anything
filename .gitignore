@@ -9,3 +9,5 @@ evidence/
 .DS_Store
 frontend/tsconfig.tsbuildinfo
 *.db*
+backend/app/breachwatch_emails.json
+backend/app/breachwatch_cache.json
