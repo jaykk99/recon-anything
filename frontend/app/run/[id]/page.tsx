@@ -95,6 +95,12 @@ function valueRank(f: Finding): number {
 function sortByValue(list: Finding[]): Finding[] {
   return [...list].sort((a, b) => valueRank(a) - valueRank(b) || b.confidence - a.confidence);
 }
+// bounty-grade impact: backend stamps evidence.impact (1-10).
+// "Big stuff only" = impact >= 7. "sort: impact" ranks by impact * confidence.
+function impactOf(f: Finding): number {
+  const v = Number(f.evidence?.impact ?? 0);
+  return isNaN(v) ? 0 : v;
+}
 // human label for grouped noise: "520 subdomains"
 function groupLabel(key: string, n: number): string {
   const map: Record<string, string> = {
@@ -186,6 +192,10 @@ function FindingCard({ f, open, onToggle }: { f: Finding; open: boolean; onToggl
             </span>
           )}
           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(sev)}`}>{sev.toUpperCase()}</span>
+          {impactOf(f) > 0 && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border text-amber-300 border-amber-500/40 bg-amber-500/10"
+              title="bounty impact score, 1-10">impact {impactOf(f)}/10</span>
+          )}
           <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
           <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
           <span className="text-slate-500 text-xs">{open ? "▲" : "▼"}</span>
@@ -245,6 +255,18 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [q, setQ] = useState("");
   // high-value findings view: weaponized/high first, noise collapsed
   const [highValueOnly, setHighValueOnly] = useState(false);
+  // big stuff only: findings with evidence.impact >= 7
+  const [bigOnly, setBigOnly] = useState(false);
+  // bounty mode: run created with bounty=true. Once detected, default sort
+  // to "impact" (once only, so a manual sort change is never clobbered).
+  const [bounty, setBounty] = useState(false);
+  const bountyInit = useRef(false);
+  const applyBounty = (b: any) => {
+    if (b === true) {
+      setBounty(true);
+      if (!bountyInit.current) { bountyInit.current = true; setSortBy("impact"); }
+    }
+  };
   const [shownTop, setShownTop] = useState(50);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [groupShown, setGroupShown] = useState<Record<string, number>>({});
@@ -252,7 +274,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // reset paging when filters change
   useEffect(() => {
     setShownTop(50); setGroupShown({}); setOpenGroups({}); setExpanded({});
-  }, [q, cat, sev, sortBy, highValueOnly]);
+  }, [q, cat, sev, sortBy, highValueOnly, bigOnly]);
   // progress + ETA
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [estimatedS, setEstimatedS] = useState(0);
@@ -309,6 +331,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       if (d.estimated_s) setEstimatedS(d.estimated_s);
       if (d.source_type) setSourceType(d.source_type);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
+      applyBounty(d.bounty);
     });
     on("progress", (e) => {
       const d = JSON.parse(e.data);
@@ -362,6 +385,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
     function applyPoll(d: any): boolean {
       if (d.run?.status === "running" && d.progress) {
         const p = d.progress;
+        applyBounty(d.run?.bounty);
         if (typeof p.total === "number" && p.total > 0)
           setProgress({ done: p.done || 0, total: p.total });
         if (typeof p.eta_s === "number") setEtaS(p.eta_s);
@@ -390,6 +414,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       if (d.run?.status === "done" || d.run?.status === "failed") {
         setStatus(d.run.status); setFindings(d.findings || []); setSummary(d.run.summary);
         setTargets(d.targets || []);
+        applyBounty(d.run?.bounty);
         done.current = true;
         // keep the dedupe set in sync so late SSE events do not duplicate
         (d.findings || []).forEach((f: any) => {
@@ -484,15 +509,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const filtered = findings.filter((f) =>
     (cat === "all" || f.category === cat) &&
     (sev === "all" || normSev(f) === sev || (sev === "critical" && sevOf(f) === "critical")) &&
+    (!bigOnly || impactOf(f) >= 7) &&
     (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "") + (f.evidence?.exploitability || "")).toLowerCase().includes(q.toLowerCase())));
 
-  // sort: value (default rank), severity, plugin, confidence
+  // sort: value (default rank), severity, plugin, confidence, impact
   const sortFindings = (list: Finding[]) => {
     const sevRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
     const arr = [...list];
     if (sortBy === "severity") arr.sort((a, b) => (sevRank[sevOf(a)] ?? 4) - (sevRank[sevOf(b)] ?? 4));
     else if (sortBy === "plugin") arr.sort((a, b) => (a.plugin || "").localeCompare(b.plugin || ""));
     else if (sortBy === "confidence") arr.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    else if (sortBy === "impact") arr.sort((a, b) => (impactOf(b) * (b.confidence || 0)) - (impactOf(a) * (a.confidence || 0)));
     return arr;
   };
 
@@ -544,6 +571,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-mono text-sm text-sky-300 break-all">run {id}</h1>
           <span className={`text-xs px-2 py-1 rounded min-h-[28px] flex items-center ${status === "done" ? "pill-ok" : status === "failed" ? "pill-err" : "pill-info"}`}>{status}</span>
+          {bounty && (
+            <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-amber-900 text-amber-200 border border-amber-700"
+              title="bounty mode: high-impact vuln classes prioritized, findings sorted by impact">
+              BOUNTY MODE
+            </span>
+          )}
           <span className="text-xs text-slate-500">{findings.length} findings</span>
         </div>
         {/* live batch panel: 5 at a time, visible batches */}
@@ -683,10 +716,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
           <option value="medium">medium</option>
           <option value="low">low</option>
         </select>
+        <button
+          onClick={() => setBigOnly((v) => !v)}
+          title="only findings with impact >= 7"
+          className={`chip px-4 py-2.5 min-h-[44px] text-sm whitespace-nowrap ${bigOnly ? "bg-amber-900 text-amber-200 border border-amber-700" : "text-slate-300"}`}>
+          {bigOnly ? "✓ Big stuff only" : "Big stuff only"}
+        </button>
         <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
           <option value="value">sort: value</option>
           <option value="severity">sort: severity</option>
           <option value="confidence">sort: confidence</option>
+          <option value="impact">sort: impact</option>
           <option value="plugin">sort: plugin</option>
         </select>
         <input className="input text-sm px-3 py-2.5 min-h-[44px] flex-1 min-w-[140px]" placeholder="filter..." value={q} onChange={(e) => setQ(e.target.value)} />
@@ -2181,29 +2221,133 @@ function GraphView({ graph }: { graph: any }) {
   );
 }
 
+// ---------- attack surface map: grouped by kind, collapsible, 50-at-a-time ----------
+interface ApiMapEntry {
+  url: string; method?: string; status?: number | string;
+  auth?: string | boolean; params?: string[]; note?: string;
+}
+// render order + display labels for the backend's grouped shape
+const APIMAP_GROUPS: [string, string][] = [
+  ["api_routes", "API routes"],
+  ["pages", "Pages"],
+  ["forms", "Forms"],
+  ["js_endpoints", "JS-discovered endpoints"],
+  ["websockets", "WebSockets"],
+  ["graphql", "GraphQL"],
+];
+function normalizeApiEntry(e: any): ApiMapEntry {
+  const out: ApiMapEntry = { url: String(e?.url ?? "") };
+  if (e?.method != null && e.method !== "") out.method = String(e.method);
+  if (e?.status != null && e.status !== "") out.status = e.status;
+  if (e?.auth != null && e.auth !== "" && e.auth !== false) out.auth = e.auth;
+  if (Array.isArray(e?.params) && e.params.length > 0) out.params = e.params.map(String);
+  if (e?.note != null && e.note !== "") out.note = String(e.note);
+  return out;
+}
+// Backend may return the new grouped shape {groups:{...},counts:{...}} or the
+// old flat shape {entries:{url:{methods,status,auth,note}}} (or an entries array).
+function normalizeApiMap(data: any): { key: string; label: string; items: ApiMapEntry[] }[] {
+  const g = data?.groups;
+  if (g && typeof g === "object" && !Array.isArray(g)) {
+    const groups: { key: string; label: string; items: ApiMapEntry[] }[] = [];
+    for (const [key, label] of APIMAP_GROUPS) {
+      if (Array.isArray(g[key])) groups.push({ key, label, items: g[key].map(normalizeApiEntry) });
+    }
+    // any extra group keys the backend adds later still render
+    for (const k of Object.keys(g)) {
+      if (!APIMAP_GROUPS.some(([gk]) => gk === k) && Array.isArray(g[k]))
+        groups.push({ key: k, label: k.replace(/_/g, " "), items: g[k].map(normalizeApiEntry) });
+    }
+    return groups;
+  }
+  // old flat shape
+  const entries = data?.entries;
+  let items: ApiMapEntry[] = [];
+  if (Array.isArray(entries)) {
+    items = entries.map((e: any) =>
+      typeof e === "string" ? { url: e } : normalizeApiEntry({ url: e?.url ?? e?.path, method: e?.method, status: e?.status, auth: e?.auth, params: e?.params, note: e?.note }));
+  } else if (entries && typeof entries === "object") {
+    items = Object.entries(entries).map(([url, v]: any) => normalizeApiEntry({
+      url, method: (v?.methods || []).join(" ") || v?.method,
+      status: v?.status, auth: v?.auth, params: v?.params, note: v?.note,
+    }));
+  }
+  return items.length > 0 ? [{ key: "endpoints", label: "Endpoints", items }] : [];
+}
+function statusBadgeClass(s: number | string): string {
+  const n = parseInt(String(s), 10);
+  if (!isNaN(n)) {
+    if (n < 300) return "text-green-300 border-green-700 bg-green-950/60";
+    if (n < 400) return "text-sky-300 border-sky-700 bg-sky-950/60";
+    if (n < 500) return "text-amber-300 border-amber-700 bg-amber-950/60";
+    return "text-red-300 border-red-700 bg-red-950/60";
+  }
+  return "text-slate-400 border-slate-700 bg-slate-800/60";
+}
 function ApiMapView({ data }: { data: any }) {
-  const [shown, setShown] = useState(50);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [groupShown, setGroupShown] = useState<Record<string, number>>({});
   if (!data) return <div className="card p-4 text-sm text-slate-500">API map builds when the run finishes...</div>;
-  const entries = Object.entries(data.entries || {});
+  const groups = normalizeApiMap(data).filter((g) => g.items.length > 0);
+  if (groups.length === 0) return <div className="card p-4 text-sm text-slate-500">No attack-surface entries found.</div>;
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
   return (
     <div className="card p-4">
-      <h2 className="font-semibold text-sky-300 mb-3">API map <span className="text-slate-500 text-xs">({entries.length})</span></h2>
+      <h2 className="font-semibold text-sky-300 mb-1">Attack surface <span className="text-slate-500 text-xs">({total} endpoints)</span></h2>
+      <p className="text-xs text-slate-500 mb-3">Every reachable surface grouped by kind. Tap a group to expand.</p>
       <div className="space-y-2">
-        {entries.slice(0, shown).map(([path, v]: any, i: number) => (
-          <div key={i} className="bg-slate-800/50 rounded-lg p-3">
-            <code className="text-amber-300 text-xs font-mono break-all block">{path}</code>
-            <div className="flex gap-3 text-xs text-slate-500 mt-1 flex-wrap">
-              <span>{(v.methods || []).join(", ")}</span>
-              <span>{String(v.status || "")}</span>
-              <span className="break-words">{String(v.auth || v.note || "")}</span>
+        {groups.map((g) => {
+          const isOpen = !!openGroups[g.key];
+          const vis = groupShown[g.key] || 50;
+          return (
+            <div key={g.key} className="rounded-lg border border-slate-700/60 bg-slate-800/40">
+              <button
+                className="w-full text-left min-h-[48px] px-3 py-2.5 flex items-center gap-2 flex-wrap"
+                onClick={() => setOpenGroups((o) => ({ ...o, [g.key]: !o[g.key] }))}>
+                <span className="text-sm font-medium text-slate-200">{g.label} <span className="text-slate-400">({g.items.length})</span></span>
+                <span className="text-slate-500 text-xs ml-auto">{isOpen ? "▲" : "▼"}</span>
+              </button>
+              {isOpen && (
+                <div className="px-3 pb-3 space-y-1.5">
+                  {g.items.slice(0, vis).map((e, i) => (
+                    <div key={i} className="bg-slate-900/60 rounded-lg p-2.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {e.method && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border text-sky-300 border-sky-700 bg-sky-950/60 font-mono whitespace-nowrap">
+                            {e.method}
+                          </span>
+                        )}
+                        {e.status != null && (
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border whitespace-nowrap ${statusBadgeClass(e.status)}`}>
+                            {String(e.status)}
+                          </span>
+                        )}
+                        {e.auth != null && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border text-purple-300 border-purple-700 bg-purple-950/60 whitespace-nowrap">
+                            {typeof e.auth === "boolean" ? "auth required" : `auth: ${e.auth}`}
+                          </span>
+                        )}
+                        <code className="text-amber-300 text-xs font-mono break-all">{e.url}</code>
+                      </div>
+                      {e.params && e.params.length > 0 && (
+                        <p className="text-[11px] text-slate-500 mt-1">params: <code className="font-mono text-slate-300">{e.params.join(", ")}</code></p>
+                      )}
+                      {e.note && <p className="text-[11px] text-slate-500 mt-0.5 break-words">{e.note}</p>}
+                    </div>
+                  ))}
+                  {g.items.length > vis && (
+                    <button
+                      className="w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
+                      onClick={() => setGroupShown((s) => ({ ...s, [g.key]: (s[g.key] || 50) + 50 }))}>
+                      show more ({g.items.length - vis} remaining)
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      {entries.length > shown && (
-        <button className="mt-3 w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300"
-          onClick={() => setShown((s) => s + 50)}>show more ({entries.length - shown} remaining)</button>
-      )}
     </div>
   );
 }
