@@ -59,11 +59,11 @@ async def _emit(run_id: str, event: str, data: Dict):
     # broke live UI updates. A DB failure must never break a scan.
     # Self-healing: if the table is missing (wiped DB), recreate and retry.
     try:
-        await asyncio.to_thread(_persist_event, run_id, event, data)
+        _persist_event(run_id, event, data)
     except Exception:
         try:
             init_db()
-            await asyncio.to_thread(_persist_event, run_id, event, data)
+            _persist_event(run_id, event, data)
         except Exception:
             pass
 
