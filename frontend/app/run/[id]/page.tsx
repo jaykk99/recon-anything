@@ -321,7 +321,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
     setSseState("connecting");
     setFeedState("ok");
 
-    const es = new EventSource(`/api/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
+    const es = new EventSource(`/live/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
     // Any SSE event at all means the stream is alive.
     const on = (ev: string, fn: (e: MessageEvent) => void) =>
       es.addEventListener(ev, ((e: MessageEvent) => { setSseState("live"); fn(e); }) as EventListener);
