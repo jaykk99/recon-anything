@@ -14,6 +14,7 @@ export default function Home() {
   const [classified, setClassified] = useState<(ClassifyResult & { raw: string })[]>([]);
   const [override, setOverride] = useState("");
   const [mode, setMode] = useState<"passive" | "active">("active");
+  const [bounty, setBounty] = useState(false);
   const [sourceType, setSourceType] = useState<"website" | "bank" | "atm">("website");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
@@ -78,7 +79,7 @@ export default function Home() {
       const ids = Object.keys(enabled).filter((k) => enabled[k]);
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ targets: text, mode, plugins: ids, source_type: sourceType }),
+        body: JSON.stringify({ targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
       });
       if (!d.run_id) throw new Error("no run id returned");
       if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
@@ -181,6 +182,16 @@ export default function Home() {
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "passive" ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
               PASSIVE
             </button>
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-slate-400">Bounty:</span>
+            <button onClick={() => setBounty(!bounty)} title="prioritizes high-impact vuln classes, sorts by impact"
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${bounty ? "bg-purple-900 text-purple-200 border border-purple-700" : "text-slate-400"}`}>
+              {bounty ? "✓ BOUNTY MODE" : "BOUNTY MODE"}
+            </button>
+            <span className="text-xs text-slate-500" title="prioritizes high-impact vuln classes, sorts by impact">
+              prioritizes high-impact vuln classes, sorts by impact
+            </span>
           </div>
           <span className="text-xs text-slate-500 w-full sm:w-auto">
             {mode === "passive" ? "third-party APIs and public datasets only, no packets to the target"
