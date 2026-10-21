@@ -83,7 +83,7 @@ class FastmodePlugin(Plugin):
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
         findings: List = []
-        domain = domain_from_target(target)
+        domain = domain_from_target(target.type, target.normalized)
         base = target.normalized
         if not base.startswith("http"):
             base = f"https://{domain}"

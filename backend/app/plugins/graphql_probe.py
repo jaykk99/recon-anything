@@ -77,7 +77,6 @@ class GraphqlProbePlugin(Plugin):
         # Phase 2: introspection check on confirmed endpoints only.
         for url in [u for u in endpoints if not u.endswith("(unconfirmed)")]:
             try:
-                from ..ratelimit import fetch
                 r = await fetch(ctx.http, ctx.limiter, "POST", url,
                                 json=INTROSPECTION_Q, timeout=10,
                                 max_retries=0)
@@ -106,6 +105,6 @@ class GraphqlProbePlugin(Plugin):
             ctx.publish("endpoints", url)
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"probed {len(PATHS)} paths, {len(endpoints)} endpoints, "
                    f"{len(findings)} findings")

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from typing import List
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
@@ -64,7 +64,6 @@ class RedirectChainPlugin(Plugin):
                 chain.append({"url": url, "status": r.status_code,
                               "location": loc})
                 if r.status_code in (301, 302, 303, 307, 308) and loc:
-                    from urllib.parse import urljoin
                     url = urljoin(url, loc)
                 else:
                     break
@@ -107,11 +106,11 @@ class RedirectChainPlugin(Plugin):
                                           "each hop leaks referrer and "
                                           "slows the page.")}))
         home_reg = _reg_domain(urlparse(start).netloc or domain)
-        for c in hops[1:]:
+        for c in hops:
             loc = c.get("location") or ""
             if not loc:
                 continue
-            dest_host = urlparse(c["url"]).netloc
+            dest_host = urlparse(urljoin(c["url"], loc)).netloc
             if dest_host and _reg_domain(dest_host) != home_reg:
                 findings.append(self._f(
                     "web", "redirect_off_domain",
@@ -126,5 +125,5 @@ class RedirectChainPlugin(Plugin):
                 break
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"chain of {len(hops)} hops, {len(findings)} findings")

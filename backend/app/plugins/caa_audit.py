@@ -75,7 +75,7 @@ class CaaAuditPlugin(Plugin):
             return PluginResult(
                 plugin_id=self.id, status=PluginStatus.OK,
                 findings=findings,
-                elapsed_s=round(time.monotonic() - t0, 2),
+                duration_ms=int((time.monotonic() - t0) * 1000),
                 reason="no CAA policy found")
 
         tags = {}
@@ -120,6 +120,6 @@ class CaaAuditPlugin(Plugin):
                                   "wildcard certs.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"CAA policy at {found_at or domain}: "
                    f"{len(findings)} findings")

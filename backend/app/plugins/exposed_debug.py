@@ -59,8 +59,9 @@ class ExposedDebugPlugin(Plugin):
             return self._degraded("homepage unreachable")
         html = (resp.text or "")[:200000]
         findings: List = []
-        for key, desc, res in COMPILED:
-            m = next((x for x in res if x.search(html)), None)
+        for key, desc, patterns in COMPILED:
+            m = next((mm for rx in patterns
+                      if (mm := rx.search(html)) is not None), None)
             if m:
                 findings.append(self._f(
                     "web", key, f"{desc} (marker: {m.group(0)[:60]!r})",
@@ -73,6 +74,6 @@ class ExposedDebugPlugin(Plugin):
                                   "removed from the prod build).")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"checked {len(TOOLBARS)} toolbar signatures, "
                    f"{len(findings)} exposed")

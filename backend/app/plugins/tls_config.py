@@ -83,13 +83,15 @@ class TlsConfigPlugin(Plugin):
 
         probes = await asyncio.gather(
             *(asyncio.to_thread(_probe, domain, (ver,)) for ver in usable))
-        supported = {str(ver): res for ver, res in zip(usable, probes)
+        # Key by the short enum name ("TLSv1.3", "TLSv1.2", ...) - str(ver)
+        # gives "TLSVersion.TLSv1.3", which never matches the checks below.
+        supported = {ver.name: res for ver, res in zip(usable, probes)
                      if res[0]}
         findings: List = []
         if not supported:
             return self._degraded("no TLS handshake succeeded")
         best = max(supported, key=lambda v: usable.index(
-            next(x for x in usable if str(x) == v)))
+            next(x for x in usable if x.name == v)))
         best_cipher = supported[best][1]
 
         for ver in ("TLSv1", "TLSv1.1"):
@@ -139,6 +141,6 @@ class TlsConfigPlugin(Plugin):
                                           "server-side.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"TLS versions offered: {sorted(supported)}, "
                    f"{len(findings)} config issues")

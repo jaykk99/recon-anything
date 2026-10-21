@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, PluginStatus, Target
 
 
 def _parse_set_cookies(headers) -> List[dict]:
@@ -147,12 +147,8 @@ class CookieSecurityPlugin(Plugin):
                                           "confuse session handling.")}))
 
         ctx.publish("cookies", [c["name"] for c in cookies])
-        return PluginResult(plugin_id=self.id, status=self._ok_status(),
+        return PluginResult(plugin_id=self.id, status=PluginStatus.OK,
                             findings=findings,
-                            elapsed_s=round(time.monotonic() - t0, 2),
+                            duration_ms=int((time.monotonic() - t0) * 1000),
                             reason=f"audited {len(cookies)} cookies, "
                                    f"{len(findings)} findings")
-
-    def _ok_status(self):
-        from .base import PluginStatus
-        return PluginStatus.OK

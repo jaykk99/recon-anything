@@ -75,10 +75,11 @@ class ErrorPagesPlugin(Plugin):
             if resp is None or resp.status_code < 400:
                 continue
             body = (resp.text or "")[:20000]
-            for key, sev, desc, res in COMPILED:
+            for key, sev, desc, patterns in COMPILED:
                 if key in seen:
                     continue
-                m = next((x for x in res if x.search(body)), None)
+                m = next((mm for rx in patterns
+                          if (mm := rx.search(body)) is not None), None)
                 if m:
                     seen.add(key)
                     snippet = m.group(0)[:120]
@@ -96,5 +97,5 @@ class ErrorPagesPlugin(Plugin):
                                       "instead of rendering them.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"probed 2 missing paths, {len(findings)} disclosures")

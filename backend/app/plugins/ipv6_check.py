@@ -20,6 +20,17 @@ from ..classifier import domain_from_target
 from .base import Cost, Ctx, Plugin, PluginResult, PluginStatus, Target
 
 
+def _probe(ip: str) -> bool:
+    """TCP connect to port 443 on an IPv6 address. Module-level so tests
+    can stub it; blocking, runs in a thread."""
+    try:
+        s = socket.create_connection((ip, 443), timeout=5)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
 class Ipv6CheckPlugin(Plugin):
     id = "ipv6_check"
     label = "IPv6 Support"
@@ -55,16 +66,6 @@ class Ipv6CheckPlugin(Plugin):
                           "remediation": ("Informational: add AAAA records if "
                                           "the hosting supports IPv6.")}))
         else:
-            ok = []
-
-            def _probe(ip: str) -> bool:
-                try:
-                    s = socket.create_connection((ip, 443), timeout=5)
-                    s.close()
-                    return True
-                except Exception:
-                    return False
-
             results = await asyncio.gather(
                 *(asyncio.to_thread(_probe, ip) for ip in aaaa[:4]))
             ok = [ip for ip, good in zip(aaaa[:4], results) if good]
@@ -90,5 +91,5 @@ class Ipv6CheckPlugin(Plugin):
                                               "clients.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"{len(aaaa)} AAAA records, {len(findings)} findings")

@@ -161,6 +161,6 @@ class DnsInfraPlugin(Plugin):
                                           "separate networks/ASNs.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"checked {len(ns_hosts)} nameservers, "
                    f"{len(findings)} infra issues")

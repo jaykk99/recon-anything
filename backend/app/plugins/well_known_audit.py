@@ -124,6 +124,6 @@ class WellKnownAuditPlugin(Plugin):
                               "Contact and Expires fields.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"checked {len(WELL_KNOWN)} well-known URIs, "
                    f"{len(findings)} findings")

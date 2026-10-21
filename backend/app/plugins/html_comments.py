@@ -118,6 +118,6 @@ class HtmlCommentsPlugin(Plugin):
                                           "remove dead code from prod.")}))
         return PluginResult(
             plugin_id=self.id, status=PluginStatus.OK, findings=findings,
-            elapsed_s=round(time.monotonic() - t0, 2),
+            duration_ms=int((time.monotonic() - t0) * 1000),
             reason=f"mined {len(comments)} HTML comments: {secret_hits} "
                    f"credential patterns, {len(endpoints)} endpoints")
