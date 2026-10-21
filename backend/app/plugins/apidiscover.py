@@ -115,6 +115,11 @@ class ApiDiscoverPlugin(Plugin):
     cost = Cost.FREE
     group = "api"
     description = "Backend inference, docs discovery, GraphQL introspection, API map."
+    # Enumerator-class plugin: up to 180 wordlist probes paced by the
+    # shared per-host rate limiter (~10 rps) puts its floor near 30s
+    # even before network latency; the 60s base default got it killed
+    # mid-run on slow targets and the timeout discarded ALL findings.
+    timeout_s = 120
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()

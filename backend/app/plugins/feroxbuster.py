@@ -58,7 +58,11 @@ class FeroxbusterPlugin(Plugin):
     passive = False
     cost = Cost.FREE
     group = "web"
-    timeout_s = 30
+    # Recursive enumerator: each directory sweep gets a 20s deadline,
+    # so the old 30s class cap killed the plugin mid-recursion on any
+    # host with more than one directory and the runner discarded all
+    # of its findings. 120s = the runner's own ceiling.
+    timeout_s = 120
     aggressive = True
     description = ("Recursive content discovery: auto-recurses into "
                    "found dirs. GET only.")

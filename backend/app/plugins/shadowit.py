@@ -21,7 +21,7 @@ from typing import List, Tuple
 
 from ..classifier import domain_from_target
 from ..net import web_base
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, gather_capped
 
 
 # (paths, marker_regex, key, title, severity, confidence, remediation)
@@ -136,6 +136,29 @@ class ShadowItPlugin(Plugin):
         passive = (mode == "passive")
         seen_keys = set()
 
+        # Probe every candidate URL concurrently up front, then run the
+        # ordered marker evaluation below against the results. Sequential
+        # probing summed the rate-limiter's retry backoff per path: on
+        # slow or dead hosts this plugin burned its whole 30s budget
+        # before finishing the list, and the runner timeout discarded
+        # any findings. Same probes, same order, same findings.
+        probe_urls: List[str] = []
+        for paths, *_rest in SHADOW_PROBES:
+            for path in paths:
+                # Handle port-style paths like ":2083"
+                url = (f"{base}{path}" if not path.startswith(":")
+                       else f"{base}{path}/")
+                if url not in probe_urls:
+                    probe_urls.append(url)
+        probed = {}
+        if probe_urls:
+            budget = max(1.0, self.timeout_s - (time.monotonic() - t0) - 2)
+            results = await gather_capped(
+                [ctx.probe(u, timeout=8) for u in probe_urls], budget)
+            for u, data in zip(probe_urls, results):
+                if isinstance(data, dict):
+                    probed[u] = data
+
         for paths, marker_re, key, title, severity, confidence, remediation in SHADOW_PROBES:
             if key in seen_keys:
                 continue
@@ -144,9 +167,8 @@ class ShadowItPlugin(Plugin):
             for path in paths:
                 # Handle port-style paths like ":2083"
                 url = f"{base}{path}" if not path.startswith(":") else f"{base}{path}/"
-                try:
-                    data = await ctx.probe(url, timeout=8)
-                except Exception:
+                data = probed.get(url)
+                if data is None:
                     continue
                 status = data.get("status", 0)
                 text = data.get("text", "")

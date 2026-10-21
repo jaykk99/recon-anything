@@ -24,6 +24,11 @@ from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 ETH_API = "https://api.etherscan.io/api"
+# Sourcify's public contract repo: /contracts/{full_match|partial_match}/
+# {chainId}/{address}/metadata.json. Was referenced by _source_sourcify
+# but never defined - every keyless source lookup raised NameError and
+# the token was silently skipped by run()'s per-token guard.
+SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
 MAX_ADDR = 5  # tokens to scan per run (free-tier friendly)
 
 
