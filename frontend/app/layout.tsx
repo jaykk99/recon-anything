@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <nav className="ml-auto flex gap-4 text-sm text-slate-400">
             <a href="/" className="hover:text-sky-300">New scan</a>
             <a href="/keys" className="hover:text-sky-300">API keys</a>
+            <a href="/hunters" className="hover:text-sky-300">Hunters</a>
             <a href="/runs" className="hover:text-sky-300">Runs</a>
           </nav>
         </header>

@@ -722,10 +722,40 @@ async def _finalize_run(run_id: str) -> bool:
                                  "signals": _t["signals"]})
         except Exception:
             pass
+        # Hunter pivot pass (2026-10-20): when a run's jobs settle, the
+        # 20 hunters expand the known set from its findings and queue
+        # verification jobs on the new frontier. If jobs were queued,
+        # the run reopens and finalizes again when they settle; the
+        # depth/task budgets in hunters/engine.py bound the loop.
+        hunter_section = None
+        try:
+            from .hunters.engine import (ENABLED as _HUNTERS_ON,
+                                          finalize_hunt, hunter_expand,
+                                          new_accum)
+            if _HUNTERS_ON:
+                _hrun = session.query(Run).filter_by(id=run_id).first()
+                _accum = ((_hrun.summary or {}).get("hunters_accum")
+                          if _hrun else None) or new_accum()
+                if hunter_expand(session, _hrun, _accum) > 0:
+                    _s = dict(_hrun.summary or {})
+                    _s["hunters_accum"] = _accum
+                    _s["hunters_partial"] = {
+                        "extra_assets": _accum.get("assets_new", 0),
+                        "extra_jobs": _accum.get("jobs", 0),
+                        "depth": _accum.get("depth", 0)}
+                    _hrun.summary = _s
+                    _hrun.status = "running"
+                    session.commit()
+                    return True
+                hunter_section = finalize_hunt(session, _hrun, _accum)
+        except Exception:
+            hunter_section = None
         run = session.query(Run).filter_by(id=run_id).first()
         summary: Dict = {"findings": total, "nodes": n_nodes,
                          "edges": n_edges, "targets": n_targets,
                          "plugins": plugin_statuses}
+        if hunter_section:
+            summary["hunters"] = hunter_section
         if skipped_budget:
             summary["skipped_time_budget"] = skipped_budget
             summary["note"] = (f"{skipped_budget} low-priority plugins "

@@ -15,6 +15,17 @@ Routes:
   GET/POST/DELETE /api/keys     API key vault
   GET/POST/DELETE /api/schedules
 
+  GET  /api/hunters             hunter roster + lifetime stats
+  GET  /api/hunters/memory      per-target hunt memory (?target=)
+  GET  /api/hunters/known-set   a target's full known set (?target=)
+  GET  /api/hunters/knowledge   knowledge pack inventory
+  GET  /api/hunters/resources   resource library catalog + cache status
+  GET/POST /api/agentdata/...   agent data service (packs, known set,
+                                memory, dead ends, recent finds, library)
+
+The agents do not chat, they hunt: there is no assistant or chat route.
+Hunters work through the agent data service (app/agentdata).
+
 Single-user gate: if RECON_ACCESS_CODE is set, every /api route except
 /api/health requires header X-Access-Code.
 """
@@ -809,95 +820,6 @@ def api_diff(a: str, b: str):
         session.close()
 
 
-# -- assistant ---------------------------------------------------------------
-# Uncensored AI assistant (AI Horde keyless backend). Detection/analysis
-# only: it explains findings and suggests manual steps, never exploits.
-
-
-class AssistantChatIn(BaseModel):
-    messages: List[Dict[str, str]]
-    run_id: Optional[str] = None
-
-
-@app.post("/api/assistant/chat", dependencies=[Depends(gate)])
-async def api_assistant_chat(body: AssistantChatIn):
-    """Free-form chat, optionally grounded in a run's findings."""
-    if not body.messages:
-        raise HTTPException(400, "messages required")
-    from .uncensored_assistant import assistant_chat
-    reply = await assistant_chat(body.messages, body.run_id)
-    return {"reply": reply}
-
-
-class AssistantAgentIn(BaseModel):
-    run_id: str
-    instruction: str
-
-
-@app.post("/api/assistant/agent", dependencies=[Depends(gate)])
-async def api_assistant_agent(body: AssistantAgentIn):
-    """Structured AI review of a run: gaps, deeper plugins, manual tests.
-
-    Horde polling blocks on the network, so the review runs in a thread.
-    """
-    import asyncio
-    from .uncensored_assistant import agent_review
-    session = get_session()
-    try:
-        if not session.query(Run).filter_by(id=body.run_id).first():
-            raise missing_run(body.run_id)
-    finally:
-        session.close()
-    review = await asyncio.to_thread(
-        asyncio.run, agent_review(body.run_id, body.instruction))
-    return review
-
-
-class DeepRunIn(BaseModel):
-    run_id: str
-    plugin_ids: List[str]
-
-
-@app.post("/api/assistant/deep-run", dependencies=[Depends(gate)])
-async def api_assistant_deep_run(body: DeepRunIn):
-    """Launch a new run against the original run's targets, but only with
-    the specified detection plugins. Returns the new run id."""
-    if not body.plugin_ids:
-        raise HTTPException(400, "plugin_ids required")
-    from .plugins.registry import describe
-    known = {p["id"] for p in describe()}
-    unknown = [p for p in body.plugin_ids if p not in known]
-    if unknown:
-        raise HTTPException(400, f"unknown plugin ids: {', '.join(unknown)}")
-    plugin_ids = [p for p in body.plugin_ids if p in known]
-
-    session = get_session()
-    try:
-        orig = session.query(Run).filter_by(id=body.run_id).first()
-        if not orig:
-            raise missing_run(body.run_id)
-        targets = session.query(Target).filter_by(run_id=body.run_id).all()
-        targets_text = "\n".join(t.raw for t in targets if t.raw)
-        if not targets_text:
-            raise HTTPException(400, "original run has no targets")
-        new_run_id = uuid.uuid4().hex[:12]
-        mode = orig.mode or "passive"
-        source_type = getattr(orig, "source_type", None) or "website"
-        session.add(Run(id=new_run_id, mode=mode, status="running",
-                        source_type=source_type,
-                        summary={"note": f"deep-run of {body.run_id}",
-                                 "plugins": plugin_ids}))
-        session.commit()
-        keys = load_all(session)
-    finally:
-        session.close()
-    # launch_run accepts plugin_ids natively and filters the plugin list
-    # before launch; detection plugins only, nothing else changes.
-    await launch_run(new_run_id, targets_text, mode, plugin_ids, {}, keys,
-                     source_type=source_type)
-    return {"new_run_id": new_run_id}
-
-
 # -- ATM ---------------------------------------------------------------------
 class AtmLocateIn(BaseModel):
     query: str
@@ -1191,3 +1113,204 @@ async def api_breachwatch_check(body: BreachCheckIn):
     cache[email] = result
     _bw_save_cache(cache)
     return result
+
+
+# -- agent data service -------------------------------------------------------
+# The learning/data layer FOR the agents (app/agentdata). Hunters call
+# these functions in-process and can call the same shapes over HTTP;
+# the namespace (system) keeps other agent systems' data separate.
+# Same access-code gate as every other /api route.
+
+
+@app.get("/api/agentdata/packs", dependencies=[Depends(gate)])
+def api_agentdata_packs():
+    from .agentdata import packs
+    return {"packs": packs.pack_inventory()}
+
+
+@app.get("/api/agentdata/packs/{name}", dependencies=[Depends(gate)])
+def api_agentdata_pack(name: str):
+    from .agentdata import packs
+    raw = packs.pack_raw(name)
+    if raw is None:
+        raise HTTPException(404, "unknown pack")
+    return {"name": name, "entries": packs.pack_entries(name), "raw": raw}
+
+
+@app.get("/api/agentdata/known", dependencies=[Depends(gate)])
+def api_agentdata_known(system: str = "recon", target: str = ""):
+    from .agentdata import store
+    if not target:
+        raise HTTPException(400, "target required")
+    session = get_session()
+    try:
+        assets = store.get_known_set(session, system, target)
+        return {"system": system, "target": target, "count": len(assets),
+                "assets": assets}
+    finally:
+        session.close()
+
+
+class KnownIn(BaseModel):
+    system: str = "recon"
+    target: str
+    asset_type: str
+    value: str
+    found_by: str = ""
+    run_id: str = ""
+
+
+@app.post("/api/agentdata/known", dependencies=[Depends(gate)])
+def api_agentdata_known_add(body: KnownIn):
+    from .agentdata import store
+    session = get_session()
+    try:
+        _row, created = store.add_known_asset(
+            session, body.system, body.target, body.asset_type, body.value,
+            found_by=body.found_by, run_id=body.run_id)
+        return {"ok": True, "created": created}
+    finally:
+        session.close()
+
+
+@app.get("/api/agentdata/memory", dependencies=[Depends(gate)])
+def api_agentdata_memory(system: str = "recon", target: str = ""):
+    from .agentdata import store
+    if not target:
+        raise HTTPException(400, "target required")
+    session = get_session()
+    try:
+        return store.get_memory(session, system, target)
+    finally:
+        session.close()
+
+
+class DeadEndIn(BaseModel):
+    system: str = "recon"
+    target: str
+    asset_type: str
+    value: str
+    run_id: str = ""
+    reason: str = ""
+
+
+@app.post("/api/agentdata/dead-ends", dependencies=[Depends(gate)])
+def api_agentdata_dead_end(body: DeadEndIn):
+    from .agentdata import store
+    session = get_session()
+    try:
+        created = store.add_dead_end(session, body.system, body.target,
+                                     body.asset_type, body.value,
+                                     run_id=body.run_id, reason=body.reason)
+        return {"ok": True, "created": created}
+    finally:
+        session.close()
+
+
+@app.get("/api/agentdata/finds", dependencies=[Depends(gate)])
+def api_agentdata_finds(system: str = "recon", limit: int = 50,
+                        target: str = "", hunter: str = ""):
+    from .agentdata import store
+    session = get_session()
+    try:
+        return {"finds": store.recent_finds(
+            session, system, limit=min(limit, 200),
+            target_key=target or None, hunter=hunter or None)}
+    finally:
+        session.close()
+
+
+@app.get("/api/agentdata/resources", dependencies=[Depends(gate)])
+def api_agentdata_resources():
+    from .agentdata import resources
+    session = get_session()
+    try:
+        return {"resources": resources.catalog(session)}
+    finally:
+        session.close()
+
+
+@app.post("/api/agentdata/resources/{resource_id}/fetch",
+          dependencies=[Depends(gate)])
+def api_agentdata_resource_fetch(resource_id: str):
+    from .agentdata import resources
+    session = get_session()
+    try:
+        result = resources.fetch_resource(session, resource_id)
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "fetch failed"))
+        return result
+    finally:
+        session.close()
+
+
+# -- hunters (human view, read-only, same data service) ------------------------
+
+@app.get("/api/hunters", dependencies=[Depends(gate)])
+def api_hunters():
+    from .agentdata import store
+    from .hunters.roles import HUNTERS
+    session = get_session()
+    try:
+        stats = store.hunter_stats(session, store.DEFAULT_SYSTEM)
+    finally:
+        session.close()
+    out = []
+    for h in HUNTERS:
+        s = stats.get(h["name"], {})
+        out.append({**h, "stats": {
+            "assets_discovered": s.get("assets_discovered", 0),
+            "jobs_enqueued": s.get("jobs_enqueued", 0),
+            "dead_ends": s.get("dead_ends", 0),
+            "assets_in_known_set": s.get("assets_in_known_set", 0)}})
+    return {"hunters": out, "count": len(out)}
+
+
+@app.get("/api/hunters/memory", dependencies=[Depends(gate)])
+def api_hunters_memory(target: str = ""):
+    from .agentdata import store
+    if not target:
+        raise HTTPException(400, "target required")
+    session = get_session()
+    try:
+        mem = store.get_memory(session, store.DEFAULT_SYSTEM, target)
+        counts = store.known_counts(session, store.DEFAULT_SYSTEM, target)
+        mem["known_set_counts"] = counts
+        mem["known_set_total"] = sum(counts.values())
+        return mem
+    finally:
+        session.close()
+
+
+@app.get("/api/hunters/known-set", dependencies=[Depends(gate)])
+def api_hunters_known_set(target: str = ""):
+    from .agentdata import store
+    if not target:
+        raise HTTPException(400, "target required")
+    session = get_session()
+    try:
+        assets = store.get_known_set(session, store.DEFAULT_SYSTEM, target)
+        grouped: Dict[str, list] = {}
+        for a in assets:
+            grouped.setdefault(a["type"], []).append(a)
+        return {"target": target, "total": len(assets),
+                "counts": {k: len(v) for k, v in grouped.items()},
+                "assets": assets, "grouped": grouped}
+    finally:
+        session.close()
+
+
+@app.get("/api/hunters/knowledge", dependencies=[Depends(gate)])
+def api_hunters_knowledge():
+    from .agentdata import packs
+    return {"packs": packs.pack_inventory()}
+
+
+@app.get("/api/hunters/resources", dependencies=[Depends(gate)])
+def api_hunters_resources():
+    from .agentdata import resources
+    session = get_session()
+    try:
+        return {"resources": resources.catalog(session)}
+    finally:
+        session.close()

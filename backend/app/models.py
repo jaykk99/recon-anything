@@ -212,6 +212,73 @@ class PluginJob(Base):
     finished_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class KnownAsset(Base):
+    # The hunters' KNOWN SET: every confirmed asset for a target, persisted
+    # across runs and namespaced by agent system so other agent systems
+    # (Error Inbox swarm, bro-agent) can keep their own sets in the same
+    # store. Hunters expand FROM this set: each asset type has pivot rules
+    # that generate candidates, the detection plugins verify them, and
+    # confirmed candidates join the set and expand again.
+    __tablename__ = "known_assets"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    system = Column(String, default="recon", index=True)
+    target_key = Column(String, index=True)  # root target, e.g. example.com
+    asset_type = Column(String, index=True)  # domain|subdomain|ip|url|email|wallet|repo|js_file|endpoint|cert|org
+    value = Column(Text, index=True)
+    found_by = Column(String, default="")  # hunter or plugin that confirmed it
+    first_run_id = Column(String, index=True)
+    last_run_id = Column(String, index=True)
+    depth = Column(Integer, default=0)  # pivot depth at which it was found
+    meta = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class HuntAction(Base):
+    # Full audit trail for the hunter layer: every asset found, job
+    # enqueued, dead end recorded, and expansion pass, per hunter.
+    __tablename__ = "hunt_actions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, index=True)
+    system = Column(String, default="recon", index=True)
+    target_key = Column(String, index=True)
+    hunter = Column(String, index=True)
+    action = Column(String, index=True)  # asset_found|job_enqueued|dead_end|expand_pass|note
+    asset_type = Column(String, default="")
+    asset_value = Column(Text, default="")
+    detail = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class HuntMemory(Base):
+    # Per-target hunt memory, one row per (system, target_key). Hunters
+    # read this before expanding a repeat target: what is already known,
+    # which branches were dead ends, and how the known set grew per run.
+    __tablename__ = "hunt_memory"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    system = Column(String, default="recon", index=True)
+    target_key = Column(String, index=True)
+    assets_by_type = Column(JSON, default=dict)  # {asset_type: count}
+    finding_counts = Column(JSON, default=dict)  # {category: count} cumulative
+    dead_ends = Column(JSON, default=list)  # [{type, value, run_id, reason}]
+    runs = Column(JSON, default=list)  # [{run_id, at, known_before, known_after, findings}]
+    notes = Column(JSON, default=list)  # free-form memory notes from hunters
+    updated_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class ResourceCache(Base):
+    # Fetched library resources (wordlists, pattern packs, references)
+    # cached by the agent data service with source URL + attribution, so
+    # hunters consult the real public material at hunt time.
+    __tablename__ = "resource_cache"
+    id = Column(String, primary_key=True)  # resource id from the registry
+    source_url = Column(Text)
+    attribution = Column(Text, default="")
+    content = Column(Text)  # cached body (truncated at fetch time)
+    fetched_at = Column(DateTime(timezone=True), default=_utcnow)
+    size_bytes = Column(Integer, default=0)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args=connect_args,
