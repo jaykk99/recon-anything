@@ -286,6 +286,65 @@ class Target:
             self.normalized = self.raw.strip()
 
 
+class CaseInsensitiveHeaders(dict):
+    """A headers dict whose lookups ignore case, like httpx.Headers.
+
+    Servers send header names in arbitrary casing ("Strict-Transport-
+    Security"); plugins look them up lowercase. Plain-dict storage made
+    those lookups silently miss - or crash attribute-style consumers.
+    """
+
+    def _real_key(self, key: Any) -> Any:
+        lk = str(key).lower()
+        for k in self.keys():
+            if str(k).lower() == lk:
+                return k
+        return key
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return super().get(self._real_key(key), default)
+
+    def __getitem__(self, key: Any) -> Any:
+        return super().__getitem__(self._real_key(key))
+
+    def __contains__(self, key: Any) -> bool:
+        return super().__contains__(self._real_key(key))
+
+
+class PageData(dict):
+    """Cached page payload returned by Ctx.fetch_page.
+
+    The payload is stored as a plain dict (status_code, headers, text,
+    url) so it survives the JSON cache round-trip, and most plugins
+    consume it dict-style: page["text"], page.get("headers"). A newer
+    plugin family was written against fetch_page's documented contract
+    ("returns the response") and uses attribute access instead -
+    page.text, page.headers.get(...) - and crashed with AttributeError
+    on every live scan (10 plugins, first seen in production
+    2026-10-21; the unit tests stubbed fetch_page with response
+    objects, so the suite never saw it). Attribute access now falls
+    through to the dict keys, so both styles work on the same object.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+def _as_page(raw: Any) -> Any:
+    """Wrap a raw cached/fetched page payload as PageData (idempotent)."""
+    if raw is None or not isinstance(raw, dict):
+        return raw
+    page = raw if isinstance(raw, PageData) else PageData(raw)
+    headers = page.get("headers")
+    if isinstance(headers, dict) and not isinstance(
+            headers, CaseInsensitiveHeaders):
+        page["headers"] = CaseInsensitiveHeaders(headers)
+    return page
+
+
 @dataclass
 class Ctx:
     """Run context handed to every plugin."""
@@ -325,10 +384,11 @@ class Ctx:
         """Fetch a page with cross-plugin caching.
 
         Multiple plugins fetch the same homepage. This caches the
-        httpx response by URL so only the first plugin pays the cost.
+        page payload by URL so only the first plugin pays the cost.
         Singleflight: concurrent callers for the same URL share one
         in-flight request instead of thundering-herding the target.
-        Returns the response or None on failure.
+        Returns a PageData (dict with status_code/headers/text/url,
+        also readable as attributes) or None on failure.
         """
         from ..ratelimit import fetch as _fetch
         # Normalize the key: "https://host" and "https://host/" are the same
@@ -337,7 +397,7 @@ class Ctx:
         cache_key = f"page:{url.rstrip('/')}"
         cached = self.cache.get("http", cache_key)
         if cached is not None:
-            return cached
+            return _as_page(cached)
         inflight = self.shared.setdefault("_fetch_page_inflight", {})
         task = inflight.get(cache_key)
         if task is None:
@@ -346,7 +406,7 @@ class Ctx:
             inflight[cache_key] = task
             task.add_done_callback(lambda _t: inflight.pop(cache_key, None))
         try:
-            return await asyncio.shield(task)
+            return _as_page(await asyncio.shield(task))
         except Exception:
             return None
 
@@ -367,7 +427,7 @@ class Ctx:
                 self.cache.set("http", cache_key, data, ttl=300)
             except Exception:
                 pass
-            return data
+            return _as_page(data)
         except Exception:
             return None
 
