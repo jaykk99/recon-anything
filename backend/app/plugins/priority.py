@@ -48,6 +48,9 @@ LOW_PRIORITY = {
     "tokenapproval", "walletcheck", "wallets", "crypto", "cryptoconfig",
     "smartcontract", "cards", "credential_strength", "hashid",
     "asn_scan", "rdap", "pivots", "registry", "cloud", "ldapi",
+    # Hunter source enumerators (2026-10-21): passive dataset queries,
+    # wide but shallow - same tier as the other enumeration sources.
+    "reverse_ip", "passive_dns", "rapiddns",
     # Native crawler/enumerator tools: heavy by nature, run last so
     # findings lead and enumeration trails. (Jay's order 2026-10-18.)
     "katana", "hakrawler", "wget", "httrack", "gobuster", "feroxbuster",
