@@ -916,13 +916,61 @@ async def queue_worker_loop() -> None:
                 await asyncio.sleep(2.0)
 
 
-def _enqueue_jobs(session, run_id: str, plugins, trobj, bounty: bool = False) -> int:
-    """Insert one PluginJob per (plugin x target) pair. Returns job count."""
+def _calibrated_estimates(session, days: int = 7) -> Dict[str, int]:
+    """Median observed plugin durations, blended with hardcoded estimates.
+
+    Queries recent finished jobs (last `days`) and takes the per-plugin
+    median of result.ms. Plugins with fewer than 3 real observations keep
+    the hardcoded PLUGIN_TIME_ESTIMATES value. Medians are clamped to
+    [2, 600]s so one pathological run can't permanently distort dispatch
+    order. Only jobs that actually executed count (ms > 0 - skips and
+    instant failures are ignored).
+
+    This is what makes fastest-first-within-tier *accurate*: the guesses
+    in PLUGIN_TIME_ESTIMATES get corrected by reality every scan.
+    """
+    from statistics import median
+    try:
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+        rows = (session.query(PluginJob.plugin_id, PluginJob.result)
+                .filter(PluginJob.created_at >= cutoff,
+                        PluginJob.status.in_(("done", "failed")))
+                .order_by(PluginJob.id.desc()).limit(20000).all())
+    except Exception:
+        return {}
+    samples: Dict[str, List[int]] = {}
+    for pid, result in rows:
+        try:
+            ms = int((result or {}).get("ms") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ms > 0:
+            samples.setdefault(pid, []).append(ms)
+    out: Dict[str, int] = {}
+    for pid, vals in samples.items():
+        if len(vals) < 3:
+            continue
+        secs = max(2, min(600, int(median(vals) / 1000)))
+        out[pid] = secs
+    return out
+
+
+def _enqueue_jobs(session, run_id: str, plugins, trobj,
+                  bounty: bool = False,
+                  estimates: Optional[Dict[str, int]] = None) -> int:
+    """Insert one PluginJob per (plugin x target) pair. Returns job count.
+
+    estimates overrides the hardcoded PLUGIN_TIME_ESTIMATES per plugin
+    (see _calibrated_estimates) so dispatch order reflects observed
+    durations.
+    """
+    estimates = estimates or {}
     jobs = [PluginJob(run_id=run_id, target_id=t.id, plugin_id=p.id,
                       phase=getattr(p, "phase", 1),
                       priority=priority_for(p.id, bounty=bounty),
-                      estimate_s=PLUGIN_TIME_ESTIMATES.get(
-                          p.id, DEFAULT_PLUGIN_ESTIMATE_S),
+                      estimate_s=estimates.get(
+                          p.id, PLUGIN_TIME_ESTIMATES.get(
+                              p.id, DEFAULT_PLUGIN_ESTIMATE_S)),
                       status="queued")
             for t in trobj for p in plugins]
     if jobs:
@@ -1086,19 +1134,24 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                                   type=t.type, normalized=t.normalized))
         session.commit()
 
-        # Time estimate for the UI (same math as before).
+        # Time estimate for the UI: calibrated from recent real durations,
+        # falling back to the hardcoded table for plugins without history.
+        estimates = _calibrated_estimates(session)
         n_targets = max(len(trobj), 1)
-        total_plugin_s = sum(PLUGIN_TIME_ESTIMATES.get(
-            p.id, DEFAULT_PLUGIN_ESTIMATE_S) for p in plugins) * n_targets
+        total_plugin_s = sum(estimates.get(
+            p.id, PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S))
+            for p in plugins) * n_targets
         concurrency = max(getattr(config, "MAX_CONCURRENCY", 5), 1)
         estimated_s = max(int(total_plugin_s / concurrency), 10)
 
         meta = {"mode": mode, "plugin_ids": plugin_ids,
                 "module_overrides": module_overrides or {},
-                "source_type": source_type}
+                "source_type": source_type,
+                "estimates": "calibrated" if estimates else "static"}
         run.summary = {**(run.summary or {}), "queue_meta": meta}
         session.commit()
-        n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty)
+        n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty,
+                               estimates=estimates)
 
         await _emit(run_id, "run_start",
                     {"run_id": run_id,

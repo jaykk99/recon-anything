@@ -102,3 +102,76 @@ def test_new_plugins_have_estimates():
                "typosquat", "tls_config", "caa_audit"]
     missing = [pid for pid in new_ids if pid not in PLUGIN_TIME_ESTIMATES]
     assert not missing, f"plugins missing time estimates: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Adaptive time estimates (_calibrated_estimates)
+# ---------------------------------------------------------------------------
+
+import datetime as _dt  # noqa: E402
+
+from app.runner import _calibrated_estimates, _enqueue_jobs  # noqa: E402
+
+
+def _seed_job(s, pid, ms, status="done", age_days=0):
+    created = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=age_days)
+    j = PluginJob(run_id="r-cal", target_id="t1", plugin_id=pid,
+                  phase=1, priority=2, estimate_s=12, status=status,
+                  created_at=created,
+                  result={"status": "ok", "reason": "", "findings": 1,
+                          "ms": ms})
+    s.add(j)
+    s.commit()
+
+
+def test_calibration_uses_median(session):
+    for ms in (4000, 5000, 6000, 90000):  # median 5.5s -> 5
+        _seed_job(session, "dns", ms)
+    est = _calibrated_estimates(session)
+    assert est["dns"] == 5
+
+
+def test_calibration_needs_three_samples(session):
+    _seed_job(session, "tls", 40000)
+    _seed_job(session, "tls", 42000)
+    est = _calibrated_estimates(session)
+    assert "tls" not in est  # falls back to hardcoded table
+
+
+def test_calibration_ignores_zero_ms(session):
+    for ms in (0, 0, 0, 5000, 6000, 7000):
+        _seed_job(session, "waf", ms)
+    est = _calibrated_estimates(session)
+    assert est["waf"] == 6  # only the real executions count
+
+
+def test_calibration_clamps_outliers(session):
+    for _ in range(4):
+        _seed_job(session, "backup", 900000)  # 900s -> clamped to 600
+    est = _calibrated_estimates(session)
+    assert est["backup"] == 600
+
+
+def test_calibration_ignores_old_jobs(session):
+    for _ in range(4):
+        _seed_job(session, "crawler", 120000, age_days=30)
+    est = _calibrated_estimates(session, days=7)
+    assert "crawler" not in est
+
+
+def test_enqueue_uses_calibrated_estimates(session):
+    from app.models import Target as TargetRow
+    t = TargetRow(id="t-cal", run_id="r-cal", raw="example.com",
+                  type="domain", normalized="example.com")
+    session.add(t)
+    session.commit()
+
+    class P:
+        id = "dns"
+        phase = 1
+
+    n = _enqueue_jobs(session, "r-cal", [P()], [t],
+                      estimates={"dns": 3})
+    assert n == 1
+    job = session.query(PluginJob).filter_by(run_id="r-cal").first()
+    assert job.estimate_s == 3
