@@ -30,8 +30,8 @@ class SmugglingPlugin(Plugin):
     description = ("Timing-based HTTP request-smuggling/desync detection "
                    "with harmless conflicting-header probes.")
     phase = 2
-    # The runner hard-kills plugins at 30s (MAX_PLUGIN_TIMEOUT_S). This
-    # plugin's timing probes are slow by design, so the whole probe
+    # This plugin self-budgets to 30s (well under the runner cap). Its
+    # timing probes are slow by design, so the whole probe
     # sequence is budgeted: 1 baseline + 3 variant probes with tight
     # timeouts, sequential (timing signals must not interfere).
     timeout_s = 30

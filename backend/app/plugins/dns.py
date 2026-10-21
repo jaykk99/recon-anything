@@ -12,8 +12,10 @@ import time
 from typing import List
 
 import dns.asyncresolver
+import dns.query
 import dns.reversename
 import dns.resolver
+import dns.zone
 
 from ..classifier import domain_from_target
 from .base import Ctx, Cost, Finding, Plugin, PluginResult, Target
@@ -51,12 +53,17 @@ class DnsPlugin(Plugin):
             r.lifetime = 10
 
         async def lookup(rtype: str):
+            # Try every resolver before declaring no answer (2026-10-20):
+            # the old code returned [] on the FIRST resolver's NoAnswer,
+            # so a flaky/negative-caching system resolver silently blanked
+            # record types the public resolvers could see - one more way
+            # findings differed between runs.
             for resolver in resolvers:
                 try:
                     ans = await resolver.resolve(domain, rtype)
                     return [str(x).strip('"') for x in ans]
                 except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-                    return []
+                    continue
                 except Exception:
                     continue
             return []
@@ -111,8 +118,12 @@ class DnsPlugin(Plugin):
         # Zone transfer attempt (detection only - one AXFR query per nameserver)
         for ns_val in [f.value for f in findings if f.key == "ns"][:4]:
             try:
-                import dns.query
-                import dns.zone
+                # NOTE: dns.query / dns.zone are imported at module level.
+                # Importing them here inside run() would make `dns` a local
+                # variable for the whole function and every earlier use
+                # (dns.asyncresolver at the top) would crash with
+                # UnboundLocalError - that bug killed this plugin on every
+                # scan until 2026-10-20.
                 ns_host = ns_val.rstrip(".")
                 # Resolve NS to IP first
                 ns_ips = []

@@ -161,30 +161,38 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
 
 
 # Default per-plugin timeout ceiling (seconds). Individual plugins override
-# via their timeout_s class attribute. 30s is the hard per-plugin cap
-# (Jay's order 2026-10-18 - speed is top priority): if a plugin hasn't
-# produced anything in 30s it is killed gracefully with a "skipped:
-# timeout" note. Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
-DEFAULT_PLUGIN_TIMEOUT_S = 30
-MAX_PLUGIN_TIMEOUT_S = 30
+# via their timeout_s class attribute. The cap was 30s under the 2026-10-18
+# speed-first order; Jay's 2026-10-20 order ("it doesn't find enough, it
+# needs to find more") reversed that tradeoff: slow enumerators (subdomain
+# brute force, crawlers, port scans, param discovery) were being killed at
+# 30s and losing their findings, so the cap is now 120s. A plugin that
+# times out is still killed gracefully with a "skipped: timeout" note.
+# Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
+DEFAULT_PLUGIN_TIMEOUT_S = 60
+MAX_PLUGIN_TIMEOUT_S = 120
 
-# Global scan time budget (seconds). A full scan has a HARD 80s ceiling
-# (Jay's order 2026-10-18 - speed is top priority). The dispatcher:
-#  - runs plugins in priority order (high-signal first, so the first
-#    critical finding lands in <15s),
+# Global scan time budget (seconds). Was a HARD 80s ceiling (2026-10-18
+# speed-first order) - with 170+ plugins at 16-way concurrency that was
+# mathematically impossible to finish: live check 2026-10-20 showed a scan
+# skipping 138 of 170 plugins as "skipped: time budget" and returning only
+# 25 findings. Jay's 2026-10-20 order (find more) raises the budget to
+# 600s. Findings still stream live in priority order, so the first
+# critical finding still lands in <15s; the longer budget only lets the
+# rest of the plugins actually run instead of being cut. The dispatcher:
+#  - runs plugins in priority order (high-signal first),
 #  - after SCAN_SOFT_STOP_S only HIGH-priority plugins start (the rest are
 #    recorded as ok(0) "skipped: time budget", never an error),
 #  - after SCAN_HARD_STOP_S no new plugin starts,
 #  - caps every in-flight plugin's timeout at the remaining budget, so the
 #    last job always finishes by the deadline.
 # All are env-overridable for tuning.
-SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "80"))
-SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "65"))
-SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "72"))
+SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "600"))
+SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "480"))
+SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "560"))
 # Seconds reserved at the end of the budget for the correlation graph,
 # summary persistence, and run_done emission. In-flight plugins are killed
-# by (budget - SCAN_TAIL_RESERVE_S) so run_done always lands < 80s.
-SCAN_TAIL_RESERVE_S = float(__import__("os").environ.get("RECON_SCAN_TAIL_RESERVE_S", "14"))
+# by (budget - SCAN_TAIL_RESERVE_S) so run_done lands within the budget.
+SCAN_TAIL_RESERVE_S = float(__import__("os").environ.get("RECON_SCAN_TAIL_RESERVE_S", "30"))
 
 
 async def _run_plugin(plugin, target: Target, ctx: Ctx,
@@ -193,7 +201,8 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
 
     deadline: monotonic timestamp of the scan's hard budget end. The
     plugin's effective timeout is the smallest of (a) its own timeout_s,
-    (b) the 60s per-plugin cap, and (c) the time left in the scan budget.
+    (b) the per-plugin cap (MAX_PLUGIN_TIMEOUT_S), and (c) the time left
+    in the scan budget.
     A plugin that cannot finish in the remaining window is killed
     gracefully: ok(0) with a "skipped: timeout" note - never an error,
     never a hang. Findings always win over speed, but a timeout with a
@@ -206,8 +215,8 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     await _emit(ctx.run_id, "plugin_start",
                 {"plugin": plugin.id, "label": plugin.label, "target": target.normalized})
     t0 = time.monotonic()
-    # Per-plugin timeout ceiling from the plugin itself (default 60s),
-    # clamped to the 60s hard cap no matter what a plugin asks for.
+    # Per-plugin timeout ceiling from the plugin itself,
+    # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
     timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
                   or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
     if deadline is not None:
@@ -797,7 +806,17 @@ async def _pump_once() -> bool:
 
 
 async def queue_worker_loop() -> None:
-    """Claim queued plugin jobs from Postgres and run them, forever."""
+    """Claim queued plugin jobs from Postgres and run them, forever.
+
+    Continuous slot-filling (changed 2026-10-20): the old loop claimed a
+    batch of 16 jobs and awaited ALL of them before claiming the next
+    batch, so one slow plugin stalled 15 finished slots and the batch
+    barrier - combined with the old 80s scan budget - meant which plugins
+    got to run at all varied with timing, so findings differed every run.
+    Now a slot is refilled the moment its job finishes: up to
+    MAX_CONCURRENCY jobs run at once, each completion frees its slot for
+    the next queued job (priority order), and every queued job runs.
+    """
     global _worker_http, _worker_limiter
     reset_stale_queue_jobs()
     async with net.async_client(
@@ -806,12 +825,41 @@ async def queue_worker_loop() -> None:
             follow_redirects=True) as http:
         _worker_http = http
         _worker_limiter = RateLimiter(default_rps=config.DEFAULT_RPS)
+        in_flight: set = set()
+
+        def _swallow(task: "asyncio.Task") -> None:
+            # _run_one_job handles its own errors; this only keeps a
+            # stray task exception from logging "never retrieved".
+            if not task.cancelled():
+                task.exception()
+
         while True:
             try:
-                did_work = await _pump_once()
+                in_flight = {t for t in in_flight if not t.done()}
+                free = (max(getattr(config, "MAX_CONCURRENCY", 5), 1)
+                        - len(in_flight))
+                claimed_ids = []
+                if free > 0:
+                    session = get_session()
+                    try:
+                        claimed = _claim_jobs(session, free)
+                        # capture ids while the session is still open
+                        # (commit expires attrs)
+                        claimed_ids = [j.id for j in claimed]
+                    finally:
+                        try:
+                            session.close()
+                        except Exception:
+                            pass
+                for job_id in claimed_ids:
+                    task = asyncio.create_task(_run_one_job(job_id))
+                    task.add_done_callback(_swallow)
+                    in_flight.add(task)
+                await _sweep_finalize()
+                await asyncio.sleep(0.5 if (claimed_ids or in_flight)
+                                    else 2.0)
             except Exception:
-                did_work = False
-            await asyncio.sleep(0.5 if did_work else 2.0)
+                await asyncio.sleep(2.0)
 
 
 def _enqueue_jobs(session, run_id: str, plugins, trobj, bounty: bool = False) -> int:

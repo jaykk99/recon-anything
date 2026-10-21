@@ -96,6 +96,9 @@ class EmailExposurePlugin(Plugin):
     description = ("Hunt publicly exposed credentials for the target: "
                    "GitHub code search, paste compilations, exposed "
                    ".env/config files.")
+    # Several slow external searches; 90s so it finishes instead of being
+    # cut mid-sweep and losing every finding (2026-10-20).
+    timeout_s = 90
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -106,8 +109,24 @@ class EmailExposurePlugin(Plugin):
         mode = self.module_mode(ctx)
         passive = (mode == "passive")
 
-        await self._github_search(domain, ctx, findings)
-        comb_ok = await self._comb_domain(domain, ctx, findings)
+        # Run the independent external searches concurrently (2026-10-20):
+        # sequentially they stacked 20-25s timeouts and the plugin was
+        # killed before returning anything. Each writes to its own list
+        # and results merge in a fixed order, so findings stay
+        # deterministic run to run.
+        gh_findings: List[Finding] = []
+        comb_findings: List[Finding] = []
+        comb_state: List[bool] = []
+
+        async def _comb_wrap() -> None:
+            comb_state.append(
+                await self._comb_domain(domain, ctx, comb_findings))
+
+        await asyncio.gather(
+            self._github_search(domain, ctx, gh_findings), _comb_wrap())
+        findings.extend(gh_findings)
+        findings.extend(comb_findings)
+        comb_ok = comb_state[0] if comb_state else False
         if not passive:
             await self._config_probes(domain, target, ctx, findings)
 
@@ -227,20 +246,30 @@ class EmailExposurePlugin(Plugin):
         the number of hits appended. Any failure (network, format change,
         non-200) silently returns 0; the manual-dork finding covers it."""
         total = 0
-        for q in SG_QUERIES:
-            qtext = q.format(d=domain)
-            url = SOURCEGRAPH_STREAM.format(q=quote(qtext))
+        # Fetch all queries concurrently (was sequential: 3 x 20s timeouts
+        # stacked past the plugin timeout and everything was lost), then
+        # parse in query order so output is deterministic.
+        async def _sg_fetch(q: str):
+            url = SOURCEGRAPH_STREAM.format(q=quote(q.format(d=domain)))
             try:
-                r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                r = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                timeout=20,
                                 headers={"Accept": "text/event-stream",
                                          "User-Agent": "ReconAnything/1.0"})
             except Exception:
-                continue
+                return None
             if r.status_code != 200:
-                continue
+                return None
             try:
-                text = r.text
+                return r.text
             except Exception:
+                return None
+
+        sg_texts = await asyncio.gather(
+            *[_sg_fetch(q) for q in SG_QUERIES])
+        for q, text in zip(SG_QUERIES, sg_texts):
+            qtext = q.format(d=domain)
+            if text is None:
                 continue
             # Event-stream format: lines starting with "data: {json}".
             for line in text.splitlines()[:400]:
@@ -253,8 +282,18 @@ class EmailExposurePlugin(Plugin):
                     obj = json.loads(payload)
                 except Exception:
                     continue
-                results = obj.get("results")
-                if not isinstance(results, list):
+                # Sourcegraph stream events arrive as a JSON LIST of
+                # event objects, not a single dict - the old obj.get()
+                # crashed with "'list' object has no attribute 'get'"
+                # and errored the whole plugin (fixed 2026-10-20).
+                events = obj if isinstance(obj, list) else [obj]
+                results = []
+                for ev_obj in events:
+                    if isinstance(ev_obj, dict):
+                        r = ev_obj.get("results")
+                        if isinstance(r, list):
+                            results.extend(r)
+                if not results:
                     continue
                 for item in results[:25]:
                     if not isinstance(item, dict):

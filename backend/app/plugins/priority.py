@@ -1,6 +1,8 @@
-"""Scan-time priority tiers for the 120s scan budget (Jay's order 2026-10-18).
+"""Scan-time priority tiers for the scan budget (600s since 2026-10-20).
 
-A full scan has a HARD 120s ceiling. The runner dispatches plugins in
+A full scan has a HARD 600s ceiling (was 80s, which cut most plugins and
+made findings differ every run - Jay's order 2026-10-20: find more). The
+runner dispatches plugins in
 priority order and, as the budget runs out, stops starting new low-priority
 plugins (they are recorded as ok(0) with a "skipped: time budget" note -
 never an error, never a hang).

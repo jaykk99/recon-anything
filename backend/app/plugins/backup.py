@@ -145,7 +145,7 @@ ADMIN_PATHS = [
 
 
 class BackupPlugin(Plugin):
-    timeout_s = 30  # capped: 30s per-plugin ceiling (Jay's order 2026-10-18)
+    timeout_s = 90  # raised 2026-10-20: 30s cap truncated this enumerator mid-work (Jay: find more)
     id = "backup"
     label = "Backup File Sweeper"
     accepts = ["domain", "url"]

@@ -425,12 +425,14 @@ class Plugin(abc.ABC):
     # budget isn't burned on blocked endpoints. Lightweight checks keep
     # running. No effect on non-WAF hosts.
     aggressive: bool = False
-    # Per-plugin timeout ceiling (seconds). Hard-capped at 30s by the
-    # runner (MAX_PLUGIN_TIMEOUT_S): if a plugin hasn't produced anything
-    # in 30s it is killed gracefully (Jay's order 2026-10-18 - speed is
-    # top priority). The scan's global 80s budget can shrink this further
-    # when the clock is running out.
-    timeout_s: int = 30
+    # Per-plugin timeout ceiling (seconds). Hard-capped by the runner
+    # (MAX_PLUGIN_TIMEOUT_S, 120s since 2026-10-20): if a plugin hasn't
+    # produced anything in that window it is killed gracefully. Was a 30s
+    # cap under the 2026-10-18 speed-first order; Jay's 2026-10-20 order
+    # (find more, consistently) raised it so enumerators finish their work
+    # instead of being cut at different points every run. The scan's
+    # global budget can shrink this further when the clock is running out.
+    timeout_s: int = 60
 
     @abc.abstractmethod
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
