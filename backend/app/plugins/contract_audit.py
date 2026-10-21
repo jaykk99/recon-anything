@@ -170,15 +170,24 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                     break
 
         # --- 3b. delegatecall to a non-hardcoded (untrusted) target ---
-        for dm in re.finditer(r"\.delegatecall\s*\(", body):
-            arg_m = re.match(r"\s*([^),;]{0,80})", body[dm.end():])
-            arg = (arg_m.group(1) if arg_m else "").strip()
-            trusted = bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", arg))
-            if not trusted and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", arg):
+        # The TARGET of delegatecall is the receiver (X in X.delegatecall),
+        # not the call arguments (which are just the forwarded calldata).
+        # A receiver that is a 0x address literal or an immutable/constant
+        # state var (set once at deploy time) is effectively hardcoded, so
+        # it is trusted. Anything else (dynamic address, function arg,
+        # mutable state var) is untrusted and gets flagged.
+        for dm in re.finditer(
+                r"((?:0x[0-9a-fA-F]{40})|(?:[A-Za-z_][A-Za-z0-9_]*"
+                r"(?:\.[A-Za-z_][A-Za-z0-9_]*)*))"
+                r"\.delegatecall\s*\(", body):
+            receiver = dm.group(1).split(".")[-1]
+            trusted = bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", receiver))
+            if not trusted and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",
+                                            receiver):
                 # immutable/constant state vars are set once at deploy time:
                 # effectively hardcoded, so trusted. Check the declaration
                 # statement (keyword can come before or after the name).
-                for decl in re.finditer(r"[^;{}]*\b" + re.escape(arg) +
+                for decl in re.finditer(r"[^;{}]*\b" + re.escape(receiver) +
                                         r"\b[^;{}]*;", clean):
                     if re.search(r"\b(immutable|constant)\b", decl.group(0)):
                         trusted = True
@@ -188,7 +197,7 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                     "check": "delegatecall_untrusted", "severity": "high",
                     "function": name,
                     "detail": (f"Function '{name}' delegatecalls to a non-hardcoded "
-                               f"target ({arg[:60] or 'dynamic'}). If the target "
+                               f"target ({receiver[:60] or 'dynamic'}). If the target "
                                "address is attacker-controllable the contract's "
                                "logic can be hijacked (storage lives in the "
                                "caller).")})
