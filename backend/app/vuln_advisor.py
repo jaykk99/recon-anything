@@ -85,6 +85,13 @@ def advise(findings: List[Dict], run_summary: Dict) -> List[Dict]:
             "dry_run_steps": steps,
             "remediation": remediation,
             "evidence_count": len(evidence_refs),
+            # Finding refs (id/plugin/key) so the UI can offer the
+            # findings playground ("test in playground") per candidate.
+            "evidence_refs": [
+                {"id": f.get("id"), "plugin": f.get("plugin"),
+                 "key": f.get("key"),
+                 "value": str(f.get("value") or "")[:160]}
+                for f in evidence_refs[:5] if isinstance(f, dict)],
         })
 
     # -- 1. Exposed .git -> full source reconstruction ---------------------

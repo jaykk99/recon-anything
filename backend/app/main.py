@@ -8,6 +8,9 @@ Routes:
   GET  /api/runs/{id}/stream    SSE live progress + findings
   GET  /api/runs                list runs
   GET  /api/runs/{id}           run detail + findings + summary
+  POST /api/runs/{id}/findings/{fid}/retest
+                                findings playground: re-run that finding's
+                                own plugin on its own target, compare fresh
   GET  /api/runs/{id}/graph     correlation graph payload
   GET  /api/runs/{id}/apimap    assembled API map
   GET  /api/runs/{id}/export    ?format=json|csv|md|html
@@ -355,6 +358,29 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
         }
     finally:
         session.close()
+
+
+@app.post("/api/runs/{run_id}/findings/{finding_id}/retest",
+          dependencies=[Depends(gate)])
+async def api_finding_retest(run_id: str, finding_id: int):
+    """Findings playground: re-run the ONE plugin that produced this
+    finding, against this finding's own target, and compare fresh vs
+    stored (unchanged / changed / gone / error).
+
+    The plugin and target come from the stored finding itself - the
+    caller cannot name a URL, a plugin, or a payload, so this cannot
+    be used as a general request tool. Fresh findings are returned,
+    never written back to the run. Rate limited per finding
+    (app/playground.py). See app/playground.py for the full design.
+    """
+    from .playground import PlaygroundError, retest_finding
+    try:
+        return await retest_finding(run_id, finding_id)
+    except PlaygroundError as e:
+        headers = {}
+        if e.retry_after:
+            headers["Retry-After"] = str(int(e.retry_after) + 1)
+        raise HTTPException(e.status_code, e.detail, headers=headers)
 
 
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])
