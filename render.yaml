@@ -1,19 +1,18 @@
-# Render blueprint: ReconAnything UI/API (no workers).
+# Render blueprint: ReconAnything, split into UI/API + worker services.
 #
-# Architecture:
-#   - Render  -> serves the UI + API only (RECON_WORKER_ENABLED=0).
-#                Creates scan jobs in the Postgres queue.
-#   - Railway -> runs the plugin workers (python -m app.worker_main),
-#                any number of replicas. Claims jobs via
-#                SELECT ... FOR UPDATE SKIP LOCKED.
+# Architecture (split done 2026-10-20 on Jay's order - scans must never
+# block the site he is using):
+#   - recon-anything        -> UI + API only (RECON_WORKER_ENABLED=0).
+#                              Creates scan jobs in the Postgres queue.
+#   - recon-anything-worker -> runs the plugin queue
+#                              (python -m app.worker_main). Claims jobs
+#                              via SELECT ... FOR UPDATE SKIP LOCKED.
+#                              Serves a trivial health page on $PORT so
+#                              Render's free web service stays happy;
+#                              keepalive pings + a wake ping on run
+#                              creation (RECON_WORKER_URL) stop spin-down.
 #   - Neon Postgres (DATABASE_URL) is the shared queue + results store.
 #     Scans survive restarts: jobs left queued/running are requeued on boot.
-#
-# Railway worker service setup (dashboard):
-#   - Root directory: backend/
-#   - Start command: python -m app.worker_main
-#   - Env: DATABASE_URL=<same Neon URL>, RECON_CONCURRENCY=5 (per worker)
-#   - No HTTP port needed.
 services:
   - type: web
     name: recon-anything
@@ -23,12 +22,25 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
-        sync: false # set in dashboard (Neon Postgres, shared with workers)
+        sync: false # set in dashboard (Neon Postgres, shared with worker)
       - key: RECON_ACCESS_CODE
         sync: false
       - key: RECON_MASTER_KEY
         sync: false
       - key: RECON_WORKER_ENABLED
-        value: "0" # UI only: Railway workers run the queue
+        value: "0" # UI/API only: the worker service runs the queue
+      - key: RECON_WORKER_URL
+        sync: false # https://recon-anything-worker.onrender.com (wake ping)
+      - key: PYTHONUNBUFFERED
+        value: "1"
+  - type: web
+    name: recon-anything-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerCommand: python -m app.worker_main
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false # same Neon Postgres as the UI service
       - key: PYTHONUNBUFFERED
         value: "1"

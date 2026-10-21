@@ -50,6 +50,29 @@ from .runner import launch_run, subscribe
 log = logging.getLogger("recon-anything")
 
 
+def _wake_worker() -> None:
+    """Ping the standalone worker service so a free-tier instance that
+    spun down wakes up and starts claiming the run just created.
+
+    Fire-and-forget: a background thread with a short timeout, all
+    errors swallowed. No-op when RECON_WORKER_URL is unset (worker
+    in-process or always-on hosting)."""
+    url = os.environ.get("RECON_WORKER_URL", "").rstrip("/")
+    if not url:
+        return
+
+    def _ping() -> None:
+        try:
+            import urllib.request
+            req = urllib.request.Request(url + "/", method="GET")
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception:
+            pass
+
+    import threading
+    threading.Thread(target=_ping, daemon=True).start()
+
+
 def missing_run(run_id: str) -> HTTPException:
     """404 with an actionable message.
 
@@ -237,6 +260,7 @@ async def api_start_run(body: RunIn):
     await launch_run(run_id, body.targets, body.mode,
                      body.plugins, overrides, keys,
                      source_type=body.source_type, bounty=body.bounty)
+    _wake_worker()
     return {"run_id": run_id}
 
 
