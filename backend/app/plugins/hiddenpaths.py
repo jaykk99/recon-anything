@@ -133,6 +133,7 @@ class HiddenPathsPlugin(Plugin):
             findings.append(self._f(
                 "web", "hidden_endpoint", f"/{path} ({status})",
                 f"hiddenpaths: /{path} returned {status}",
+                source_url=urljoin(base + "/", path),
                 confidence=85 if interesting else 60,
                 evidence={"severity": "medium" if status == 200 else "low",
                           "why": f"Unlinked path returns {status}"},

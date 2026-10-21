@@ -544,6 +544,29 @@ class Plugin(abc.ABC):
                 category,
                 "Review this finding and address the underlying issue, "
                 "then re-scan to verify.")
+        # Attacker impact: every finding also says what an attacker
+        # could DO with it, in plain language (descriptive impact only).
+        # Plugins may set their own; otherwise resolve key -> prefix ->
+        # plugin -> category from app.impact.
+        if not ev.get("attacker_impact"):
+            try:
+                from ..impact import attacker_impact_for
+                ev["attacker_impact"] = attacker_impact_for(
+                    key, self.id, category)
+            except Exception:
+                ev["attacker_impact"] = (
+                    "This observation helps an attacker map or weaken "
+                    "the target; see the finding detail.")
+        # Hash findings: name the algorithm (from its format or the
+        # plugin's own label) and what the hash is for, in the impact
+        # text and as hash_type/hash_purpose fields. Identification
+        # only - no cracking, ever.
+        try:
+            from ..impact import apply_hash_annotation
+            apply_hash_annotation(ev, key=key, plugin_id=self.id,
+                                  category=category, value=value)
+        except Exception:
+            pass
         if bv is None:
             bv = bounty_tier_for(key, raw_sev)
         return Finding(plugin_id=self.id, category=category, key=key, value=value,
