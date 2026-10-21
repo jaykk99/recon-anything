@@ -11,11 +11,20 @@ of them from re-walking the same branch.
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..models import HuntAction, HuntMemory, KnownAsset
+from ..models import (HuntAction, HuntMemory, KnownAsset, PluginJob,
+                      Run, Target as TargetRow)
 
 DEFAULT_SYSTEM = "recon"
+
+# Dead ends expire: a branch that produced nothing once (a plugin
+# timeout, a host briefly down) must not be blocked forever, or the
+# known set stops compounding. Entries older than the TTL are
+# ignored by dead_end_values and the branch may be re-hunted.
+DEAD_END_TTL_DAYS = float(
+    os.environ.get("RECON_HUNTER_DEAD_END_TTL_DAYS", "7"))
 
 
 def _now():
@@ -142,6 +151,157 @@ def hunter_stats(session, system: str) -> Dict[str, Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Agent activity feed (per run): the audit trail made readable
+# ---------------------------------------------------------------------------
+
+# Pseudo-agents that act in a run without being hunter roles.
+_AGENT_LABELS = {
+    "seed": "Seed targets",
+    "hunter_engine": "Expansion engine",
+    "chain_engine": "Finding-driven chaining",
+    "known_set": "Known set (earlier scans)",
+}
+
+
+def describe_action(row) -> str:
+    """Plain-language line for one audit row, built from the stored
+    fields so the activity feed reads like 'dns_hunter found ip
+    1.2.3.4 from an A-record finding' instead of raw codes. Works for
+    rows written before this helper existed - nothing new had to be
+    stored."""
+    hunter = row.hunter or "hunter"
+    action = row.action or ""
+    atype = row.asset_type or ""
+    aval = row.asset_value or ""
+    d = row.detail if isinstance(row.detail, dict) else {}
+    if action == "asset_found":
+        via = d.get("via") or ""
+        if via == "known_set":
+            how = "re-seeded from the known set"
+        elif via == "target":
+            how = "seed target"
+        elif via == "shape":
+            how = "spotted in finding text"
+        elif via:
+            how = f"from a '{via}' finding"
+        else:
+            how = "from scan findings"
+        return f"{hunter} found {atype} {aval} ({how})".strip()
+    if action == "job_enqueued":
+        plugin = d.get("plugin") or "a plugin"
+        target = d.get("target") or aval
+        if d.get("via") == "finding_chain":
+            signals = ", ".join(d.get("signals") or []) or "a finding"
+            return (f"{hunter} queued {plugin} on {target} because of "
+                    f"{signals} findings (finding-driven chain)")
+        depth = d.get("depth")
+        suffix = f" at depth {depth}" if depth is not None else ""
+        return (f"{hunter} queued {plugin} on {target} to verify "
+                f"{atype} {aval}{suffix}").strip()
+    if action == "expand_pass":
+        chained = d.get("chained_jobs") or 0
+        chain_note = (f", {chained} chained from findings"
+                      if chained else "")
+        return (f"Expansion pass at depth {d.get('depth', 0)}: "
+                f"{d.get('new_assets', 0)} new assets, "
+                f"{d.get('jobs_enqueued', 0)} jobs queued{chain_note}")
+    if action == "dead_end":
+        return (f"{hunter} closed {atype} {aval} as a dead end "
+                f"(produced no findings)").strip()
+    if action == "note":
+        return f"{hunter}: {d.get('note') or aval or 'note'}"
+    return f"{hunter} {action} {atype} {aval}".strip()
+
+
+def run_agent_activity(session, system: str, run_id: str,
+                       limit: int = 500) -> Dict:
+    """One run's agent activity: the chronological feed plus a
+    per-agent rollup (actions, assets found, jobs queued, findings
+    those jobs produced, current status).
+
+    Status is derived, not stored: an agent is "working" while any
+    job it queued is queued/running (or the run is live and the agent
+    is the engine itself), "done" when the run is finished, and
+    "abandoned" when every job it queued ended failed/skipped with
+    none completing - the watchdog/stale-claim sweep dropped its
+    work."""
+    from ..hunters.roles import HUNTERS
+    specialties = {h["name"]: h["specialty"] for h in HUNTERS}
+    run = session.query(Run).filter_by(id=run_id).first()
+    run_status = run.status if run else ""
+    rows = (session.query(HuntAction)
+            .filter_by(system=system, run_id=run_id)
+            .order_by(HuntAction.id.asc()).all())
+    targets = (session.query(TargetRow).filter_by(run_id=run_id).all())
+    target_id_by_norm = {t.normalized: t.id for t in targets}
+    jobs = (session.query(PluginJob).filter_by(run_id=run_id).all())
+    job_by_key = {(j.target_id, j.plugin_id): j for j in jobs}
+
+    feed: List[Dict] = []
+    agents: Dict[str, Dict] = {}
+
+    def agent(name: str) -> Dict:
+        return agents.setdefault(name, {
+            "name": name,
+            "specialty": specialties.get(name)
+            or _AGENT_LABELS.get(name, ""),
+            "actions": 0, "assets_found": 0, "jobs_enqueued": 0,
+            "chained_jobs": 0, "dead_ends": 0,
+            "findings_contributed": 0, "last_action_at": None,
+            "status": "done", "_job_states": []})
+
+    for r in rows:
+        feed.append({
+            "id": r.id, "run_id": r.run_id, "agent": r.hunter,
+            "action": r.action, "asset_type": r.asset_type,
+            "asset_value": r.asset_value,
+            "description": describe_action(r),
+            "detail": r.detail or {},
+            "at": r.created_at.isoformat() if r.created_at else None})
+        a = agent(r.hunter)
+        a["actions"] += 1
+        a["last_action_at"] = feed[-1]["at"]
+        d = r.detail if isinstance(r.detail, dict) else {}
+        if r.action == "asset_found":
+            a["assets_found"] += 1
+        elif r.action == "dead_end":
+            a["dead_ends"] += 1
+        elif r.action == "job_enqueued":
+            a["jobs_enqueued"] += 1
+            if d.get("via") == "finding_chain":
+                a["chained_jobs"] += 1
+            tid = target_id_by_norm.get(d.get("target") or "")
+            job = job_by_key.get((tid, d.get("plugin") or ""))
+            if job is not None:
+                a["_job_states"].append(job.status)
+                if job.status == "done":
+                    result = job.result if isinstance(job.result, dict) \
+                        else {}
+                    a["findings_contributed"] += int(
+                        result.get("findings") or 0)
+    out_agents = []
+    for a in agents.values():
+        states = a.pop("_job_states")
+        if states and all(s in ("failed", "skipped") for s in states):
+            a["status"] = "abandoned"
+        elif run_status == "done":
+            a["status"] = "done"
+        elif any(s in ("queued", "running") for s in states):
+            a["status"] = "working"
+        elif run_status in ("running", "finalizing"):
+            a["status"] = "working" if a["name"] in (
+                "hunter_engine", "chain_engine") else "idle"
+        else:
+            a["status"] = "done"
+        out_agents.append(a)
+    out_agents.sort(key=lambda a: (-a["actions"], a["name"]))
+    return {"run_id": run_id, "run_status": run_status,
+            "total_actions": len(feed),
+            "actions": feed[-max(1, int(limit)):],
+            "agents": out_agents}
+
+
+# ---------------------------------------------------------------------------
 # Hunt memory
 # ---------------------------------------------------------------------------
 
@@ -176,7 +336,22 @@ def dead_end_values(session, system: str, target_key: str) -> Set[str]:
            .filter_by(system=system, target_key=target_key).first())
     if row is None:
         return set()
-    return {(d.get("value") or "") for d in (row.dead_ends or [])}
+    cutoff = _now() - dt.timedelta(days=DEAD_END_TTL_DAYS)
+    out: Set[str] = set()
+    for d in (row.dead_ends or []):
+        at = d.get("at")
+        if at:
+            try:
+                ts = dt.datetime.fromisoformat(str(at))
+            except ValueError:
+                ts = None
+            # Unparseable or timezone-naive stamps are treated as
+            # fresh (kept): expiring on a guess could reopen a branch
+            # that was deliberately closed.
+            if ts is not None and ts.tzinfo is not None and ts < cutoff:
+                continue
+        out.add(d.get("value") or "")
+    return out
 
 
 def add_dead_end(session, system: str, target_key: str, asset_type: str,

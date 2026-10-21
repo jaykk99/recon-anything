@@ -15,6 +15,7 @@ Routes:
   GET/POST/DELETE /api/keys     API key vault
   GET/POST/DELETE /api/schedules
 
+  GET  /api/runs/{id}/agent-activity  per-run agent feed + rollup
   GET  /api/hunters             hunter roster + lifetime stats
   GET  /api/hunters/memory      per-target hunt memory (?target=)
   GET  /api/hunters/known-set   a target's full known set (?target=)
@@ -353,6 +354,26 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
             # done/total, eta_s, and currently-running plugin names.
             "progress": run_progress(session, run_id),
         }
+    finally:
+        session.close()
+
+
+@app.get("/api/runs/{run_id}/agent-activity",
+         dependencies=[Depends(gate)])
+def api_run_agent_activity(run_id: str, limit: int = 500):
+    """Live agent-activity feed for one run: every hunt_actions row
+    in order with a plain-language description and agent
+    attribution, plus a per-agent rollup (actions, assets found,
+    jobs queued, findings those jobs produced, status). The UI polls
+    this while a scan runs so Jay can watch the agents work."""
+    from .agentdata import store
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        return store.run_agent_activity(
+            session, store.DEFAULT_SYSTEM, run_id, limit=limit)
     finally:
         session.close()
 
