@@ -206,6 +206,11 @@ class PluginJob(Base):
     plugin_id = Column(String, index=True)
     phase = Column(Integer, default=1)  # 1 = main pass, 2 = chain consumers
     priority = Column(Integer, default=2)  # 1 = HIGH, 2 = MEDIUM, 3 = LOW
+    # Estimated seconds for this plugin (from PLUGIN_TIME_ESTIMATES at
+    # enqueue). The claim query orders by (priority, phase, estimate_s) so
+    # fast plugins stream their findings first *within* each tier -
+    # Jay's priority policy is untouched, quick wins just land earlier.
+    estimate_s = Column(Integer, default=12)
     status = Column(String, default="queued", index=True)  # queued|running|done|skipped|failed
     attempts = Column(Integer, default=0)
     result = Column(JSON, nullable=True)  # {status, reason, findings, ms}

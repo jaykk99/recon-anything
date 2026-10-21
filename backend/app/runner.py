@@ -294,6 +294,15 @@ PLUGIN_TIME_ESTIMATES = {
     "supplychain": 20, "enterprise": 15, "iot": 15, "k8s": 12,
     "docker": 12, "hypervisor": 12, "cloud": 15, "fingerprint": 15,
     "hiddenpaths": 25, "bola": 15, "blogic": 15,
+    # 2026-10-20 quota batch: web-security, protocol, and infra plugins.
+    "cookie_security": 8, "csp_audit": 8, "hsts": 10, "http_methods": 8,
+    "error_pages": 10, "exposed_debug": 8, "phpinfo": 10,
+    "mixed_content": 8, "http2_check": 10, "graphql_probe": 15,
+    "rate_limit_audit": 8, "web_manifest": 10, "sri_audit": 8,
+    "html_comments": 8, "trackers": 8, "well_known_audit": 10,
+    "redirect_chain": 10, "dns_infra": 20, "ipv6_check": 10,
+    "ip_reputation": 15, "smtp_tls": 20, "cdn_detect": 8,
+    "typosquat": 45, "tls_config": 15, "caa_audit": 8,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
@@ -425,21 +434,36 @@ def _budget_skip_reason() -> str:
             f"{int(SCAN_BUDGET_S)}s scan ceiling")
 
 
+def _queued_jobs_query(session):
+    """Queued jobs in dispatch order: priority, phase, estimate, id.
+
+    The estimate_s tiebreaker streams fast plugins first *within* each
+    (priority, phase) tier without changing Jay's priority policy.
+    coalesce guards rows enqueued before estimate_s existed.
+    """
+    from sqlalchemy import func
+    return (session.query(PluginJob)
+            .filter(PluginJob.status == "queued")
+            .order_by(PluginJob.priority, PluginJob.phase,
+                      func.coalesce(PluginJob.estimate_s,
+                                    DEFAULT_PLUGIN_ESTIMATE_S),
+                      PluginJob.id))
+
+
 def _claim_jobs(session, limit: int):
     """Claim up to `limit` queued jobs for this worker.
 
-    Ordering: priority tier first, then phase, then id. Phase-2 jobs wait
-    until no phase-1 jobs remain pending for their run (preserves the
-    discovery-bus producer -> consumer ordering). Budget gates from the
+    Ordering: priority tier first, then phase, then estimated duration,
+    then id. Phase-2 jobs wait until no phase-1 jobs remain pending for
+    their run (preserves the discovery-bus producer -> consumer ordering).
+    The estimate_s tiebreaker keeps Jay's priority policy intact while
+    quick wins stream first *within* each tier. Budget gates from the
     scan clock apply: past the hard stop jobs are recorded skipped, past
     the soft stop only HIGH-priority jobs start.
     """
     from .models import IS_SQLITE
     now_mono = time.monotonic()
-    q = (session.query(PluginJob)
-         .filter(PluginJob.status == "queued")
-         .order_by(PluginJob.priority, PluginJob.phase, PluginJob.id)
-         .limit(limit * 4))
+    q = _queued_jobs_query(session).limit(limit * 4)
     if not IS_SQLITE:
         q = q.with_for_update(skip_locked=True)
     candidates = q.all()
@@ -871,7 +895,10 @@ def _enqueue_jobs(session, run_id: str, plugins, trobj, bounty: bool = False) ->
     """Insert one PluginJob per (plugin x target) pair. Returns job count."""
     jobs = [PluginJob(run_id=run_id, target_id=t.id, plugin_id=p.id,
                       phase=getattr(p, "phase", 1),
-                      priority=priority_for(p.id, bounty=bounty), status="queued")
+                      priority=priority_for(p.id, bounty=bounty),
+                      estimate_s=PLUGIN_TIME_ESTIMATES.get(
+                          p.id, DEFAULT_PLUGIN_ESTIMATE_S),
+                      status="queued")
             for t in trobj for p in plugins]
     if jobs:
         session.bulk_save_objects(jobs)
