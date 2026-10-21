@@ -868,3 +868,39 @@ def test_caa_no_issuewild(canned_dns):
     res = _run("caa_audit", _domain_target(), CtxStub())
     assert "caa_no_issuewild" in _keys(res)
     assert "caa_missing" not in _keys(res)
+
+
+# ---------------------------------------------------------------------------
+# fastmode: new inline checks reuse the audit helpers
+# ---------------------------------------------------------------------------
+
+def test_fastmode_cookie_csp_hsts(monkeypatch):
+    from app.plugins import fastmode as fm
+    home = _resp(
+        "https://example.com/",
+        headers=[("set-cookie", "sessid=abc; Path=/"),
+                 ("content-security-policy",
+                  "script-src 'unsafe-inline' 'self'"),
+                 ("strict-transport-security", "max-age=1000")],
+        text="<html></html>")
+    # stub the network-heavy parts; we only exercise the homepage checks
+    async def fake_fetch_many(client, limiter, requests, **kw):
+        return [home] + [None] * (len(requests) - 1)
+
+    async def fake_fetch(client, limiter, method, url, **kw):
+        raise ConnectionError("stubbed")
+
+    monkeypatch.setattr(fm, "fetch_many", fake_fetch_many, raising=False)
+    monkeypatch.setattr(fm, "fetch", fake_fetch, raising=False)
+    monkeypatch.setattr(fm.socket, "gethostbyname",
+                        lambda h: (_ for _ in ()).throw(
+                            OSError("stubbed")))
+    import dns.asyncresolver
+    monkeypatch.setattr(dns.asyncresolver, "Resolver", CannedResolver)
+    CannedResolver.answers = {}
+    p = fm.FastmodePlugin()
+    res = asyncio.run(p.run(_url_target("https://example.com"), CtxStub()))
+    keys = {f.key for f in res.findings}
+    assert "fast_cookie_flags" in keys
+    assert "fast_csp_unsafe_inline" in keys
+    assert "fast_hsts_weak" in keys

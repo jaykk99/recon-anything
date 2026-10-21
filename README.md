@@ -93,7 +93,12 @@ Rules:
   `ratelimit.fetch` (global + per-host limits, 429 Retry-After, backoff).
 - Tag each finding with the mode that produced it (`passive=True/False`).
 
-### Shipped plugins (12)
+### Shipped plugins (197 and counting)
+
+The registry auto-discovers every `Plugin` subclass in
+`backend/app/plugins/` - drop in a file, no central list to edit.
+Below are the core ones; the health gate (`backend/tests/test_plugin_health.py`)
+enforces unique ids, valid groups, and metadata on all 197.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -113,6 +118,55 @@ Rules:
 With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
+
+### New plugins (2026-10-20 batch)
+
+25 passive audit plugins, each with canned-response tests in
+`backend/tests/test_new_plugins.py` and a dead-network resilience gate
+(`test_plugin_resilience.py`) covering all 197 plugins:
+
+| id | label | what it does |
+|----|-------|--------------|
+| cookie_security | Cookie Security Flags | Secure/HttpOnly/SameSite audit, __Host-/__Secure- prefix rules |
+| csp_audit | CSP Policy Audit | grades an existing CSP: unsafe-inline/eval, wildcards, data:, missing object-src/base-uri |
+| hsts | HSTS Analysis | max-age, includeSubDomains, preload readiness, bare-domain downgrade probe |
+| http_methods | HTTP Methods Audit | OPTIONS-advertised verbs: TRACE/XST, PUT/DELETE, WebDAV, DEBUG (never exercised) |
+| error_pages | Error Page Disclosure | stack traces, debug mode, SQL errors, path disclosure on 404/500 pages |
+| exposed_debug | Exposed Debug Toolbars | Django/Symfony/Laravel/Rails toolbar markers in prod HTML |
+| phpinfo | phpinfo() Exposure | conventional phpinfo paths, marker-confirmed |
+| mixed_content | Mixed Content | http:// subresources on https pages (active vs passive) |
+| http2_check | HTTP/2 / HTTP/3 Support | ALPN-negotiated protocol detection |
+| graphql_probe | GraphQL Exposure | endpoint detection + introspection availability (read-only queries) |
+| rate_limit_audit | Rate-Limit Headers | documents advertised limits vs undocumented throttling |
+| web_manifest | PWA Manifest / SW Audit | scope, icons, start_url, service-worker scope header |
+| sri_audit | Subresource Integrity | cross-origin scripts/styles missing integrity attributes |
+| html_comments | HTML Comment Intel | TODOs, credential patterns, internal hosts, commented endpoints |
+| trackers | Third-Party Trackers | inventory of adtech/analytics with script access |
+| well_known_audit | Well-Known URIs | security.txt, change-password, assetlinks, app-site-association, gpc.json |
+| redirect_chain | Redirect Chain | downgrades, off-domain hops, loops, long chains |
+| dns_infra | DNS Infra Health | lame delegation, missing glue, SOA health, single-NS risk |
+| ipv6_check | IPv6 Support | AAAA records + real IPv6 connectivity (broken dual-stack detection) |
+| ip_reputation | IP Reputation (DNSBL) | Spamhaus/Barracuda/SpamCop/SORBS listings |
+| smtp_tls | Mail Server TLS | STARTTLS advertisement vs working handshake, cleartext AUTH |
+| cdn_detect | CDN Detection | edge provider from headers/CNAMEs (no origin hunting) |
+| typosquat | Typosquat Domains | generated lookalikes that actually resolve |
+| tls_config | TLS Config Audit | deprecated versions, weak ciphers, CRIME, forward secrecy |
+| caa_audit | CAA Policy Audit | missing policy, issuewild gaps, issuance forbids |
+
+Fast mode (`fastmode` plugin) now also runs inline cookie-flag, CSP,
+HSTS and GraphQL triage checks reusing these plugins' graders.
+
+### API notes
+
+- `GET /api/runs` no longer embeds each run's full summary JSON (it made
+  the list ~6s idle). Light columns only, plus `findings_count` from one
+  indexed `GROUP BY`; pass `?summary=1` for the full blobs. `runs.created_at`
+  is indexed.
+- Job dispatch order is `(priority, phase, estimate_s)`: Jay's priority
+  tiers are unchanged, but fast plugins stream first *within* each tier.
+- Vuln advisor candidates carry `confidence_basis` ("direct evidence: ..."
+  vs "heuristic: ...") and `needs_manual_verification` so the UI can
+  label heuristic findings honestly.
 
 ### API keys
 

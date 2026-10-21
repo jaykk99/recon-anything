@@ -22,6 +22,10 @@ from typing import Dict, List, Optional, Tuple
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from .base import Cost, Ctx, Plugin, PluginResult, Target
+# Reuse the audit plugins' pure graders so fastmode's inline checks never
+# drift from the full-scan verdicts.
+from .csp_audit import _grade_csp as _grade_csp_policy, _parse_csp
+from .hsts import _parse_hsts
 
 # Top risky ports for the fast TCP sweep (connect-only, short timeout).
 FAST_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 993, 995,
@@ -110,6 +114,8 @@ class FastmodePlugin(Plugin):
             findings.extend(self._check_banner(home, base))
             findings.extend(self._check_tech(home, base))
             findings.extend(self._check_waf(home, base))
+            findings.extend(self._check_cookie_flags(home, base))
+            findings.extend(self._check_csp_hsts(home, base))
         else:
             findings.append(self._f(
                 "web", "fast_home_unreachable",
@@ -139,6 +145,9 @@ class FastmodePlugin(Plugin):
         tls_f = await self._check_tls(domain)
         if tls_f:
             findings.append(tls_f)
+
+        # --- 2b. GraphQL quick probe (one harmless __typename) ------------
+        findings.extend(await self._check_graphql(base, ctx))
 
         # --- 3. crt.sh subdomains (fast, keyless) ----------------------
         findings.extend(await self._check_subdomains(domain, ctx))
@@ -250,6 +259,97 @@ class FastmodePlugin(Plugin):
                 source="fastmode triage", source_url=url, confidence=90,
                 evidence={"severity": "low", "waf": waf,
                           "remediation": REMEDIATION}))
+        return out
+
+    def _check_cookie_flags(self, resp, url: str) -> List:
+        # Fast inline version of the cookie_security audit: only the
+        # highest-signal misses, summarized in one finding.
+        out = []
+        raw = resp.headers.get_list("set-cookie") \
+            if hasattr(resp.headers, "get_list") else []
+        if not raw:
+            single = resp.headers.get("set-cookie")
+            raw = [single] if single else []
+        bad = 0
+        for c in raw:
+            parts = [p.strip() for p in c.split(";")]
+            if not parts or "=" not in parts[0]:
+                continue
+            attrs = {}
+            for p in parts[1:]:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    attrs[k.strip().lower()] = v.strip()
+                else:
+                    attrs[p.strip().lower()] = True
+            name = parts[0].split("=", 1)[0].strip().lower()
+            sess = any(k in name for k in ("sess", "auth", "token", "sid"))
+            if sess and ("httponly" not in attrs or "secure" not in attrs):
+                bad += 1
+        if bad:
+            out.append(self._f(
+                "web", "fast_cookie_flags",
+                f"{bad} session-ish cookie(s) missing Secure/HttpOnly",
+                source="fastmode triage", source_url=url, confidence=85,
+                evidence={"severity": "medium", "count": bad,
+                          "remediation": REMEDIATION}))
+        return out
+
+    def _check_csp_hsts(self, resp, url: str) -> List:
+        # Fast inline grading via the shared audit helpers: only the
+        # bypass-grade weaknesses, one finding each.
+        out = []
+        is_https = url.startswith("https://")
+        csp = resp.headers.get("content-security-policy", "")
+        if csp:
+            policy = _parse_csp(csp)
+            for w in _grade_csp_policy(policy, is_https):
+                if w["key"] in ("csp_unsafe_inline", "csp_unsafe_eval",
+                                "csp_wildcard_script_src",
+                                "csp_data_script_src"):
+                    out.append(self._f(
+                        "web", "fast_" + w["key"], w["message"],
+                        source="fastmode triage", source_url=url,
+                        confidence=85,
+                        evidence={"severity": w["severity"],
+                                  "directive": w["directive"],
+                                  "remediation": REMEDIATION}))
+        hsts = resp.headers.get("strict-transport-security", "")
+        if hsts:
+            h = _parse_hsts(hsts)
+            try:
+                age = int(str(h.get("max-age", "0")).strip('"'))
+            except (ValueError, TypeError):
+                age = 0
+            if age < 31536000 or "includesubdomains" not in h:
+                out.append(self._f(
+                    "web", "fast_hsts_weak",
+                    f"HSTS weak: max-age={age}, "
+                    f"includeSubDomains={'includesubdomains' in h}",
+                    source="fastmode triage", source_url=url, confidence=85,
+                    evidence={"severity": "low", "max_age": age,
+                              "remediation": REMEDIATION}))
+        return out
+
+    async def _check_graphql(self, base: str, ctx: Ctx) -> List:
+        # One harmless __typename probe; introspection stays in the full scan.
+        out = []
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", base + "/graphql",
+                            json={"query": "{__typename}"}, timeout=8,
+                            max_retries=0)
+            data = r.json() if r is not None else {}
+            if isinstance(data.get("data"), dict) and \
+                    "__typename" in data["data"]:
+                out.append(self._f(
+                    "api", "fast_graphql",
+                    "GraphQL endpoint detected at /graphql",
+                    source="fastmode triage",
+                    source_url=base + "/graphql", confidence=80,
+                    evidence={"severity": "low",
+                              "remediation": REMEDIATION}))
+        except Exception:
+            pass
         return out
 
     def _check_robots(self, resp, domain: str) -> List:
