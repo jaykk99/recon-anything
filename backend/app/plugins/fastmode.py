@@ -111,7 +111,6 @@ class FastmodePlugin(Plugin):
         home = resps[0] if resps else None
         if home is not None and getattr(home, "status_code", 0) == 200:
             findings.extend(self._check_headers(home, base))
-            findings.extend(self._check_banner(home, base))
             findings.extend(self._check_tech(home, base))
             findings.extend(self._check_waf(home, base))
             findings.extend(self._check_cookie_flags(home, base))
@@ -212,9 +211,6 @@ class FastmodePlugin(Plugin):
                           "x_powered_by": x_powered,
                           "remediation": REMEDIATION}))
         return out
-
-    def _check_banner(self, resp, url: str) -> List:
-        return []
 
     def _check_tech(self, resp, url: str) -> List:
         out = []
