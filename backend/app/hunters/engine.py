@@ -231,8 +231,17 @@ def _per_hunter(accum: Dict, hunter: str) -> Dict:
     return accum["per_hunter"].setdefault(hunter, {"assets": 0, "jobs": 0})
 
 
-def hunter_expand(session, run: Run, accum: Dict) -> int:
-    """Run one expansion pass. Mutates accum. Returns jobs enqueued."""
+def hunter_expand(session, run: Run, accum: Dict,
+                  advance_depth: bool = True) -> int:
+    """Run one expansion pass. Mutates accum. Returns jobs enqueued.
+
+    advance_depth=False is the incremental mid-run mode used by the
+    runner's hunter sweep: jobs join the live queue as findings land,
+    but the depth counter (asset generations) only advances on the
+    settle/finalize passes, so early passes cannot burn the depth
+    budget before late findings arrive. The expanded-marker set and
+    the task budget bound incremental passes exactly like settle ones.
+    """
     if not ENABLED:
         return 0
     findings = session.query(FindingRow).filter_by(run_id=run.id).all()
@@ -305,6 +314,8 @@ def hunter_expand(session, run: Run, accum: Dict) -> int:
 
     from ..plugins.registry import discover
     from ..plugins.priority import priority_for
+    from ..runner import (DEFAULT_PLUGIN_ESTIMATE_S,
+                          PLUGIN_TIME_ESTIMATES)
     registry = discover()
     existing_targets = {t.normalized for t in targets}
     existing_jobs = {(j.target_id, j.plugin_id) for j in
@@ -359,6 +370,8 @@ def hunter_expand(session, run: Run, accum: Dict) -> int:
                     run_id=run.id, target_id=trobj.id, plugin_id=pid,
                     phase=getattr(pinst, "phase", 1),
                     priority=priority_for(pid, bounty=bounty),
+                    estimate_s=PLUGIN_TIME_ESTIMATES.get(
+                        pid, DEFAULT_PLUGIN_ESTIMATE_S),
                     status="queued"))
                 existing_jobs.add((trobj.id, pid))
                 accum["tasks_used"] += 1
@@ -380,7 +393,7 @@ def hunter_expand(session, run: Run, accum: Dict) -> int:
                                 "jobs_enqueued": enqueued,
                                 "knowledge": knowledge_snapshot(session)})
     accum["jobs"] += enqueued
-    if enqueued:
+    if enqueued and advance_depth:
         accum["depth"] = depth + 1
     return enqueued
 

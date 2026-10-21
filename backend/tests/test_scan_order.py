@@ -1,10 +1,14 @@
-"""Tests for scan dispatch ordering (fastest-first within tier).
+"""Tests for scan dispatch ordering (anti-starvation within tier).
 
 Jay's priority policy is unchanged: HIGH tier beats MEDIUM beats LOW,
-phase 1 beats phase 2. Within the same (priority, phase) the claim
-query now orders by the plugin's time estimate so quick wins stream
-first. Rows enqueued before estimate_s existed (NULL) fall back to
-the default estimate.
+phase 1 beats phase 2. Within the same (priority, phase), claiming no
+longer streams strictly fastest-first: that order left the slowest
+plugins queued until the scan budget's soft stop mass-skipped them
+(34 of 170 cut on the 2026-10-20 verification scan). _dispatch_order
+interleaves longest-first with shortest-first inside each tier, so
+long jobs start in the first claim waves and mid-length jobs fill the
+tail. Rows enqueued before estimate_s existed (NULL) fall back to the
+default estimate.
 """
 import os
 import sys
@@ -21,7 +25,7 @@ import pytest  # noqa: E402
 
 from app.models import PluginJob, get_session, init_db  # noqa: E402
 from app.runner import (DEFAULT_PLUGIN_ESTIMATE_S, PLUGIN_TIME_ESTIMATES,  # noqa: E402
-                        _queued_jobs_query)
+                        _dispatch_order, _queued_jobs_query)
 
 
 @pytest.fixture()
@@ -44,11 +48,54 @@ def _job(s, pid, priority, phase=1, estimate=None):
 
 
 def test_fastest_first_within_tier(session):
+    # The base query contract is unchanged (deterministic SQL order);
+    # claiming re-orders with _dispatch_order (see below).
     _job(session, "slow", priority=2, phase=1, estimate=60)
     _job(session, "fast", priority=2, phase=1, estimate=5)
     _job(session, "mid", priority=2, phase=1, estimate=20)
     order = [j.plugin_id for j in _queued_jobs_query(session).all()]
     assert order == ["fast", "mid", "slow"]
+
+
+def test_dispatch_order_no_starvation(session):
+    # The longest job in the tier is claimed FIRST, then the fastest:
+    # slow plugins can no longer be stranded at the budget's soft stop.
+    _job(session, "slow", priority=2, phase=1, estimate=60)
+    _job(session, "fast", priority=2, phase=1, estimate=5)
+    _job(session, "mid", priority=2, phase=1, estimate=20)
+    order = [j.plugin_id for j in
+             _dispatch_order(_queued_jobs_query(session).all())]
+    assert order == ["slow", "fast", "mid"]
+
+
+def test_dispatch_interleave_longest_first(session):
+    for est in (60, 45, 30, 20, 12, 8, 5):
+        _job(session, f"p{est}", priority=2, phase=1, estimate=est)
+    order = [j.plugin_id for j in
+             _dispatch_order(_queued_jobs_query(session).all())]
+    # longest, shortest, 2nd longest, 2nd shortest, ... mid-length last
+    assert order == ["p60", "p5", "p45", "p8", "p30", "p12", "p20"]
+
+
+def test_dispatch_priority_and_phase_dominate(session):
+    _job(session, "slow-high", priority=1, phase=1, estimate=300)
+    _job(session, "fast-low", priority=3, phase=1, estimate=1)
+    _job(session, "slow-p1", priority=2, phase=1, estimate=300)
+    _job(session, "fast-p2", priority=2, phase=2, estimate=1)
+    order = [j.plugin_id for j in
+             _dispatch_order(_queued_jobs_query(session).all())]
+    assert order == ["slow-high", "slow-p1", "fast-p2", "fast-low"]
+
+
+def test_dispatch_null_estimate_uses_default(session):
+    _job(session, "legacy", priority=2, phase=1, estimate=None)
+    _job(session, "quick", priority=2, phase=1, estimate=5)
+    _job(session, "slower", priority=2, phase=1,
+         estimate=DEFAULT_PLUGIN_ESTIMATE_S + 50)
+    order = [j.plugin_id for j in
+             _dispatch_order(_queued_jobs_query(session).all())]
+    # legacy counts as the default (12): desc [62, 12, 5] interleaved
+    assert order == ["slower", "quick", "legacy"]
 
 
 def test_priority_beats_estimate(session):
@@ -81,6 +128,20 @@ def test_tie_broken_by_id(session):
     order = [j.plugin_id for j in _queued_jobs_query(session).all()]
     ids = [j.id for j in _queued_jobs_query(session).all()]
     assert ids == sorted(ids)
+
+
+def test_claim_takes_longest_in_tier_first(session):
+    from app.models import Run
+    from app.runner import _claim_jobs
+    session.query(Run).delete()
+    session.add(Run(id="r1", status="running", mode="passive"))
+    session.commit()
+    _job(session, "fast", priority=2, phase=1, estimate=5)
+    _job(session, "slow", priority=2, phase=1, estimate=60)
+    claimed = _claim_jobs(session, 1)
+    assert [j.plugin_id for j in claimed] == ["slow"]
+    claimed = _claim_jobs(session, 1)
+    assert [j.plugin_id for j in claimed] == ["fast"]
 
 
 def test_non_queued_excluded(session):

@@ -19,14 +19,18 @@ ACCESS_CODE = env("RECON_ACCESS_CODE", "")  # single-user gate; empty = no gate
 MASTER_KEY = env("RECON_MASTER_KEY", "")  # Fernet key for API key encryption
 USER_AGENT = "ReconAnything/1.0 (+https://github.com/jaykk99/recon-anything)"
 DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
-# 24 parallel plugins: plugins are I/O-bound (waiting on DNS/HTTP), so
+# 32 parallel plugins: plugins are I/O-bound (waiting on DNS/HTTP), so
 # more slots keep the pipe full without hammering the target - the
 # per-host rate limiter (DEFAULT_RPS) still paces actual requests, and
-# WAF/challenge detection already throttles hostile targets. Was 16;
-# raised 2026-10-20 because live scans showed throughput (~90 plugins
-# per 600s at 16 slots on the free-tier instance) was the binding
-# constraint cutting plugins on the scan budget. Env-overridable.
-MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "24"))
+# WAF/challenge detection already throttles hostile targets. Was 16,
+# then 24 (2026-10-20); raised to 32 on 2026-10-21 with the
+# anti-starvation dispatch order, because even at 24 slots the scan
+# budget ceiling - not plugin slowness alone - was cutting 34 of 170
+# plugins. The worker's DB pool is sized to match (models.py:
+# RECON_DB_POOL_SIZE/OVERFLOW, default 30+30); plugin jobs never hold a
+# pooled connection across execution (the 2026-10-20 outage rule), so
+# slot count does not translate into held connections. Env-overridable.
+MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "32"))
 # Per-host request pacing. 50 RPS is still polite for authorized testing
 # (a single browser tab bursts more than this) and keeps the bulk-sweep
 # plugins (artifacts, backup, cloud_buckets: hundreds of probe requests

@@ -9,14 +9,20 @@ can import the same registry later without changes.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import datetime as dt
 import json
+import logging
 import ssl
+import threading
 import time
 import uuid
+import zlib
 from typing import AsyncIterator, Dict, List, Optional
 
 import httpx
+
+log = logging.getLogger("recon-anything.runner")
 
 from . import config
 from . import net
@@ -46,6 +52,27 @@ def _sse(event: str, data: Dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+# Event persistence runs on a dedicated single-thread executor: a scan
+# emits ~750 events (plugin start/done, one per finding, progress), and
+# each durable copy is a synchronous DB commit. Doing that on the event
+# loop (the old behavior) stalled every in-flight plugin behind Neon
+# round-trips hundreds of times per scan. One writer thread keeps the
+# per-run seq ordering intact while the loop stays free for plugins.
+_event_writer = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="run-events")
+
+
+def _persist_event_safe(run_id: str, event: str, data: Dict) -> None:
+    try:
+        _persist_event(run_id, event, data)
+    except Exception:
+        try:
+            init_db()
+            _persist_event(run_id, event, data)
+        except Exception:
+            pass
+
+
 async def _emit(run_id: str, event: str, data: Dict):
     msg = _sse(event, data)
     RUN_EVENT_BUFFER.setdefault(run_id, []).append(msg)
@@ -57,15 +84,14 @@ async def _emit(run_id: str, event: str, data: Dict):
     # Durable copy in run_events: the in-memory bus is invisible to other
     # worker processes and vanishes on restart, which is what silently
     # broke live UI updates. A DB failure must never break a scan.
-    # Self-healing: if the table is missing (wiped DB), recreate and retry.
+    # Self-healing: if the table is missing (wiped DB), recreate and retry
+    # (inside _persist_event_safe, on the writer thread).
     try:
-        _persist_event(run_id, event, data)
-    except Exception:
-        try:
-            init_db()
-            _persist_event(run_id, event, data)
-        except Exception:
-            pass
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_event_writer, _persist_event_safe,
+                                   run_id, event, data)
+    except RuntimeError:
+        _persist_event_safe(run_id, event, data)
 
 
 def _persist_event(run_id: str, event: str, data: Dict):
@@ -191,9 +217,23 @@ MAX_PLUGIN_TIMEOUT_S = 120
 #  - caps every in-flight plugin's timeout at the remaining budget, so the
 #    last job always finishes by the deadline.
 # All are env-overridable for tuning.
-SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "1500"))
-SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "1200"))
-SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "1400"))
+#
+# 2026-10-21 (Jay: "get scanning better and faster"): even at 1500s the
+# verification scan still cut 34 of 170 plugins - the ceiling was doing
+# the cutting, not plugin slowness alone: dispatch streamed fastest-first
+# within each tier, so the slowest plugins (the deep enumerators) were
+# still queued when the soft stop hit and got mass-skipped. Three fixes
+# landed together: anti-starvation dispatch (longest jobs in each tier
+# start in the first claim wave, interleaved with the fastest), worker
+# concurrency 24 -> 32, and hunter expansion running incrementally
+# during the scan instead of only at finalize. The budget is a ceiling,
+# not a target - a scan ends when its jobs end - so the ceiling rises
+# to 2400s to give slow-but-legit work (WAF-paced hosts at 1 rps, big
+# wordlist sweeps, hunter frontiers) room to finish instead of being
+# recorded as cut. Soft/hard stops scale with it.
+SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "2400"))
+SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "2000"))
+SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "2250"))
 # Seconds reserved at the end of the budget for the correlation graph,
 # summary persistence, and run_done emission. In-flight plugins are killed
 # by (budget - SCAN_TAIL_RESERVE_S) so run_done lands within the budget.
@@ -435,10 +475,9 @@ def _budget_skip_reason() -> str:
 
 
 def _queued_jobs_query(session):
-    """Queued jobs in dispatch order: priority, phase, estimate, id.
-
-    The estimate_s tiebreaker streams fast plugins first *within* each
-    (priority, phase) tier without changing Jay's priority policy.
+    """Base fetch of queued jobs (deterministic order: priority, phase,
+    estimate, id). The claim pass re-orders these with _dispatch_order
+    before claiming; this query only defines the candidate set.
     coalesce guards rows enqueued before estimate_s existed.
     """
     from sqlalchemy import func
@@ -450,23 +489,74 @@ def _queued_jobs_query(session):
                       PluginJob.id))
 
 
+def _dispatch_order(jobs):
+    """Order queued jobs for claiming: no starvation within a tier.
+
+    Jay's policy is unchanged at the top level: HIGH priority before
+    MEDIUM before LOW, phase 1 before phase 2. The old within-tier rule
+    (estimate ascending - fastest first) is what created the cut list:
+    the slowest plugins in each tier were still queued when the scan
+    budget's soft stop hit and were mass-skipped (34 of 170 on the
+    2026-10-20 verification scan, all of them deep enumerators). Within
+    a (priority, phase) tier, jobs are now interleaved longest-first /
+    shortest-first (longest, shortest, 2nd longest, 2nd shortest, ...):
+    the longest jobs start in the first claim waves alongside the quick
+    wins, and the jobs left for the tail are mid-length ones that fit
+    anywhere. Ties break by job id.
+    """
+    def est(j):
+        return (j.estimate_s if j.estimate_s is not None
+                else DEFAULT_PLUGIN_ESTIMATE_S)
+
+    groups: Dict[tuple, List] = {}
+    for j in jobs:
+        groups.setdefault((j.priority, j.phase), []).append(j)
+    ordered: List = []
+    for key in sorted(groups):
+        tier = sorted(groups[key], key=lambda j: (-est(j), j.id))
+        lo, hi = 0, len(tier) - 1
+        take_long = True
+        while lo <= hi:
+            if take_long:
+                ordered.append(tier[lo])
+                lo += 1
+            else:
+                ordered.append(tier[hi])
+                hi -= 1
+            take_long = not take_long
+    return ordered
+
+
 def _claim_jobs(session, limit: int):
     """Claim up to `limit` queued jobs for this worker.
 
-    Ordering: priority tier first, then phase, then estimated duration,
-    then id. Phase-2 jobs wait until no phase-1 jobs remain pending for
-    their run (preserves the discovery-bus producer -> consumer ordering).
-    The estimate_s tiebreaker keeps Jay's priority policy intact while
-    quick wins stream first *within* each tier. Budget gates from the
-    scan clock apply: past the hard stop jobs are recorded skipped, past
-    the soft stop only HIGH-priority jobs start.
+    Ordering: _dispatch_order (priority tier, then phase, then the
+    anti-starvation interleave). Phase-2 jobs wait until no phase-1
+    jobs remain pending for their run (preserves the discovery-bus
+    producer -> consumer ordering). Budget gates from the scan clock
+    apply: past the hard stop jobs are recorded skipped, past the soft
+    stop only HIGH-priority jobs start.
     """
+    from sqlalchemy import func
+
     from .models import IS_SQLITE
     now_mono = time.monotonic()
-    q = _queued_jobs_query(session).limit(limit * 4)
+    q = _queued_jobs_query(session)
     if not IS_SQLITE:
         q = q.with_for_update(skip_locked=True)
-    candidates = q.all()
+    # The queue is bounded by design (~200 scan jobs + <=300 hunter
+    # jobs), so the whole candidate set is fetched and ordered in
+    # Python; the old limit*4 window could exclude the longest jobs
+    # from the candidate set entirely, re-creating the starvation this
+    # ordering exists to fix.
+    candidates = _dispatch_order(q.all())
+    # Per-run phase-1 pending counts, one GROUP BY for the whole pass
+    # (was one COUNT query per phase-2 candidate).
+    phase1_pending = dict(
+        session.query(PluginJob.run_id, func.count(PluginJob.id))
+        .filter(PluginJob.phase == 1,
+                PluginJob.status.in_(("queued", "running")))
+        .group_by(PluginJob.run_id).all())
     claimed = []
     run_cache: Dict[str, Run] = {}
     for job in candidates:
@@ -497,7 +587,7 @@ def _claim_jobs(session, limit: int):
                           "reason": _budget_skip_reason(),
                           "findings": 0, "ms": 0}
             continue
-        if job.phase == 2 and _phase1_pending(session, job.run_id):
+        if job.phase == 2 and phase1_pending.get(job.run_id, 0) > 0:
             continue  # leave queued; phase 1 still producing bus signals
         job.status = "running"
         job.worker = WORKER_ID
@@ -689,6 +779,188 @@ async def _run_one_job(job_id: int) -> None:
                  "plugin": plugin.id, "target": target.normalized})
 
 
+# ---------------------------------------------------------------------------
+# Hunter expansion: mutual exclusion + incremental (mid-run) passes
+#
+# hunter_expand mutates shared DB state (known set, hunt audit, the job
+# queue). Two expansion passes for the same run must never overlap: the
+# finalize pass (authoritative, at settle) and the incremental passes
+# below. The guard is a per-run threading.Lock (the production worker
+# is one process) plus, on Postgres, a session-level advisory lock on a
+# dedicated connection (covers a second worker process). Acquire is
+# non-blocking by default: a skipped incremental pass costs nothing,
+# the finalize pass still expands everything when jobs settle.
+# ---------------------------------------------------------------------------
+_hunter_guards: Dict[str, threading.Lock] = {}
+_hunter_guards_mu = threading.Lock()
+_hunter_marks: Dict[str, int] = {}  # run_id -> findings at last pass
+_last_hunter_sweep = 0.0
+HUNTER_SWEEP_INTERVAL_S = float(_os.environ.get("RECON_HUNTER_SWEEP_S", "15"))
+HUNTER_MIN_NEW_FINDINGS = int(_os.environ.get("RECON_HUNTER_MIN_NEW", "8"))
+_HUNTER_ADVISORY_NS = 727272
+
+
+def _hunter_guard_lock(run_id: str) -> threading.Lock:
+    with _hunter_guards_mu:
+        return _hunter_guards.setdefault(run_id, threading.Lock())
+
+
+class _HunterGuard:
+    """Per-run hunter-expansion guard (see section note above)."""
+
+    def __init__(self, run_id: str, wait_s: float = 0.0):
+        self.run_id = run_id
+        self.wait_s = max(wait_s, 0.0)
+        self._lock = _hunter_guard_lock(run_id)
+        self._locked = False
+        self._conn = None
+        self.acquired = False
+
+    def _try_advisory(self) -> bool:
+        """One advisory-lock attempt. True when held (or not applicable:
+        SQLite / DB hiccup - the in-process lock is the fallback)."""
+        if IS_SQLITE:
+            return True
+        try:
+            from . import models as _models
+            conn = _models.engine.connect()
+            key = zlib.crc32(self.run_id.encode()) & 0x7FFFFFFF
+            got = conn.exec_driver_sql(
+                "SELECT pg_try_advisory_lock(%s, %s)",
+                (_HUNTER_ADVISORY_NS, key)).scalar()
+            if not got:
+                conn.close()
+                return False
+            self._conn = conn
+            return True
+        except Exception:
+            return True
+
+    def __enter__(self):
+        deadline = time.monotonic() + self.wait_s
+        while True:
+            if self._lock.acquire(blocking=False):
+                self._locked = True
+                if self._try_advisory():
+                    self.acquired = True
+                    return self
+                self._lock.release()
+                self._locked = False
+            if time.monotonic() >= deadline:
+                return self
+            time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        try:
+            if self._conn is not None:
+                key = zlib.crc32(self.run_id.encode()) & 0x7FFFFFFF
+                self._conn.exec_driver_sql(
+                    "SELECT pg_advisory_unlock(%s, %s)",
+                    (_HUNTER_ADVISORY_NS, key))
+                self._conn.close()
+                self._conn = None
+        except Exception:
+            pass
+        if self._locked:
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+            self._locked = False
+        return False
+
+
+def _incremental_hunter_pass_sync(run_id: str) -> int:
+    """One mid-run hunter expansion pass. Returns jobs enqueued.
+
+    Runs the same hunter_expand the finalize path uses, over the
+    findings persisted so far, with the depth counter FROZEN
+    (advance_depth=False): asset generations stay owned by the
+    settle/finalize passes, while the jobs this pass enqueues join the
+    live queue immediately and overlap the main scan instead of
+    starting only after every seed job settles. The accum is persisted
+    back into the run summary so the finalize pass continues where
+    this one left off.
+    """
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if run is None or run.status != "running":
+            return 0
+        if _pending_count(session, run_id) == 0:
+            return 0  # finalize owns the run now
+        from .hunters.engine import (ENABLED as _HUNTERS_ON,
+                                      hunter_expand, new_accum)
+        if not _HUNTERS_ON:
+            return 0
+        accum = ((run.summary or {}).get("hunters_accum")) or new_accum()
+        with _HunterGuard(run_id) as guard:
+            if not guard.acquired:
+                return 0
+            n = hunter_expand(session, run, accum, advance_depth=False)
+            if n > 0:
+                s = dict(run.summary or {})
+                s["hunters_accum"] = accum
+                s["hunters_partial"] = {
+                    "extra_assets": accum.get("assets_new", 0),
+                    "extra_jobs": accum.get("jobs", 0),
+                    "depth": accum.get("depth", 0)}
+                run.summary = s
+                session.commit()
+            return n
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return 0
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+async def _sweep_hunter_expand() -> None:
+    """Feed the hunters mid-scan: for every running run whose findings
+    grew since the last pass, run an incremental expansion so hunter
+    jobs overlap the main queue. Throttled, opportunistic."""
+    global _last_hunter_sweep
+    now = time.monotonic()
+    if now - _last_hunter_sweep < HUNTER_SWEEP_INTERVAL_S:
+        return
+    _last_hunter_sweep = now
+    try:
+        from .hunters.engine import ENABLED as _HUNTERS_ON
+        if not _HUNTERS_ON:
+            return
+    except Exception:
+        return
+    session = get_session()
+    counts: Dict[str, int] = {}
+    try:
+        run_ids = [r[0] for r in session.query(Run.id)
+                   .filter(Run.status == "running").limit(5).all()]
+        for rid in run_ids:
+            counts[rid] = (session.query(FindingRow)
+                           .filter_by(run_id=rid).count())
+    except Exception:
+        return
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+    for rid, n_findings in counts.items():
+        if (n_findings - _hunter_marks.get(rid, 0)
+                >= HUNTER_MIN_NEW_FINDINGS):
+            await asyncio.to_thread(_incremental_hunter_pass_sync, rid)
+            _hunter_marks[rid] = n_findings
+    for rid in list(_hunter_marks):
+        if rid not in counts:
+            _hunter_marks.pop(rid, None)
+
+
 async def _finalize_run(run_id: str) -> bool:
     """Finalize a run whose jobs are all settled. Atomic claim so only one
     worker finalizes. Returns True if this worker did it."""
@@ -757,21 +1029,33 @@ async def _finalize_run(run_id: str) -> bool:
                                           finalize_hunt, hunter_expand,
                                           new_accum)
             if _HUNTERS_ON:
-                _hrun = session.query(Run).filter_by(id=run_id).first()
-                _accum = ((_hrun.summary or {}).get("hunters_accum")
-                          if _hrun else None) or new_accum()
-                if hunter_expand(session, _hrun, _accum) > 0:
-                    _s = dict(_hrun.summary or {})
-                    _s["hunters_accum"] = _accum
-                    _s["hunters_partial"] = {
-                        "extra_assets": _accum.get("assets_new", 0),
-                        "extra_jobs": _accum.get("jobs", 0),
-                        "depth": _accum.get("depth", 0)}
-                    _hrun.summary = _s
-                    _hrun.status = "running"
-                    session.commit()
-                    return True
-                hunter_section = finalize_hunt(session, _hrun, _accum)
+                # Serialize against incremental mid-run passes. If a
+                # pass is in flight (or it enqueued jobs while we were
+                # finalizing), back off: the sweep retries finalize once
+                # the queue settles again.
+                with _HunterGuard(run_id, wait_s=5.0) as _guard:
+                    if not _guard.acquired or \
+                            _pending_count(session, run_id) > 0:
+                        (session.query(Run)
+                         .filter_by(id=run_id, status="finalizing")
+                         .update({"status": "running"}))
+                        session.commit()
+                        return False
+                    _hrun = session.query(Run).filter_by(id=run_id).first()
+                    _accum = ((_hrun.summary or {}).get("hunters_accum")
+                              if _hrun else None) or new_accum()
+                    if hunter_expand(session, _hrun, _accum) > 0:
+                        _s = dict(_hrun.summary or {})
+                        _s["hunters_accum"] = _accum
+                        _s["hunters_partial"] = {
+                            "extra_assets": _accum.get("assets_new", 0),
+                            "extra_jobs": _accum.get("jobs", 0),
+                            "depth": _accum.get("depth", 0)}
+                        _hrun.summary = _s
+                        _hrun.status = "running"
+                        session.commit()
+                        return True
+                    hunter_section = finalize_hunt(session, _hrun, _accum)
         except Exception:
             hunter_section = None
         run = session.query(Run).filter_by(id=run_id).first()
@@ -799,6 +1083,7 @@ async def _finalize_run(run_id: str) -> bool:
         await _emit(run_id, "run_done", run_done_data)
         _run_ctxs.pop(run_id, None)
         _run_clocks.pop(run_id, None)
+        _hunter_marks.pop(run_id, None)
         return True
     except Exception:
         try:
@@ -940,6 +1225,7 @@ async def queue_worker_loop() -> None:
                     task.add_done_callback(_swallow)
                     in_flight.add(task)
                 await _sweep_finalize()
+                await _sweep_hunter_expand()
                 await asyncio.sleep(0.5 if (claimed_ids or in_flight)
                                     else 2.0)
             except Exception:
