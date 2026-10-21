@@ -144,6 +144,27 @@ def test_claim_takes_longest_in_tier_first(session):
     assert [j.plugin_id for j in claimed] == ["fast"]
 
 
+def test_abandon_job_requeues_then_fails(session):
+    from app.runner import MAX_JOB_ATTEMPTS, _abandon_job
+    _job(session, "wedged", priority=2, phase=1, estimate=5)
+    job = session.query(PluginJob).filter_by(plugin_id="wedged").one()
+    job.status = "running"
+    session.commit()
+    _abandon_job(job.id)
+    session.expire_all()
+    job = session.query(PluginJob).filter_by(plugin_id="wedged").one()
+    assert job.status == "queued" and job.attempts == 1
+    # Simulate repeated wedges: at MAX_JOB_ATTEMPTS the job fails
+    # (poison-pill guard) instead of looping forever.
+    job.status = "running"
+    job.attempts = MAX_JOB_ATTEMPTS - 1
+    session.commit()
+    _abandon_job(job.id)
+    session.expire_all()
+    job = session.query(PluginJob).filter_by(plugin_id="wedged").one()
+    assert job.status == "failed" and job.attempts == MAX_JOB_ATTEMPTS
+
+
 def test_non_queued_excluded(session):
     j = _job(session, "done-one", priority=1, phase=1, estimate=1)
     j.status = "done"

@@ -379,6 +379,20 @@ WORKER_ENABLED = _os.environ.get("RECON_WORKER_ENABLED", "1") == "1"
 STALE_CLAIM_S = int(_os.environ.get("RECON_STALE_CLAIM_S", "600"))
 # A job abandoned this many times is marked failed (poison-pill guard).
 MAX_JOB_ATTEMPTS = 3
+# Worker-loop watchdog: a job task alive longer than this is wedged.
+# Plugin execution itself is capped at MAX_PLUGIN_TIMEOUT_S (120s) by
+# asyncio.wait_for, but wait_for can only deliver cancellation at an
+# await point - a plugin stuck in synchronous code (CPU-bound parsing,
+# a blocking call that ignored the async contract) freezes its task
+# past every cap, and before 2026-10-21 the only recovery was a
+# process restart, because reset_stale_queue_jobs ran just once at
+# boot. Observed live that day: a full scan froze at 154/211 for 9+
+# minutes with every slot held by unsettled jobs. The loop now
+# abandons + cancels such tasks (same attempts semantics as the
+# stale-claim reset) and re-runs the stale sweep periodically, so a
+# wedged job costs minutes, not the whole scan.
+JOB_WATCHDOG_S = int(_os.environ.get("RECON_JOB_WATCHDOG_S", "300"))
+STALE_SWEEP_INTERVAL_S = 60.0
 
 _queue_worker_task = None
 _worker_http = None
@@ -442,6 +456,48 @@ def reset_stale_queue_jobs() -> int:
         except Exception:
             pass
     return n
+
+
+def _abandon_job(job_id: int) -> None:
+    """Reset one wedged job: requeue it, or fail it at MAX attempts.
+
+    Same semantics as reset_stale_queue_jobs, for a single job whose
+    asyncio task the worker loop's watchdog is about to cancel. The
+    cancel lands at the task's next await point; if the task is stuck
+    in synchronous code it dies with the process instead, and the
+    boot-time stale reset recovers the row (already requeued here, so
+    it is simply claimable again).
+    """
+    session = get_session()
+    try:
+        job = session.query(PluginJob).filter_by(id=job_id).first()
+        if job is None or job.status != "running":
+            return
+        job.attempts = (job.attempts or 0) + 1
+        if job.attempts >= MAX_JOB_ATTEMPTS:
+            job.status = "failed"
+            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            job.result = {"status": "failed",
+                          "reason": ("abandoned: job task exceeded the "
+                                     f"{JOB_WATCHDOG_S}s watchdog limit "
+                                     f"({job.attempts} attempts)"),
+                          "findings": 0, "ms": 0}
+        else:
+            job.status = "queued"
+            job.worker = None
+            job.started_at = None
+            job.result = None
+        session.commit()
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
 
 def _pending_count(session, run_id: str) -> int:
@@ -1195,6 +1251,9 @@ async def queue_worker_loop() -> None:
         _worker_http = http
         _worker_limiter = RateLimiter(default_rps=config.DEFAULT_RPS)
         in_flight: set = set()
+        # task -> (job_id, monotonic start) for the watchdog below.
+        task_jobs: Dict[Any, Any] = {}
+        last_stale_sweep = 0.0
 
         def _swallow(task: "asyncio.Task") -> None:
             # _run_one_job handles its own errors; this only keeps a
@@ -1205,6 +1264,29 @@ async def queue_worker_loop() -> None:
         while True:
             try:
                 in_flight = {t for t in in_flight if not t.done()}
+                task_jobs = {t: v for t, v in task_jobs.items()
+                             if t in in_flight}
+                # Watchdog: abandon + cancel tasks alive far past the
+                # per-plugin cap (see JOB_WATCHDOG_S). Cancelling a
+                # task stuck in synchronous code has no effect until
+                # it awaits again - the job row is already requeued,
+                # so the scan proceeds on the freed slot regardless.
+                now_m = time.monotonic()
+                for task, (job_id, started) in list(task_jobs.items()):
+                    if now_m - started > JOB_WATCHDOG_S:
+                        log.warning(
+                            "watchdog: abandoning job %s after %.0fs",
+                            job_id, now_m - started)
+                        _abandon_job(job_id)
+                        task.cancel()
+                        task_jobs.pop(task, None)
+                        in_flight.discard(task)
+                # Periodic stale-claim recovery (boot used to be the
+                # only chance): frees jobs orphaned by dead workers or
+                # by tasks cancelled while their rows were claimed.
+                if now_m - last_stale_sweep > STALE_SWEEP_INTERVAL_S:
+                    last_stale_sweep = now_m
+                    reset_stale_queue_jobs()
                 free = (max(getattr(config, "MAX_CONCURRENCY", 5), 1)
                         - len(in_flight))
                 claimed_ids = []
@@ -1224,6 +1306,7 @@ async def queue_worker_loop() -> None:
                     task = asyncio.create_task(_run_one_job(job_id))
                     task.add_done_callback(_swallow)
                     in_flight.add(task)
+                    task_jobs[task] = (job_id, time.monotonic())
                 await _sweep_finalize()
                 await _sweep_hunter_expand()
                 await asyncio.sleep(0.5 if (claimed_ids or in_flight)
