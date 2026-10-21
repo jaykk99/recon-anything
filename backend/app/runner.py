@@ -785,7 +785,12 @@ async def _finalize_run(run_id: str) -> bool:
 
 async def _sweep_finalize() -> None:
     """Finalize any running runs whose jobs are all settled (covers the
-    crash-between-last-job-and-finalize window). Throttled to ~5s."""
+    crash-between-last-job-and-finalize window). Also heals runs left
+    "running" with zero plugin jobs - e.g. a mid-scan redeploy that
+    orphaned the run (seen 2026-10-20 when a direct push to master
+    redeployed both Render services mid-scan): they are finalized as
+    interrupted so they stop sitting "running" forever. Throttled to ~5s.
+    """
     global _last_sweep
     now = time.monotonic()
     if now - _last_sweep < 5:
@@ -801,6 +806,26 @@ async def _sweep_finalize() -> None:
         for rid in run_ids:
             if _pending_count(session, rid) == 0:
                 await _finalize_run(rid)
+        # Orphaned runs: no jobs at all, still "running", older than 10 min.
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        orphans = (session.query(Run)
+                   .filter(Run.status == "running",
+                           Run.created_at < cutoff).all())
+        for run in orphans:
+            n_jobs = (session.query(PluginJob)
+                      .filter_by(run_id=run.id).count())
+            if n_jobs == 0:
+                log.warning("finalizing orphaned run %s (no jobs, "
+                            "interrupted mid-scan)", run.id)
+                run.status = "done"
+                run.finished_at = dt.datetime.now(dt.timezone.utc)
+                summary = run.summary or {}
+                summary["interrupted"] = True
+                summary["note"] = ("Run was interrupted mid-scan "
+                                   "(service redeploy); findings found so "
+                                   "far are preserved.")
+                run.summary = summary
+                session.commit()
     finally:
         try:
             session.close()
