@@ -175,10 +175,15 @@ MAX_PLUGIN_TIMEOUT_S = 120
 # speed-first order) - with 170+ plugins at 16-way concurrency that was
 # mathematically impossible to finish: live check 2026-10-20 showed a scan
 # skipping 138 of 170 plugins as "skipped: time budget" and returning only
-# 25 findings. Jay's 2026-10-20 order (find more) raises the budget to
-# 600s. Findings still stream live in priority order, so the first
-# critical finding still lands in <15s; the longer budget only lets the
-# rest of the plugins actually run instead of being cut. The dispatcher:
+# 25 findings. Jay's 2026-10-20 order (find more) raised it to 600s, but
+# the first live verification scan still cut 79 of 170 plugins (90 ran,
+# 73 findings): on the free-tier single instance (worker + API sharing
+# one small CPU), real throughput is roughly 90 plugins per 600s, and the
+# plugins cut last are the slow enumerators that need the most time. The
+# budget is therefore 1500s (25 min). Findings still stream live in
+# priority order, so the first critical finding still lands in <15s; the
+# longer budget only lets every plugin actually run instead of being cut.
+# The dispatcher:
 #  - runs plugins in priority order (high-signal first),
 #  - after SCAN_SOFT_STOP_S only HIGH-priority plugins start (the rest are
 #    recorded as ok(0) "skipped: time budget", never an error),
@@ -186,13 +191,13 @@ MAX_PLUGIN_TIMEOUT_S = 120
 #  - caps every in-flight plugin's timeout at the remaining budget, so the
 #    last job always finishes by the deadline.
 # All are env-overridable for tuning.
-SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "600"))
-SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "480"))
-SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "560"))
+SCAN_BUDGET_S = float(__import__("os").environ.get("RECON_SCAN_BUDGET_S", "1500"))
+SCAN_SOFT_STOP_S = float(__import__("os").environ.get("RECON_SCAN_SOFT_STOP_S", "1200"))
+SCAN_HARD_STOP_S = float(__import__("os").environ.get("RECON_SCAN_HARD_STOP_S", "1400"))
 # Seconds reserved at the end of the budget for the correlation graph,
 # summary persistence, and run_done emission. In-flight plugins are killed
 # by (budget - SCAN_TAIL_RESERVE_S) so run_done lands within the budget.
-SCAN_TAIL_RESERVE_S = float(__import__("os").environ.get("RECON_SCAN_TAIL_RESERVE_S", "30"))
+SCAN_TAIL_RESERVE_S = float(__import__("os").environ.get("RECON_SCAN_TAIL_RESERVE_S", "60"))
 
 
 async def _run_plugin(plugin, target: Target, ctx: Ctx,

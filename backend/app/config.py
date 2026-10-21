@@ -19,13 +19,14 @@ ACCESS_CODE = env("RECON_ACCESS_CODE", "")  # single-user gate; empty = no gate
 MASTER_KEY = env("RECON_MASTER_KEY", "")  # Fernet key for API key encryption
 USER_AGENT = "ReconAnything/1.0 (+https://github.com/jaykk99/recon-anything)"
 DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
-# 16 parallel plugins: plugins are I/O-bound (waiting on DNS/HTTP), so 16
-# keeps the pipe full without hammering the target - the per-host rate
-# limiter (DEFAULT_RPS) still paces actual requests, and WAF/challenge
-# detection already throttles hostile targets. Raised from 10 (Jay's order
-# 2026-10-18 - speed is top priority): the plugin count grew past 150 and
-# 10 slots serialized the scan behind the slow enumerators. Env-overridable.
-MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "16"))
+# 24 parallel plugins: plugins are I/O-bound (waiting on DNS/HTTP), so
+# more slots keep the pipe full without hammering the target - the
+# per-host rate limiter (DEFAULT_RPS) still paces actual requests, and
+# WAF/challenge detection already throttles hostile targets. Was 16;
+# raised 2026-10-20 because live scans showed throughput (~90 plugins
+# per 600s at 16 slots on the free-tier instance) was the binding
+# constraint cutting plugins on the scan budget. Env-overridable.
+MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "24"))
 # Per-host request pacing. 50 RPS is still polite for authorized testing
 # (a single browser tab bursts more than this) and keeps the bulk-sweep
 # plugins (artifacts, backup, cloud_buckets: hundreds of probe requests
