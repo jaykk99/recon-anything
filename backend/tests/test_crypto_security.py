@@ -295,3 +295,64 @@ def test_rebase_fires():
 def test_defi_findings_have_remediation():
     for r in scan_defi_risks(DEFI_VULN):
         assert r.get("remediation"), r["check"]
+
+
+# ---------------------------------------------------------------------------
+# delegatecall receiver-based trust (fixed 2026-10-20: the audit used to
+# inspect the call *arguments* - the forwarded calldata - instead of the
+# *receiver*, which is the actual target address).
+# ---------------------------------------------------------------------------
+
+def dcall_checks(src):
+    return {(r["check"], r["function"]) for r in audit_source(src)}
+
+
+def test_delegatecall_receiver_immutable_not_flagged():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "address public immutable impl = 0x1234567890123456789012345678901234567890; "
+           "function upgrade() public onlyOwner { "
+           "(bool s,) = impl.delegatecall(abi.encodeWithSignature(\"init()\")); "
+           "require(s); } }")
+    assert "delegatecall_untrusted" not in {k for k, _ in dcall_checks(src)}
+
+
+def test_delegatecall_receiver_constant_not_flagged():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "address constant IMPL = 0x1234567890123456789012345678901234567890; "
+           "function upgrade() public onlyOwner { "
+           "(bool s,) = IMPL.delegatecall(\"\"); require(s); } }")
+    assert "delegatecall_untrusted" not in {k for k, _ in dcall_checks(src)}
+
+
+def test_delegatecall_literal_address_not_flagged():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "function upgrade() public onlyOwner { "
+           "(bool s,) = 0x1234567890123456789012345678901234567890"
+           ".delegatecall(\"\"); require(s); } }")
+    assert "delegatecall_untrusted" not in {k for k, _ in dcall_checks(src)}
+
+
+def test_delegatecall_mutable_state_var_flagged():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "address public impl; "
+           "function setImpl(address a) public { impl = a; } "
+           "function upgrade() public { "
+           "(bool s,) = impl.delegatecall(abi.encodeWithSignature(\"init()\")); "
+           "require(s); } }")
+    assert ("delegatecall_untrusted", "upgrade") in dcall_checks(src)
+
+
+def test_delegatecall_function_arg_flagged():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "function upgrade(address target) public { "
+           "(bool s,) = target.delegatecall(\"\"); require(s); } }")
+    assert ("delegatecall_untrusted", "upgrade") in dcall_checks(src)
+
+
+def test_delegatecall_detail_names_receiver():
+    src = ("pragma solidity ^0.8.20; contract P { "
+           "address public logic; "
+           "function upgrade() public { (bool s,) = logic.delegatecall(\"\"); } }")
+    rows = [r for r in audit_source(src)
+            if r["check"] == "delegatecall_untrusted"]
+    assert rows and "logic" in rows[0]["detail"]

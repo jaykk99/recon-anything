@@ -56,7 +56,10 @@ def _utcnow():
 class Run(Base):
     __tablename__ = "runs"
     id = Column(String, primary_key=True)
-    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    # Indexed: GET /api/runs orders by created_at desc on every poll; without
+    # the index the list endpoint did a full-table sort (~6s idle wart,
+    # fixed 2026-10-20). Fresh DBs get it via init_db/create_all.
+    created_at = Column(DateTime(timezone=True), default=_utcnow, index=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     mode = Column(String, default="passive")  # passive | active
     source_type = Column(String, default="website")  # website | bank | atm
@@ -203,6 +206,11 @@ class PluginJob(Base):
     plugin_id = Column(String, index=True)
     phase = Column(Integer, default=1)  # 1 = main pass, 2 = chain consumers
     priority = Column(Integer, default=2)  # 1 = HIGH, 2 = MEDIUM, 3 = LOW
+    # Estimated seconds for this plugin (from PLUGIN_TIME_ESTIMATES at
+    # enqueue). The claim query orders by (priority, phase, estimate_s) so
+    # fast plugins stream their findings first *within* each tier -
+    # Jay's priority policy is untouched, quick wins just land earlier.
+    estimate_s = Column(Integer, default=12)
     status = Column(String, default="queued", index=True)  # queued|running|done|skipped|failed
     attempts = Column(Integer, default=0)
     result = Column(JSON, nullable=True)  # {status, reason, findings, ms}
@@ -296,20 +304,49 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
-    if not IS_SQLITE:
-        return  # create_all handles schema on real DBs; the backfill below is sqlite-only
-    # Lightweight migration for pre-existing SQLite DBs: create_all does not
-    # add columns to tables that already exist, so backfill source_type when
-    # missing.
+    # Self-healing column/index backfill for pre-existing databases.
+    # create_all only creates MISSING tables - it never adds columns to
+    # tables that already exist. A direct push to master (e.g. the daily
+    # code-quota workers) that adds a model column would otherwise break
+    # every INSERT on the live Postgres DB (2026-10-20: plugin_jobs
+    # .estimate_s was added by a quota push and the live DB predated it).
+    # ADD COLUMN IF NOT EXISTS works on both Postgres and SQLite, so this
+    # runs everywhere, on every boot, and is a no-op when current.
+    is_sqlite = IS_SQLITE
+    for table, column, ddl in (
+        ("runs", "source_type", "VARCHAR DEFAULT 'website'"),
+        ("plugin_jobs", "estimate_s", "INTEGER DEFAULT 12"),
+    ):
+        try:
+            with engine.connect() as conn:
+                if is_sqlite:
+                    # SQLite has no ADD COLUMN IF NOT EXISTS - inspect
+                    # the table first like the old code did.
+                    cols = [r[1] for r in
+                            conn.exec_driver_sql(
+                                f"PRAGMA table_info({table})")]
+                    if column not in cols:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE {table} ADD COLUMN "
+                            f"{column} {ddl}")
+                        conn.commit()
+                else:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                        f"{column} {ddl}")
+                    conn.commit()
+        except Exception as exc:  # keep booting on any schema oddity
+            log.warning("schema backfill skipped for %s.%s: %s",
+                        table, column, exc)
     try:
         with engine.connect() as conn:
-            cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(runs)")]
-            if "source_type" not in cols:
-                conn.exec_driver_sql(
-                    "ALTER TABLE runs ADD COLUMN source_type VARCHAR DEFAULT 'website'")
-                conn.commit()
-    except Exception as exc:  # corrupted/legacy sqlite file; keep booting
-        log.warning("sqlite schema backfill skipped: %s", exc)
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_runs_created_at "
+                "ON runs (created_at)")
+            conn.commit()
+    except Exception as exc:
+        log.warning("schema backfill skipped for ix_runs_created_at: %s",
+                    exc)
 
 
 def _safe_url(url: str) -> str:

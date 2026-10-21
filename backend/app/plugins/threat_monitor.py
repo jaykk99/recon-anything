@@ -185,7 +185,7 @@ class ThreatMonitorPlugin(Plugin):
                 techs.append(t.strip())
         # Belt and suspenders: grab Server header ourselves too
         try:
-            domain = domain_from_target(target)
+            domain = domain_from_target(target.type, target.normalized)
             resp = await fetch(ctx.http, ctx.limiter, "HEAD",
                                f"https://{domain}/", timeout=10)
             server = resp.headers.get("server", "") or ""

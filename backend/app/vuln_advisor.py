@@ -64,12 +64,21 @@ def advise(findings: List[Dict], run_summary: Dict) -> List[Dict]:
 
     def add(vuln_id: str, name: str, severity: str, confidence: int,
             why: str, poc: str, poc_lang: str, steps: List[str],
-            remediation: str, evidence_refs: List[Dict]):
+            remediation: str, evidence_refs: List[Dict],
+            confidence_basis: str = "heuristic pattern match",
+            verified: bool = False):
+        # Honest confidence (Jay's bar): every candidate says WHY we believe
+        # the number. Direct evidence = the scan literally observed the
+        # weakness (exposed file, negotiated protocol). Heuristic = a
+        # pattern match that needs a human to confirm. needs_manual_verification
+        # is True unless the finding was directly observed.
         cands.append({
             "id": vuln_id,
             "name": name,
             "severity": severity,
             "confidence": confidence,
+            "confidence_basis": confidence_basis,
+            "needs_manual_verification": not verified,
             "why_viable": why,
             "poc_code": poc,
             "poc_lang": poc_lang,
@@ -99,6 +108,8 @@ curl -s -o /dev/null -w "%{{http_code}}" {base}/.git/HEAD
             ],
             "Block /.git at the web server or CDN. Never deploy the .git folder.",
             [git],
+            confidence_basis='direct evidence: .git/HEAD reachable over HTTP',
+            verified=True,
         )
 
     # -- 2. Exposed .env / secrets ------------------------------------------
@@ -121,6 +132,8 @@ curl -s -I {base}/.env | head -5
             ],
             "Remove .env from web root. Rotate every exposed key immediately.",
             env + secrets[:3],
+            confidence_basis='direct evidence: secret/config file served with 200',
+            verified=True,
         )
 
     # -- 3. SQLi hint ---------------------------------------------------------
@@ -242,6 +255,8 @@ curl -s "https://$BUCKET" | head -c 500
             ],
             "Set bucket ACLs to private. Audit with least-privilege IAM.",
             s3[:2],
+            confidence_basis='direct evidence: bucket XML listing observed',
+            verified=True,
         )
 
     # -- 8. JWT weakness -----------------------------------------------------------
@@ -609,26 +624,9 @@ for n in ["/backup.zip", "/www.zip", "/site.zip", "/db.sql", "/backup.sql"]:
             backup[:2],
         )
 
-    # -- 22. phpinfo ----------------------------------------------------------------
-    phpinfo = _first(findings, key="phpinfo_exposed") or _first(findings, value_contains="phpinfo")
-    if phpinfo:
-        add(
-            "phpinfo", "phpinfo() exposed (version + config disclosure)",
-            "high", 88,
-            "Your scan found a live phpinfo page. It hands attackers the exact PHP "
-            "version, loaded modules, and environment - perfect CVE targeting fuel.",
-            f"""# Safe detection only: read-only GET
-curl -s {base}/phpinfo.php | grep -i "PHP Version"
-# Match the version: PHP < 8.1.29/8.2.21/8.3.8 = CVE-2024-4577 RCE""",
-            "sh",
-            [
-                "GET /phpinfo.php (read-only).",
-                "Extract the PHP Version line.",
-                "Match it against known CVEs (e.g. CVE-2024-4577 for PHP-CGI).",
-            ],
-            "Delete phpinfo.php from production. Never ship debug pages.",
-            [phpinfo],
-        )
+    # -- 22. phpinfo: superseded by the 2026-10-20 "phpinfo" template below
+    # (same id, direct-evidence confidence labeling). Kept as a numbered
+    # slot so template numbering stays stable.
 
     # -- 23. Server status -------------------------------------------------------------
     sstat = _first(findings, key="server_status_exposed") or _first(findings, value_contains="server-status")
@@ -668,6 +666,288 @@ curl -s {base}/actuator/env | head -c 300
             ],
             "Lock down actuator endpoints. Never expose /actuator/env publicly.",
             [act],
+        )
+
+    # -- 2026-10-20: templates for the new audit plugins ----------------------
+    # Direct-evidence candidates (the scan observed the weakness itself).
+    gql = _find(findings, key="graphql_introspection_enabled")
+    if gql:
+        add(
+            "graphql-introspection", "GraphQL introspection exposed",
+            "high", 90,
+            "Your scan confirmed the GraphQL endpoint answers introspection "
+            "queries: the full schema (types, fields, mutations) is public. "
+            "That is the complete API map an attacker needs.",
+            f"""# Safe detection only: introspection already confirmed by scan
+curl -s -X POST {base}/graphql \\
+  -H 'Content-Type: application/json' \\
+  -d '{{"query":"{{__schema{{queryType{{name}}}}}}"}}' | head -c 300
+# __schema in the response = exposed. No mutations attempted.""",
+            "sh",
+            [
+                "Re-send the introspection query from the PoC (read-only).",
+                "A __schema object in the response confirms exposure.",
+                "Do not run mutations or probe auth - report as-is.",
+            ],
+            "Disable introspection in production; require auth and rate "
+            "limits on the GraphQL endpoint.",
+            gql[:2],
+            confidence_basis="direct evidence: introspection query answered",
+            verified=True,
+        )
+
+    php = _find(findings, key="phpinfo_exposed")
+    if php:
+        add(
+            "phpinfo", "phpinfo() page exposed (config disclosure)",
+            "high", 95,
+            "Your scan confirmed a live phpinfo() page: full PHP config, "
+            "loaded extensions, server paths and environment variables are "
+            "public.",
+            f"""# Safe detection only: confirm the page (read-only)
+curl -s {php[0].get('source_url', base + '/phpinfo.php')} | grep -ci "phpinfo()"
+# >= 1 with a <title>phpinfo()</title> = exposed""",
+            "sh",
+            [
+                "GET the phpinfo URL (read-only).",
+                "Look for <title>phpinfo()</title> and PHP Version markers.",
+                "Report immediately. Do not harvest the disclosed paths.",
+            ],
+            "Delete the phpinfo file from production now.",
+            php[:2],
+            confidence_basis="direct evidence: phpinfo() markers in response",
+            verified=True,
+        )
+
+    dbg = _find(findings, key="debug_django_toolbar") or \
+        _find(findings, key="debug_symfony_profiler") or \
+        _find(findings, key="debug_laravel_telescope") or \
+        _find(findings, key="debug_rails_console")
+    if dbg:
+        add(
+            "debug-toolbar", "Dev debug toolbar exposed in production",
+            "high", 90,
+            "Your scan found a development debug toolbar/profiler active on "
+            "the production site. These expose queries, env vars and stack "
+            "traces to every visitor.",
+            f"""# Safe detection only: confirm the toolbar marker (read-only)
+curl -s {base}/ | grep -oiE "djdt|sf-toolbar|phpdebugbar|web-console" | head -3""",
+            "sh",
+            [
+                "Re-fetch the homepage (read-only).",
+                "A toolbar marker in the HTML confirms it is live.",
+                "Do not click through the toolbar - report it.",
+            ],
+            "Disable the toolbar in production (env-gated or removed).",
+            dbg[:2],
+            confidence_basis="direct evidence: toolbar marker in HTML",
+            verified=True,
+        )
+
+    cleartext = _find(findings, key="smtp_cleartext_auth")
+    if cleartext:
+        add(
+            "smtp-cleartext-auth", "Mail server offers cleartext AUTH",
+            "high", 85,
+            "Your scan confirmed the MX advertises plaintext AUTH without a "
+            "working TLS layer: credentials would cross the wire unencrypted.",
+            f"""# Safe detection only: banner + EHLO read (no auth attempted)
+(echo EHLO probe; sleep 1) | nc {cleartext[0].get('evidence', {}).get('host', 'MX')} 25 | grep -i auth""",
+            "sh",
+            [
+                "Connect to port 25 and read the banner (no login).",
+                "Send EHLO and check for AUTH PLAIN before STARTTLS.",
+                "Report; never attempt a login.",
+            ],
+            "Disable AUTH until STARTTLS completes (or fix TLS).",
+            cleartext[:2],
+            confidence_basis="direct evidence: AUTH advertised pre-TLS",
+            verified=True,
+        )
+
+    stack = _find(findings, key="error_stack_trace") or \
+        _find(findings, key="error_debug_mode")
+    if stack:
+        add(
+            "verbose-errors", "Verbose error pages (stack traces / debug)",
+            "high", 85,
+            "Your scan triggered error pages that disclose stack traces or "
+            "debug output: framework, paths and often query fragments leak.",
+            f"""# Safe detection only: request a missing page (read-only)
+curl -s {base}/no-such-page-$RANDOM | grep -ciE "traceback|stack trace|debug"
+# Matches = verbose error disclosure""",
+            "sh",
+            [
+                "GET a random nonexistent path (read-only).",
+                "Look for traceback/debug markers in the 404 body.",
+                "Report the disclosure; do not mine it for secrets.",
+            ],
+            "Ship generic error pages; log verbosely server-side only.",
+            stack[:2],
+            confidence_basis="direct evidence: trace markers in error body",
+            verified=True,
+        )
+
+    tls_old = _find(findings, key="tls_deprecated_version")
+    if tls_old:
+        add(
+            "tls-deprecated", "Deprecated TLS versions negotiated",
+            "medium", 90,
+            "Your scan negotiated TLS 1.0/1.1 with the server: deprecated "
+            "protocols with known weaknesses, rejected by PCI DSS and all "
+            "modern browsers.",
+            f"""# Safe detection only: version probe (handshake only)
+openssl s_client -connect {base.replace('https://', '').replace('http://', '').split('/')[0]}:443 -tls1 < /dev/null 2>&1 | grep -i "protocol"
+# A completed handshake on -tls1 = deprecated version enabled""",
+            "sh",
+            [
+                "Complete a TLS 1.0 handshake (no application data).",
+                "A successful handshake confirms the version is enabled.",
+            ],
+            "Disable TLS 1.0/1.1; require TLS 1.2+.",
+            tls_old[:2],
+            confidence_basis="direct evidence: handshake completed",
+            verified=True,
+        )
+
+    listed = _find(findings, key="ip_blocklisted")
+    if listed:
+        listed_ip = (listed[0].get("evidence") or {}).get("ip", "1.2.3.4")
+        rev_ip = ".".join(reversed(listed_ip.split(".")))
+        add(
+            "ip-blocklisted", "Server IP on spam/malware blocklists",
+            "medium", 90,
+            "Your scan found the server IP listed on DNS blocklists: mail "
+            "deliverability is damaged and a listing often signals a "
+            "compromised host.",
+            f"""# Safe detection only: DNSBL lookup (no contact with target)
+dig +short {rev_ip}.zen.spamhaus.org
+# An A record in response = listed""",
+            "sh",
+            [
+                "Query the DNSBL zone for the reversed IP (DNS only).",
+                "An A record in response = listed.",
+                "Investigate the compromise cause before delisting.",
+            ],
+            "Clean the host, then request delisting at the blocklist.",
+            listed[:2],
+            confidence_basis="direct evidence: DNSBL A record returned",
+            verified=True,
+        )
+
+    trace = _find(findings, key="http_trace_enabled")
+    if trace:
+        add(
+            "http-trace", "HTTP TRACE enabled (XST)",
+            "medium", 90,
+            "Your scan confirmed the server answers TRACE: cross-site "
+            "tracing can steal HttpOnly cookies via script.",
+            f"""# Safe detection only: OPTIONS/TRACE check (read-only)
+curl -s -X TRACE {base}/ -o /dev/null -w "%{{http_code}}\\n"
+# 200 with echoed request = TRACE enabled""",
+            "sh",
+            [
+                "Send one TRACE request (read-only).",
+                "A 200 echoing the request confirms it.",
+            ],
+            "Disable TRACE/TRACK at the web server.",
+            trace[:2],
+            confidence_basis="direct evidence: TRACE answered",
+            verified=True,
+        )
+
+    # Heuristic candidates (pattern matches - a human should confirm).
+    sess_cookie = [f for f in _find(findings, key="cookie_flags_missing")
+                   if (f.get("evidence") or {}).get("severity") == "medium"]
+    if sess_cookie:
+        add(
+            "cookie-flags", "Session cookies missing Secure/HttpOnly/SameSite",
+            "medium", 80,
+            "Your scan found session/auth cookies without Secure, HttpOnly "
+            "or SameSite flags. Missing HttpOnly exposes them to XSS theft; "
+            "missing Secure/SameSite weakens transport and CSRF defenses.",
+            f"""# Safe detection only: read Set-Cookie flags (no session use)
+curl -s -D - {base}/ -o /dev/null | grep -i "^set-cookie:" """,
+            "sh",
+            [
+                "Re-fetch the homepage and inspect Set-Cookie headers.",
+                "Confirm which of Secure/HttpOnly/SameSite are absent.",
+                "Manually verify the cookie is actually session-bearing.",
+            ],
+            "Set Secure; HttpOnly; SameSite=Lax on auth cookies.",
+            sess_cookie[:3],
+            confidence_basis="heuristic: cookie name suggests session use",
+            verified=False,
+        )
+
+    csp_weak = _find(findings, key="csp_unsafe_inline") or \
+        _find(findings, key="csp_wildcard_script_src") or \
+        _find(findings, key="csp_data_script_src")
+    if csp_weak:
+        add(
+            "csp-bypass", "Content-Security-Policy bypassable",
+            "medium", 75,
+            "Your scan parsed the CSP and found bypass primitives "
+            "(unsafe-inline, wildcards, or data: script sources). A weak "
+            "CSP blunts XSS protection but exploitability depends on an "
+            "actual injection point.",
+            f"""# Safe detection only: re-read the policy (no injection)
+curl -s -D - {base}/ -o /dev/null | grep -i "^content-security-policy:" """,
+            "sh",
+            [
+                "Re-read the CSP header.",
+                "Confirm the weak directive is still present.",
+                "Only a real XSS sink turns this into an exploit - do not "
+                "inject; report the weak policy.",
+            ],
+            "Remove unsafe values; use nonces/hashes for inline scripts.",
+            csp_weak[:3],
+            confidence_basis="heuristic: policy analysis, needs an XSS sink",
+            verified=False,
+        )
+
+    squid = _find(findings, key="typosquat_registered")
+    if squid:
+        add(
+            "typosquat", "Lookalike domains resolve (phishing risk)",
+            "medium", 85,
+            f"Your scan found {len(squid)} typosquat variant(s) that "
+            "actually resolve. Live lookalikes are classic phishing "
+            "infrastructure - or defensive holds you forgot about.",
+            """# Safe detection only: DNS resolution (already done by scan)
+# Review each resolving variant: yours, parked, or hostile.""",
+            "sh",
+            [
+                "Resolve each variant (DNS only, no HTTP contact needed).",
+                "Check WHOIS/creation dates for hostile registrations.",
+                "Consider defensive registration or takedown reports.",
+            ],
+            "Register key variants defensively; report hostile ones.",
+            squid[:5],
+            confidence_basis="direct evidence: variant resolves in DNS",
+            verified=True,
+        )
+
+    hsts_bad = _find(findings, key="hsts_bare_domain_downgrade")
+    if hsts_bad:
+        add(
+            "hsts-downgrade", "Bare domain serves plaintext HTTP",
+            "medium", 85,
+            "Your scan confirmed http:// serves 200 instead of redirecting "
+            "to https: HSTS cannot protect the first plaintext visit, so "
+            "SSL stripping works here.",
+            f"""# Safe detection only: one plaintext GET (read-only)
+curl -s -o /dev/null -w "%{{http_code}}" http://{base.replace('https://', '').replace('http://', '').split('/')[0]}/
+# 200 = downgrade gap; 301 to https = fine""",
+            "sh",
+            [
+                "GET the http:// bare domain once (read-only).",
+                "200 = confirmed gap; 301->https = not vulnerable.",
+            ],
+            "301-redirect all plaintext HTTP to https.",
+            hsts_bad[:2],
+            confidence_basis="direct evidence: plaintext 200 observed",
+            verified=True,
         )
 
     # Rank: severity first, then confidence

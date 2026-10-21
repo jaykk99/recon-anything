@@ -289,15 +289,42 @@ async def api_run_stream(run_id: str):
 
 
 @app.get("/api/runs", dependencies=[Depends(gate)])
-def api_list_runs(limit: int = Query(30, le=200)):
+def api_list_runs(limit: int = Query(30, le=200),
+                  summary: bool = Query(False,
+                                        description="include each run's full "
+                                        "summary JSON (heavy; default off)")):
+    # Perf: the list view only needs light columns. The summary JSON blob
+    # (executive summary, plugin stats) made this endpoint ~6s idle because
+    # 30 full rows were deserialized per poll. load_only keeps the heavy
+    # summary column out unless ?summary=1 is passed explicitly.
+    from sqlalchemy.orm import load_only
+    from sqlalchemy import func
+    fields = [Run.id, Run.mode, Run.status, Run.source_type, Run.created_at]
+    if summary:
+        fields.append(Run.summary)
     session = get_session()
     try:
-        runs = session.query(Run).order_by(Run.created_at.desc()).limit(limit).all()
-        return {"runs": [
-            {"id": r.id, "mode": r.mode, "status": r.status,
-             "source_type": getattr(r, "source_type", None) or "website",
-             "created_at": r.created_at.isoformat() if r.created_at else None,
-             "summary": r.summary or {}} for r in runs]}
+        runs = (session.query(Run)
+                .options(load_only(*fields))
+                .order_by(Run.created_at.desc()).limit(limit).all())
+        # One GROUP BY for findings counts (indexed on findings.run_id) so
+        # the list table keeps its "findings" column without the heavy
+        # per-run summary JSON.
+        counts = dict(
+            session.query(Finding.run_id, func.count(Finding.id))
+            .filter(Finding.run_id.in_([r.id for r in runs]))
+            .group_by(Finding.run_id).all()) if runs else {}
+        out = []
+        for r in runs:
+            row = {"id": r.id, "mode": r.mode, "status": r.status,
+                   "source_type": getattr(r, "source_type", None) or "website",
+                   "created_at": r.created_at.isoformat()
+                   if r.created_at else None,
+                   "findings_count": counts.get(r.id, 0)}
+            if summary:
+                row["summary"] = r.summary or {}
+            out.append(row)
+        return {"runs": out}
     finally:
         session.close()
 

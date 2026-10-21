@@ -30,7 +30,7 @@ export default function RunsPage() {
                 <td><a className="text-sky-400 font-mono" href={`/run/${r.id}`}>{r.id}</a></td>
                 <td className="text-xs">{r.mode}</td>
                 <td className="text-xs">{r.status}</td>
-                <td className="text-xs">{r.summary?.findings ?? "-"}</td>
+                <td className="text-xs">{r.findings_count ?? r.summary?.findings ?? "-"}</td>
                 <td className="text-xs text-slate-500">{(r.created_at || "").slice(0, 19)}</td>
               </tr>
             ))}
