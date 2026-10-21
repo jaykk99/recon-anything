@@ -1247,6 +1247,7 @@ function FilesView({ findings, onView }: { findings: Finding[]; onView: (url: st
 
 interface VulnCandidate {
   id: string; name: string; severity: string; confidence: number;
+  confidence_basis: string; needs_manual_verification: boolean;
   why_viable: string; poc_code: string; poc_lang: string;
   dry_run_steps: string[]; remediation: string; evidence_count: number;
 }
@@ -1410,9 +1411,19 @@ function VulnsView({ runId }: { runId: string }) {
                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(c.severity)}`}>{c.severity.toUpperCase()}</span>
                 <span className="font-semibold text-sm">{c.name}</span>
                 <span className="text-[10px] text-slate-500 ml-auto">{c.confidence}% viable</span>
+                {c.needs_manual_verification ? (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-amber-700/60 text-amber-300" title={c.confidence_basis || "heuristic - verify manually"}>NEEDS MANUAL CHECK</span>
+                ) : (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-emerald-700/60 text-emerald-300" title={c.confidence_basis || "directly observed by the scan"}>SCAN-CONFIRMED</span>
+                )}
                 <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
               </div>
               <p className="text-xs text-slate-400 mt-1 break-words">{c.why_viable}</p>
+              {c.confidence_basis && (
+                <p className="text-[11px] text-slate-500 mt-1 break-words">
+                  <span className="font-semibold text-slate-400">Why this confidence: </span>{c.confidence_basis}
+                </p>
+              )}
             </button>
             {isOpen && (
               <div className="pt-3 mt-2 border-t border-slate-700/50 space-y-3">
