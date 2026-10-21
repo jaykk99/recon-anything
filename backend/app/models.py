@@ -56,7 +56,10 @@ def _utcnow():
 class Run(Base):
     __tablename__ = "runs"
     id = Column(String, primary_key=True)
-    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    # Indexed: GET /api/runs orders by created_at desc on every poll; without
+    # the index the list endpoint did a full-table sort (~6s idle wart,
+    # fixed 2026-10-20). Fresh DBs get it via init_db/create_all.
+    created_at = Column(DateTime(timezone=True), default=_utcnow, index=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     mode = Column(String, default="passive")  # passive | active
     source_type = Column(String, default="website")  # website | bank | atm
