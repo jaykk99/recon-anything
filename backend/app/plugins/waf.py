@@ -39,7 +39,12 @@ class WafPlugin(Plugin):
             return self._degraded(f"could not fetch: {str(e)[:150]}")
 
         headers = {k.lower(): v for k, v in r.headers.items()}
-        cookies = r.headers.get("set-cookie", "")
+        # All Set-Cookie values, not just the first: WAF vendors often set
+        # several cookies at once (Imperva incap_ses + visid_incap, ...).
+        try:
+            cookies = ", ".join(r.headers.get_list("set-cookie"))
+        except Exception:
+            cookies = r.headers.get("set-cookie", "")
 
         # Shared registry: header + cookie vendor attribution.
         for vendor in detect_vendors(headers, cookies):

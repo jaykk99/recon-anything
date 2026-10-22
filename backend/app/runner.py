@@ -673,6 +673,20 @@ def _get_run_ctx(run_id: str) -> Ctx:
                   evidence_dir=config.EVIDENCE_DIR,
                   source_type=(run.source_type if run and run.source_type
                                else "website"))
+        # WAF-block accounting baseline: the limiter is shared across
+        # runs in this worker, so snapshot per-host WAF stats at run
+        # start; _finalize_run turns the delta into findings.
+        try:
+            from .classifier import domain_from_target as _dft
+            _base: Dict[str, Dict] = {}
+            for _t in session.query(TargetRow).filter_by(run_id=run_id):
+                _h = _dft(_t.type, _t.normalized) or (
+                    _t.normalized if _t.type == "ip" else None)
+                if _h:
+                    _base[_h] = ctx.limiter.waf_stats(_h)
+            ctx.shared["_waf_base"] = _base
+        except Exception:
+            pass
     finally:
         try:
             session.close()
@@ -1017,6 +1031,61 @@ async def _sweep_hunter_expand() -> None:
             _hunter_marks.pop(rid, None)
 
 
+def _record_waf_blocks(session, run_id: str, ctx) -> int:
+    """Turn WAF blocks observed during the run into findings.
+
+    Every plugin fetch passes through the shared rate limiter, which
+    classifies responses with app.waf and counts blocks per host - but a
+    plugin whose fetch gets blocked just degrades quietly, so a heavily
+    WAF-filtered scan used to look like "no findings". The delta against
+    the run-start baseline (see _get_run_ctx) is what THIS run's traffic
+    hit. One finding per affected target, skipped when the waf plugin
+    already reported blocking for it. Returns findings added.
+    """
+    if ctx is None:
+        return 0
+    base = getattr(ctx, "shared", {}).get("_waf_base") or {}
+    if not base:
+        return 0
+    from .classifier import domain_from_target
+    existing = {
+        f.target_id for f in
+        session.query(FindingRow).filter_by(run_id=run_id)
+        .filter(FindingRow.key.in_(("waf_blocking", "waf_blocked_requests")))
+        .all()}
+    added = 0
+    for t in session.query(TargetRow).filter_by(run_id=run_id).all():
+        host = domain_from_target(t.type, t.normalized) or (
+            t.normalized if t.type == "ip" else None)
+        if not host or host not in base or t.id in existing:
+            continue
+        cur = ctx.limiter.waf_stats(host)
+        blocked = int(cur.get("blocked", 0)) - int(base[host].get("blocked", 0))
+        if blocked <= 0:
+            continue
+        vendor = cur.get("vendor") or base[host].get("vendor")
+        succeeded = int(cur.get("succeeded", 0)) - int(
+            base[host].get("succeeded", 0))
+        session.add(FindingRow(
+            run_id=run_id, target_id=t.id, plugin_id="waf",
+            category="web", key="waf_blocked_requests",
+            value=(f"WAF blocked {blocked} scan request(s) to {host}"
+                   + (f" ({vendor})" if vendor else "")),
+            source="rate limiter WAF accounting", source_url=None,
+            confidence=85, passive=True,
+            first_seen=dt.datetime.now(dt.timezone.utc),
+            evidence={"severity": "medium", "vendor": vendor,
+                      "blocked": blocked, "succeeded": succeeded,
+                      "note": "Per-host delta on the shared rate limiter "
+                              "during this run; the waf plugin's own "
+                              "fingerprint findings carry the vendor proof."},
+            raw={}, bounty_value="low"))
+        added += 1
+    if added:
+        session.flush()
+    return added
+
+
 async def _finalize_run(run_id: str) -> bool:
     """Finalize a run whose jobs are all settled. Atomic claim so only one
     worker finalizes. Returns True if this worker did it."""
@@ -1036,6 +1105,11 @@ async def _finalize_run(run_id: str) -> bool:
             return False
         from .graph import build_graph
         n_nodes, n_edges = build_graph(session, run_id)
+        # WAF blocks seen by ANY plugin become findings (not silent zeros).
+        try:
+            _record_waf_blocks(session, run_id, _run_ctxs.get(run_id))
+        except Exception:
+            pass
         total = session.query(FindingRow).filter_by(run_id=run_id).count()
         jobs = session.query(PluginJob).filter_by(run_id=run_id).all()
         plugin_statuses: Dict[str, str] = {}

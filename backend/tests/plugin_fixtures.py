@@ -210,6 +210,23 @@ def _handler(request: httpx.Request) -> httpx.Response:
     url = request.url
     host = url.host
     path = url.path or "/"
+    if host == "waf.fixture.test":
+        # Cloudflare-fronted host: passive vendor fingerprints on every
+        # response (__cf_bm cookie, CF-Ray, server) and a hard 403 block
+        # page for the classic XSS probe string, like a real WAF serves.
+        cf = {"Server": "cloudflare", "CF-Ray": "8abc1234-fixture",
+              "Set-Cookie": "__cf_bm=abc123; path=/; HttpOnly"}
+        if request.url.query and (
+                b"%3Cscript%3E" in request.url.query
+                or b"<script>" in request.url.query):
+            return httpx.Response(
+                403, headers=cf, request=request,
+                content=("<title>Attention Required! | Cloudflare</title>"
+                         "<h1>Sorry, you have been blocked</h1>"))
+        return httpx.Response(
+            200, headers=cf, request=request,
+            content=("<html><head><title>protected</title></head>"
+                     "<body>behind cloudflare</body></html>"))
     if host == "crt.sh":
         return httpx.Response(200, content=CRT_JSON,
                               headers={"Content-Type": "application/json"},
