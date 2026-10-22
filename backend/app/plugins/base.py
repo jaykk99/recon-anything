@@ -593,3 +593,14 @@ class Plugin(abc.ABC):
 
     def missing_keys(self, ctx: Ctx) -> List[str]:
         return [k for k in self.requires_keys if not ctx.keys.get(k)]
+
+    def _checkpoint(self, findings: List[Finding]) -> None:
+        """Snapshot confirmed findings so a timeout keeps partial results.
+
+        Long-running probe plugins call this after each unit of work
+        (one URL, one payload batch). If the runner kills the plugin on
+        timeout, the checkpointed findings are reported instead of being
+        silently discarded - a scan that found 3 SQLi in 60s should not
+        report zero. Stored on the instance (per job), never shared.
+        """
+        self.__dict__["partial_findings"] = list(findings)

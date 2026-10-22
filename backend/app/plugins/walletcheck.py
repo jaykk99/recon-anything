@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # BIP39 wordlist sample for mnemonic detection (first few + pattern)
@@ -98,7 +99,7 @@ class WalletcheckPlugin(Plugin):
         texts = [("homepage", html, page_url)]
         for m in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
             full = urljoin(page_url, m.group(1))
-            if urlparse(full).netloc.endswith(domain):
+            if same_domain(full, domain):
                 try:
                     jr = await fetch(ctx.http, ctx.limiter, "GET", full, timeout=15)
                     if jr.status_code == 200:

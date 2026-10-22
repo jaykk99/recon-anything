@@ -374,6 +374,10 @@ class SqliPlugin(Plugin):
                                                         "Authorized testing only."}))
                 except Exception:
                     pass
+            # Checkpoint confirmed findings: if the runner kills this
+            # plugin on timeout, the findings from finished URLs survive
+            # instead of being discarded with the in-flight work.
+            self._checkpoint(findings)
 
         async def test_url_sem(u: str):
             async with sem:

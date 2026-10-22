@@ -271,13 +271,26 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
         result = await asyncio.wait_for(plugin.run(target, ctx),
                                         timeout=timeout)
     except asyncio.TimeoutError:
-        # Jay's rule: no errors ever. A timeout degrades to ok(0) with a
-        # note. Partial work is lost, but the scan keeps moving.
-        result = plugin._degraded(
-            f"skipped: timeout after {timeout:.0f}s - findings may be incomplete")
+        # Jay's rule: no errors ever. A timeout degrades gracefully - but
+        # partial work is KEPT: plugins checkpoint confirmed findings via
+        # Plugin._checkpoint(), and those are reported with a "partial"
+        # note instead of being silently discarded. A scan that found 3
+        # SQLi before the cutoff must not report zero.
+        partials = list(
+            getattr(plugin, "partial_findings", None) or [])
+        if partials:
+            result = plugin._ok(
+                partials,
+                f"timeout after {timeout:.0f}s - partial results: "
+                f"{len(partials)} findings confirmed before the cutoff")
+        else:
+            result = plugin._degraded(
+                f"skipped: timeout after {timeout:.0f}s - findings may be "
+                f"incomplete")
         await _emit(ctx.run_id, "plugin_timeout",
                     {"plugin": plugin.id, "timeout_s": round(timeout, 1),
-                     "target": target.normalized})
+                     "target": target.normalized,
+                     "partial_findings": len(partials)})
     except Exception as e:  # never let one plugin kill the run
         # Environmental network failures degrade gracefully (ok with a note);
         # genuine code bugs still surface as errors so they can be fixed.

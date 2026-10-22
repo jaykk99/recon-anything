@@ -18,6 +18,7 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
+from .injutil import same_domain
 
 JUICY_EXTS = (".bak", ".old", ".zip", ".sql", ".env", ".log", ".txt",
               ".json", ".xml", ".yaml", ".yml", ".conf", ".config",
@@ -33,6 +34,33 @@ def _interesting(url: str) -> bool:
     if low.endswith(JUICY_EXTS):
         return True
     return any(h in low for h in API_HINT)
+
+
+def _archive_row_is_junk(url: str) -> bool:
+    """True when an archive row is a captured payload, not a real URL.
+
+    The Wayback CDX index holds captures of *payload strings* where the
+    queried host appears as a placeholder - XSS/SQLi probe artifacts
+    from archived exploit kits and scanner traffic. Tells (all observed
+    live against IP-literal queries, 2026-10-22):
+      - a second scheme embedded in the path/query
+        (http://127.0.0.1/%EF%BF%BDhttp://static.streampad.com/x.js)
+      - quotes, angle brackets or raw spaces (payload concatenation:
+        http://127.0.0.1/" + url + "index.php?act=idx)
+      - the unicode replacement char (corrupt captures)
+    Real archived page URLs never contain these in path/query, so
+    dropping them costs nothing and removes dozens of bogus findings.
+    """
+    try:
+        parts = urlparse(url)
+    except Exception:
+        return True
+    rest = (parts.path + "?" + parts.query).lower()
+    for marker in ("http://", "https://", '"', "'", "<", ">", " ", "\u00a0",
+                   "%22", "%27", "%3c", "%3e", "%ef%bf%bd", "\ufffd", "\ufeff"):
+        if marker in rest:
+            return True
+    return False
 
 
 class GauPlugin(Plugin):
@@ -134,10 +162,20 @@ class GauPlugin(Plugin):
             self._commoncrawl(ctx, domain))
 
         all_urls = otx | wb | cc
+        # Gate every archive URL before it can become a finding or a
+        # published discovery-bus asset:
+        #  1. host must be the target domain (or a subdomain) - archive
+        #     APIs return unfiltered off-target captures;
+        #  2. not a captured payload string - CDX holds XSS/SQLi probe
+        #     artifacts where the host is just a placeholder
+        #     (see _archive_row_is_junk).
+        gated = {u for u in all_urls
+                 if same_domain(u, domain)
+                 and not _archive_row_is_junk(u)}
         findings: List[Finding] = []
-        for u in sorted(all_urls):
+        for u in sorted(gated):
             ctx.publish("urls", u)
-        interesting = sorted(u for u in all_urls if _interesting(u))
+        interesting = sorted(u for u in gated if _interesting(u))
         for u in interesting[:80]:
             findings.append(self._f(
                 "web", "archived_url", u,
@@ -155,8 +193,9 @@ class GauPlugin(Plugin):
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(
             findings,
-            f"{len(all_urls)} archived URLs "
-            f"(otx {len(otx)}, wayback {len(wb)}, commoncrawl {len(cc)}); "
+            f"{len(gated)} archived URLs "
+            f"(otx {len(otx)}, wayback {len(wb)}, commoncrawl {len(cc)}, "
+            f"dropped {len(all_urls) - len(gated)} off-target/junk); "
             f"{len(interesting)} interesting")
         res.duration_ms = dur
         return res

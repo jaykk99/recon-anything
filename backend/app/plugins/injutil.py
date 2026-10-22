@@ -15,6 +15,31 @@ from ..ratelimit import fetch
 from .base import Ctx
 
 
+def host_of(url: str) -> str:
+    """Hostname of a URL, lowercased, without the port.
+
+    urlparse().netloc includes ":port" - use this everywhere a host
+    comparison is needed.
+    """
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def same_domain(url: str, domain: str) -> bool:
+    """True when the URL's host is the domain or a subdomain.
+
+    Compares hostnames, not netlocs: "example.com:8080".endswith(
+    "example.com") is False, so the naive netloc check silently dropped
+    every same-domain asset on non-default ports (js_secrets missed all
+    JS bundles on localhost:port targets - false negatives, 2026-10-22).
+    """
+    h = host_of(url)
+    d = (domain or "").lower().strip(".")
+    return bool(h) and (h == d or h.endswith("." + d))
+
+
 async def fetch_homepage(ctx: Ctx, base: str) -> Tuple[str, str]:
     """Fetch the target homepage. Returns (html, final_url)."""
     r = await fetch(ctx.http, ctx.limiter, "GET", base, timeout=25,
@@ -81,10 +106,12 @@ def baseline_pattern_hits(body: str, patterns) -> Set[str]:
 
 
 def over_budget(t0: float, budget_s: float = 25.0) -> bool:
-    """True when the plugin has spent its time budget (hard cap is 30s).
+    """True when the plugin has spent its time budget.
 
     Heavy probe loops should `break` when this is True so the plugin
     exits cleanly with partial findings instead of being killed.
+    Callers with a longer timeout_s should pass an explicit budget_s
+    (leaving headroom for clean exit) instead of the 25s default.
     """
     return (time.monotonic() - t0) > budget_s
 

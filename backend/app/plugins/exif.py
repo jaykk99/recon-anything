@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif")
@@ -174,7 +175,7 @@ class ExifPlugin(Plugin):
             low = src.lower().split("?")[0]
             if low.endswith(IMG_EXTS):
                 full = urljoin(page_url, src)
-                if urlparse(full).netloc.endswith(domain):
+                if same_domain(full, domain):
                     imgs.append(full)
             if len(imgs) >= 8:
                 break

@@ -166,6 +166,9 @@ class CmdInjectionPlugin(Plugin):
                             break
                     if found:
                         break
+            # Checkpoint: keep confirmed findings if the runner kills us
+            # on timeout mid-scan.
+            self._checkpoint(findings)
 
         res = self._ok(findings, f"probed {tested} payloads across "
                                  f"{len(urls)} URLs, {len(findings)} cmd signals")

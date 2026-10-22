@@ -194,6 +194,9 @@ class RcePlugin(Plugin):
                                           "scope_note": "Authorized testing only. "
                                                         "Do not exploit beyond detection."}))
                             break
+            # Checkpoint: keep confirmed findings if the runner kills us
+            # on timeout mid-scan.
+            self._checkpoint(findings)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested} params (time) + "

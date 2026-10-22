@@ -75,7 +75,7 @@ class TraversalPlugin(Plugin):
         tested = 0
         confirmed = False
         for u in sorted(urls)[:12]:
-            if over_budget(t0):
+            if over_budget(t0, budget_s=50):
                 break
             parts = urlparse(u)
             try:
@@ -94,7 +94,7 @@ class TraversalPlugin(Plugin):
                 base_params = [(n, "1") for n in names]
             for name in names[:6]:
                 for payload in TRAVERSAL_PAYLOADS[:3]:
-                    if over_budget(t0):
+                    if over_budget(t0, budget_s=50):
                         break
                     purl = probe_url(parts, base_params, name, payload)
                     try:

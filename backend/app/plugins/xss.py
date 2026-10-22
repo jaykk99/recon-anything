@@ -29,6 +29,29 @@ REMEDIATION = ("Encode all user input on output (context-aware encoding), "
                "on the server side. For DOM XSS, avoid innerHTML/eval; "
                "use textContent and safe DOM APIs.")
 
+# Method 3: DOM sink scan. Dangerous sinks that turn attacker-controlled
+# DOM data into code execution. No script is ever executed - this is
+# static analysis of inline <script> blocks only.
+DOM_SINKS = [
+    (r"document\.write\s*\(", "document.write"),
+    (r"document\.writeln\s*\(", "document.writeln"),
+    (r"\.innerHTML\s*=", "innerHTML assignment"),
+    (r"\.outerHTML\s*=", "outerHTML assignment"),
+    (r"\.insertAdjacentHTML\s*\(", "insertAdjacentHTML"),
+    (r"(?<![\w$.])eval\s*\(", "eval()"),
+    (r"new\s+Function\s*\(", "Function constructor"),
+    (r"setTimeout\s*\(\s*['\"]", "setTimeout with string"),
+    (r"setInterval\s*\(\s*['\"]", "setInterval with string"),
+]
+# DOM sources: attacker-influenced data reachable from the page URL.
+DOM_SOURCES = [
+    (r"location\.search", "location.search"),
+    (r"location\.hash", "location.hash"),
+    (r"document\.URL", "document.URL"),
+    (r"document\.documentURI", "document.documentURI"),
+    (r"document\.referrer", "document.referrer"),
+    (r"window\.name", "window.name"),
+]
 # Context probes: inert canary wrapped for specific reflection contexts.
 # Each entry: (wrapper template with {C} placeholder, context label,
 # encoding form: "raw" | "url2x" | "entity")
@@ -95,6 +118,28 @@ class XssPlugin(Plugin):
                 else:
                     contexts.append("raw HTML context")
         return list(set(contexts))
+
+    def _scan_dom_sinks(self, script: str):
+        """Static sink/source analysis of one inline <script> block.
+
+        Returns a list of (sink_label, source_label_or_None, snippet).
+        A sink fed by a DOM source (location.search, location.hash, ...)
+        in the same block is a DOM-XSS candidate; a bare sink is still
+        worth flagging at lower confidence. Nothing is executed.
+        """
+        hits = []
+        for spat, slabel in DOM_SINKS:
+            for sm in re.finditer(spat, script, re.I):
+                start = max(0, sm.start() - 80)
+                end = min(len(script), sm.end() + 80)
+                snippet = re.sub(r"\s+", " ", script[start:end]).strip()
+                src_label = None
+                for rpat, rlabel in DOM_SOURCES:
+                    if re.search(rpat, script, re.I):
+                        src_label = rlabel
+                        break
+                hits.append((slabel, src_label, snippet[:200]))
+        return hits
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -222,12 +267,75 @@ class XssPlugin(Plugin):
                 else:
                     continue
                 break
+            # Checkpoint confirmed findings for timeout resilience.
+            self._checkpoint(findings)
 
         async def test_url_sem(u: str):
             async with sem:
                 await test_url(u)
 
         await asyncio.gather(*[test_url_sem(u) for u in sample_urls(urls, 12)])
+
+        # --- Method 3: DOM sinks (static analysis, nothing executed) ---
+        # Scan inline <script> blocks on the homepage plus a sample of
+        # discovered same-domain pages (including non-parameterized ones
+        # like /old-page.php, which the reflected methods skip). A sink
+        # fed by a DOM source (location.search/hash, document.URL, ...)
+        # in the same block is a DOM-XSS candidate.
+        try:
+            dom_pages = set()
+            for m in re.finditer(r'href=["\']([^"\']+)["\']', html, re.I):
+                u = m.group(1)
+                if u.startswith("/"):
+                    p = urlparse(page_url)
+                    u = f"{p.scheme}://{p.netloc}{u}"
+                if domain in urlparse(u).netloc:
+                    dom_pages.add(u.split("#")[0])
+            dom_pages.add(page_url)
+            # Prefer non-parameterized pages here: the reflected methods
+            # above already cover the param URLs, and the param-first
+            # sampler would crowd out sink-bearing legacy pages.
+            dom_candidates = [u for u in dom_pages
+                              if not urlparse(u).query] or list(dom_pages)
+            for page in sample_urls(dom_candidates, 8):
+                page_data = await ctx.fetch_page(page, timeout=12)
+                if not page_data:
+                    continue
+                ptext = page_data.get("text", "") or ""
+                if not ptext:
+                    continue
+                for sm in re.finditer(
+                        r"<script(?:\s[^>]*)?>(.*?)</script>",
+                        ptext, re.I | re.S):
+                    script = sm.group(1)
+                    if not script or len(script) > 200000:
+                        continue
+                    for sink, source, snippet in self._scan_dom_sinks(script):
+                        if source:
+                            conf, sev = 80, "high"
+                            what = (f"HIGH: DOM-XSS candidate - {sink} fed by "
+                                    f"{source}")
+                        else:
+                            conf, sev = 60, "medium"
+                            what = (f"MEDIUM: dangerous JS sink {sink} "
+                                    f"(no DOM source seen in block)")
+                        findings.append(self._f(
+                            "web", "xss_dom_sink",
+                            f"{what} at {urlparse(page).path or '/'}: "
+                            f"{snippet}",
+                            source="DOM sink scan", source_url=page,
+                            confidence=conf, passive=False,
+                            evidence={"severity": sev,
+                                      "sink": sink,
+                                      "dom_source": source or "",
+                                      "snippet": snippet,
+                                      "remediation": REMEDIATION,
+                                      "scope_note": "Static analysis only - "
+                                                    "no script executed. "
+                                                    "Authorized testing only."}))
+                        self._checkpoint(findings)
+        except Exception:
+            pass
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"probed {tested[0]} params, "

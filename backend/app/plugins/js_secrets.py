@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .secretutils import is_placeholder, redact
 
@@ -147,7 +148,7 @@ class JsSecretsPlugin(Plugin):
         js_urls: Set[str] = set()
         for sm in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
             full = urljoin(page_url, sm.group(1))
-            if urlparse(full).netloc.endswith(domain):
+            if same_domain(full, domain):
                 js_urls.add(full)
         for ju in ctx.consume("js_files"):
             if isinstance(ju, str) and domain in urlparse(ju).netloc:

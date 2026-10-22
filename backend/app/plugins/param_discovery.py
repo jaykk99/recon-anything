@@ -176,6 +176,9 @@ class ParamDiscoveryPlugin(Plugin):
                                         else 1, s))[:10]
         for s in ordered:
             await test_seed(s)
+            # Checkpoint: keep confirmed findings if the runner kills us
+            # on timeout mid-sweep.
+            self._checkpoint(findings)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,

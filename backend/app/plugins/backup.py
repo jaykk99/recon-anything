@@ -280,6 +280,9 @@ class BackupPlugin(Plugin):
                         break
                 if len(findings) >= 30:
                     break
+                # Checkpoint: keep confirmed findings if the runner kills
+                # us on timeout mid-sweep.
+                self._checkpoint(findings)
 
         dur = int((time.monotonic() - t0) * 1000)
         swept_n = swept if not passive else len(candidates)

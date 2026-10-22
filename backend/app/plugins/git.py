@@ -122,6 +122,9 @@ class GitPlugin(Plugin):
                 source=".git check", source_url=base + "/.git/HEAD",
                 confidence=97, passive=False,
                 evidence={"severity": "critical", "remediation": REMEDIATION}))
+        # Checkpoint the HEAD finding immediately: it is the highest-value
+        # signal and must survive even if the file loop below is cut short.
+        self._checkpoint(findings)
 
         recovered = []
         for path, label, conf, marker in GIT_FILES[1:]:
@@ -137,6 +140,9 @@ class GitPlugin(Plugin):
                 source=".git check", source_url=base + path,
                 confidence=conf if not passive else conf - 12, passive=passive,
                 evidence={"severity": "critical", "remediation": REMEDIATION}))
+            # Checkpoint: keep confirmed findings if the runner kills us
+            # on timeout mid-enumeration.
+            self._checkpoint(findings)
             if len(recovered) >= 6:
                 break
 

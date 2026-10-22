@@ -31,6 +31,20 @@ from urllib.parse import urlparse
 import httpx
 
 
+# Connection pool sizing for the scan worker. The worker runs up to
+# MAX_CONCURRENCY (32) plugin jobs at once, and time-based detection
+# plugins (sqli/cmdi/rce SLEEP payloads) hold connections open for 5-6s
+# while the target sleeps. With httpx's default 100-connection pool,
+# quick plugins (git: 21 sub-second checks) starve behind the sleeping
+# connections and hit their own timeout with zero findings - a false
+# negative (seen 2026-10-22: git ran 0.5s solo, timed out at 60s under
+# 32-job load). 400 connections comfortably covers 32 jobs x ~10
+# in-flight requests each; the direct-mount transports get the same
+# limits since NO_PROXY targets (localhost scans) use their own pools.
+POOL_LIMITS = httpx.Limits(max_connections=400,
+                           max_keepalive_connections=100)
+
+
 def egress_proxy() -> Optional[str]:
     """Proxy URL from the environment, or None for direct egress."""
     p = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
@@ -89,7 +103,8 @@ def _direct_mounts() -> dict:
         if not key_host:
             continue
         for scheme in ("http", "https"):
-            mounts[f"{scheme}://{key_host}"] = httpx.AsyncHTTPTransport()
+            mounts[f"{scheme}://{key_host}"] = httpx.AsyncHTTPTransport(
+                limits=POOL_LIMITS)
     return mounts
 
 
@@ -100,7 +115,8 @@ def _direct_mounts_sync() -> dict:
         if not key_host:
             continue
         for scheme in ("http", "https"):
-            mounts[f"{scheme}://{key_host}"] = httpx.HTTPTransport()
+            mounts[f"{scheme}://{key_host}"] = httpx.HTTPTransport(
+                limits=POOL_LIMITS)
     return mounts
 
 
@@ -143,6 +159,9 @@ def async_client(**kwargs) -> httpx.AsyncClient:
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
+    # Generous pool: the scan worker runs 32 plugin jobs concurrently
+    # and time-based payloads hold connections open for seconds.
+    kwargs.setdefault("limits", POOL_LIMITS)
     if "mounts" not in kwargs:
         direct = _direct_mounts()
         if direct:
@@ -155,6 +174,9 @@ def sync_client(**kwargs) -> httpx.Client:
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
+    # Generous pool: the scan worker runs 32 plugin jobs concurrently
+    # and time-based payloads hold connections open for seconds.
+    kwargs.setdefault("limits", POOL_LIMITS)
     if "mounts" not in kwargs:
         direct = _direct_mounts_sync()
         if direct:

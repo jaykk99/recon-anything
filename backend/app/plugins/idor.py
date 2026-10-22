@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # (pattern, label, risk)
@@ -101,7 +102,7 @@ class IdorPlugin(Plugin):
                                   html, re.I):
                 from urllib.parse import urljoin
                 full = urljoin(page_url, sm.group(1))
-                if urlparse(full).netloc.endswith(domain):
+                if same_domain(full, domain):
                     try:
                         jr = await fetch(ctx.http, ctx.limiter, "GET", full,
                                          timeout=10)

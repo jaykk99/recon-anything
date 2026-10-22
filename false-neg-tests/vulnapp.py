@@ -280,6 +280,26 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"VulnTest listening on http://{HOST}:{PORT}", flush=True)
+    # N05 decoy: a bare TCP listener on 8000 so the port_scan plugin has
+    # a real open web port to find. Accepts and immediately closes -
+    # no HTTP, no content.
+    import socket as _socket
+    import threading as _threading
+    decoy = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    decoy.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    decoy.bind((HOST, 8000))
+    decoy.listen(5)
+
+    def _decoy_loop():
+        while True:
+            try:
+                conn, _ = decoy.accept()
+                conn.close()
+            except Exception:
+                break
+
+    _threading.Thread(target=_decoy_loop, daemon=True).start()
+    print(f"VulnTest decoy port open on {HOST}:8000", flush=True)
     srv.serve_forever()
 
 

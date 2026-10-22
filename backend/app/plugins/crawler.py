@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 MAX_PAGES = 50
@@ -149,7 +150,7 @@ class CrawlerPlugin(Plugin):
                 for m in re.finditer(
                         r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I):
                     src = urljoin(furl or url, m.group(1).strip())
-                    if urlparse(src).netloc.endswith(domain) or \
+                    if same_domain(src, domain) or \
                             urlparse(src).netloc == domain:
                         ctx.publish("js_files", src)
                     else:

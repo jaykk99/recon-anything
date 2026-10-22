@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "backend"))
@@ -69,6 +70,36 @@ GROUND_TRUTH = [
 ]
 
 
+async def wait_for_run(run_id: str, timeout_s: float = 1500.0) -> str:
+    """Block until the queue worker settles the run.
+
+    execute_run() is enqueue-only: it returns right after inserting the
+    jobs, and the in-process queue worker processes them asynchronously.
+    Reading findings immediately after used to report 0 findings for
+    every scan (100% false "misses" on every run). Poll the run row
+    until the finalize pass marks it done/failed, keeping the event
+    loop alive so the worker can actually run the jobs. Returns the
+    final status ("done", "failed", or "timeout").
+    """
+    from app.models import get_session, Run
+    deadline = time.monotonic() + timeout_s
+    last_shown = None
+    while time.monotonic() < deadline:
+        session = get_session()
+        try:
+            run = session.query(Run).filter_by(id=run_id).first()
+            status = run.status if run else "missing"
+        finally:
+            session.close()
+        if status != last_shown:
+            print(f"  .. run {run_id[:14]} status={status}", flush=True)
+            last_shown = status
+        if status in ("done", "failed", "missing"):
+            return status
+        await asyncio.sleep(5)
+    return "timeout"
+
+
 async def main():
     from app.models import init_db, get_session, Run
     from app.runner import execute_run
@@ -85,6 +116,8 @@ async def main():
     print(f"=== scanning {TARGET} (active, {len(PLUGINS)} plugins) ===", flush=True)
     await execute_run(run_id, TARGET, "active", plugin_ids=PLUGINS,
                       module_overrides=None, keys={}, source_type="website")
+    final = await wait_for_run(run_id)
+    print(f"=== main scan finished: {final} ===", flush=True)
 
     session = get_session()
     findings = findings_dump(session, run_id)
@@ -158,6 +191,8 @@ async def main():
     await execute_run(run_id2, TARGET + "/blog/", "active",
                       plugin_ids=["cms_probes"], module_overrides=None,
                       keys={}, source_type="website")
+    final2 = await wait_for_run(run_id2, timeout_s=600.0)
+    print(f"=== blog scan finished: {final2} ===", flush=True)
     session = get_session()
     findings2 = findings_dump(session, run_id2)
     session.close()
