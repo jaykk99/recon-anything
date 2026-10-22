@@ -1,4 +1,4 @@
-"""The 20 hunter roles and the known-set expansion rules.
+"""The 23 hunter roles and the known-set expansion rules.
 
 Each role: name, specialty, what it consumes (asset types and finding
 keys), what it produces (asset types), and the detection plugins it
@@ -95,6 +95,18 @@ HUNTERS = [
      "consumes": ["domain", "subdomain", "ip", "url", "email", "wallet", "repo"],
      "produces": ["domain", "subdomain", "ip", "url", "email", "wallet", "repo"],
      "plugins": ["assetgraph", "pivots", "autotriage"]},
+    {"name": "neighbor_hunter", "specialty": "Related-domain and co-host discovery",
+     "consumes": ["ip", "cert"],
+     "produces": ["domain"],
+     "plugins": ["reverse_ip"]},
+    {"name": "passive_dns_hunter", "specialty": "Passive DNS history pivoting",
+     "consumes": ["domain", "subdomain", "url"],
+     "produces": ["ip", "subdomain", "domain"],
+     "plugins": ["passive_dns"]},
+    {"name": "rapiddns_hunter", "specialty": "RapidDNS deep subdomain enumeration",
+     "consumes": ["domain"],
+     "produces": ["subdomain"],
+     "plugins": ["rapiddns"]},
 ]
 
 HUNTER_NAMES = [h["name"] for h in HUNTERS]
@@ -109,6 +121,18 @@ KEY_TO_ASSET = {
     "a": ("ip", "dns_hunter"),
     "aaaa": ("ip", "dns_hunter"),
     "ptr": ("subdomain", "dns_hunter"),
+    "cname": ("subdomain", "dns_hunter"),
+    "mx": ("domain", "dns_hunter"),
+    "ns": ("domain", "dns_hunter"),
+    "archived_url": ("url", "archive_hunter"),
+    "wayback_interesting_url": ("url", "archive_hunter"),
+    "graphql_endpoint": ("endpoint", "endpoint_hunter"),
+    "endpoint_js": ("endpoint", "endpoint_hunter"),
+    "js_file_deep": ("js_file", "js_miner"),
+    "profile_url": ("url", "osint_hunter"),
+    "cohosted_domain": ("domain", "neighbor_hunter"),
+    "passive_ip": ("ip", "passive_dns_hunter"),
+    "passive_host": ("domain", "passive_dns_hunter"),
     "endpoint": ("endpoint", "endpoint_hunter"),
     "api_endpoint": ("endpoint", "endpoint_hunter"),
     "js_endpoint": ("endpoint", "js_miner"),
@@ -134,11 +158,14 @@ KEY_TO_ASSET = {
 # repo -> org repos and hosts in history (github plugins).
 EXPANSION = {
     "domain": [
-        ("subdomain_hunter", ["subdomains", "subdomain_brute"]),
+        ("subdomain_hunter", ["subdomains", "subdomain_compiler",
+                              "subdomain_brute"]),
         ("cert_hunter", ["tls"]),
-        ("archive_hunter", ["wayback", "gau"]),
-        ("cloud_hunter", ["cloud_buckets", "s3"]),
         ("dns_hunter", ["dns"]),
+        ("passive_dns_hunter", ["passive_dns"]),
+        ("rapiddns_hunter", ["rapiddns"]),
+        ("archive_hunter", ["wayback"]),
+        ("cloud_hunter", ["cloud_buckets", "s3"]),
         ("email_hunter", ["emails", "email_infra"]),
     ],
     "subdomain": [
@@ -146,21 +173,24 @@ EXPANSION = {
         ("port_hunter", ["ports", "banners"]),
         ("fingerprint_hunter", ["webtech", "favicon_hash", "headers"]),
         ("cert_hunter", ["tls"]),
+        ("passive_dns_hunter", ["passive_dns"]),
     ],
     "cert": [
         ("cert_hunter", ["tls"]),
-        ("subdomain_hunter", ["subdomains"]),
+        ("subdomain_hunter", ["subdomains", "subdomain_compiler"]),
     ],
     "ip": [
         ("dns_hunter", ["dns", "rdap"]),
         ("port_hunter", ["ports", "port_scan", "banners"]),
+        ("neighbor_hunter", ["reverse_ip"]),
+        ("passive_dns_hunter", ["passive_dns"]),
     ],
     "url": [
         ("endpoint_hunter", ["apidiscover", "crawler"]),
         ("js_miner", ["jsminer"]),
         ("secret_hunter", ["secrets"]),
         ("fingerprint_hunter", ["headers", "webtech"]),
-        ("archive_hunter", ["waybackurls"]),
+        ("archive_hunter", ["waybackurls", "gau"]),
     ],
     "endpoint": [
         ("endpoint_hunter", ["apidiscover", "param_discovery"]),

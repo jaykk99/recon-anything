@@ -283,6 +283,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       if (!bountyInit.current) { bountyInit.current = true; setSortBy("impact"); }
     }
   };
+  const [agentActions, setAgentActions] = useState(0);
   const [shownTop, setShownTop] = useState(50);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [groupShown, setGroupShown] = useState<Record<string, number>>({});
@@ -705,6 +706,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
             if (t === "ports") return findings.filter(isPortFinding).length;
             if (t === "files") return findings.filter(isFileFinding).length;
             if (t === "vulns") return findings.filter((f) => f.category === "vuln").length;
+            if (t === "agents") return agentActions;
             return 0;
           };
           const tabLabel = (t: string) => {
@@ -712,7 +714,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
             const name = t;
             return c > 0 ? `${name} (${c})` : name;
           };
-          return (["findings", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "apimap", "raw"] as const)
+          return (["findings", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
             .filter((t) => t !== "atm" || sourceType === "atm")
             .map((t) => (
               <button key={t} onClick={() => setTab(t)}
@@ -886,6 +888,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
       {tab === "creds" && <CredsView findings={findings} />}
       {tab === "graph" && <GraphView graph={graph} />}
+      {tab === "agents" && <AgentsView runId={id} live={status !== "done"} onCount={setAgentActions} />}
       {tab === "apimap" && <ApiMapView data={apiMap} />}
       {tab === "raw" && (
         <div className="card p-4">
@@ -1280,6 +1283,101 @@ interface SimReport {
   target: string; total_tested: number; working_count: number;
   working: SimResult[]; results: SimResult[];
   disclaimer: string;
+}
+
+interface AgentRollup {
+  name: string; specialty: string; actions: number; assets_found: number;
+  jobs_enqueued: number; chained_jobs: number; dead_ends: number;
+  findings_contributed: number; last_action_at: string | null;
+  status: string;
+}
+
+interface AgentFeedItem {
+  id: number; agent: string; action: string; asset_type: string;
+  asset_value: string; description: string; at: string | null;
+}
+
+function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; onCount?: (n: number) => void }) {
+  const [agents, setAgents] = useState<AgentRollup[] | null>(null);
+  const [feed, setFeed] = useState<AgentFeedItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let stop = false;
+    const load = async () => {
+      try {
+        const r = await fetch(`/api/runs/${runId}/agent-activity`, { headers: { "X-Access-Code": getCode() } });
+        const d = await r.json();
+        if (stop) return;
+        setAgents(d.agents || []);
+        setFeed(d.actions || []);
+        if (onCount) onCount(d.total_actions || 0);
+      } catch {
+        if (!stop && agents === null) setAgents([]);
+      } finally {
+        if (!stop) setLoading(false);
+      }
+    };
+    load();
+    // Same 4s cadence as the run page's poll fallback while the scan runs.
+    const t = live ? setInterval(load, 4000) : undefined;
+    return () => { stop = true; if (t) clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, live]);
+
+  const statusPill = (s: string) => {
+    if (s === "working") return "bg-emerald-900 text-emerald-200";
+    if (s === "abandoned") return "bg-red-900 text-red-200";
+    if (s === "idle") return "bg-slate-700 text-slate-300";
+    return "bg-sky-900 text-sky-200";
+  };
+  const fmtTime = (iso: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
+  };
+
+  if (loading && agents === null) return <div className="card p-4 text-sm text-slate-400">loading agent activity...</div>;
+  const list = [...feed].reverse();
+  return (
+    <div className="space-y-4">
+      <div className="card p-4">
+        <h2 className="text-xs uppercase text-slate-500 mb-2">Agents on this scan{live ? " (live)" : ""}</h2>
+        {(!agents || agents.length === 0) && <p className="text-sm text-slate-500">No agent actions yet. Hunters start expanding once findings land.</p>}
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {(agents || []).map((a) => (
+            <div key={a.name} className="rounded bg-slate-800/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-slate-200">{a.name}</span>
+                <span className={`text-[11px] px-2 py-0.5 rounded ${statusPill(a.status)}`}>{a.status}</span>
+              </div>
+              {a.specialty && <div className="text-[11px] text-slate-500 mt-0.5">{a.specialty}</div>}
+              <div className="text-xs text-slate-400 mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                <span>{a.actions} actions</span>
+                <span>{a.assets_found} found</span>
+                <span>{a.jobs_enqueued} jobs queued</span>
+                {a.chained_jobs > 0 && <span>{a.chained_jobs} chained</span>}
+                <span>{a.findings_contributed} findings</span>
+                {a.dead_ends > 0 && <span>{a.dead_ends} dead ends</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="card p-4">
+        <h2 className="text-xs uppercase text-slate-500 mb-2">Activity feed</h2>
+        {list.length === 0 && <p className="text-sm text-slate-500">Nothing yet.</p>}
+        <div className="space-y-1.5 max-h-[600px] overflow-y-auto pr-1">
+          {list.map((it) => (
+            <div key={it.id} className="text-sm flex gap-2 items-baseline">
+              <span className="text-[11px] text-slate-500 whitespace-nowrap">{fmtTime(it.at)}</span>
+              <span className="text-slate-200">{it.description}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function VulnsView({ runId }: { runId: string }) {

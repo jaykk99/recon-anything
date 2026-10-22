@@ -47,10 +47,13 @@ def _finding(key, value, plugin="dns", category="dns", source_url=None):
 # Roles + packs + registry
 # ---------------------------------------------------------------------------
 
-def test_twenty_hunters_defined():
-    assert len(HUNTERS) == 20
+def test_hunters_defined():
+    assert len(HUNTERS) == 23
     names = [h["name"] for h in HUNTERS]
-    assert len(set(names)) == 20
+    assert len(set(names)) == 23
+    for expected in ("neighbor_hunter", "passive_dns_hunter",
+                     "rapiddns_hunter"):
+        assert expected in names
     for h in HUNTERS:
         assert h["specialty"] and h["consumes"] and h["produces"]
 
@@ -285,6 +288,321 @@ def test_finalize_hunt_records_memory_and_dead_ends(session):
 
 
 # ---------------------------------------------------------------------------
+# Canonicalization: one node, one asset, however it was spelled
+# ---------------------------------------------------------------------------
+
+def test_extract_canonicalizes_duplicate_spellings():
+    target = TargetRow(id="t1", run_id="r-x", raw="Example.COM.",
+                       type="domain", normalized="Example.COM.")
+    findings = [
+        _finding("subdomain", "API.Example.com."),
+        _finding("subdomain", "api.example.com"),
+        _finding("a", "2606:4700:0:0:0:0:6813:DF11"),
+        _finding("aaaa", "2606:4700::6813:df11"),
+        _finding("endpoint", "https://EXAMPLE.com:443/api/v1/#frag",
+                 plugin="apidiscover", category="api"),
+        _finding("endpoint", "https://example.com/api/v1",
+                 plugin="apidiscover", category="api"),
+    ]
+    assets = engine.extract_assets(findings, [target])
+    pairs = [(a["type"], a["value"]) for a in assets]
+    assert pairs.count(("subdomain", "api.example.com")) == 1
+    assert sum(1 for t, v in pairs if t == "ip") == 1
+    assert ("ip", "2606:4700::6813:df11") in pairs
+    assert sum(1 for t, v in pairs if t == "endpoint") == 1
+    assert ("endpoint", "https://example.com/api/v1") in pairs
+
+
+def test_extract_mx_ns_cname_and_archive_keys():
+    target = TargetRow(id="t1", run_id="r-x", raw="pivots.test",
+                       type="domain", normalized="pivots.test")
+    findings = [
+        _finding("mx", "10 mail.pivots.test."),
+        _finding("ns", "ns1.otherdns.test."),
+        _finding("cname", "pivots.test.hosting.test."),
+        _finding("archived_url", "https://pivots.test/old-login",
+                 plugin="gau", category="web"),
+        _finding("graphql_endpoint", "https://pivots.test/graphql",
+                 plugin="graphql", category="api"),
+        _finding("passive_ip", "198.51.100.23", plugin="passive_dns"),
+        _finding("cohosted_domain", "sibling.test",
+                 plugin="reverse_ip", category="graph"),
+    ]
+    pairs = {(a["type"], a["value"])
+             for a in engine.extract_assets(findings, [target])}
+    assert ("domain", "mail.pivots.test") in pairs
+    assert ("domain", "ns1.otherdns.test") in pairs
+    assert ("subdomain", "pivots.test.hosting.test") in pairs
+    assert ("url", "https://pivots.test/old-login") in pairs
+    assert ("endpoint", "https://pivots.test/graphql") in pairs
+    assert ("ip", "198.51.100.23") in pairs
+    assert ("domain", "sibling.test") in pairs
+
+
+def test_extract_cross_root_san_promoted_to_domain():
+    target = TargetRow(id="t1", run_id="r-x", raw="main.test",
+                       type="domain", normalized="main.test")
+    findings = [
+        _finding("tls_san", "www.main.test", plugin="tls"),
+        _finding("tls_san", "sibling-other.test", plugin="tls"),
+    ]
+    assets = engine.extract_assets(findings, [target])
+    by_value = {a["value"]: a for a in assets}
+    assert by_value["www.main.test"]["type"] == "subdomain"
+    assert by_value["sibling-other.test"]["type"] == "domain"
+    assert by_value["sibling-other.test"]["found_by"] == "neighbor_hunter"
+
+
+# ---------------------------------------------------------------------------
+# Compounding: the persisted known set re-seeds the next run
+# ---------------------------------------------------------------------------
+
+def test_known_set_reseeds_next_run(session):
+    run1 = _mk_run(session, "run-reseed-1", "reseed.test")
+    r = _finding("subdomain", "api.reseed.test")
+    r.run_id = "run-reseed-1"
+    session.add(r)
+    session.commit()
+    a1 = engine.new_accum()
+    assert engine.hunter_expand(session, run1, a1) > 0
+    # second run, NO new findings at all: the persisted known set
+    # alone must produce re-verification jobs for the known node
+    run2 = _mk_run(session, "run-reseed-2", "reseed.test")
+    a2 = engine.new_accum()
+    enqueued = engine.hunter_expand(session, run2, a2)
+    assert enqueued > 0
+    assert a2["tasks_reexpand"] > 0
+    jobs = session.query(PluginJob).filter_by(run_id="run-reseed-2").all()
+    targets = {t.id: t for t in
+               session.query(TargetRow).filter_by(
+                   run_id="run-reseed-2").all()}
+    assert any(targets[j.target_id].normalized == "api.reseed.test"
+               for j in jobs)
+
+
+def test_reseed_respects_reexpand_budget(session, monkeypatch):
+    run1 = _mk_run(session, "run-reseed-b1", "rbudget.test")
+    r = _finding("subdomain", "api.rbudget.test")
+    r.run_id = "run-reseed-b1"
+    session.add(r)
+    session.commit()
+    engine.hunter_expand(session, run1, engine.new_accum())
+    monkeypatch.setattr(engine, "REEXPAND_FRACTION", 0.0)
+    run2 = _mk_run(session, "run-reseed-b2", "rbudget.test")
+    a2 = engine.new_accum()
+    engine.hunter_expand(session, run2, a2)
+    # with a zero re-expansion share, NO job may target the known
+    # node (the seed target's own depth-0 expansion is unaffected)
+    assert a2["tasks_reexpand"] == 0
+    jobs = session.query(PluginJob).filter_by(run_id="run-reseed-b2").all()
+    targets = {t.id: t for t in
+               session.query(TargetRow).filter_by(
+                   run_id="run-reseed-b2").all()}
+    assert jobs and all(
+        targets[j.target_id].normalized == "rbudget.test" for j in jobs)
+
+
+def test_frontier_prioritizes_new_surface_over_identity(session,
+                                                        monkeypatch):
+    monkeypatch.setattr(engine, "MAX_TASKS", 3)
+    run = Run(id="run-prio-1", mode="passive", status="running",
+              source_type="website", summary={})
+    session.add(run)
+    session.add(TargetRow(id="run-prio-1-t", run_id="run-prio-1",
+                          raw="owner@prio.test", type="email",
+                          normalized="owner@prio.test"))
+    r = _finding("a", "203.0.113.7")
+    r.run_id = "run-prio-1"
+    session.add(r)
+    session.commit()
+    accum = engine.new_accum()
+    engine.hunter_expand(session, run, accum)
+    jobs = session.query(PluginJob).filter_by(run_id="run-prio-1").all()
+    assert jobs
+    targets = {t.id: t for t in
+               session.query(TargetRow).filter_by(
+                   run_id="run-prio-1").all()}
+    # the whole (tiny) budget went to the new IP node, none to the
+    # seed email's own expansion rules
+    assert all(targets[j.target_id].normalized == "203.0.113.7"
+               for j in jobs)
+
+
+def test_dead_end_ttl_expires(session):
+    store.add_dead_end(session, "recon", "ttl.test", "subdomain",
+                       "old.ttl.test", run_id="r0", reason="nothing")
+    assert "old.ttl.test" in store.dead_end_values(
+        session, "recon", "ttl.test")
+    # backdate the entry 30 days: past the 7-day TTL it no longer
+    # blocks re-hunting
+    from app.models import HuntMemory
+    row = (session.query(HuntMemory)
+           .filter_by(system="recon", target_key="ttl.test").first())
+    import datetime as _dt
+    stale = (_dt.datetime.now(_dt.timezone.utc)
+             - _dt.timedelta(days=30)).isoformat()
+    row.dead_ends = [dict(d, at=stale) for d in row.dead_ends]
+    session.commit()
+    assert "old.ttl.test" not in store.dead_end_values(
+        session, "recon", "ttl.test")
+
+
+# ---------------------------------------------------------------------------
+# Finding-driven chaining
+# ---------------------------------------------------------------------------
+
+def test_chaining_wordpress_finding_queues_cms_plugins(session):
+    run = _mk_run(session, "run-chain-1", "chain.test")
+    tid = "run-chain-1-t"
+    f = _finding("tech", "WordPress 6.4.2", plugin="webtech",
+                 category="web")
+    f.run_id = "run-chain-1"
+    f.target_id = tid
+    session.add(f)
+    session.commit()
+    accum = engine.new_accum()
+    engine.hunter_expand(session, run, accum)
+    assert accum["chained_jobs"] >= 2
+    jobs = session.query(PluginJob).filter_by(
+        run_id="run-chain-1", target_id=tid).all()
+    chained = {j.plugin_id for j in jobs} & {"cms_probes", "cves"}
+    assert chained == {"cms_probes", "cves"}
+    from app.models import HuntAction
+    actions = (session.query(HuntAction)
+               .filter_by(run_id="run-chain-1",
+                          hunter="chain_engine").all())
+    assert actions and all(a.action == "job_enqueued" for a in actions)
+
+
+def test_chaining_findingless_target_queues_nothing(session):
+    run = _mk_run(session, "run-chain-2", "plain.test")
+    accum = engine.new_accum()
+    engine.hunter_expand(session, run, accum)
+    assert accum["chained_jobs"] == 0
+    from app.models import HuntAction
+    assert (session.query(HuntAction)
+            .filter_by(run_id="run-chain-2",
+                       hunter="chain_engine").count()) == 0
+
+
+def test_chaining_graphql_and_jwt(session):
+    from app.hunters.chaining import plan_chains
+    target = TargetRow(id="tt", run_id="r-x", raw="api.test",
+                       type="domain", normalized="api.test")
+    f1 = _finding("graphql_endpoint", "https://api.test/graphql",
+                  plugin="graphql", category="api")
+    f1.target_id = "tt"
+    f2 = _finding("jwt_header", "alg none", plugin="jwt", category="api")
+    f2.target_id = "tt"
+    plan, hot, signals = plan_chains([f1, f2], [target])
+    assert "graphql" in plan["tt"] and "jwt" in plan["tt"]
+    assert "graphql" in signals["tt"]
+
+
+# ---------------------------------------------------------------------------
+# New hunter source plugins: parsers (network-free)
+# ---------------------------------------------------------------------------
+
+def test_new_plugins_registered():
+    from app.plugins.registry import discover
+    reg = discover()
+    for pid in ("reverse_ip", "passive_dns", "rapiddns"):
+        assert pid in reg
+        assert reg[pid]().passive is True
+
+
+def test_reverse_ip_parsers():
+    from app.plugins.reverse_ip import (parse_hackertarget_reverse,
+                                        parse_otx_ip_passive,
+                                        parse_rapiddns_sameip)
+    assert parse_hackertarget_reverse(
+        "a.example.com\nb.example.org\nerror invalid\n") == {
+        "a.example.com", "b.example.org"}
+    assert parse_otx_ip_passive({"passive_dns": [
+        {"hostname": "mail.example.com"},
+        {"hostname": "bad host!"},
+        {"hostname": "x.example.net"}]}) == {
+        "mail.example.com", "x.example.net"}
+    html = ('<a href="https://rapiddns.io/subdomain/shop.example.com">x</a>'
+            "<td>api.example.com</td><td>rapiddns.io</td>")
+    assert parse_rapiddns_sameip(html) == {
+        "shop.example.com", "api.example.com"}
+
+
+def test_passive_dns_parsers():
+    from app.plugins.passive_dns import (parse_otx_domain_passive,
+                                         parse_threatcrowd_domain)
+    out = parse_otx_domain_passive({"passive_dns": [
+        {"hostname": "www.example.com", "address": "192.0.2.5",
+         "record_type": "A"},
+        {"hostname": "old.example.com", "address": "192.0.2.9",
+         "record_type": "A"},
+        {"hostname": "example.com", "address": "cdn.hosting.net",
+         "record_type": "CNAME"},
+        {"hostname": "v6.example.com", "address": "2001:db8:0:0:0:0:0:1",
+         "record_type": "AAAA"}]}, "example.com")
+    assert "192.0.2.5" in out["ips"] and "2001:db8::1" in out["ips"]
+    assert out["hosts"] == ["old.example.com", "v6.example.com",
+                            "www.example.com"]
+    assert out["cname_targets"] == ["cdn.hosting.net"]
+    tc = parse_threatcrowd_domain({
+        "resolutions": [{"ip_address": "198.51.100.7"}],
+        "subdomains": ["mail.example.com"]})
+    assert tc["ips"] == ["198.51.100.7"]
+    assert tc["hosts"] == ["mail.example.com"]
+
+
+def test_rapiddns_parser():
+    from app.plugins.rapiddns import parse_rapiddns_subdomains
+    html = ("<td>api.example.com</td> <td>WWW.Example.COM.</td> "
+            "junk other.org example.com <td>dev.example.com</td>")
+    assert parse_rapiddns_subdomains(html, "example.com") == [
+        "api.example.com", "dev.example.com", "www.example.com"]
+
+
+# ---------------------------------------------------------------------------
+# Agent activity feed: order, attribution, plain language
+# ---------------------------------------------------------------------------
+
+def test_agent_activity_feed(session):
+    run = _mk_run(session, "run-feed-1", "feed.test")
+    r = _finding("subdomain", "api.feed.test")
+    r.run_id = "run-feed-1"
+    session.add(r)
+    session.commit()
+    engine.hunter_expand(session, run, engine.new_accum())
+    data = store.run_agent_activity(session, "recon", "run-feed-1")
+    assert data["run_id"] == "run-feed-1"
+    assert data["total_actions"] > 0
+    ids = [a["id"] for a in data["actions"]]
+    assert ids == sorted(ids)  # chronological order
+    found = [a for a in data["actions"] if a["action"] == "asset_found"]
+    api_found = [a for a in found if "api.feed.test" in a["description"]]
+    assert api_found and api_found[0]["agent"] == "subdomain_hunter"
+    rollup = {a["name"]: a for a in data["agents"]}
+    assert rollup["subdomain_hunter"]["assets_found"] >= 1
+    assert rollup["subdomain_hunter"]["jobs_enqueued"] >= 1
+    assert rollup["subdomain_hunter"]["status"] in (
+        "working", "done", "idle", "abandoned")
+
+
+def test_agent_activity_endpoint(client, session):
+    run = _mk_run(session, "run-feed-2", "feed2.test")
+    r = _finding("subdomain", "api.feed2.test")
+    r.run_id = "run-feed-2"
+    session.add(r)
+    session.commit()
+    engine.hunter_expand(session, run, engine.new_accum())
+    resp = client.get("/api/runs/run-feed-2/agent-activity")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_actions"] > 0 and body["agents"]
+    assert all("description" in a for a in body["actions"])
+    missing = client.get("/api/runs/no-such-run/agent-activity")
+    assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # HTTP surface: hunters endpoints, agent data, and the no-chat rule
 # ---------------------------------------------------------------------------
 
@@ -299,7 +617,7 @@ def test_hunters_endpoint_shape(client):
     resp = client.get("/api/hunters")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["count"] == 20
+    assert data["count"] == 23
     h = data["hunters"][0]
     assert {"name", "specialty", "consumes", "produces", "stats"} <= set(h)
     assert "assets_discovered" in h["stats"]
