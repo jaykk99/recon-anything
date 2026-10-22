@@ -147,39 +147,47 @@ class WebTechPlugin(Plugin):
                 if name not in seen_tech:
                     seen_tech.add(name)
                     findings.append(self._f("web", "tech", name,
-                                            source="signature match", confidence=75,
+                                            source="signature match", source_url=base,
+                                            confidence=75,
                                             passive=passive))
         # server header as its own finding
         server = home["headers"].get("server", "")
         if server:
             findings.append(self._f("web", "server_header", server[:200],
-                                    source="HTTP headers", confidence=95, passive=passive))
+                                    source="HTTP headers", source_url=base,
+                                    confidence=95, passive=passive))
         powered = home["headers"].get("x-powered-by", "")
         if powered:
             findings.append(self._f("web", "x_powered_by", powered[:200],
-                                    source="HTTP headers", confidence=95, passive=passive))
+                                    source="HTTP headers", source_url=base,
+                                    confidence=95, passive=passive))
         # cookies hint at stack
         set_cookie = home["headers"].get("set-cookie", "")
         if set_cookie:
             names = re.findall(r"^([^=;]+)=", set_cookie, re.M)[:10]
             if names:
                 findings.append(self._f("web", "cookies", ", ".join(names)[:300],
-                                        source="Set-Cookie", confidence=90, passive=passive))
+                                        source="Set-Cookie", source_url=base,
+                                        confidence=90, passive=passive))
         # page title
         m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
         if m:
             findings.append(self._f("web", "page_title", m.group(1).strip()[:200],
-                                    source="HTML", confidence=95, passive=passive))
+                                    source="HTML", source_url=base,
+                                    confidence=95, passive=passive))
         # tracking IDs for pivoting
         for m in re.finditer(r"UA-\d{4,10}-\d{1,4}", html):
             findings.append(self._f("identity", "ga_id", m.group(0),
-                                    source="HTML/JS", confidence=95, passive=passive))
+                                    source="HTML/JS", source_url=base,
+                                    confidence=95, passive=passive))
         for m in re.finditer(r"GTM-[A-Z0-9]{4,10}", html):
             findings.append(self._f("identity", "gtm_id", m.group(0),
-                                    source="HTML/JS", confidence=95, passive=passive))
+                                    source="HTML/JS", source_url=base,
+                                    confidence=95, passive=passive))
         for m in re.finditer(r"ca-pub-\d{10,20}", html):
             findings.append(self._f("identity", "adsense_id", m.group(0),
-                                    source="HTML/JS", confidence=95, passive=passive))
+                                    source="HTML/JS", source_url=base,
+                                    confidence=95, passive=passive))
 
         # well-known files (independent probes -> parallel)
         wk_items = list(WELLKNOWN.items())
@@ -214,7 +222,9 @@ class WebTechPlugin(Plugin):
             if fav.status_code == 200 and len(fav.content) > 100:
                 h = _mmh3_32(fav.content)
                 findings.append(self._f("identity", "favicon_mmh3", str(h),
-                                        source="favicon.ico", confidence=95, passive=passive))
+                                        source="favicon.ico",
+                                        source_url=base.rstrip("/") + "/favicon.ico",
+                                        confidence=95, passive=passive))
         except Exception:
             pass
 

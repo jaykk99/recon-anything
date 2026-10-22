@@ -5,6 +5,7 @@ import { getCode, api } from "../../../lib/api";
 interface Finding {
   plugin: string; category: string; key: string; value: string;
   source: string; source_url?: string; confidence: number; passive: boolean;
+  attacker_impact?: string;
   evidence?: Record<string, any>;
 }
 interface PluginState { plugin: string; label?: string; status: string; reason: string; findings: number }
@@ -101,6 +102,11 @@ function impactOf(f: Finding): number {
   const v = Number(f.evidence?.impact ?? 0);
   return isNaN(v) ? 0 : v;
 }
+// plain-language "what an attacker can do with this" (backend stamps it
+// top-level on API rows and inside evidence at creation time).
+function attackerImpactOf(f: Finding): string {
+  return f.attacker_impact || (f.evidence?.attacker_impact as string) || "";
+}
 // human label for grouped noise: "520 subdomains"
 function groupLabel(key: string, n: number): string {
   const map: Record<string, string> = {
@@ -129,6 +135,9 @@ function findingMarkdown(f: Finding): string {
   md += `- **Source:** ${f.source}\n`;
   if (f.source_url) md += `- **URL:** ${f.source_url}\n`;
   md += `\n${f.value}\n`;
+  const ai = attackerImpactOf(f);
+  if (ai) md += `\n**What an attacker can do:** ${ai}\n`;
+  if (f.evidence?.hash_type) md += `\n**Hash:** ${f.evidence.hash_type}${f.evidence.hash_purpose ? ` — what it is for: ${f.evidence.hash_purpose}` : ""}\n`;
   if (f.evidence?.remediation) md += `\n**Remediation:** ${f.evidence.remediation}\n`;
   return md;
 }
@@ -210,6 +219,13 @@ function FindingCard({ f, open, onToggle }: { f: Finding; open: boolean; onToggl
             <span className={`px-1.5 py-0.5 rounded border ${exploitBadge(tier)}`}>exploitability: {exploitLabel(tier)}</span>
             <span className="text-slate-600 break-all">{f.source}</span>
           </div>
+          {attackerImpactOf(f) && (
+            <p className="text-red-300/90 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+          )}
+          {ev.hash_type && (
+            <p className="text-amber-300/90 break-words"><span className="font-semibold">Hash: </span>{ev.hash_type}{ev.hash_purpose ? ` — what it is for: ${ev.hash_purpose}` : ""}</p>
+          )}
+          <p className="text-slate-400 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
           {ev.remediation && (
             <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
           )}
@@ -1147,6 +1163,10 @@ function PortsView({ runId, findings, targets }: { runId: string; findings: Find
                 {banner}{pr?.http?.title ? ` | ${pr.http.title}` : ""}
               </p>
             )}
+            {attackerImpactOf(f) && (
+              <p className="text-xs text-red-300/90 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+            )}
+            <p className="text-xs text-slate-400 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
             {ev.remediation && (
               <p className="text-xs text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
             )}
@@ -1528,6 +1548,10 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
               <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
+              {attackerImpactOf(f) && (
+                <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+              )}
               {f.source_url && (
                 <button onClick={() => onView(f.source_url!)}
                   className="text-xs text-sky-400 mt-2 min-h-[44px]">tap to view source</button>
@@ -1559,6 +1583,10 @@ function CredsView({ findings }: { findings: Finding[] }) {
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
               <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
+              {attackerImpactOf(f) && (
+                <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+              )}
               {f.source_url && (
                 <p className="text-xs text-slate-500 mt-1 break-all">{f.source_url}</p>
               )}
@@ -1779,7 +1807,10 @@ function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any 
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${typeColor(t)}`}>{t.toUpperCase()}</span>
                   <code className="text-xs font-mono text-slate-200 break-all flex-1">{f.value}</code>
                 </div>
-                <p className="text-xs text-slate-500 mt-1 break-words">{f.source}</p>
+                <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold text-slate-400">Source: </span>{f.source}</p>
+                {attackerImpactOf(f) && (
+                  <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+                )}
                 {f.evidence?.relation && (
                   <p className="text-[11px] text-slate-600">relation: {f.evidence.relation}</p>
                 )}

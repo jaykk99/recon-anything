@@ -120,7 +120,8 @@ class DeepCrawlPlugin(Plugin):
 
         for js in sorted(js_files)[:50]:
             findings.append(self._f("web", "js_file_deep", js,
-                                    f"deepcrawl: JS file found at depth", confidence=75))
+                                    f"deepcrawl: JS file found at depth",
+                                    source_url=js, confidence=75))
             ctx.publish("js_files", js)
         # Mine CSS url() references for backend/asset paths
         async def fetch_css(css_url: str) -> str:
@@ -160,5 +161,5 @@ class DeepCrawlPlugin(Plugin):
                                 f"{pages_crawled} pages crawled to depth {MAX_DEPTH}, "
                                 f"{len(js_files)} JS files, {len(css_files)} CSS files, "
                                 f"{len(api_calls)} API calls",
-                                "deepcrawl", confidence=90))
+                                "deepcrawl", source_url=base, confidence=90))
         return self._ok(findings, f"deep crawled {pages_crawled} pages")
