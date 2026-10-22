@@ -57,10 +57,18 @@ def _install_fake_fetch(monkeypatch):
             return _HOMEPAGE
         raise ConnectionError(f"no canned response for {url}")
 
+    # Import every plugin module BEFORE patching anything: modules
+    # bind `fetch` at import time (from ..ratelimit import fetch), so a
+    # module first imported while ratelimit.fetch is patched captures
+    # the fake as its permanent binding - and monkeypatch's undo never
+    # restores it, silently breaking that plugin for every later test
+    # in the process (found by tests/test_plugin_fixtures.py, which saw
+    # headers/cors/forms/git/secrets/waybackurls/webtech return zero
+    # findings only when run after this file).
+    registry = discover()
     monkeypatch.setattr(ratelimit, "fetch", fake_fetch)
     # Plugins that imported fetch at module level need their own binding
     # patched too (same approach as tests/test_new_plugins._patch_http).
-    registry = discover()
     for pid in ("hsts", "csp_audit", "cookie_security", "cdn_detect",
                 "rate_limit_audit", "sri_audit", "mixed_content",
                 "html_comments", "trackers", "exposed_debug"):

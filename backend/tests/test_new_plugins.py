@@ -88,6 +88,12 @@ def _patch_http(monkeypatch, pid, mapping):
     domain-target plugins need the ratelimit-level patch too.
     """
     import app.ratelimit as _rl
+    # Import ALL plugin modules before patching ratelimit: modules bind
+    # fetch at import time, so any module first imported while
+    # ratelimit.fetch is stubbed (e.g. a helper a plugin imports lazily
+    # during run()) would capture the fake permanently, beyond
+    # monkeypatch's undo. Same leak as tests/test_fetch_page_contract.py.
+    discover()
     mod = _mod(pid)
 
     async def fake_fetch(client, limiter, method, url, **kw):

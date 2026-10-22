@@ -160,6 +160,7 @@ VENDOR_COOKIES: List[Tuple[str, str]] = [
     ("bm_sv", "Akamai"),
     ("bm_sz", "Akamai"),
     ("ak_bmsc", "Akamai"),
+    ("aws-waf-token", "AWS WAF"),
     ("incap_ses_", "Imperva"),
     ("visid_incap_", "Imperva"),
     ("_px3", "PerimeterX / HUMAN"),

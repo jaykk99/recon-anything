@@ -73,7 +73,24 @@ ATM_CVES: Dict[str, List[Dict[str, str]]] = {
 
 # Vendor keywords matched against page content / banners.
 VENDOR_HINTS = ("diebold", "wincor", "ncr", "hyosung", "aptra", "opteva",
-                "pro cash", "procash", "selfserv", "atm")
+                "pro cash", "procash", "selfserv", "triton", "grg", "atm")
+
+# Keyword -> canonical vendor key (ATM_CVES is keyed by these) and the
+# display name used in findings. "aptra"/"selfserv" are NCR product
+# lines, "opteva" is Diebold, "procash" is Wincor - the old substring
+# matching missed those mappings entirely, so detected NCR APTRA tech
+# never matched the NCR CVEs.
+HINT_TO_VENDOR = {
+    "diebold": "diebold", "opteva": "diebold",
+    "wincor": "wincor", "procash": "wincor", "pro cash": "wincor",
+    "ncr": "ncr", "aptra": "ncr", "selfserv": "ncr",
+    "hyosung": "hyosung", "triton": "triton", "grg": "grg",
+}
+VENDOR_NAMES = {
+    "diebold": "Diebold Nixdorf", "wincor": "Diebold Nixdorf (Wincor)",
+    "ncr": "NCR", "hyosung": "Hyosung", "triton": "Triton",
+    "grg": "GRG Banking",
+}
 
 # Wireless-ish service banners flagged from scan data (best effort).
 WIRELESS_HINTS = ("bluetooth", "wifi", "wi-fi", "802.11", "nfc",
@@ -98,6 +115,31 @@ class AtmPlugin(Plugin):
         mode = ctx.mode
         findings: List[Finding] = []
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
+
+        # Authorization gate (defense in depth): ATM assessment only
+        # runs when the run carries the module authorization - set by
+        # main.py when the operator explicitly picks the ATM source
+        # type. Website runs never enqueue this plugin at all; if it is
+        # ever invoked without the gate, it skips instead of probing.
+        authorized = (ctx.module_overrides or {}).get("atm") == "authorized" \
+            or getattr(ctx, "source_type", "") == "atm"
+        if not authorized:
+            return self._skipped(
+                "atm module not authorized for this run "
+                "(module_overrides atm=authorized required)")
+        # Audit claim: record the authorization this assessment ran
+        # under, as a finding inside the run itself.
+        findings.append(self._f(
+            "infra", "atm_authorization",
+            "ATM assessment authorized for this run (operator selected "
+            "the ATM source type; module_overrides atm=authorized). "
+            "Read-only detection only: no transaction, card, or "
+            "authentication capability is exercised.",
+            source="authorization audit", confidence=100, passive=True,
+            evidence={"severity": "info",
+                      "note": "Audit claim finding: the authorization "
+                              "basis for every other ATM finding in "
+                              "this run."}))
 
         domain = domain_from_target(target.type, target.normalized)
         host = domain or (target.normalized if target.type == "ip" else "")
@@ -140,12 +182,14 @@ class AtmPlugin(Plugin):
                 await self._mgmt_paths(base, host, mode, ctx))
             findings.extend(await self._vendor_fingerprint(base, ctx))
             if mode == "active":
-                findings.extend(await self._check_mgmt_ports(host))
+                findings.extend(await self._check_mgmt_ports(host, ctx))
 
         findings.extend(self._match_cves(ctx))
         findings.extend(self._flag_wireless(ctx))
 
-        if not findings:
+        if len(findings) <= 1:
+            # Only the audit claim (or nothing): the assessment ran and
+            # found no ATM footprint - say so explicitly.
             findings.append(self._f(
                 "infra", "atm_no_footprint",
                 f"No ATM infrastructure footprint found on {host or target.raw} "
@@ -247,19 +291,29 @@ class AtmPlugin(Plugin):
         blob = text + "\n" + "\n".join(
             f"{k}:{v}" for k, v in headers.items())
         low = blob.lower()
-        for hint in VENDOR_HINTS:
-            if hint in low and hint not in ("atm",):
+        seen_vendors = set()
+        for hint, vendor in HINT_TO_VENDOR.items():
+            if vendor in seen_vendors:
+                continue
+            if re.search(rf"\b{re.escape(hint)}\b", low):
+                seen_vendors.add(vendor)
+                # Feed the CVE matcher with the canonical vendor, not
+                # just the raw page text (which it may never see).
+                ctx.publish("atm_vendors", vendor)
                 out.append(self._f(
                     "infra", "atm_vendor",
-                    f"ATM vendor fingerprint on page: '{hint}'",
+                    f"ATM vendor fingerprint on page: "
+                    f"{VENDOR_NAMES.get(vendor, vendor)} ('{hint}')",
                     source="atm vendor fingerprint",
                     source_url=page.get("url", base),
-                    confidence=70, passive=True,
-                    evidence={"severity": "medium", "vendor": hint,
+                    confidence=75, passive=True,
+                    evidence={"severity": "medium", "vendor": vendor,
+                              "vendor_name": VENDOR_NAMES.get(
+                                  vendor, vendor),
+                              "matched_hint": hint,
                               "remediation": "Vendor disclosure helps "
                               "attackers target known CVEs; strip "
                               "vendor strings from public pages."}))
-                break
         return out
 
     async def _nearby_atms(self, lat: float, lon: float,
@@ -290,66 +344,105 @@ class AtmPlugin(Plugin):
             pass
         return out
 
-    async def _check_mgmt_ports(self, host: str) -> List[Finding]:
+    async def _check_mgmt_ports(self, host: str,
+                                ctx: Ctx = None) -> List[Finding]:
         async def probe(port: int, service: str):
             try:
-                _, writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout=2.5)
+                # Read only what the service volunteers on connect
+                # (SSH/SMTP-style greeting). Nothing is ever sent.
+                banner = ""
+                try:
+                    data = await asyncio.wait_for(reader.read(256),
+                                                  timeout=1.0)
+                    banner = data.decode("utf-8", "ignore").strip()
+                except Exception:
+                    pass
                 writer.close()
                 try:
                     await writer.wait_closed()
                 except Exception:
                     pass
-                return (port, service, True)
+                return (port, service, True, banner)
             except Exception:
-                return (port, service, False)
+                return (port, service, False, "")
 
         results = await asyncio.gather(
             *[probe(p, s) for p, s in ATM_MGMT_PORTS])
         out = []
-        for port, service, is_open in results:
+        for port, service, is_open, banner in results:
             if is_open:
+                if ctx is not None and banner:
+                    ctx.publish("banners", f"{host}:{port} {banner}")
+                ev = {"severity": "high",
+                      "remediation": "Restrict remote management "
+                      "to jump hosts / VPN. Detection only: "
+                      "connect-only probe, no authentication "
+                      "attempted."}
+                if banner:
+                    ev["banner"] = banner[:200]
                 out.append(self._f(
                     "infra", "atm_exposed_mgmt",
-                    f"ATM remote-mgmt port OPEN on {host}: {port} ({service})",
+                    f"ATM remote-mgmt port OPEN on {host}: {port} ({service})"
+                    + (f" - banner: {banner[:80]}" if banner else ""),
                     source="atm mgmt probe", confidence=95, passive=False,
-                    evidence={"severity": "high",
-                              "remediation": "Restrict remote management "
-                              "to jump hosts / VPN. Detection only: "
-                              "connect-only probe, no authentication "
-                              "attempted."}))
+                    evidence=ev))
         return out
 
+    @staticmethod
+    def _evidence_hay(ctx: Ctx) -> str:
+        """Scan data that is evidence ABOUT THE TARGET.
+
+        Excludes scanner bookkeeping - above all probe_cache, which
+        holds the URLs this scanner itself probed. The mgmt-path wordlist
+        contains /aptra, /opteva, /selfserv: scanning the probe log made
+        the CVE matcher 'detect' Diebold/NCR on every site those paths
+        were merely probed (and 404'd) on. Self-generated data is not
+        evidence.
+        """
+        skip = {"probe_cache", "atm_vendors", "_waf_base"}
+        return " ".join(
+            str(x) for kind, items in ctx.shared.items()
+            if kind not in skip for x in items).lower()
+
     def _match_cves(self, ctx: Ctx) -> List[Finding]:
-        hay = " ".join(
-            str(x) for items in ctx.shared.values() for x in items).lower()
-        matched = [v for v in VENDOR_HINTS if v in hay]
-        if not matched:
-            return []
+        # Primary source: canonical vendors the fingerprint pass (or any
+        # other plugin) published to the bus. Fallback: scan target
+        # evidence for vendor keywords - on word boundaries, so short
+        # hints like "ncr" don't fire inside unrelated words
+        # ("encryption").
+        vendors = {str(v).lower() for v in ctx.consume("atm_vendors")}
+        if not vendors:
+            hay = self._evidence_hay(ctx)
+            for hint, vendor in HINT_TO_VENDOR.items():
+                if re.search(rf"\b{re.escape(hint)}\b", hay):
+                    vendors.add(vendor)
         out = []
         seen = set()
-        for hint in matched:
-            for vendor, cves in ATM_CVES.items():
-                if vendor in hint or hint in vendor:
-                    for c in cves:
-                        if c["id"] in seen:
-                            continue
-                        seen.add(c["id"])
-                        out.append(self._f(
-                            "infra", "atm_cve",
-                            f"{c['id']}: {c['title']}",
-                            source="atm CVE matcher", confidence=70,
-                            passive=True,
-                            evidence={"severity": "high", "vendor": vendor,
-                                      "matched_hint": hint,
-                                      "remediation": "Patch ATM software "
-                                      "to vendor-fixed versions."}))
+        for vendor in sorted(vendors):
+            for c in ATM_CVES.get(vendor, []):
+                if c["id"] in seen:
+                    continue
+                seen.add(c["id"])
+                out.append(self._f(
+                    "infra", "atm_cve",
+                    f"{c['id']}: {c['title']}",
+                    source="atm CVE matcher", confidence=70,
+                    passive=True,
+                    evidence={"severity": "high", "vendor": vendor,
+                              "vendor_name": VENDOR_NAMES.get(
+                                  vendor, vendor),
+                              "remediation": "Patch ATM software "
+                              "to vendor-fixed versions."}))
         return out
 
     def _flag_wireless(self, ctx: Ctx) -> List[Finding]:
         """Best-effort: flag Bluetooth/WiFi/NFC service banners in scan data."""
         out = []
-        for items in ctx.shared.values():
+        for kind, items in ctx.shared.items():
+            if kind in ("probe_cache", "atm_vendors", "_waf_base"):
+                continue  # scanner bookkeeping is not target evidence
             for x in items:
                 s = str(x)
                 if any(h in s.lower() for h in WIRELESS_HINTS):

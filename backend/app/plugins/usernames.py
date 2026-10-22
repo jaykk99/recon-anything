@@ -79,6 +79,46 @@ GENERIC_LOCALS = {"info", "contact", "support", "admin", "hello", "mail",
                   "sales", "help", "noreply", "no-reply", "webmaster",
                   "postmaster", "abuse", "team"}
 
+# Username literals baked into the site's own JS/config ("username": "x",
+# login: 'x', user = "x"). Service accounts and deploy bots leak this way.
+JS_USERNAME_RE = re.compile(
+    r"""(?i)["']?(?:username|user_name|login|service_account|account_name)"""
+    r"""["']?\s*[:=]\s*["']([A-Za-z0-9][A-Za-z0-9_.\-]{1,39})["']""")
+SCRIPT_SRC_RE = re.compile(r"""(?i)<script[^>]+src=["']([^"']+)["']""")
+# Well-known default account names: if a site's own public data says one
+# of these accounts exists, that is a finding (attackers try them first).
+DEFAULT_ACCOUNTS = {"admin", "administrator", "root", "webmaster",
+                    "sysadmin", "system", "manager", "operator"}
+_NON_HANDLES = {"true", "false", "null", "none", "user", "username",
+                "string", "text", "password", "email", "name", "value"}
+
+
+def usernames_in_js(text: str) -> List[str]:
+    """Handles assigned to username/login fields in JS or config text."""
+    out = []
+    for m in JS_USERNAME_RE.finditer(text[:600000]):
+        v = m.group(1).strip()
+        if v.lower() not in _NON_HANDLES and v not in out:
+            out.append(v)
+    return out[:20]
+
+
+def parse_wp_users(text: str) -> List[dict]:
+    """Parse a /wp-json/wp/v2/users response into [{slug, name}]."""
+    import json
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for u in data[:50]:
+        if isinstance(u, dict) and u.get("slug"):
+            out.append({"slug": str(u["slug"])[:60],
+                        "name": str(u.get("name") or "")[:80]})
+    return out
+
 
 class UsernamesPlugin(Plugin):
     id = "usernames"
@@ -154,6 +194,11 @@ class UsernamesPlugin(Plugin):
                     f"Harvested {len(candidates)} username candidates from {domain}: "
                     f"{', '.join(candidates)}",
                     source="site harvesting", confidence=80, passive=True))
+            # Accounts the site exposes about ITSELF: username literals
+            # in its own JS/config, and its public WP author accounts.
+            # In-scope assets only; no logins, no credential data.
+            findings.extend(
+                await self._exposed_accounts(base, html, ctx))
 
         if not candidates:
             res = self._ok(findings, "no username candidates found")
@@ -194,3 +239,77 @@ class UsernamesPlugin(Plugin):
                        f"checked {len(candidates)} username(s) on {len(PLATFORMS)} platforms")
         res.duration_ms = dur
         return res
+
+    async def _exposed_accounts(self, base: str, html: str,
+                                ctx: Ctx) -> List[Finding]:
+        """Usernames the target exposes on its own assets.
+
+        1) username/login literals in the site's JavaScript and config
+           objects (service accounts, deploy bots, embedded defaults);
+        2) the site's public WordPress author accounts from its own
+           REST API, flagging well-known default account names.
+        Observation only: nothing is logged into, ever.
+        """
+        out: List[Finding] = []
+        from urllib.parse import urljoin
+        js_urls: List[str] = []
+        for item in ctx.consume("js_files"):
+            if isinstance(item, str):
+                js_urls.append(item if item.startswith("http")
+                               else urljoin(base, item))
+        for m in SCRIPT_SRC_RE.finditer(html[:200000]):
+            u = urljoin(base, m.group(1))
+            if u not in js_urls:
+                js_urls.append(u)
+        for js_url in js_urls[:5]:
+            try:
+                page = await ctx.fetch_page(js_url, timeout=10)
+            except Exception:
+                page = None
+            if not page:
+                continue
+            handles = usernames_in_js(page.get("text") or "")
+            if handles:
+                defaults = [h for h in handles
+                            if h.lower() in DEFAULT_ACCOUNTS]
+                out.append(self._f(
+                    "identity", "username_in_code",
+                    f"Usernames baked into site code at {js_url}: "
+                    f"{', '.join(handles)}",
+                    source="JS/config username literals",
+                    source_url=js_url, confidence=85, passive=True,
+                    evidence={"severity": "medium",
+                              "usernames": handles,
+                              "default_accounts": defaults,
+                              "why": "Service/deploy account names in "
+                                     "public code hand attackers valid "
+                                     "account names for password spraying "
+                                     "and social engineering."}))
+        # WordPress author accounts, from the site's own public REST API.
+        wp_url = urljoin(base, "/wp-json/wp/v2/users")
+        try:
+            page = await ctx.fetch_page(wp_url, timeout=10)
+        except Exception:
+            page = None
+        if page and page.get("status_code", page.get("status")) == 200:
+            users = parse_wp_users(page.get("text") or "")
+            if users:
+                slugs = [u["slug"] for u in users]
+                defaults = [s for s in slugs
+                            if s.lower() in DEFAULT_ACCOUNTS]
+                out.append(self._f(
+                    "identity", "wp_author_accounts",
+                    f"WordPress author accounts exposed by the site's "
+                    f"REST API: "
+                    f"{', '.join(f'{u['slug']} ({u['name']})' for u in users[:10])}",
+                    source="WP REST API (site's own public data)",
+                    source_url=wp_url, confidence=90, passive=True,
+                    evidence={"severity": "medium",
+                              "accounts": users,
+                              "default_accounts": defaults,
+                              "why": "WP author enumeration gives "
+                                     "attackers confirmed account names; "
+                                     "a default 'admin' account is the "
+                                     "first one tried. Restrict the users "
+                                     "endpoint or rename defaults."}))
+        return out

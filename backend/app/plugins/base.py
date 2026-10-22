@@ -304,6 +304,19 @@ class CaseInsensitiveHeaders(dict):
     def get(self, key: Any, default: Any = None) -> Any:
         return super().get(self._real_key(key), default)
 
+    def get_list(self, key: Any) -> List[Any]:
+        """httpx.Headers parity: all values for a header name.
+
+        fetch_page stores headers in a plain dict, so at most one value
+        per name survives; return it as a one-item list (or [] when the
+        header is absent). cookie_security and fastmode parse
+        Set-Cookie via get_list() - without this method their hasattr()
+        guard silently yielded zero cookies and both plugins reported
+        "no cookies" on every real scan.
+        """
+        value = self.get(key)
+        return [] if value is None else [value]
+
     def __getitem__(self, key: Any) -> Any:
         return super().__getitem__(self._real_key(key))
 

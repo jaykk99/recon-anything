@@ -7,6 +7,17 @@ interface Finding {
   source: string; source_url?: string; confidence: number; passive: boolean;
   attacker_impact?: string;
   evidence?: Record<string, any>;
+  // Present on findings served by the run-detail API; id powers the
+  // findings playground (re-test endpoint is addressed by run + id).
+  id?: number; target_id?: string;
+}
+
+interface RetestResult {
+  plugin: string; plugin_label?: string; target: string; target_type?: string;
+  status: string; reason: string; duration_ms: number; verdict: string;
+  checked_at: string; fresh_count: number;
+  original: Finding & { id: number };
+  fresh_findings: Finding[];
 }
 interface PluginState { plugin: string; label?: string; status: string; reason: string; findings: number }
 
@@ -43,12 +54,40 @@ function isPortFinding(f: Finding): boolean {
 }
 // Same idea for the other tabs: badge count always uses the same
 // filter the tab view uses, so counts never disagree with lists.
+//
+// Secrets/creds classification is built from the keys plugins ACTUALLY
+// emit (keyharvest: aws_key; secrets: js_secret; comments:
+// comment_credential; artifacts: exposed_env; jwt: jwt_token; ...).
+// The old rule (key starts with exposed_/wallet_) matched almost none
+// of them, so the tabs showed 0 while leak findings existed.
+const SECRET_KEY_RE =
+  /(secret|password|passwd|api_?key|access_?key|private_?key|jwt|seed|mnemonic|wallet_?file|exposed_env|laravel_env|hardcoded)/;
+const SECRET_POINTER_RE = /^(keyleak_|github_dork|github_manual|github_note)/;
 function isSecretFinding(f: Finding): boolean {
   const k = f.key || "";
-  return k.startsWith("exposed_") || k.startsWith("wallet_");
+  if (SECRET_POINTER_RE.test(k)) return false; // dork links point AT secrets; not material
+  if (SECRET_KEY_RE.test(k)) return true;
+  // exposed_* counts only when the exposed thing is credential material
+  // (an exposed admin panel or document is not a secret).
+  return k.startsWith("exposed_") &&
+    /(key|secret|token|env|credential|aws|github|jwt|password)/.test(k);
 }
 function isCredFinding(f: Finding): boolean {
-  return (f.key || "").startsWith("cred_");
+  const k = f.key || "";
+  return k.startsWith("cred_") || k.includes("credential") ||
+    k === "iot_default_creds" || k === "default_creds" ||
+    k === "default_credentials" || k === "plaintext_password" ||
+    k === "exposed_hardcoded_password" || k === "exposed_card_number";
+}
+// Connections = relationship findings (the connections mapper's keys,
+// plus payment/bank/crypto relationship keys other plugins emit).
+function isConnectionFinding(f: Finding): boolean {
+  const k = f.key || "";
+  return k === "connected_domain" || k === "connected_device" ||
+    k === "connected_service" || k === "connected_account" ||
+    k === "connected_financial" || k === "connection_summary" ||
+    k === "payment_processor" || k === "billing_endpoint" ||
+    k.startsWith("bank_") || k.startsWith("crypto_");
 }
 function isSubdomainFinding(f: Finding): boolean {
   return f.key === "subdomain";
@@ -187,7 +226,10 @@ function copyText(t: string) { navigator.clipboard.writeText(t).catch(() => {});
 
 // One finding as an expandable card. Used in both the top-findings list
 // and inside collapsed noise groups.
-function FindingCard({ f, open, onToggle }: { f: Finding; open: boolean; onToggle: () => void }) {
+function FindingCard({ f, open, onToggle, onPlayground }: {
+  f: Finding; open: boolean; onToggle: () => void;
+  onPlayground?: (f: Finding) => void;
+}) {
   const sev = normSev(f);
   const tier = exploitOf(f);
   const ev = f.evidence || {};
@@ -247,9 +289,173 @@ function FindingCard({ f, open, onToggle }: { f: Finding; open: boolean; onToggl
             )}
             <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyText(f.value)}>copy value</button>
             <button className="text-sky-400 px-3 py-2 min-h-[44px] rounded-lg bg-slate-800" onClick={() => copyText(findingMarkdown(f))}>copy as markdown</button>
+            {onPlayground && f.id != null && (
+              <button className="text-emerald-300 px-3 py-2 min-h-[44px] rounded-lg bg-emerald-950/60 border border-emerald-800/50"
+                onClick={() => onPlayground(f)}>Test in playground</button>
+            )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- findings playground ----------
+// Re-test ONE finding in place: the endpoint re-runs only the plugin
+// that produced the finding, against only that finding's own target
+// (both are resolved server-side from the stored finding - there is
+// no URL, plugin, or payload to inject), and compares fresh vs stored.
+function PlaygroundPanel({ runId, finding, onClose }: {
+  runId: string; finding: Finding; onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<RetestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const impact = finding.attacker_impact || finding.evidence?.attacker_impact || "";
+
+  async function runRetest() {
+    if (finding.id == null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/runs/${runId}/findings/${finding.id}/retest`, {
+        method: "POST",
+        headers: { "X-Access-Code": getCode(), "Content-Type": "application/json" },
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      setResult(d as RetestResult);
+    } catch (e: any) {
+      setError(e.message || "re-test failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const verdictBadge = (v: string) => {
+    if (v === "unchanged") return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
+    if (v === "changed") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
+    return "text-rose-300 border-rose-500/40 bg-rose-500/10";
+  };
+  const verdictText = (v: string) => {
+    if (v === "unchanged") return "UNCHANGED - still produced";
+    if (v === "changed") return "CHANGED - same check, new value";
+    if (v === "gone") return "GONE - no longer produced";
+    return "ERROR - re-test failed";
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={onClose}>
+      <div className="bg-slate-950 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-3xl max-h-[92vh] flex flex-col border border-slate-700"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="p-4 border-b border-slate-800 flex items-center gap-2">
+          <span className="text-sm font-semibold text-sky-300">Playground</span>
+          <span className="text-xs text-slate-500">re-test this finding live</span>
+          <button onClick={onClose}
+            className="px-4 py-2.5 min-h-[44px] min-w-[44px] rounded-lg bg-slate-800 text-lg ml-auto">X</button>
+        </div>
+        <div className="overflow-auto flex-1 p-4 space-y-4">
+          <p className="text-[11px] text-slate-500">
+            Detection-only re-check: re-runs <span className="text-slate-300">{finding.plugin}</span> against
+            this finding&apos;s own target, through the same code path as a scan job.
+            The fresh result is shown next to the original; nothing is saved back to the run.
+          </p>
+
+          {/* original finding */}
+          <div className={`rounded-lg p-3 space-y-1.5 border ${sevColor(normSev(finding))}`}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(normSev(finding))}`}>{normSev(finding).toUpperCase()}</span>
+              <code className="text-amber-300 text-xs font-mono break-all">{finding.key}</code>
+              <span className="text-[10px] text-slate-500 ml-auto">{finding.category} · {finding.plugin}</span>
+            </div>
+            <p className="text-sm break-words whitespace-pre-wrap">{finding.value}</p>
+            <div className="flex items-center gap-2 flex-wrap text-xs pt-1">
+              <span className="text-slate-500">source:</span>
+              <span className="text-slate-400 break-all">{finding.source}</span>
+              {finding.source_url && (
+                <a href={finding.source_url} target="_blank" rel="noopener"
+                  className="text-sky-400 underline">open source</a>
+              )}
+            </div>
+            {impact && (
+              <p className="text-xs text-rose-200/90 break-words pt-1">
+                <span className="font-semibold">What an attacker can do: </span>{impact}
+              </p>
+            )}
+            {finding.evidence && (
+              <details className="pt-1">
+                <summary className="text-xs text-slate-500 cursor-pointer py-1">stored evidence (raw)</summary>
+                <pre className="text-[11px] font-mono bg-slate-950 rounded-lg p-3 overflow-auto whitespace-pre-wrap break-words max-h-[240px] border border-slate-800">
+                  {JSON.stringify(finding.evidence, null, 2)}
+                </pre>
+              </details>
+            )}
+          </div>
+
+          <button
+            onClick={runRetest}
+            disabled={busy || finding.id == null}
+            className="w-full chip px-4 py-3 min-h-[48px] text-sm text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 disabled:opacity-50">
+            {busy ? "Re-testing..." : `Run ${finding.plugin} again on this target`}
+          </button>
+          {finding.id == null && (
+            <p className="text-xs text-amber-300">This finding has no stored id, so it cannot be re-tested.</p>
+          )}
+          {error && (
+            <div className="rounded-lg p-3 border border-rose-500/40 bg-rose-500/10 text-sm text-rose-200 break-words">
+              {error}
+            </div>
+          )}
+
+          {/* fresh result, side by side with the original */}
+          {result && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded border ${verdictBadge(result.verdict)}`}>
+                  {verdictText(result.verdict)}
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  plugin status: {result.status} · {fmtTime(result.duration_ms / 1000)} ·{" "}
+                  {new Date(result.checked_at).toLocaleTimeString()}
+                </span>
+              </div>
+              {result.reason && <p className="text-xs text-slate-400 break-words">{result.reason}</p>}
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="rounded-lg border border-slate-800 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-slate-400">Original (stored)</p>
+                  <code className="text-amber-300 text-xs font-mono break-all">{result.original.key}</code>
+                  <p className="text-xs break-words whitespace-pre-wrap text-slate-300">{result.original.value}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-slate-400">
+                    Fresh ({result.fresh_count} finding{result.fresh_count === 1 ? "" : "s"})
+                  </p>
+                  {result.fresh_findings.length === 0 ? (
+                    <p className="text-xs text-slate-500">The plugin produced no findings this time.</p>
+                  ) : result.fresh_findings.map((ff, i) => (
+                    <div key={i} className="border-t border-slate-800/70 pt-2 first:border-t-0 first:pt-0">
+                      <code className="text-amber-300 text-xs font-mono break-all">{ff.key}</code>
+                      <p className="text-xs break-words whitespace-pre-wrap text-slate-300">{ff.value}</p>
+                      {(ff.attacker_impact || ff.evidence?.attacker_impact) && (
+                        <p className="text-[11px] text-rose-200/80 break-words mt-0.5">
+                          {ff.attacker_impact || ff.evidence?.attacker_impact}
+                        </p>
+                      )}
+                      <details>
+                        <summary className="text-[11px] text-slate-500 cursor-pointer py-1">evidence (raw)</summary>
+                        <pre className="text-[11px] font-mono bg-slate-950 rounded-lg p-2 overflow-auto whitespace-pre-wrap break-words max-h-[200px] border border-slate-800">
+                          {JSON.stringify(ff.evidence || {}, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -262,6 +468,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
   const [sourceType, setSourceType] = useState("website");
+  const [envMode, setEnvMode] = useState("sandbox");
   const [summary, setSummary] = useState<any>(null);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
@@ -297,6 +504,21 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [estimatedS, setEstimatedS] = useState(0);
   const [etaS, setEtaS] = useState<number | null>(null);
   const [wafNotice, setWafNotice] = useState<string | null>(null);
+  // Vuln candidate count for the tab badge (candidates live behind the
+  // advisor endpoint, not in findings - see tabCount).
+  const [vulnCount, setVulnCount] = useState(0);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/runs/${id}/vulns`, { headers: { "X-Access-Code": getCode() } });
+        if (!r.ok || !live) return;
+        const j = await r.json();
+        if (live && Array.isArray(j.candidates)) setVulnCount(j.candidates.length);
+      } catch { /* badge just stays 0 until a load succeeds */ }
+    })();
+    return () => { live = false; };
+  }, [id, status]);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   // finding dedupe: SSE replays history on reconnect, so skip repeats.
@@ -438,6 +660,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
           seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
         });
         if (d.run?.source_type) setSourceType(d.run.source_type);
+        if (d.run?.env_mode) setEnvMode(d.run.env_mode);
         if (d.run.status === "done") {
           const h = { "X-Access-Code": getCode() };
           fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
@@ -562,6 +785,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // expanded finding cards: key = stable per-list index (e.g. "top:12", "grp:<gkey>:7")
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   function toggleCard(k: string) { setExpanded((e) => ({ ...e, [k]: !e[k] })); }
+  // findings playground: the finding currently open in the panel
+  const [playground, setPlayground] = useState<Finding | null>(null);
 
   const pill = (s: string) =>
     s === "ok" ? "pill-ok" : s === "error" ? "pill-err" : s === "running" ? "pill-info" : s === "failed" ? "pill-err" : "pill-warn";
@@ -588,6 +813,9 @@ export default function RunPage({ params }: { params: { id: string } }) {
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-mono text-sm text-sky-300 break-all">run {id}</h1>
           <span className={`text-xs px-2 py-1 rounded min-h-[28px] flex items-center ${status === "done" ? "pill-ok" : status === "failed" ? "pill-err" : "pill-info"}`}>{status}</span>
+          {envMode === "sandbox"
+            ? <span title="Sandbox run: own/lab targets only, does not count as production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-amber-500/40 bg-amber-500/10 text-amber-200">SANDBOX</span>
+            : <span title="Live run: production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-emerald-500/40 bg-emerald-500/10 text-emerald-200">LIVE</span>}
           {bounty && (
             <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-amber-900 text-amber-200 border border-amber-700"
               title="bounty mode: high-impact vuln classes prioritized, findings sorted by impact">
@@ -705,7 +933,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
             if (t === "subdomains") return findings.filter(isSubdomainFinding).length;
             if (t === "ports") return findings.filter(isPortFinding).length;
             if (t === "files") return findings.filter(isFileFinding).length;
-            if (t === "vulns") return findings.filter((f) => f.category === "vuln").length;
+            if (t === "connections") return findings.filter(isConnectionFinding).length;
+            if (t === "atm") return findings.filter((f) => f.plugin === "atm" || f.key.startsWith("atm_")).length;
+            // Vuln candidates come from the advisor endpoint, NOT from
+            // findings (no plugin emits a "vuln" category) - counting
+            // findings here always showed 0.
+            if (t === "vulns") return vulnCount;
             if (t === "agents") return agentActions;
             return 0;
           };
@@ -813,7 +1046,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
             <div className="space-y-3">
               {top.slice(0, shownTop).map((f, i) => {
                 const ek = `top:${i}`;
-                return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} />;
+                return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} onPlayground={(ff) => setPlayground(ff)} />;
               })}
             </div>
             {top.length > shownTop && (
@@ -854,7 +1087,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
                         <div className="px-3 pb-3 space-y-2">
                           {g.items.slice(0, shownG).map((f, j) => {
                             const ek = `grp:${g.gkey}:${j}`;
-                            return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} />;
+                            return <FindingCard key={ek} f={f} open={!!expanded[ek]} onToggle={() => toggleCard(ek)} onPlayground={(ff) => setPlayground(ff)} />;
                           })}
                           {g.items.length > shownG && (
                             <button
@@ -899,6 +1132,11 @@ export default function RunPage({ params }: { params: { id: string } }) {
           </div>
           <pre className="text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">{JSON.stringify(findings, null, 1)}</pre>
         </div>
+      )}
+
+      {/* findings playground panel */}
+      {playground && (
+        <PlaygroundPanel runId={id} finding={playground} onClose={() => setPlayground(null)} />
       )}
 
       {/* file viewer modal: metadata, headers, highlighting, hex, download */}
@@ -1272,6 +1510,8 @@ interface VulnCandidate {
   confidence_basis: string; needs_manual_verification: boolean;
   why_viable: string; poc_code: string; poc_lang: string;
   dry_run_steps: string[]; remediation: string; evidence_count: number;
+  // Underlying findings (id/plugin/key) - powers "Test in playground".
+  evidence_refs?: { id?: number; plugin?: string; key?: string; value?: string }[];
 }
 
 interface SimResult {
@@ -1385,6 +1625,10 @@ function VulnsView({ runId }: { runId: string }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [term, setTerm] = useState<{ cand: VulnCandidate; lines: string[]; busy: boolean } | null>(null);
+  // findings playground: resolve a candidate's underlying finding and
+  // open it in the shared playground panel
+  const [pg, setPg] = useState<Finding | null>(null);
+  const [pgBusy, setPgBusy] = useState<string | null>(null);
   // simulation state
   const [sim, setSim] = useState<SimReport | null>(null);
   const [simBusy, setSimBusy] = useState(false);
@@ -1420,6 +1664,22 @@ function VulnsView({ runId }: { runId: string }) {
       setSim({ target: "", total_tested: 0, working_count: 0, working: [], results: [], disclaimer: "Test failed: " + e.message });
     } finally {
       setSimBusy(false);
+    }
+  }
+
+  async function openPlayground(c: VulnCandidate) {
+    const ref = (c.evidence_refs || []).find((r) => r.id != null);
+    if (!ref) return;
+    setPgBusy(c.id);
+    try {
+      const d = await api<any>(`/api/runs/${runId}`);
+      const f = (d.findings || []).find((x: any) => x.id === ref.id);
+      if (f) setPg(f as Finding);
+    } catch {
+      // panel simply does not open; the run detail fetch failing is
+      // already surfaced by the rest of this page
+    } finally {
+      setPgBusy(null);
     }
   }
 
@@ -1566,6 +1826,14 @@ function VulnsView({ runId }: { runId: string }) {
                   onClick={() => openTerminal(c)}>
                   Test safely (dry-run terminal)
                 </button>
+                {(c.evidence_refs || []).some((r) => r.id != null) && (
+                  <button
+                    className="w-full chip px-4 py-3 min-h-[48px] text-sm text-sky-300 bg-sky-950/50 border border-sky-800/50 disabled:opacity-50"
+                    disabled={pgBusy === c.id}
+                    onClick={() => openPlayground(c)}>
+                    {pgBusy === c.id ? "Opening playground..." : "Test in playground (re-run the finding's own check)"}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1608,6 +1876,11 @@ function VulnsView({ runId }: { runId: string }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* findings playground panel (from a candidate's evidence) */}
+      {pg && (
+        <PlaygroundPanel runId={runId} finding={pg} onClose={() => setPg(null)} />
       )}
     </div>
   );
@@ -1803,14 +2076,9 @@ function AtmView({ runId, findings }: { runId: string; findings: Finding[] }) {
 
 function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any }) {
   const [filter, setFilter] = useState("all");
-  const conns = findings.filter((f) =>
-    f.key === "connected_device" || f.key === "connected_service" ||
-    f.key === "connected_account" || f.key === "connected_financial" ||
-    f.key === "connection_summary" ||
-    f.key === "payment_processor" || f.key === "billing_endpoint" ||
-    f.key.startsWith("bank_") || f.key.startsWith("crypto_"));
+  const conns = findings.filter(isConnectionFinding);
 
-  const byType: Record<string, Finding[]> = { device: [], service: [], account: [], financial: [] };
+  const byType: Record<string, Finding[]> = { device: [], service: [], account: [], financial: [], domain: [] };
   conns.forEach((f) => {
     const t = f.evidence?.type as string;
     if (t && byType[t]) byType[t].push(f);
@@ -1829,7 +2097,7 @@ function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any 
     : byType[filter] || [];
 
   // Mini graph for connections only
-  const connKinds = ["device", "service", "account", "financial"];
+  const connKinds = ["device", "service", "account", "financial", "domain"];
   const gNodes = (graph?.nodes || []).filter((n: any) =>
     connKinds.includes(n.kind) || n.kind === "target");
   const gIds = new Set(gNodes.map((n: any) => n.id));
@@ -1844,7 +2112,7 @@ function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any 
           Click a type to filter.
         </p>
         <div className="flex gap-2 flex-wrap mt-3">
-          {(["all", "device", "service", "account", "financial"] as const).map((t) => (
+          {(["all", "device", "service", "account", "financial", "domain"] as const).map((t) => (
             <button key={t} onClick={() => setFilter(t)}
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${filter === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
               {t} ({t === "all" ? shown.length : (byType[t] || []).length})

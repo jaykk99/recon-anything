@@ -165,11 +165,16 @@ class BackupPlugin(Plugin):
         mode = self.module_mode(ctx)
         passive = (mode == "passive")
 
-        candidates = []
+        # DIRECT_PATHS first: these are curated, well-known backup file
+        # locations (/backup.zip, /db_backup.sql, ...) - the highest hit
+        # rate per probe. They used to be appended AFTER the ~2,000
+        # generated BASE_NAMES x EXTENSIONS combos, and the sweep's
+        # chunking + 18s budget never reached them: the single most
+        # likely backup exposures were silently never probed.
+        candidates = list(DIRECT_PATHS)
         for name in BASE_NAMES:
             for ext in EXTENSIONS:
                 candidates.append(f"/{name}{ext}")
-        candidates += DIRECT_PATHS
 
         # Deep backend sweep: backend files with backend extensions at
         # root, backend dirs themselves, and admin/management paths.

@@ -115,6 +115,11 @@ class ApiDiscoverPlugin(Plugin):
     cost = Cost.FREE
     group = "api"
     description = "Backend inference, docs discovery, GraphQL introspection, API map."
+    # Enumerator-class plugin: up to 180 wordlist probes paced by the
+    # shared per-host rate limiter (~10 rps) puts its floor near 30s
+    # even before network latency; the 60s base default got it killed
+    # mid-run on slow targets and the timeout discarded ALL findings.
+    timeout_s = 120
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -340,6 +345,12 @@ class ApiDiscoverPlugin(Plugin):
             doc = json.loads(text[:2000000])
         except Exception:
             return
+        if not isinstance(doc, dict):
+            # Plenty of real APIs return a top-level JSON list (WP REST
+            # collections, OData feeds). That is not an OpenAPI doc -
+            # and .get() on it used to raise out of run() and zero the
+            # whole plugin's findings for the target.
+            return
         paths = doc.get("paths", {})
         for p, ops in list(paths.items())[:100]:
             if not isinstance(ops, dict):
@@ -362,6 +373,8 @@ class ApiDiscoverPlugin(Plugin):
         try:
             data = r.json()
         except Exception:
+            return False
+        if not isinstance(data, dict):
             return False
         schema = (data.get("data") or {}).get("__schema")
         if not schema:

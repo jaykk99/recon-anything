@@ -8,6 +8,9 @@ Routes:
   GET  /api/runs/{id}/stream    SSE live progress + findings
   GET  /api/runs                list runs
   GET  /api/runs/{id}           run detail + findings + summary
+  POST /api/runs/{id}/findings/{fid}/retest
+                                findings playground: re-run that finding's
+                                own plugin on its own target, compare fresh
   GET  /api/runs/{id}/graph     correlation graph payload
   GET  /api/runs/{id}/apimap    assembled API map
   GET  /api/runs/{id}/export    ?format=json|csv|md|html
@@ -48,6 +51,7 @@ from typing import Dict, List, Optional
 
 from . import config
 from . import net
+from . import modes as app_modes
 from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
@@ -234,6 +238,48 @@ def api_plugins():
     return {"plugins": plugins}
 
 
+# -- settings: scan mode (sandbox | live) ----------------------------------
+class ModeIn(BaseModel):
+    mode: str
+
+
+class OwnedAssetsIn(BaseModel):
+    assets: List[str]
+
+
+@app.get("/api/settings", dependencies=[Depends(gate)])
+def api_settings():
+    session = get_session()
+    try:
+        return {"mode": app_modes.get_mode(session),
+                "owned_assets": app_modes.get_owned_assets(session),
+                "audit": app_modes.audit_tail(session)}
+    finally:
+        session.close()
+
+
+@app.put("/api/settings/mode", dependencies=[Depends(gate)])
+def api_set_mode(body: ModeIn):
+    if body.mode not in app_modes.MODES:
+        raise HTTPException(400, "mode must be sandbox|live")
+    session = get_session()
+    try:
+        detail = app_modes.set_mode(session, body.mode, actor="ui")
+        return {"ok": True, "mode": body.mode, "audit": detail}
+    finally:
+        session.close()
+
+
+@app.put("/api/settings/owned-assets", dependencies=[Depends(gate)])
+def api_set_owned_assets(body: OwnedAssetsIn):
+    session = get_session()
+    try:
+        assets = app_modes.set_owned_assets(session, body.assets, actor="ui")
+        return {"ok": True, "owned_assets": assets}
+    finally:
+        session.close()
+
+
 # -- runs -----------------------------------------------------------------
 class RunIn(BaseModel):
     targets: str
@@ -255,7 +301,24 @@ async def api_start_run(body: RunIn):
     run_id = uuid.uuid4().hex[:12]
     session = get_session()
     try:
+        # App mode gate: SANDBOX restricts targets to owned assets +
+        # local/lab space. The mode is a settings-level switch (audited),
+        # never a per-scan option. LIVE keeps the long-standing behavior.
+        env_mode = app_modes.get_mode(session)
+        if env_mode == app_modes.SANDBOX:
+            rejected = app_modes.check_sandbox_targets(
+                classify_batch(body.targets),
+                app_modes.get_owned_assets(session))
+            if rejected:
+                raise HTTPException(
+                    400,
+                    "SANDBOX mode: targets must be your own assets or "
+                    "local/lab targets. Rejected: " + "; ".join(
+                        f"{r['raw']} ({r['reason']})" for r in rejected)
+                    + ". Switch to LIVE in Settings to scan authorized "
+                      "external targets.")
         session.add(Run(id=run_id, mode=body.mode, status="running",
+                        env_mode=env_mode,
                         source_type=body.source_type,
                         summary={"bounty": bool(body.bounty)}))
         session.commit()
@@ -300,7 +363,8 @@ def api_list_runs(limit: int = Query(30, le=200),
     # summary column out unless ?summary=1 is passed explicitly.
     from sqlalchemy.orm import load_only
     from sqlalchemy import func
-    fields = [Run.id, Run.mode, Run.status, Run.source_type, Run.created_at]
+    fields = [Run.id, Run.mode, Run.status, Run.env_mode, Run.source_type,
+              Run.created_at]
     if summary:
         fields.append(Run.summary)
     session = get_session()
@@ -318,6 +382,7 @@ def api_list_runs(limit: int = Query(30, le=200),
         out = []
         for r in runs:
             row = {"id": r.id, "mode": r.mode, "status": r.status,
+                   "env_mode": getattr(r, "env_mode", None) or "sandbox",
                    "source_type": getattr(r, "source_type", None) or "website",
                    "created_at": r.created_at.isoformat()
                    if r.created_at else None,
@@ -341,6 +406,7 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
+                    "env_mode": getattr(run, "env_mode", None) or "sandbox",
                     "source_type": getattr(run, "source_type", None) or "website",
                     "bounty": bool((run.summary or {}).get("bounty")),
                     "created_at": run.created_at.isoformat() if run.created_at else None,
@@ -376,6 +442,29 @@ def api_run_agent_activity(run_id: str, limit: int = 500):
             session, store.DEFAULT_SYSTEM, run_id, limit=limit)
     finally:
         session.close()
+
+
+@app.post("/api/runs/{run_id}/findings/{finding_id}/retest",
+          dependencies=[Depends(gate)])
+async def api_finding_retest(run_id: str, finding_id: int):
+    """Findings playground: re-run the ONE plugin that produced this
+    finding, against this finding's own target, and compare fresh vs
+    stored (unchanged / changed / gone / error).
+
+    The plugin and target come from the stored finding itself - the
+    caller cannot name a URL, a plugin, or a payload, so this cannot
+    be used as a general request tool. Fresh findings are returned,
+    never written back to the run. Rate limited per finding
+    (app/playground.py). See app/playground.py for the full design.
+    """
+    from .playground import PlaygroundError, retest_finding
+    try:
+        return await retest_finding(run_id, finding_id)
+    except PlaygroundError as e:
+        headers = {}
+        if e.retry_after:
+            headers["Retry-After"] = str(int(e.retry_after) + 1)
+        raise HTTPException(e.status_code, e.detail, headers=headers)
 
 
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])

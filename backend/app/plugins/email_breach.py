@@ -31,6 +31,29 @@ from .secretutils import evidence_block, redact
 HIBP_V3 = "https://haveibeenpwned.com/api/v3"
 UA = "ReconAnything/1.0"
 
+_PLACEHOLDER_WORDS = {
+    "unknown", "redacted", "[redacted]", "not found", "notfound",
+    "n/a", "null", "none", "hidden", "placeholder", "changeme",
+}
+
+
+def is_placeholder(pw: str) -> bool:
+    """True for mask/placeholder values in breach compilations rather
+    than real passwords ("***", "xxxx", "?", "redacted", ...).
+
+    Referenced by _proxynova_email's line parser but never defined -
+    any ProxyNova hit with a matching email line raised NameError out
+    of run() and the runner discarded ALL of this plugin's findings
+    for the target.
+    """
+    v = pw.strip().lower()
+    if not v:
+        return True
+    if v in _PLACEHOLDER_WORDS:
+        return True
+    # pure mask strings: only *, x, ?, -, . characters
+    return all(c in "*x?-." for c in v)
+
 # Data classes that mean "rotate this now".
 SENSITIVE_CLASSES = {
     "passwords", "password hints", "email addresses", "usernames",

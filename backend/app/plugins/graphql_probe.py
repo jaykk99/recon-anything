@@ -16,7 +16,7 @@ import time
 from typing import List
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch_many
+from ..ratelimit import fetch, fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Plugin, PluginResult, PluginStatus, Target, safe_json_dict
 

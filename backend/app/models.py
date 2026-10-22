@@ -63,6 +63,9 @@ class Run(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow, index=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     mode = Column(String, default="passive")  # passive | active
+    # sandbox | live - the app mode the run was created under (settings).
+    # Stamped at creation; sandbox runs never count as production findings.
+    env_mode = Column(String, default="sandbox")
     source_type = Column(String, default="website")  # website | bank | atm
     status = Column(String, default="running")  # running | done | error
     summary = Column(JSON, default=dict)
@@ -166,6 +169,24 @@ class Schedule(Base):
     enabled = Column(Boolean, default=True)
     last_run_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class AppSetting(Base):
+    """Key/value app settings (scan mode, owned-assets allowlist, ...)."""
+    __tablename__ = "app_settings"
+    key = Column(String, primary_key=True)
+    value = Column(JSON, default=dict)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class AuditLog(Base):
+    """Append-only audit trail for settings-level actions (mode switches)."""
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts = Column(DateTime(timezone=True), default=_utcnow, index=True)
+    action = Column(String)
+    actor = Column(String, default="ui")
+    detail = Column(JSON, default=dict)
 
 
 class AIHunter(Base):
@@ -323,6 +344,7 @@ def init_db() -> None:
     is_sqlite = IS_SQLITE
     for table, column, ddl in (
         ("runs", "source_type", "VARCHAR DEFAULT 'website'"),
+        ("runs", "env_mode", "VARCHAR DEFAULT 'sandbox'"),
         ("plugin_jobs", "estimate_s", "INTEGER DEFAULT 12"),
     ):
         try:
