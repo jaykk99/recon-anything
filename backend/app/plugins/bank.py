@@ -27,6 +27,13 @@ PLATFORMS = [  # (label, regex, confidence), case-insensitive
     ("Q2", r"q2ebanking|\bq2\b", 75), ("Alkami", r"alkami", 90),
     ("NCR", r"\bncr\b|digital\s*insight", 75),
     ("Diebold Nixdorf", r"diebold", 85),
+    ("nCino", r"ncino", 85),
+    ("MeridianLink", r"meridian\s*link|meridianlink", 80),
+    ("Corelation", r"corelation|keystone", 80),
+    ("Finacle (Infosys)", r"finacle", 80),
+    ("Mambu", r"mambu", 80),
+    ("Backbase", r"backbase", 80),
+    ("Bottomline", r"bottomline\s*(technologies)?|paymode", 70),
 ]
 MFA_HINTS = [r"two[-\s]?factor", r"one[-\s]?time\s*(passcode|password|code)",
              r"authenticator", r"multi[-\s]?factor", r"verification\s*code"]
@@ -102,6 +109,30 @@ class BankPlugin(Plugin):
         t0 = time.monotonic()
         mode = ctx.mode
         findings: List[Finding] = []
+        # Authorization gate (defense in depth), same pattern as the ATM
+        # module: bank assessment only runs when the run carries the
+        # module authorization - set by main.py when the operator picks
+        # the bank source type. Website runs never enqueue this plugin;
+        # invoked without the gate, it skips instead of probing.
+        authorized = (ctx.module_overrides or {}).get("bank") == "authorized" \
+            or getattr(ctx, "source_type", "") == "bank"
+        if not authorized:
+            return self._skipped(
+                "bank module not authorized for this run "
+                "(module_overrides bank=authorized required)")
+        # Audit claim: the authorization basis for this assessment,
+        # recorded inside the run.
+        findings.append(self._f(
+            "financial", "bank_authorization",
+            "Bank assessment authorized for this run (operator selected "
+            "the bank source type; module_overrides bank=authorized). "
+            "Read-only assessment only: no account access, no "
+            "transactions, no credential use.",
+            source="authorization audit", confidence=100, passive=True,
+            evidence={"severity": "info",
+                      "note": "Audit claim finding: the authorization "
+                              "basis for every other bank finding in "
+                              "this run."}))
         domain = domain_from_target(target.type, target.normalized)
         # POI targets: use the operator website if present, else record
         # the location and stop (no host to assess).
@@ -190,26 +221,35 @@ class BankPlugin(Plugin):
         logins = [f for f in forms if re.search(
             r'type\s*=\s*["\']?password', f, re.IGNORECASE)]
         notes = []
+        posture_ev = {"severity": "medium", "login_forms": len(logins),
+                      "mfa_hints": 0, "rate_limit_headers": [],
+                      "cookies_seen": 0}
         if logins:
             lf = "\n".join(logins)
             notes.append(f"{len(logins)} login form(s) found")
             notes.append("password autocomplete=off" if re.search(
                 r'autocomplete\s*=\s*["\']?off', lf, re.IGNORECASE) else
                 "MISSING: password autocomplete=off")
+            posture_ev["password_autocomplete_off"] = bool(re.search(
+                r'autocomplete\s*=\s*["\']?off', lf, re.IGNORECASE))
             mfa = sum(bool(re.search(h, html, re.IGNORECASE))
                       for h in MFA_HINTS)
+            posture_ev["mfa_hints"] = mfa
             notes.append(f"MFA hints present ({mfa})" if mfa else
                          "MISSING: no MFA hints in page text")
         else:
             notes.append("no login form with password field found")
         rl = [h for h in RL_HEADERS if h in {k.lower() for k in headers}]
+        posture_ev["rate_limit_headers"] = rl
         notes.append(f"rate-limit headers: {', '.join(rl)}" if rl else
                      "MISSING: no rate-limit headers seen")
         cookies = [v for k, v in headers.items()
                    if k.lower() == "set-cookie"]
+        posture_ev["cookies_seen"] = len(cookies)
         for flag in ("secure", "httponly", "samesite"):
             if cookies:
                 n = sum(flag in c.lower() for c in cookies)
+                posture_ev[f"cookie_{flag}"] = f"{n}/{len(cookies)}"
                 notes.append(f"cookie {flag}: {n}/{len(cookies)}" if n else
                              f"MISSING: cookie {flag} flag not seen")
         if not cookies:
@@ -218,25 +258,40 @@ class BankPlugin(Plugin):
                                 "Login posture: " + "; ".join(notes),
                                 source="bank plugin", source_url=final,
                                 confidence=80, passive=True,
-                                evidence={"severity": "medium"}))
-        # 7) CVE matching on detected tech
+                                evidence=posture_ev))
+        # 7) CVE matching on detected tech. Word boundaries: bare
+        # substring matching made short markers like "f5" fire inside
+        # random hex strings in page markup - a CVE claim needs the
+        # marker as an actual token in the page evidence.
         for marker, cve, title in TECH_CVES:
-            hit = marker in low
+            hit = re.search(rf"\b{re.escape(marker)}\b", low) is not None
+            inferred = False
             if not hit and marker == "log4j" and \
                     any(p in ("Temenos", "Finastra") for p in platforms):
                 hit = True  # Java-based core banking stacks
+                inferred = True
             if hit:
-                findings.append(self._f("financial", "bank_cve",
-                                        f"{cve}: {title}. Verify patched "
-                                        f"version on {domain}.",
-                                        source="bank plugin",
-                                        source_url=final, confidence=70,
-                                        passive=True,
-                                        evidence={"severity": "high",
-                                                  "cve": cve,
-                                                  "remediation": "Patch to "
-                                                  "the vendor-fixed version "
-                                                  "immediately."}))
+                findings.append(self._f(
+                    "financial", "bank_cve",
+                    f"{cve}: {title}. Verify patched "
+                    f"version on {domain}.",
+                    source="bank plugin",
+                    source_url=final,
+                    confidence=50 if inferred else 70,
+                    passive=True,
+                    evidence={"severity": "high",
+                              "cve": cve,
+                              "marker": marker,
+                              "inferred": inferred,
+                              "note": ("Inferred from the detected "
+                                       "Java-based platform, not from a "
+                                       "Log4j marker in page data."
+                                       if inferred else
+                                       "Marker detected in the site's "
+                                       "own page data."),
+                              "remediation": "Patch to "
+                              "the vendor-fixed version "
+                              "immediately."}))
         # 8) PCI DSS indicators
         pci = []
         for m in CARD_INPUT.finditer(html):
@@ -262,7 +317,8 @@ class BankPlugin(Plugin):
                                               "card data in URLs; mask "
                                               "card inputs; serve all "
                                               "forms over HTTPS."}))
-        if not findings:
+        if len(findings) <= 1:
+            # Only the audit claim: assessment ran, nothing found.
             findings.append(self._f(
                 "financial", "bank_no_footprint",
                 f"No banking infrastructure footprint on {domain} at {ts}: "
@@ -347,6 +403,30 @@ class BankPlugin(Plugin):
                                evidence={"severity": "medium",
                                          "api_paths": api[:10],
                                          "mobile_hints": mob}))
+        # Distinct API / mobile-banking hosts the page itself points
+        # at (absolute URLs in markup): the mobile channel usually
+        # lives on its own host and is half the attack surface.
+        from urllib.parse import urlparse as _up
+        hosts = set()
+        for m in re.finditer(r"https?://([a-z0-9.\-]+)", html or "",
+                             re.IGNORECASE):
+            h = m.group(1).lower()
+            if h != domain and any(t in h for t in
+                                   ("api", "mobile", "olb", "digital",
+                                    "mib", "ebanking")):
+                hosts.add(h)
+        for h in sorted(hosts)[:10]:
+            ctx.publish("subdomains", h)
+            out.append(self._f(
+                "financial", "bank_mobile_api_host",
+                f"Banking API/mobile host referenced by {domain}: {h}",
+                source="bank API surface", source_url=final,
+                confidence=75, passive=passive,
+                evidence={"severity": "medium", "host": h,
+                          "remediation": "Inventory the mobile/API "
+                          "channel with the same rigor as the web "
+                          "channel: auth, rate limits, cert pinning on "
+                          "the client side."}))
         root = base.rstrip("/")
         probes = await asyncio.gather(
             *[ctx.probe(root + p) for p in API_FILES])

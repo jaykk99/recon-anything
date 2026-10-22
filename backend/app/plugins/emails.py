@@ -103,6 +103,46 @@ class EmailsPlugin(Plugin):
                     confidence=conf, passive=True))
                 ctx.publish("emails", email)
 
+        # Corporate email PATTERN: with 2+ company addresses in the same
+        # shape, the naming convention is public knowledge - anyone can
+        # construct the address of any employee (targeted phishing /
+        # pretexting surface). Derived only from addresses the target
+        # itself published on its own pages above.
+        company = sorted(e for e in seen if e.partition("@")[2] == domain)
+
+        def _shape(local: str) -> str:
+            if "." in local:
+                a, b = local.split(".", 1)
+                if a.isalpha() and b.isalpha():
+                    return ("first.last" if len(a) > 1 and len(b) > 1
+                            else "f.last" if len(a) == 1
+                            else "first.l" if len(b) == 1 else "")
+            if local.isalpha() and len(local) >= 3:
+                return "firstlast?"
+            return ""
+
+        shapes = {}
+        for e in company:
+            s = _shape(e.partition("@")[0])
+            if s and s != "firstlast?":
+                shapes.setdefault(s, []).append(e)
+        for shape, examples in sorted(shapes.items()):
+            if len(examples) >= 2:
+                findings.append(self._f(
+                    "identity", "email_pattern",
+                    f"Corporate email pattern at {domain}: {shape}@{domain} "
+                    f"({len(examples)} published examples: "
+                    f"{', '.join(examples[:3])})",
+                    source="email harvester pattern analysis",
+                    confidence=80, passive=True,
+                    evidence={"severity": "low", "pattern": shape,
+                              "examples": examples[:5],
+                              "why": "A predictable address format lets "
+                                     "anyone construct a valid-looking "
+                                     "address for any named employee - "
+                                     "the starting point for targeted "
+                                     "phishing and pretexting."}))
+
         # Also check DNS TXT for SPF (reveals mail providers)
         try:
             import dns.asyncresolver

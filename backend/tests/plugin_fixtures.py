@@ -60,6 +60,7 @@ fetch('/api/v1/users');
 fetch('/api/v1/orders');
 const metrics = '/api/internal/metrics';
 const AWS_KEY = "AKIA1234567890ABCDEF";
+const SERVICE_CFG = {"username": "deploy-bot", "login": "svc-reports", "env": "prod"};
 const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZpeHR1cmUifQ.dozjgNryP4J3jVmNHl0w5N_XgL0n3AAA";
 // TODO remove before prod: password = "FixturePass123!"
 //# sourceMappingURL=app.js.map
@@ -164,6 +165,12 @@ ROUTES = {
                       "</form>wp-login fixture</html>", {}),
     "/wp-json/": (200, "application/json",
                   json.dumps({"name": "Fixture", "namespaces": ["wp/v2"]}), {}),
+    "/wp-json/wp/v2/users": (200, "application/json",
+                             json.dumps([
+                                 {"id": 1, "slug": "fixture-admin",
+                                  "name": "Fixture Admin"},
+                                 {"id": 2, "slug": "admin",
+                                  "name": "Site Admin"}]), {}),
     "/api/v1/users": (200, "application/json", USERS_JSON, {}),
     "/api/v1/orders": (200, "application/json", "[]", {}),
     "/api/internal/metrics": (200, "application/json", '{"debug": true}', {}),
@@ -227,6 +234,54 @@ def _handler(request: httpx.Request) -> httpx.Response:
             200, headers=cf, request=request,
             content=("<html><head><title>protected</title></head>"
                      "<body>behind cloudflare</body></html>"))
+    if host == "bank.fixture.test":
+        # Bank portal fixture: Fiserv fingerprints, a bare login form
+        # (no autocomplete=off, no MFA hints, flag-less cookie), a
+        # mobile API host reference, and a hex token containing "f5"
+        # inside a word (CVE matcher must NOT fire on it).
+        if path == "/login":
+            return httpx.Response(
+                200, headers={"Content-Type": "text/html"}, request=request,
+                content=("<html><head><title>Sign On</title></head><body>"
+                         "<form action='/login' method='post'>"
+                         "<input name='user'><input type='password' "
+                         "name='pwd'></form></body></html>"))
+        return httpx.Response(
+            200, headers={"Content-Type": "text/html",
+                          "Set-Cookie": "session=abc123; Path=/"},
+            request=request,
+            content=("<html><head><title>Fixture Bank</title></head>"
+                     "<body data-token='a1f5b2c3'>"
+                     "<h1>Fixture Bank online banking</h1>"
+                     "<p>Powered by Fiserv digital banking.</p>"
+                     "<form action='/login' method='post'>"
+                     "<input name='user'><input type='password' "
+                     "name='pwd'></form>"
+                     "<script src='https://mobile-api.bank.fixture.test"
+                     "/v1/app.js'></script>"
+                     "</body></html>"))
+    if host == "atm.fixture.test":
+        # ATM vendor portal: Diebold + NCR APTRA fingerprints, and the
+        # /aptra management path live.
+        if path == "/aptra":
+            return httpx.Response(
+                200, headers={"Content-Type": "text/html"}, request=request,
+                content=("<html><head><title>APTRA Advance - terminal "
+                         "management</title></head><body>mgmt</body></html>"))
+        return httpx.Response(
+            200, headers={"Content-Type": "text/html"}, request=request,
+            content=("<html><head><title>Self-service portal</title>"
+                     "</head><body>Diebold Nixdorf self-service banking, "
+                     "powered by APTRA Advance on Opteva terminals."
+                     "</body></html>"))
+    if host == "webmail.fixture.test":
+        # Roundcube login surface for the email-infra surface checks.
+        return httpx.Response(
+            200, headers={"Content-Type": "text/html"}, request=request,
+            content=("<html><head><title>Roundcube Webmail :: Welcome "
+                     "to Roundcube Webmail</title></head><body>"
+                     "<form id='login-form'>Username Password Login"
+                     "</form></body></html>"))
     if host == "crt.sh":
         return httpx.Response(200, content=CRT_JSON,
                               headers={"Content-Type": "application/json"},
