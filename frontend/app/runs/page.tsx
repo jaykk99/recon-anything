@@ -28,7 +28,11 @@ export default function RunsPage() {
             {runs.map((r) => (
               <tr key={r.id}>
                 <td><a className="text-sky-400 font-mono" href={`/run/${r.id}`}>{r.id}</a></td>
-                <td className="text-xs">{r.mode}</td>
+                <td className="text-xs">{r.mode}{" "}
+                  {(r.env_mode || "sandbox") === "sandbox"
+                    ? <span className="text-amber-300 border border-amber-500/40 bg-amber-500/10 rounded px-1">SANDBOX</span>
+                    : <span className="text-emerald-300 border border-emerald-500/40 bg-emerald-500/10 rounded px-1">LIVE</span>}
+                </td>
                 <td className="text-xs">{r.status}</td>
                 <td className="text-xs">{r.findings_count ?? r.summary?.findings ?? "-"}</td>
                 <td className="text-xs text-slate-500">{(r.created_at || "").slice(0, 19)}</td>

@@ -31,6 +31,7 @@ NODE_KIND = {
     "registrant_org": "org",
     "app_title": "app", "bundle_id": "app",
     # connection mapper node types
+    "connected_domain": "domain",
     "connected_device": "device",
     "connected_service": "service",
     "connected_account": "account",
