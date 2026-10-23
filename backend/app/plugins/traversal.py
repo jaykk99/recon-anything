@@ -4,11 +4,18 @@ Probes file-ish query parameters with traversal payloads and checks for
 /etc/passwd leakage (read-only GET, extracts nothing else). Also checks
 for Windows-style (..\\..\\windows\\win.ini) markers.
 
+Scheduling: file-ish-param URLs are probed FIRST (the vuln lives in
+?file=/path=, not ?id=), each URL gets one baseline fetch (not one per
+payload), and URLs probe concurrently under a shared semaphore. This
+killed the old failure mode where alphabetical ordering burned the
+whole 60s budget on non-fileish URLs before reaching the real target.
+
 GET only. No file writes, no data extraction beyond the passwd marker.
 Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Set
@@ -49,7 +56,22 @@ class TraversalPlugin(Plugin):
     passive = False
     cost = Cost.FREE
     group = "web"
+    # Traversal probing is payload-heavy across many URLs; give it the
+    # runner's full per-plugin budget.
+    timeout_s = 120
     description = "Probe file params for directory traversal (read-only passwd check)."
+
+    @staticmethod
+    def _url_priority(u: str) -> tuple:
+        """File-ish params first: the vuln lives in ?file=/path=, not ?id=.
+        Alphabetical order previously buried real targets behind a dozen
+        non-fileish URLs and the plugin timed out before reaching them."""
+        try:
+            params = parse_qsl(urlparse(u).query, keep_blank_values=True)
+        except Exception:
+            params = []
+        fileish = sum(1 for n, _ in params if n.lower() in FILEISH_PARAMS)
+        return (-fileish, u)
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -72,18 +94,20 @@ class TraversalPlugin(Plugin):
             # common file params directly (one cheap sweep).
             urls = {base}
 
-        tested = 0
-        confirmed = False
-        for u in sorted(urls)[:12]:
-            if over_budget(t0, budget_s=50):
-                break
+        sem = asyncio.Semaphore(6)
+        tested = [0]
+        confirmed = [False]
+
+        async def probe_one(u: str):
+            if confirmed[0]:
+                return
             parts = urlparse(u)
             try:
                 params = parse_qsl(parts.query, keep_blank_values=True)
             except Exception:
-                continue
+                return
             if not params and u != base:
-                continue
+                return
             if params:
                 # Prefer file-ish params; fall back to the first 2 params.
                 fileish = [n for n, _ in params if n.lower() in FILEISH_PARAMS]
@@ -92,24 +116,28 @@ class TraversalPlugin(Plugin):
             else:
                 names = ["file", "path", "page", "include", "template", "name"]
                 base_params = [(n, "1") for n in names]
+            # Baseline ONCE per URL (FP guard), not once per payload:
+            # markers like "root:x:0:0" or "[extensions]" can exist in
+            # the page's normal content (docs, tutorials). Only flag
+            # when the marker appears in the probed response but NOT
+            # in the baseline.
+            base_body, _ = await fetch_baseline(ctx, u, timeout=12)
+            base_body = base_body[:50000]
             for name in names[:6]:
+                if confirmed[0]:
+                    break
                 for payload in TRAVERSAL_PAYLOADS[:3]:
-                    if over_budget(t0, budget_s=50):
+                    if confirmed[0] or over_budget(t0, budget_s=100):
                         break
                     purl = probe_url(parts, base_params, name, payload)
                     try:
-                        r = await fetch(ctx.http, ctx.limiter, "GET", purl,
-                                        timeout=12, follow_redirects=True)
+                        async with sem:
+                            r = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                                            timeout=12, follow_redirects=True)
                     except Exception:
                         continue
-                    tested += 1
+                    tested[0] += 1
                     body = r.text[:50000]
-                    # Baseline FP guard: markers like "root:x:0:0" or
-                    # "[extensions]" can exist in the page's normal content
-                    # (docs, tutorials). Only flag when the marker appears
-                    # in the probed response but NOT in the baseline.
-                    base_body, _ = await fetch_baseline(ctx, u, timeout=12)
-                    base_body = base_body[:50000]
                     if any(m in body for m in PASSWD_MARKERS) and \
                             not any(m in base_body for m in PASSWD_MARKERS):
                         findings.append(self._f(
@@ -123,7 +151,8 @@ class TraversalPlugin(Plugin):
                                 "severity": "high",
                                 "remediation": REMEDIATION,
                                 "poc_command": f"curl -s '{purl}' | grep -c 'root:x:0:0'"}))
-                        confirmed = True
+                        confirmed[0] = True
+                        self._checkpoint(findings)
                         break
                     if any(m in body for m in WININI_MARKERS) and \
                             not any(m in base_body for m in WININI_MARKERS):
@@ -138,15 +167,15 @@ class TraversalPlugin(Plugin):
                                 "severity": "high",
                                 "remediation": REMEDIATION,
                                 "poc_command": f"curl -s '{purl}' | head -5"}))
-                        confirmed = True
+                        confirmed[0] = True
+                        self._checkpoint(findings)
                         break
-                if confirmed:
-                    break
-            if confirmed:
-                break
+
+        ordered = sorted(urls, key=self._url_priority)[:12]
+        await asyncio.gather(*[probe_one(u) for u in ordered])
 
         dur = int((time.monotonic() - t0) * 1000)
-        note = f"traversal probes sent: {tested}"
+        note = f"traversal probes sent: {tested[0]}"
         if not findings:
             note += " - no /etc/passwd or win.ini leakage detected"
         res = self._ok(findings, note)

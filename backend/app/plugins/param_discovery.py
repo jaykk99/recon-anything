@@ -6,6 +6,13 @@ For every candidate it sends ONE inert canary value and reports:
   - param_accepted: the page behaved differently vs baseline (param exists)
   - param_reflected: the canary is reflected unencoded (XSS candidate)
 
+Batch probing: up to 20 params ride on ONE request, each with its own
+unique canary. A batch with no reflection costs 1 request instead of 20;
+a reflecting batch is bisected with individual requests to name the
+culprit. This is what keeps the plugin inside its time budget on
+param-dense targets (the old one-request-per-param loop timed out at
+120s before reaching the reflecting page).
+
 GET only, inert canaries, no exploitation. Rate-limited.
 """
 from __future__ import annotations
@@ -42,6 +49,8 @@ thumb file2 doc document download attachment preview thumb2
 redirect_url return_url next_url continue_url callback_url
 """.split()
 
+BATCH_SIZE = 20  # params per batch-probe request
+
 
 class ParamDiscoveryPlugin(Plugin):
     id = "param_discovery"
@@ -56,6 +65,16 @@ class ParamDiscoveryPlugin(Plugin):
     phase = 2
     description = ("Discover hidden GET params with canary probes; flag "
                    "unencoded reflection (XSS candidates). GET only.")
+
+    @staticmethod
+    def _raw_reflected(body: str, canary: str) -> bool:
+        """True when the canary is reflected unencoded (XSS candidate).
+
+        An HTML-encoded echo (&lt;canary&gt;) is not directly exploitable
+        and must not be reported as a reflection.
+        """
+        return (canary in body and f"&lt;{canary}" not in body
+                and f"&gt;{canary}" not in body)
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -114,31 +133,28 @@ class ParamDiscoveryPlugin(Plugin):
         sem = asyncio.Semaphore(6)
         tested = [0]
 
-        async def test_seed(seed: str):
-            # baseline: plain page
-            try:
-                b = await fetch(ctx.http, ctx.limiter, "GET", seed,
-                                timeout=15, max_retries=1)
-                base_body = b.text[:60000]
-                base_len = len(base_body)
-            except Exception:
-                return
-            parts = urlparse(seed)
-            for pname in candidates:
-                canary = "pd" + uuid.uuid4().hex[:10]
-                q = [(pname, canary)]
-                purl = urlunparse(parts._replace(query=urlencode(q)))
+        async def fetch_one(url: str):
+            async with sem:
                 tested[0] += 1
                 try:
-                    async with sem:
-                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
-                                         timeout=15, max_retries=1)
-                    body = pr.text[:60000]
+                    pr = await fetch(ctx.http, ctx.limiter, "GET", url,
+                                     timeout=15, max_retries=1)
+                    return pr.text[:60000]
                 except Exception:
+                    return None
+
+        def batch_url(parts, batch):
+            q = [(pname, canary) for pname, canary in batch]
+            return urlunparse(parts._replace(query=urlencode(q)))
+
+        async def bisect_batch(parts, batch):
+            """One param in the batch reflected: name the culprit(s)."""
+            for pname, canary in batch:
+                purl = batch_url(parts, [(pname, canary)])
+                body = await fetch_one(purl)
+                if body is None:
                     continue
-                if canary in body and f"&lt;{canary}" not in body \
-                        and f"&gt;{canary}" not in body:
-                    # crude context check: raw reflection?
+                if self._raw_reflected(body, canary):
                     findings.append(self._f(
                         "web", "param_reflected",
                         f"HIGH: hidden parameter '{pname}' reflects input "
@@ -151,34 +167,67 @@ class ParamDiscoveryPlugin(Plugin):
                                                   "for its output context; "
                                                   "remove the parameter if "
                                                   "unused.")}))
+
+        async def test_seed(seed: str):
+            # baseline: plain page
+            try:
+                b = await fetch(ctx.http, ctx.limiter, "GET", seed,
+                                timeout=15, max_retries=1)
+                base_body = b.text[:60000]
+                base_len = len(base_body)
+            except Exception:
+                return
+            parts = urlparse(seed)
+            for i in range(0, len(candidates), BATCH_SIZE):
+                batch = [(pname, "pd" + uuid.uuid4().hex[:10])
+                         for pname in candidates[i:i + BATCH_SIZE]]
+                purl = batch_url(parts, batch)
+                body = await fetch_one(purl)
+                if body is None:
+                    continue
+                reflected = [c for _, c in batch
+                             if self._raw_reflected(body, c)]
+                if reflected:
+                    # one (or more) params in this batch reflect:
+                    # bisect to name them.
+                    await bisect_batch(parts, batch)
                     continue
                 # accepted but not reflected: significant behavior change?
                 if abs(len(body) - base_len) > max(500, base_len * 0.25):
+                    # attribute to the batch, not a single param: the
+                    # signal is ambiguous when 20 params ride together.
                     findings.append(self._f(
                         "web", "param_accepted",
-                        f"MEDIUM: hidden parameter '{pname}' changes "
+                        f"MEDIUM: a hidden-parameter batch changes "
                         f"response at {parts.path or '/'} "
-                        f"({base_len}->{len(body)} bytes)",
+                        f"({base_len}->{len(body)} bytes) - bisect manually",
                         source="param discovery", source_url=purl,
-                        confidence=55, passive=False,
+                        confidence=50, passive=False,
                         evidence={"severity": "medium",
-                                  "parameter": pname,
-                                  "remediation": ("Inventory this parameter: "
-                                                  "document it, validate it "
-                                                  "server-side, remove if "
-                                                  "dead code.")}))
+                                  "batch_params": [p for p, _ in batch],
+                                  "remediation": ("Inventory these parameters: "
+                                                  "document them, validate "
+                                                  "them server-side, remove "
+                                                  "dead ones.")}))
+            # Checkpoint: keep confirmed findings if the runner kills us
+            # on timeout mid-sweep.
+            self._checkpoint(findings)
 
         # Dynamic-looking pages first (.php/.aspx): hidden params live
         # on dynamic pages, not static assets. Cap keeps runtime bounded.
+        # Seeds probe CONCURRENTLY (sem 3): the old sequential loop
+        # timed out at 120s before reaching reflecting pages.
         ordered = sorted(seeds,
                          key=lambda s: (0 if re.search(r"\.(php|aspx?|jsp|cgi)",
                                                        urlparse(s).path, re.I)
                                         else 1, s))[:10]
-        for s in ordered:
-            await test_seed(s)
-            # Checkpoint: keep confirmed findings if the runner kills us
-            # on timeout mid-sweep.
-            self._checkpoint(findings)
+        seed_sem = asyncio.Semaphore(3)
+
+        async def seed_sem_one(s: str):
+            async with seed_sem:
+                await test_seed(s)
+
+        await asyncio.gather(*[seed_sem_one(s) for s in ordered])
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,

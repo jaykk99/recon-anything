@@ -91,8 +91,12 @@ def test_registry():
         assert pid in reg, f"plugin {pid} not registered"
         p = reg[pid]()
         assert p.group == "web3", f"{pid} group={p.group}"
-        assert p.requires_keys, f"{pid} should declare requires_keys"
-    print("PASS registry: all 4 plugins registered, group=web3, keys declared")
+        # Deliberate design (Jay's standing order): web3 plugins are
+        # keyless-first. They work without keys and a key only enhances
+        # them, so requires_keys must stay EMPTY.
+        assert p.requires_keys == [], \
+            f"{pid} must stay keyless-first, got requires_keys={p.requires_keys}"
+    print("PASS registry: all 4 plugins registered, group=web3, keyless-first")
 
 
 def test_audit_source():
@@ -119,8 +123,12 @@ def test_defi_scan():
     print(f"PASS scan_defi_risks: found {sorted(checks)}")
     clean_risks = scan_defi_risks(CLEAN_SRC)
     clean_checks = {r["check"] for r in clean_risks}
-    # onlyOwner on setOwner is a legit true positive; nothing structural
-    assert clean_checks <= {"owner_only"}, f"clean contract over-flagged: {clean_checks}"
+    # onlyOwner on setOwner is a legit true positive; single_key_admin also
+    # fires on purpose here: onlyOwner exists but no timelock/multisig/Safe
+    # pattern is present, which is a real centralization finding. Nothing
+    # structural beyond these two may appear.
+    assert clean_checks <= {"owner_only", "single_key_admin"}, \
+        f"clean contract over-flagged: {clean_checks}"
     assert not any(r["severity"] == "high" for r in clean_risks)
     print(f"PASS scan_defi_risks(clean): only {sorted(clean_checks)}, no highs")
 

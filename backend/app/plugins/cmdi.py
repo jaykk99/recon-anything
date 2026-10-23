@@ -3,9 +3,15 @@
 Non-destructive: time-based sleep canaries (delay > 4s = signal) plus
 error-based benign probes (;id, |whoami) looking for uid= leaks.
 No command output is ever retrieved. Authorized testing only.
+
+Scheduling: round-based. Cheap error-based probes sweep every URL first,
+then the expensive time-based canaries run on what remains unconfirmed.
+The old all-methods-per-URL order burned the budget on the first few
+URLs and could miss injectable params discovered later.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import List, Tuple
@@ -56,6 +62,9 @@ class CmdInjectionPlugin(Plugin):
     passive = False
     cost = Cost.FREE
     group = "web"
+    # Time canaries are expensive (5s sleeps); give the plugin the full
+    # per-plugin budget so every URL gets error-based coverage first.
+    timeout_s = 120
     description = "Command injection: time-based + error-based probes."
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
@@ -72,105 +81,145 @@ class CmdInjectionPlugin(Plugin):
         try:
             html, page_url = await fetch_homepage(ctx, base)
         except Exception as e:
-            res = self._degraded(f"fetch failed: {str(e)[:200]}")
+            res = self._degraded(f"fetch failed: {str(e)[:120]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
             return res
         urls = param_urls(html, page_url, domain, ctx)
 
-        tested = 0
-        for u in sample_urls(urls, 12):
-            if over_budget(t0):
-                break
+        sem = asyncio.Semaphore(6)
+        tested = [0]
+        confirmed = set()  # (url, param) already proven injectable
+
+        # ---- Phase A: baselines for every URL (concurrent) ----
+        # False-positive guard: measure the normal response time and note
+        # which command-output patterns already exist in normal traffic.
+        # A slow server adds latency to every request - only flag delays
+        # clearly ABOVE the baseline.
+        async def baseline_one(u: str):
             parts = urlparse(u)
             params = parse_qsl(parts.query)
             if not params:
-                continue
-
-            # --- Baseline timing ---
-            # False-positive guard: measure the normal response time first.
-            # A slow server or congested network adds latency to every
-            # request - only flag delays clearly ABOVE the baseline.
+                return None
             baseline_body, baseline_t = await fetch_baseline(ctx, u)
-            # Which error patterns already exist in normal traffic?
             baseline_cmd_hits = baseline_pattern_hits(baseline_body,
                                                       CMD_OUTPUT_PATTERNS)
+            return (u, parts, params, baseline_body, baseline_t,
+                    baseline_cmd_hits)
 
-            for name, val in params[:3]:
-                found = False
+        async def baseline_sem(u: str):
+            async with sem:
+                return await baseline_one(u)
 
-                # --- Method 1: time-based ---
-                for payload, os_label in CMD_TIME_PAYLOADS:
-                    tested += 1
-                    purl = probe_url(parts, params, name, val + payload)
-                    try:
-                        p0 = time.monotonic()
-                        await fetch(ctx.http, ctx.limiter, "GET", purl,
-                                    timeout=20)
-                        delta = time.monotonic() - p0
-                    except Exception:
+        items = [it for it in await asyncio.gather(
+            *[baseline_sem(u) for u in sample_urls(urls, 12)]) if it]
+
+        # ---- Method 1: error-based output leak (cheap, no sleeps) ----
+        async def method_error(item, name, val):
+            u, parts, params, baseline_body, baseline_t, baseline_cmd_hits = item
+            for payload, os_label in CMD_ERROR_PAYLOADS:
+                tested[0] += 1
+                purl = probe_url(parts, params, name, val + payload)
+                try:
+                    pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
+                                     timeout=15)
+                    body = pr.text[:200000]
+                except Exception:
+                    continue
+                for pat, label in CMD_OUTPUT_PATTERNS:
+                    if pat in baseline_cmd_hits:
                         continue
-                    # Require absolute delay >= 4s AND >= 3s above baseline.
-                    if delta >= 4.0 and (delta - baseline_t) >= 3.0:
+                    if re.search(pat, body, re.I | re.M):
                         findings.append(self._f(
-                            "leak", "cmdi_time_based",
-                            f"CRITICAL: time-based command injection in "
-                            f"parameter '{name}' (~{delta:.1f}s delay) at "
-                            f"{parts.path or '/'}",
+                            "leak", "cmdi_error_based",
+                            f"CRITICAL: command injection in parameter "
+                            f"'{name}' at {parts.path or '/'} "
+                            f"({label}).",
                             source="cmd probe", source_url=purl,
-                            confidence=75, passive=False,
+                            confidence=80, passive=False,
                             evidence={"severity": "critical",
-                                      "method": "time-based",
+                                      "method": "error-based",
                                       "parameter": name,
                                       "os": os_label,
-                                      "delay_s": round(delta, 1),
-                                      "payload": payload,
+                                      "output_label": label,
                                       "remediation": REMEDIATION,
                                       "scope_note": "Authorized testing only. "
-                                                    "Sleep canary only."}))
-                        found = True
-                        break
-                if found:
-                    continue
+                                                    "Benign probe only."}))
+                        return True
+            return False
 
-                # --- Method 2: error-based output leak ---
-                for payload, os_label in CMD_ERROR_PAYLOADS:
-                    tested += 1
-                    purl = probe_url(parts, params, name, val + payload)
-                    try:
-                        pr = await fetch(ctx.http, ctx.limiter, "GET", purl,
-                                         timeout=15)
-                        body = pr.text[:200000]
-                    except Exception:
+        # ---- Method 2: time-based (expensive: 5s sleep canaries) ----
+        # Queue-wait fix (2026-10-23): measure a benign CONTROL
+        # back-to-back BEFORE each payload. Under a full scan the shared
+        # limiter's queue backs up and plain wall-clock measurements
+        # mistook queue wait for server-side delay. The control MUST
+        # come first: a 5s SLEEP payload lets the queue build up behind
+        # it, so a post-payload control sees a worse queue and true
+        # positives get rejected.
+        async def method_time(item, name, val):
+            u, parts, params, baseline_body, baseline_t, baseline_cmd_hits = item
+            try:
+                c0 = time.monotonic()
+                await fetch(ctx.http, ctx.limiter, "GET", u, timeout=20)
+                control_delta = time.monotonic() - c0
+            except Exception:
+                control_delta = baseline_t
+            for payload, os_label in CMD_TIME_PAYLOADS:
+                tested[0] += 1
+                purl = probe_url(parts, params, name, val + payload)
+                try:
+                    p0 = time.monotonic()
+                    await fetch(ctx.http, ctx.limiter, "GET", purl,
+                                timeout=20)
+                    delta = time.monotonic() - p0
+                except Exception:
+                    continue
+                # Require absolute delay >= 4s AND >= 3s above the
+                # back-to-back control.
+                if delta < 4.0 or (delta - control_delta) < 3.0:
+                    continue
+                findings.append(self._f(
+                    "leak", "cmdi_time_based",
+                    f"CRITICAL: time-based command injection in "
+                    f"parameter '{name}' (~{delta:.1f}s delay) at "
+                    f"{parts.path or '/'}",
+                    source="cmd probe", source_url=purl,
+                    confidence=75, passive=False,
+                    evidence={"severity": "critical",
+                              "method": "time-based",
+                              "parameter": name,
+                              "os": os_label,
+                              "delay_s": round(delta, 1),
+                              "payload": payload,
+                              "remediation": REMEDIATION,
+                              "scope_note": "Authorized testing only. "
+                                            "Sleep canary only."}))
+                return True
+            return False
+
+        async def run_round(method):
+            async def one(item):
+                u = item[0]
+                for name, val in item[2][:3]:
+                    if (u, name) in confirmed:
                         continue
-                    for pat, label in CMD_OUTPUT_PATTERNS:
-                        if pat in baseline_cmd_hits:
-                            continue
-                        if re.search(pat, body, re.I | re.M):
-                            findings.append(self._f(
-                                "leak", "cmdi_error_based",
-                                f"CRITICAL: command injection in parameter "
-                                f"'{name}' at {parts.path or '/'} "
-                                f"({label}).",
-                                source="cmd probe", source_url=purl,
-                                confidence=80, passive=False,
-                                evidence={"severity": "critical",
-                                          "method": "error-based",
-                                          "parameter": name,
-                                          "os": os_label,
-                                          "output_label": label,
-                                          "payload": payload,
-                                          "remediation": REMEDIATION,
-                                          "scope_note": "Authorized testing only. "
-                                                        "Benign probe only."}))
-                            found = True
-                            break
-                    if found:
-                        break
+                    if await method(item, name, val):
+                        confirmed.add((u, name))
+            async def one_sem(item):
+                async with sem:
+                    await one(item)
+            await asyncio.gather(*[one_sem(it) for it in items])
             # Checkpoint: keep confirmed findings if the runner kills us
             # on timeout mid-scan.
             self._checkpoint(findings)
 
-        res = self._ok(findings, f"probed {tested} payloads across "
-                                 f"{len(urls)} URLs, {len(findings)} cmd signals")
+        # Cheap error-based probes sweep every URL first; expensive
+        # time canaries run last on whatever is still unconfirmed.
+        for method in (method_error, method_time):
+            if over_budget(t0, budget_s=100):
+                break
+            await run_round(method)
+
+        res = self._ok(findings, f"probed {tested[0]} payloads across "
+                                 f"{len(items)} URLs, {len(findings)} cmd signals")
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res
