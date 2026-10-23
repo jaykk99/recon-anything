@@ -547,9 +547,9 @@ export default function RunPage({ params }: { params: { id: string } }) {
     return () => clearInterval(t);
   }, [status, startTime]);
 
-  // the atm tab only exists on ATM source-type runs; never leave it selected elsewhere
+  // the atm tab only exists on ATM / bank-atm source-type runs; never leave it selected elsewhere
   useEffect(() => {
-    if (tab === "atm" && sourceType !== "atm") setTab("findings");
+    if (tab === "atm" && sourceType !== "atm" && sourceType !== "bankatm") setTab("findings");
   }, [tab, sourceType]);
 
   useEffect(() => {
@@ -901,6 +901,31 @@ export default function RunPage({ params }: { params: { id: string } }) {
         {summary?.error && (
           <p className="text-red-400 text-sm mt-2">Run failed: {summary.error}</p>
         )}
+        {summary?.bankatm && (
+          <div className="mt-3 text-sm space-y-1">
+            <p className="text-emerald-300">
+              Bank / ATM mode{summary.bankatm.input_kind === "domain"
+                ? <> — financial set on <span className="font-mono">{summary.bankatm.domain}</span></>
+                : <> — {summary.bankatm.pois ?? summary.bankatm.locations?.length ?? 0} locations near {summary.bankatm.location}
+                    {summary.bankatm.resolved_domains?.length
+                      ? <>, assessing {(summary.bankatm.resolved_domains as string[]).join(", ")}</>
+                      : ", no operator domain resolved"}</>}
+            </p>
+            {summary.bankatm.input_kind === "location" && (summary.bankatm.locations || []).length > 0 && (
+              <ul className="text-xs text-slate-400 space-y-0.5">
+                {(summary.bankatm.locations as any[]).map((l, i) => (
+                  <li key={i}>
+                    {l.poi_type === "atm" ? "ATM" : "Bank"}: {l.name}
+                    {l.operator ? ` (${l.operator})` : ""}{l.address ? ` — ${l.address}` : ""}
+                    {l.resolved_domain
+                      ? <span className="text-slate-500"> → {l.resolved_domain}{l.domain_assessed ? "" : " (over cap, listed only)"}</span>
+                      : <span className="text-slate-500"> → no public domain resolved</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
         <div className="flex gap-2 text-xs mt-3 flex-wrap">
           {(["json", "csv", "md", "html"] as const).map((f) => (
             <a key={f} className="chip px-3 py-2 min-h-[44px] flex items-center hover:bg-slate-800"
@@ -948,7 +973,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
             return c > 0 ? `${name} (${c})` : name;
           };
           return (["findings", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
-            .filter((t) => t !== "atm" || sourceType === "atm")
+            .filter((t) => t !== "atm" || sourceType === "atm" || sourceType === "bankatm")
             .map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{tabLabel(t)}</button>

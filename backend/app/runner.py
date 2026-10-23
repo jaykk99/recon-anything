@@ -1398,6 +1398,16 @@ async def _finalize_run(run_id: str) -> bool:
         summary: Dict = {"findings": total, "nodes": n_nodes,
                          "edges": n_edges, "targets": n_targets,
                          "plugins": plugin_statuses}
+        # Bank/ATM mode: keep the mode's own record (input, locations,
+        # resolved domains) in the final summary - it is the run's
+        # headline, set at enqueue time and preserved here like
+        # hunters_accum above.
+        try:
+            _prev = session.query(Run).filter_by(id=run_id).first()
+            if _prev and (_prev.summary or {}).get("bankatm"):
+                summary["bankatm"] = _prev.summary["bankatm"]
+        except Exception:
+            pass
         if hunter_section:
             summary["hunters"] = hunter_section
         if skipped_budget:
@@ -1784,6 +1794,218 @@ async def _enqueue_poi_run(run_id: str, location_raw: str, mode: str,
             pass
 
 
+async def _enqueue_bankatm_run(run_id: str, targets_raw: str, mode: str,
+                               module_overrides: Optional[Dict[str, str]],
+                               excluded_plugin_ids: Optional[List[str]] = None) -> None:
+    """Bank/ATM mode: ONE input, no options (see app/bankatm.py).
+
+    Domain input -> the financial set runs on that domain. Location
+    input -> banks + ATMs near the place (OpenStreetMap), operators
+    resolved to domains, the financial set runs on each unique resolved
+    domain (capped); unresolved locations stay as geo findings.
+    """
+    import datetime as _dt
+    from . import bankatm as _ba
+    from . import bankdomains as _bd
+    from . import geo as _geo
+    session = get_session()
+    try:
+        parsed = _ba.parse_bankatm_input(targets_raw)
+        raw_first = parsed.get("raw") or ""
+        await _emit(run_id, "run_start",
+                    {"run_id": run_id, "targets": [raw_first], "mode": mode,
+                     "source_type": "bankatm", "plugins": [],
+                     "plugin_count": 0, "target_count": 0,
+                     "note": "bank/atm mode: resolving input..."})
+        if not raw_first:
+            run = session.query(Run).filter_by(id=run_id).first()
+            if run:
+                run.status = "failed"
+                run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+                run.summary = {"error": "bank/atm mode: empty input",
+                               "findings": 0}
+                session.commit()
+            await _emit(run_id, "run_done",
+                        {"run_id": run_id, "findings": 0,
+                         "error": "empty input"})
+            return
+        overrides = dict(module_overrides or {})
+        overrides["bank"] = "authorized"
+        overrides["atm"] = "authorized"
+        discover()
+        set_ids = _ba.financial_plugin_ids(
+            [p.id for p in all_plugins()], excluded_plugin_ids)
+        by_id = {p.id: p for p in all_plugins()}
+        plugins = [by_id[i] for i in set_ids if i in by_id]
+
+        if parsed["kind"] == "domain":
+            t = Target(raw=raw_first, type=parsed["target_type"],
+                       normalized=parsed["normalized"])
+            session.add(TargetRow(id=t.id, run_id=run_id, raw=t.raw,
+                                  type=t.type, normalized=t.normalized))
+            session.commit()
+            from .classifier import domain_from_target as _dft
+            dom = _dft(parsed["target_type"], parsed["normalized"]) \
+                or parsed["normalized"]
+            info = {"input_kind": "domain", "input": raw_first,
+                    "domain": dom, "locations": [],
+                    "resolved_domains": [dom]}
+            meta = {"mode": mode, "plugin_ids": set_ids,
+                    "module_overrides": overrides,
+                    "source_type": "bankatm",
+                    "seed_target_ids": [t.id], "bankatm": info}
+            run = session.query(Run).filter_by(id=run_id).first()
+            if run:
+                run.summary = {**(run.summary or {}),
+                               "queue_meta": meta, "bankatm": info}
+                session.commit()
+            n_jobs = _enqueue_jobs(session, run_id, plugins, [t])
+            await _emit(run_id, "run_start",
+                        {"run_id": run_id, "targets": [t.raw],
+                         "mode": mode, "source_type": "bankatm",
+                         "plugins": set_ids,
+                         "plugin_count": len(plugins), "target_count": 1,
+                         "queued": True,
+                         "note": (f"bank/atm mode: financial set "
+                                  f"({len(plugins)} plugins) on {dom}; "
+                                  f"{n_jobs} jobs queued")})
+            return
+
+        # -- location input ------------------------------------------
+        location = parsed["location"]
+        coords = await _geo.geocode(location)
+        if not coords:
+            run = session.query(Run).filter_by(id=run_id).first()
+            if run:
+                run.status = "failed"
+                run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+                run.summary = {"error": f"could not geocode location: "
+                                        f"{location}", "findings": 0}
+                session.commit()
+            await _emit(run_id, "run_done",
+                        {"run_id": run_id, "findings": 0,
+                         "error": f"could not geocode: {location}"})
+            return
+        pois = await _geo.find_bank_atm_pois(
+            coords["lat"], coords["lon"], _ba.POI_RADIUS_M, _ba.MAX_POIS)
+        await _emit(run_id, "progress",
+                    {"done": 0, "total": max(len(pois), 1),
+                     "note": f"found {len(pois)} banks/ATMs near "
+                             f"{coords['display_name']}"})
+        # Resolve each operator to a domain; cap unique assessed domains.
+        for poi in pois:
+            poi["resolved_domain"] = _bd.resolve_domain(
+                name=poi.get("name", ""), operator=poi.get("operator", ""),
+                brand=poi.get("brand", ""), website=poi.get("website", ""))
+        unique_domains: List[str] = []
+        for poi in pois:
+            d = poi.get("resolved_domain")
+            if d and d not in unique_domains:
+                unique_domains.append(d)
+        assessed = unique_domains[:_ba.MAX_DOMAINS]
+        assessed_set = set(assessed)
+
+        loc_entries = []
+        for poi in pois:
+            label = f"{poi['name']} ({poi['lat']:.5f},{poi['lon']:.5f})"
+            t = Target(raw=label, type="poi",
+                       normalized=f"{poi['lat']},{poi['lon']}")
+            session.add(TargetRow(id=t.id, run_id=run_id, raw=label,
+                                  type="poi",
+                                  normalized=f"{poi['lat']},{poi['lon']}"))
+            d = poi.get("resolved_domain")
+            session.add(FindingRow(
+                run_id=run_id, target_id=t.id, plugin_id="geo",
+                category="location", key="poi",
+                value=f"{poi['name']} - {poi.get('address', '')}",
+                source="OpenStreetMap", source_url="",
+                evidence={"severity": "info", "lat": poi["lat"],
+                          "lon": poi["lon"], "name": poi["name"],
+                          "address": poi.get("address", ""),
+                          "operator": poi.get("operator", ""),
+                          "brand": poi.get("brand", ""),
+                          "website": poi.get("website", ""),
+                          "phone": poi.get("phone", ""),
+                          "poi_type": poi.get("poi_type", ""),
+                          "resolved_domain": d,
+                          "domain_assessed": bool(d and d in assessed_set),
+                          "note": ("operator domain resolved; the "
+                                   "financial set assesses it in this "
+                                   "run" if d and d in assessed_set else
+                                   "no public domain resolved - location "
+                                   "listed for information only" if not d
+                                   else "domain resolved but over the "
+                                        "per-run cap; listed only")},
+                confidence=100, passive=True))
+            loc_entries.append({
+                "name": poi["name"], "poi_type": poi.get("poi_type", ""),
+                "operator": poi.get("operator", ""),
+                "address": poi.get("address", ""),
+                "resolved_domain": d,
+                "domain_assessed": bool(d and d in assessed_set)})
+        dtrobj = []
+        for d in assessed:
+            t = Target(raw=d, type="domain", normalized=d)
+            dtrobj.append(t)
+            session.add(TargetRow(id=t.id, run_id=run_id, raw=d,
+                                  type="domain", normalized=d))
+        session.commit()
+        info = {"input_kind": "location", "input": raw_first,
+                "location": coords["display_name"],
+                "locations": loc_entries,
+                "resolved_domains": assessed,
+                "pois": len(pois),
+                "caps": {"max_pois": _ba.MAX_POIS,
+                         "max_domains": _ba.MAX_DOMAINS,
+                         "radius_m": _ba.POI_RADIUS_M}}
+        meta = {"mode": mode, "plugin_ids": set_ids,
+                "module_overrides": overrides,
+                "source_type": "bankatm",
+                "seed_target_ids": [t.id for t in dtrobj],
+                "location": coords["display_name"], "bankatm": info}
+        run = session.query(Run).filter_by(id=run_id).first()
+        if run:
+            run.summary = {**(run.summary or {}), "queue_meta": meta,
+                           "bankatm": info}
+            session.commit()
+        if not dtrobj:
+            # Locations found but no domain to assess: the geo findings
+            # ARE the result - close the run now.
+            if run:
+                run.status = "done"
+                run.finished_at = _dt.datetime.now(_dt.timezone.utc)
+                run.summary = {"findings": len(pois), "bankatm": info,
+                               "note": ("no banks or ATMs found near the "
+                                        "location" if not pois else
+                                        "locations listed; no operator "
+                                        "domain resolved to assess")}
+                session.commit()
+            await _emit(run_id, "run_done",
+                        {"run_id": run_id, "findings": len(pois),
+                         "note": f"{len(pois)} locations near "
+                                 f"{coords['display_name']}; no operator "
+                                 f"domain resolved"})
+            return
+        n_jobs = _enqueue_jobs(session, run_id, plugins, dtrobj)
+        await _emit(run_id, "run_start",
+                    {"run_id": run_id,
+                     "targets": [t.raw for t in dtrobj],
+                     "mode": mode, "source_type": "bankatm",
+                     "plugins": set_ids, "plugin_count": len(plugins),
+                     "target_count": len(dtrobj),
+                     "location": coords["display_name"], "queued": True,
+                     "note": (f"bank/atm mode: {len(pois)} locations near "
+                              f"{coords['display_name']}; financial set "
+                              f"on {len(dtrobj)} operator domains "
+                              f"({', '.join(assessed)}); {n_jobs} jobs "
+                              f"queued")})
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
 async def execute_run(run_id: str, targets_raw: str, mode: str,
                       plugin_ids: Optional[List[str]] = None,
                       module_overrides: Optional[Dict[str, str]] = None,
@@ -1808,6 +2030,12 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
             session.close()
             await _enqueue_poi_run(run_id, targets_raw, mode, plugin_ids,
                                    module_overrides, source_type)
+            return
+        if source_type == "bankatm":
+            session.close()
+            await _enqueue_bankatm_run(run_id, targets_raw, mode,
+                                       module_overrides,
+                                       excluded_plugin_ids)
             return
         discover()
         classified = classify_batch(targets_raw)

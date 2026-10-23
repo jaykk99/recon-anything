@@ -17,7 +17,7 @@ export default function Home() {
   const [override, setOverride] = useState("");
   const [mode, setMode] = useState<"passive" | "active">("active");
   const [bounty, setBounty] = useState(false);
-  const [sourceType, setSourceType] = useState<"website" | "bank" | "atm">("website");
+  const [sourceType, setSourceType] = useState<"website" | "bankatm">("website");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [code, setCodeState] = useState("");
@@ -81,7 +81,11 @@ export default function Home() {
       const ids = Object.keys(enabled).filter((k) => enabled[k]);
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
+        body: JSON.stringify(sourceType === "bankatm"
+          // Bank/ATM mode: one input, no options. The server runs the
+          // full financial set; no plugin selection is sent at all.
+          ? { targets: text, mode: "active", plugins: null, source_type: "bankatm", bounty: false }
+          : { targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
       });
       if (!d.run_id) throw new Error("no run id returned");
       if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
@@ -149,12 +153,12 @@ export default function Home() {
           </div>
         </div>
         {codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
-        <textarea className="input w-full p-3 font-mono text-base min-h-[88px]" rows={3}
+        <textarea className="input w-full p-3 font-mono text-base min-h-[88px]" rows={sourceType === "bankatm" ? 1 : 3}
           placeholder={sourceType === "website"
             ? "example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"
-            : "Winnipeg, MB\n123 Main St, Winnipeg\n49.8951,-97.1384"}
+            : "rbcroyalbank.com  —  or a location:  Winnipeg, MB · ATMs near Osborne Village · 49.8951,-97.1384"}
           value={text} onChange={(e) => setText(e.target.value)} />
-        {classified.length > 0 && (
+        {sourceType !== "bankatm" && classified.length > 0 && (
           <div className="flex gap-2 flex-wrap items-center">
             {classified.slice(0, 5).map((c, i) => (
               <span key={i} className="chip px-3 py-1 text-xs bg-slate-800">
@@ -178,20 +182,19 @@ export default function Home() {
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "website" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
               WEBSITE
             </button>
-            <button onClick={() => setSourceType("bank")}
-              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "bank" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
-              BANK
-            </button>
-            <button onClick={() => setSourceType("atm")}
-              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "atm" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
-              ATM
+            <button onClick={() => setSourceType("bankatm")}
+              className={`chip px-4 py-2.5 min-h-[44px] text-xs ${sourceType === "bankatm" ? "bg-emerald-900 text-emerald-200" : "text-slate-400"}`}>
+              BANK / ATM
             </button>
           </div>
-          {sourceType !== "website" && (
+          {sourceType === "bankatm" && (
             <span className="text-xs text-amber-300 w-full sm:w-auto">
-              Enter a location above. The app finds every {sourceType === "bank" ? "bank" : "ATM"} nearby via OpenStreetMap, then assesses each one. Authorized engagements only.
+              One input, no options. A bank URL or domain runs the full financial detection set on it.
+              A location finds every bank and ATM nearby via OpenStreetMap, resolves each operator,
+              and assesses their sites. It just does it.
             </span>
           )}
+          {sourceType !== "bankatm" && (<>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Mode:</span>
             <button onClick={() => setMode("active")}
@@ -217,6 +220,7 @@ export default function Home() {
             {mode === "passive" ? "third-party APIs and public datasets only, no packets to the target"
               : "full recon: direct DNS, HTTP requests, port and vuln probes against the target - rate-limited and polite"}
           </span>
+          </>)}
           <button className="btn px-6 py-3 min-h-[48px] w-full sm:w-auto sm:ml-auto text-base" disabled={!text.trim() || running} onClick={start}>
             {running ? "Starting..." : "Run recon"}
           </button>
@@ -255,6 +259,7 @@ export default function Home() {
 
       <BreachWatch />
 
+      {sourceType !== "bankatm" && (<>
       <div className="card p-5 border border-amber-800/60">
         <div className="flex items-center gap-3 flex-wrap">
           <h2 className="font-semibold text-amber-300">Crypto pack</h2>
@@ -319,6 +324,7 @@ export default function Home() {
           </div>
         ))}
       </div>
+      </>)}
     </div>
   );
 }

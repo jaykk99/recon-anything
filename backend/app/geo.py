@@ -164,6 +164,90 @@ async def _find_pois_overpass(lat: float, lon: float, poi_type: str,
     return []
 
 
+async def find_bank_atm_pois(lat: float, lon: float,
+                             radius_m: int = 5000,
+                             cap: int = 25) -> List[Dict]:
+    """Banks AND ATMs near a point, in one Overpass query.
+
+    Unlike find_pois (single amenity, Nominatim-first, tags dropped),
+    this keeps the full OSM tag set - brand, operator, website - because
+    Bank/ATM mode resolves each operator to a domain. Returns dicts with
+    an extra "poi_type" ("bank"|"atm") per element, deduped, capped.
+    """
+    query = (
+        f"[out:json][timeout:25];"
+        f"("
+        f"node[\"amenity\"~\"^(bank|atm)$\"](around:{radius_m},{lat},{lon});"
+        f"way[\"amenity\"~\"^(bank|atm)$\"](around:{radius_m},{lat},{lon});"
+        f");"
+        f"out center 60;"
+    )
+    for url in OVERPASS_MIRRORS:
+        try:
+            async with net.async_client(timeout=30) as client:
+                resp = await client.post(url, data={"data": query},
+                                         headers=UA)
+                if resp.status_code != 200:
+                    continue
+                return parse_bank_atm_elements(resp.json(), cap)
+        except Exception:
+            continue
+    return []
+
+
+def parse_bank_atm_elements(data: Dict, cap: int = 25) -> List[Dict]:
+    """Parse an Overpass response for amenity=bank|atm into POI dicts.
+
+    Pure function (fixture-testable). Dedupes on (type, name, rounded
+    coords) and stops at cap.
+    """
+    out: List[Dict] = []
+    seen = set()
+    for el in (data or {}).get("elements", []):
+        tags = el.get("tags", {}) or {}
+        amenity = (tags.get("amenity") or "").strip().lower()
+        if amenity not in ("bank", "atm"):
+            continue
+        lat = el.get("lat") or (el.get("center") or {}).get("lat")
+        lon = el.get("lon") or (el.get("center") or {}).get("lon")
+        if lat is None or lon is None:
+            continue
+        lat, lon = float(lat), float(lon)
+        operator = tags.get("operator", "") or ""
+        brand = tags.get("brand", "") or ""
+        name = (tags.get("name") or brand or operator
+                or f"Unnamed {amenity.upper()}")
+        key = (amenity, name.lower(), round(lat, 4), round(lon, 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        addr_parts = [
+            tags.get("addr:housenumber", ""),
+            tags.get("addr:street", ""),
+            tags.get("addr:city", ""),
+            tags.get("addr:postcode", ""),
+        ]
+        address = " ".join(p for p in addr_parts if p).strip()
+        if not address:
+            address = tags.get("addr:full", "") or ""
+        out.append({
+            "name": name,
+            "lat": lat,
+            "lon": lon,
+            "address": address,
+            "operator": operator,
+            "brand": brand,
+            "website": tags.get("website", "")
+                       or tags.get("contact:website", ""),
+            "phone": tags.get("phone", "") or tags.get("contact:phone", ""),
+            "opening_hours": tags.get("opening_hours", ""),
+            "poi_type": amenity,
+        })
+        if len(out) >= cap:
+            break
+    return out
+
+
 def _parse_overpass(data: Dict, poi_type: str) -> List[Dict]:
     out = []
     for el in data.get("elements", []):

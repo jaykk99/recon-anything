@@ -334,7 +334,7 @@ class RunIn(BaseModel):
     mode: str = "active"
     plugins: Optional[List[str]] = None
     module_overrides: Optional[Dict[str, str]] = None
-    source_type: str = "website"  # website | bank | atm
+    source_type: str = "website"  # website | bank | atm | bankatm
     bounty: bool = False  # bounty mode: prioritize high-impact vuln classes
 
 
@@ -344,8 +344,9 @@ async def api_start_run(body: RunIn, request: Request):
         raise HTTPException(400, "targets required")
     if body.mode not in ("passive", "active"):
         raise HTTPException(400, "mode must be passive|active")
-    if body.source_type not in ("website", "bank", "atm"):
-        raise HTTPException(400, "source_type must be website|bank|atm")
+    if body.source_type not in ("website", "bank", "atm", "bankatm"):
+        raise HTTPException(400,
+                            "source_type must be website|bank|atm|bankatm")
     # --- plan gating (customers only; owner/open mode unchanged) ------
     actor = getattr(request.state, "actor", {"kind": "open", "user": None})
     run_user_id = None
@@ -414,6 +415,10 @@ async def api_start_run(body: RunIn, request: Request):
     if body.source_type == "bank":
         overrides["bank"] = "authorized"
     elif body.source_type == "atm":
+        overrides["atm"] = "authorized"
+    elif body.source_type == "bankatm":
+        # Bank/ATM mode is one deliberate pick: both modules authorized.
+        overrides["bank"] = "authorized"
         overrides["atm"] = "authorized"
     await launch_run(run_id, body.targets, body.mode,
                      plugins, overrides, keys,
