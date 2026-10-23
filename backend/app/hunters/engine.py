@@ -15,6 +15,17 @@ One pass (called by the runner when a run's jobs settle):
    set grows frontier by frontier until the depth or task budget
    runs out (env: RECON_HUNTER_MAX_DEPTH default 3,
    RECON_HUNTER_MAX_TASKS default 1500, RECON_HUNTERS_ENABLED=0 off).
+   Hunter-created targets per run are capped
+   (RECON_HUNTER_MAX_TARGETS_PER_RUN default 25): assets past the
+   cap still join the known set, they just do not become scan
+   targets in this run. Expansion depth is per-asset LINEAGE (seed
+   0, +1 per hop), not the pass generation counter - incremental
+   passes freeze the counter, which let reverse-IP chains expand at
+   depth 0 for a whole run (one seed snowballed into 53 targets).
+   Chains through a reverse-IP (cohosted) hop stop at lineage
+   depth 2 and never take a second reverse-IP hop. When the run
+   carries an explicit plugin selection, expansion and chaining
+   dispatch ONLY the selected plugins.
 
 Compounding: the first pass of a run also re-seeds the frontier from
 the PERSISTED known set (assets confirmed by earlier scans of the
@@ -77,6 +88,22 @@ REEXPAND_FRACTION = float(
 # Cap on persisted assets re-seeded into one run's frontier.
 KNOWN_SEED_LIMIT = int(
     os.environ.get("RECON_HUNTER_KNOWN_SEED_LIMIT", "250"))
+# Cap on hunter-created TARGETS per run (Jay's order, 2026-10-23).
+# The known set compounds across runs, so without this a single scan
+# snowballs: a crypto-pack verification scan grew 1 seed target into
+# 53 (Vercel shared-IP neighbors). Assets past the cap still join the
+# known set - memory keeps compounding - they just do not become
+# scan targets in this run.
+MAX_HUNTER_TARGETS = int(
+    os.environ.get("RECON_HUNTER_MAX_TARGETS_PER_RUN", "25"))
+# Strict depth cap for chains that pass through a reverse-IP
+# (cohosted_domain) hop. A cohosted neighbor is one pivot away from
+# an IP the run already scans; letting neighbors spawn neighbors
+# walks the whole hosting provider. The neighbor itself is verified
+# (its own plugins run), but its subtree stops at lineage depth 2
+# and a second reverse-IP hop never expands at all.
+REVERSE_IP_MAX_DEPTH = int(
+    os.environ.get("RECON_HUNTER_REVERSE_IP_MAX_DEPTH", "2"))
 ENABLED = os.environ.get("RECON_HUNTERS_ENABLED", "1") == "1"
 
 # Frontier claim order: genuinely new attack surface first (a new
@@ -207,7 +234,7 @@ def extract_assets(findings, targets) -> List[Dict]:
     """
     out: Dict[Tuple[str, str], Dict] = {}
 
-    def add(asset_type, value, found_by, via):
+    def add(asset_type, value, found_by, via, src=None):
         value = (value or "").strip()
         if not value or len(value) > 500:
             return
@@ -220,8 +247,12 @@ def extract_assets(findings, targets) -> List[Dict]:
             return
         key = (asset_type, value)
         if key not in out:
+            # src_target: the target whose findings (or existence)
+            # produced this asset. The engine turns it into lineage
+            # depth; first producer wins, matching dedupe order.
             out[key] = {"type": asset_type, "value": value,
-                        "found_by": found_by, "via": via}
+                        "found_by": found_by, "via": via,
+                        "src_target": src}
 
     # Registrable roots of the run's own targets: a cert SAN (or any
     # host) OUTSIDE these roots is a related domain owned via the
@@ -238,25 +269,28 @@ def extract_assets(findings, targets) -> List[Dict]:
     for t in targets:
         norm = getattr(t, "normalized", "") or getattr(t, "raw", "")
         ttype = getattr(t, "type", "")
+        tid = getattr(t, "id", None)
         if ttype == "domain":
-            add("domain", _clean_domain(norm), "seed", "target")
+            add("domain", _clean_domain(norm), "seed", "target", src=tid)
         elif ttype == "url":
-            add("url", norm, "seed", "target")
+            add("url", norm, "seed", "target", src=tid)
         elif ttype == "ip":
-            add("ip", norm, "seed", "target")
+            add("ip", norm, "seed", "target", src=tid)
         elif ttype == "email":
-            add("email", norm.lower(), "seed", "target")
+            add("email", norm.lower(), "seed", "target", src=tid)
         elif ttype == "crypto_wallet":
-            add("wallet", norm, "seed", "target")
+            add("wallet", norm, "seed", "target", src=tid)
         elif ttype == "github":
             add("repo", norm if norm.startswith("http")
-                else f"https://github.com/{norm}", "seed", "target")
+                else f"https://github.com/{norm}", "seed", "target",
+                src=tid)
 
     for f in findings:
         key = (f.key or "")
         val = (f.value or "").strip()
         ev = f.evidence if isinstance(f.evidence, dict) else {}
         mapped = KEY_TO_ASSET.get(key)
+        src = getattr(f, "target_id", None)
         if mapped:
             asset_type, hunter = mapped
             if key == "mx":
@@ -269,22 +303,24 @@ def extract_assets(findings, targets) -> List[Dict]:
                 if (asset_type == "subdomain" and key == "tls_san"
                         and target_roots
                         and _registrable(host) not in target_roots):
-                    add("domain", host, "neighbor_hunter", key)
+                    add("domain", host, "neighbor_hunter", key, src=src)
                 else:
-                    add(asset_type, host, hunter, key)
+                    add(asset_type, host, hunter, key, src=src)
             elif asset_type == "ip":
                 tok = val.split()[0] if val else ""
-                add("ip", tok, hunter, key)
+                add("ip", tok, hunter, key, src=src)
             elif asset_type == "email":
                 m = _EMAIL_RE.search(val)
-                add("email", (m.group(0) if m else val).lower(), hunter, key)
+                add("email", (m.group(0) if m else val).lower(), hunter,
+                    key, src=src)
             elif asset_type in ("url", "endpoint", "js_file"):
-                add(asset_type, val, hunter, key)
+                add(asset_type, val, hunter, key, src=src)
             elif asset_type == "wallet":
                 m = _BTC_RE.search(val) or _ETH_RE.search(val)
-                add("wallet", m.group(0) if m else val, hunter, key)
+                add("wallet", m.group(0) if m else val, hunter, key,
+                    src=src)
             elif asset_type in ("repo", "org"):
-                add(asset_type, val, hunter, key)
+                add(asset_type, val, hunter, key, src=src)
         # shape-based extraction from any finding value / source url
         for text in (val, f.source_url or ""):
             if not text:
@@ -292,15 +328,18 @@ def extract_assets(findings, targets) -> List[Dict]:
             m = _REPO_RE.search(text)
             if m:
                 add("repo", f"https://github.com/{m.group(1)}/{m.group(2)}",
-                    "repo_hunter", "shape")
+                    "repo_hunter", "shape", src=src)
             if text.startswith(("http://", "https://")):
                 path = urlparse(text).path.lower()
                 if path.endswith(".js"):
-                    add("js_file", text.split()[0], "js_miner", "shape")
+                    add("js_file", text.split()[0], "js_miner", "shape",
+                        src=src)
             for m in _EMAIL_RE.finditer(text):
-                add("email", m.group(0).lower(), "email_hunter", "shape")
+                add("email", m.group(0).lower(), "email_hunter", "shape",
+                    src=src)
             for m in _ETH_RE.finditer(text):
-                add("wallet", m.group(0), "wallet_hunter", "shape")
+                add("wallet", m.group(0), "wallet_hunter", "shape",
+                    src=src)
     # A host extracted as both "domain" and "subdomain" is one node:
     # keep the domain entry (it carries the wider expansion rules).
     domain_vals = {a["value"] for a in out.values()
@@ -358,7 +397,13 @@ def new_accum() -> Dict:
             "expanded": [], "hunter_targets": [],
             "known_before": {}, "per_hunter": {},
             "known_seeded": False, "tasks_reexpand": 0,
-            "chained_jobs": 0}
+            "chained_jobs": 0,
+            # Lineage bookkeeping (2026-10-23): per-target depth from
+            # a seed and whether the target's chain already consumed
+            # a reverse-IP hop. Persisted with the accum so mid-run
+            # and finalize passes share one lineage view.
+            "target_depths": {}, "target_reverse": [],
+            "cap_hits": 0}
 
 
 def _per_hunter(accum: Dict, hunter: str) -> Dict:
@@ -402,6 +447,41 @@ def hunter_expand(session, run: Run, accum: Dict,
             known_rows.setdefault((a["type"], a["value"]), a)
 
     depth = accum["depth"]
+    # Lineage maps: how deep each of the run's targets sits from a
+    # seed, and whether its discovery chain already consumed a
+    # reverse-IP hop. Targets the hunters did not create are seeds
+    # (depth 0). Persisted on accum so every pass of the run agrees.
+    hunter_ids = set(accum.get("hunter_targets", []))
+    target_depths: Dict[str, int] = dict(accum.get("target_depths")
+                                         or {})
+    target_reverse: Set[str] = set(accum.get("target_reverse") or [])
+    for t in targets:
+        if t.id not in target_depths:
+            target_depths[t.id] = depth if t.id in hunter_ids else 0
+
+    def _lineage(asset: Dict) -> Tuple[int, bool]:
+        """(lineage depth, reverse-IP chained) for an extracted asset.
+
+        Depth is per-asset lineage - seed 0, +1 per expansion hop -
+        NOT the pass generation counter: incremental passes freeze
+        the counter (advance_depth=False), which let reverse-IP
+        chains keep expanding "at depth 0" for an entire run.
+        """
+        if asset.get("found_by") == "seed":
+            return 0, False
+        src = asset.get("src_target")
+        lineage = target_depths.get(src, depth) + 1
+        reverse = (asset.get("via") == "cohosted_domain"
+                   or src in target_reverse)
+        if reverse and asset.get("via") == "cohosted_domain" \
+                and src in target_reverse:
+            # Second reverse-IP hop in one chain: price it past the
+            # reverse cap so the expansion gate never takes it.
+            lineage = max(lineage, REVERSE_IP_MAX_DEPTH + 1)
+        return lineage, reverse
+
+    for a in assets:
+        a["_depth"], a["_reverse"] = _lineage(a)
     # Host-family dedupe: the same host must not re-enter the set as
     # "domain" after it was confirmed as "subdomain" (or the reverse)
     # when a later pass re-reads hunter-created targets as seeds.
@@ -430,7 +510,7 @@ def hunter_expand(session, run: Run, accum: Dict,
             continue
         _row, created = store.add_known_asset(
             session, SYSTEM, tk, a["type"], a["value"],
-            found_by=a["found_by"], run_id=run.id, depth=depth,
+            found_by=a["found_by"], run_id=run.id, depth=a["_depth"],
             meta={"via": a["via"]})
         if created:
             already_known.add((a["type"], a["value"]))
@@ -452,7 +532,7 @@ def hunter_expand(session, run: Run, accum: Dict,
     expanded = set(accum["expanded"])
     frontier = []
     for a in new_assets:
-        frontier.append((a, depth, False))
+        frontier.append((a, a["_depth"], False))
     if depth == 0:
         for a in assets:
             if a["found_by"] == "seed":
@@ -481,7 +561,10 @@ def hunter_expand(session, run: Run, accum: Dict,
             frontier.append((
                 {"type": ktype, "value": kval,
                  "found_by": row.get("found_by") or "known_set",
-                 "via": "known_set"},
+                 "via": "known_set",
+                 "_depth": min(row.get("depth") or 0, MAX_DEPTH),
+                 "_reverse": (row.get("meta") or {}).get("via")
+                 == "cohosted_domain"},
                 min(row.get("depth") or 0, MAX_DEPTH), True))
             reseeds += 1
     # Claim order: nodes behind high-value findings first, then new
@@ -501,13 +584,19 @@ def hunter_expand(session, run: Run, accum: Dict,
     from ..plugins.registry import discover
     from ..plugins.priority import priority_for
     from ..runner import (DEFAULT_PLUGIN_ESTIMATE_S,
-                          PLUGIN_TIME_ESTIMATES)
+                          PLUGIN_TIME_ESTIMATES, _run_selection)
     registry = discover()
     existing_targets = {t.normalized for t in targets}
     existing_jobs = {(j.target_id, j.plugin_id) for j in
                      session.query(PluginJob).filter_by(run_id=run.id).all()}
     target_by_norm = {t.normalized: t for t in targets}
     bounty = bool((run.summary or {}).get("bounty"))
+    # SELECTION MEANS RUN - EVERYWHERE (2026-10-23): when the run
+    # carries an explicit plugin selection (e.g. the crypto-pack
+    # preset), hunter expansion and chaining dispatch ONLY selected
+    # plugins, on seed and expanded targets alike. A pack-only scan
+    # is pack-only. No selection -> None -> behavior as before.
+    selection = _run_selection(run)
 
     enqueued = 0
     pass_enqueued = 0
@@ -515,7 +604,9 @@ def hunter_expand(session, run: Run, accum: Dict,
     for a, a_depth, is_known in frontier:
         if pass_enqueued >= MAX_TASKS_PER_PASS:
             break
-        if a_depth > MAX_DEPTH:
+        # Depth gate on lineage: reverse-IP chains cap stricter.
+        if a_depth > (REVERSE_IP_MAX_DEPTH if a.get("_reverse")
+                      else MAX_DEPTH):
             continue
         if is_known and accum["tasks_reexpand"] >= reexpand_cap:
             # Re-seed budget spent; leave the marker unset so a
@@ -527,6 +618,12 @@ def hunter_expand(session, run: Run, accum: Dict,
         expanded.add(marker)
         accum["expanded"] = sorted(expanded)
         rules = EXPANSION.get(a["type"], [])
+        if selection is not None:
+            # Filter BEFORE target creation: an asset whose rules
+            # hold no selected plugin never becomes a target at all.
+            rules = [(h, [p for p in pids if p in selection])
+                     for h, pids in rules]
+            rules = [(h, pids) for h, pids in rules if pids]
         if not rules:
             continue
         ttype = ASSET_TARGET_TYPE.get(a["type"])
@@ -537,6 +634,12 @@ def hunter_expand(session, run: Run, accum: Dict,
         if trobj is None:
             if norm in existing_targets:
                 continue
+            if len(accum["hunter_targets"]) >= MAX_HUNTER_TARGETS:
+                # Per-run hunter target cap: the asset stays in the
+                # known set (it was confirmed above) and can seed a
+                # future run; it just gets no target in this one.
+                accum["cap_hits"] = accum.get("cap_hits", 0) + 1
+                continue
             trobj = TargetRow(id=uuid.uuid4().hex[:12], run_id=run.id,
                               raw=a["value"], type=ttype,
                               normalized=norm)
@@ -545,6 +648,9 @@ def hunter_expand(session, run: Run, accum: Dict,
             existing_targets.add(norm)
             target_by_norm[norm] = trobj
             accum["hunter_targets"].append(trobj.id)
+            target_depths[trobj.id] = a_depth
+            if a.get("_reverse"):
+                target_reverse.add(trobj.id)
         used_for_asset = 0
         for hunter, plugin_ids in rules:
             for pid in plugin_ids:
@@ -602,6 +708,8 @@ def hunter_expand(session, run: Run, accum: Dict,
         if trobj is None:
             continue
         for pid in pids:
+            if selection is not None and pid not in selection:
+                continue  # selected runs: chaining respects it too
             if accum["tasks_used"] >= MAX_TASKS:
                 break
             if chained_now >= MAX_CHAIN_JOBS_PER_PASS:
@@ -643,6 +751,8 @@ def hunter_expand(session, run: Run, accum: Dict,
                                 "chained_jobs": chained_now,
                                 "knowledge": knowledge_snapshot(session)})
     accum["jobs"] += enqueued
+    accum["target_depths"] = target_depths
+    accum["target_reverse"] = sorted(target_reverse)
     if enqueued and advance_depth:
         accum["depth"] = depth + 1
     return enqueued
@@ -695,6 +805,9 @@ def finalize_hunt(session, run: Run, accum: Dict) -> Dict:
         "known_by_target": per_key,
         "extra_assets": accum.get("assets_new", 0),
         "extra_jobs": accum.get("jobs", 0),
+        "hunter_targets": len(accum.get("hunter_targets", [])),
+        "hunter_target_cap": MAX_HUNTER_TARGETS,
+        "hunter_cap_hits": accum.get("cap_hits", 0),
         "chained_jobs": accum.get("chained_jobs", 0),
         "reexpand_tasks": accum.get("tasks_reexpand", 0),
         "depth_reached": accum.get("depth", 0),

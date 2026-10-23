@@ -613,6 +613,41 @@ def _run_selection(run) -> Optional[set]:
     return set(ids) if ids else None
 
 
+def _run_seed_target_ids(session, run) -> Optional[set]:
+    """The run's SEED target ids (targets the user actually asked to
+    scan), or None when unknown.
+
+    Recorded as queue_meta.seed_target_ids at run creation. Runs
+    created before that field existed fall back to "every target not
+    recorded as hunter-created in hunters_accum"; when neither source
+    exists the run is legacy and None disables seed-first gating for
+    it (pre-2026-10-23 behavior).
+
+    Seed-first reservation (Jay's order, 2026-10-23): hunter-expanded
+    targets compounded run over run (known set 631 -> 707 -> 1,226)
+    until ~70% of a scan's jobs were budget-skipped and the seed's own
+    expensive plugins starved. In _claim_jobs, a run's seed jobs claim
+    before its hunter jobs, and hunter jobs only take slots the seed
+    queue cannot use.
+    """
+    try:
+        summary = run.summary or {}
+        meta = summary.get("queue_meta", {}) or {}
+        ids = meta.get("seed_target_ids")
+        if ids:
+            return set(ids)
+        accum = summary.get("hunters_accum") or {}
+        hunter_ids = accum.get("hunter_targets")
+        if hunter_ids is not None:
+            all_ids = {t.id for t in
+                       session.query(TargetRow)
+                       .filter_by(run_id=run.id).all()}
+            return all_ids - set(hunter_ids)
+    except Exception:
+        return None
+    return None
+
+
 def _queued_jobs_query(session):
     """Base fetch of queued jobs (deterministic order: priority, phase,
     estimate, id). The claim pass re-orders these with _dispatch_order
@@ -675,6 +710,19 @@ def _claim_jobs(session, limit: int):
     producer -> consumer ordering). Budget gates from the scan clock
     apply: past the hard stop jobs are recorded skipped, past the soft
     stop only HIGH-priority jobs start.
+
+    SEED-FIRST RESERVATION (2026-10-23): claiming runs in two passes.
+    Pass 1 claims only SEED jobs (targets the user asked to scan);
+    pass 2 claims HUNTER jobs (targets the hunters expanded into),
+    and only for runs whose seed queue is drained - every seed job
+    either claimed, budget-skipped, or left queued solely by the
+    phase-2 rule. The phase-deferred exception matters: a deferred
+    seed phase-2 job waits on phase-1 producers, which may be hunter
+    jobs themselves, so blocking hunters behind it would deadlock the
+    run. Everything else about a hunter job claiming is unchanged:
+    it never takes a slot a claimable seed job could have used, so
+    hunter work fills leftover capacity while seed jobs run, and the
+    seed's expensive plugins can no longer be starved by the frontier.
     """
     from sqlalchemy import func
 
@@ -689,15 +737,27 @@ def _claim_jobs(session, limit: int):
     # from the candidate set entirely, re-creating the starvation this
     # ordering exists to fix.
     candidates = _dispatch_order(q.all())
-    # SELECTED MEANS RUN (2026-10-23): jobs whose plugin belongs to
-    # their run's explicit selection claim before everything else
-    # (stable sort keeps _dispatch_order inside each class) and are
-    # exempt from the budget gates below. Selections come from
-    # queue_meta.plugin_ids, set at run creation.
+    run_cache: Dict[str, Run] = {}
     sel_map: Dict[str, Optional[set]] = {}
+    seed_map: Dict[str, Optional[set]] = {}
     for rid in {j.run_id for j in candidates}:
         r = session.query(Run).filter_by(id=rid).first()
+        run_cache[rid] = r
         sel_map[rid] = _run_selection(r) if r is not None else None
+        seed_map[rid] = (_run_seed_target_ids(session, r)
+                         if r is not None else None)
+
+    def is_seed(job) -> bool:
+        seeds = seed_map.get(job.run_id)
+        return seeds is None or job.target_id in seeds
+
+    # Stable sorts compose: dispatch order survives inside each
+    # class; seed class sorts before hunter class; the SELECTED
+    # MEANS RUN sort (2026-10-23) goes on last so an explicit plugin
+    # selection still claims before everything else, and selected
+    # jobs stay exempt from the budget gates below. Selections come
+    # from queue_meta.plugin_ids, set at run creation.
+    candidates.sort(key=lambda j: 0 if is_seed(j) else 1)
     if any(sel_map.values()):
         candidates.sort(
             key=lambda j: 0 if (sel_map.get(j.run_id)
@@ -711,10 +771,11 @@ def _claim_jobs(session, limit: int):
                 PluginJob.status.in_(("queued", "running")))
         .group_by(PluginJob.run_id).all())
     claimed = []
-    run_cache: Dict[str, Run] = {}
-    for job in candidates:
-        if len(claimed) >= limit:
-            break
+
+    def gate(job) -> str:
+        """Per-job claim gates, shared by both passes. Returns
+        "claim", "skip" (terminal skip recorded on the job), or
+        "defer" (leave queued)."""
         run = run_cache.get(job.run_id)
         if run is None:
             run = session.query(Run).filter_by(id=job.run_id).first()
@@ -726,7 +787,7 @@ def _claim_jobs(session, limit: int):
             job.result = {"status": "skipped",
                           "reason": "run no longer active",
                           "findings": 0, "ms": 0}
-            continue
+            return "skip"
         clock = _run_clocks.get(job.run_id)
         if clock is None:
             clock = now_mono
@@ -741,14 +802,52 @@ def _claim_jobs(session, limit: int):
             job.result = {"status": "skipped",
                           "reason": _budget_skip_reason(),
                           "findings": 0, "ms": 0}
-            continue
+            return "skip"
         if job.phase == 2 and phase1_pending.get(job.run_id, 0) > 0:
-            continue  # leave queued; phase 1 still producing bus signals
+            return "defer"  # phase 1 still producing bus signals
+        return "claim"
+
+    def do_claim(job) -> None:
         job.status = "running"
         job.worker = WORKER_ID
         job.started_at = dt.datetime.now(dt.timezone.utc)
         job.attempts = (job.attempts or 0) + 1
         claimed.append(job)
+
+    # Pass 1: seed jobs only, in the order composed above.
+    seed_phase_deferred: Dict[str, int] = {}
+    for job in candidates:
+        if len(claimed) >= limit:
+            break
+        if not is_seed(job):
+            continue
+        verdict = gate(job)
+        if verdict == "claim":
+            do_claim(job)
+        elif verdict == "defer":
+            seed_phase_deferred[job.run_id] = (
+                seed_phase_deferred.get(job.run_id, 0) + 1)
+    # Seed jobs still queued per run after pass 1 (claimed and
+    # skipped ones no longer count). Any leftover beyond the
+    # phase-deferred ones means claimable seed work is still waiting
+    # (e.g. the claim limit filled): hunter jobs for that run wait.
+    seed_queued_left: Dict[str, int] = {}
+    for job in candidates:
+        if is_seed(job) and job.status == "queued":
+            seed_queued_left[job.run_id] = (
+                seed_queued_left.get(job.run_id, 0) + 1)
+    # Pass 2: hunter jobs, gated per run on the drained seed queue.
+    for job in candidates:
+        if len(claimed) >= limit:
+            break
+        if is_seed(job) or job.status != "queued":
+            continue
+        rid = job.run_id
+        if (seed_queued_left.get(rid, 0)
+                > seed_phase_deferred.get(rid, 0)):
+            continue  # seed work for this run still has first claim
+        if gate(job) == "claim":
+            do_claim(job)
     session.commit()
     return claimed
 
@@ -1660,6 +1759,7 @@ async def _enqueue_poi_run(run_id: str, location_raw: str, mode: str,
         meta = {"mode": mode, "plugin_ids": plugin_ids,
                 "module_overrides": module_overrides or {},
                 "source_type": source_type,
+                "seed_target_ids": [t.id for t in trobj],
                 "location": coords["display_name"], "pois": len(pois)}
         run = session.query(Run).filter_by(id=run_id).first()
         if run:
@@ -1751,6 +1851,7 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                 "excluded_plugin_ids": excluded_plugin_ids or [],
                 "module_overrides": module_overrides or {},
                 "source_type": source_type,
+                "seed_target_ids": [t.id for t in trobj],
                 "estimates": "calibrated" if estimates else "static"}
         run.summary = {**(run.summary or {}), "queue_meta": meta}
         session.commit()
