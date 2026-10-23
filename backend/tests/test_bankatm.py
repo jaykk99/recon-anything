@@ -128,6 +128,53 @@ def test_overpass_parse_cap():
     assert len(pois) == 2
 
 
+NOMINATIM_FIXTURE = [
+    {"class": "amenity", "type": "bank", "lat": "49.8955",
+     "lon": "-97.1392", "display_name": "RBC, Portage Ave, Winnipeg",
+     "extratags": {"name": "RBC", "operator": "RBC Royal Bank"},
+     "address": {"road": "Portage Ave", "city": "Winnipeg"}},
+    {"class": "amenity", "type": "bank", "lat": "49.9500",
+     "lon": "-97.2000", "display_name": "Too Far Bank",
+     "extratags": {"name": "Faraway Bank"}, "address": {}},
+    {"class": "amenity", "type": "atm", "lat": "49.8955",
+     "lon": "-97.1392", "display_name": "wrong type for this call",
+     "extratags": {"name": "ATM"}, "address": {}},
+]
+
+
+def test_nominatim_parse_bank_atm():
+    pois = geo.parse_nominatim_bank_atm(
+        NOMINATIM_FIXTURE, "bank", 49.8951, -97.1384, 5000)
+    assert len(pois) == 1  # far one filtered by radius, atm by type
+    p = pois[0]
+    assert p["name"] == "RBC" and p["poi_type"] == "bank"
+    assert p["operator"] == "RBC Royal Bank"  # extratags kept
+    assert "Portage Ave" in p["address"]
+
+
+def test_find_bank_atm_layered_fallback(monkeypatch):
+    # Nominatim and Overpass both empty -> legacy find_pois is the
+    # last resort and its results are normalized to the POI shape.
+    import asyncio as _aio
+
+    async def empty(*a, **k):
+        return []
+
+    async def fake_find_pois(lat, lon, poi_type, radius_m=5000):
+        if poi_type == "atm":
+            return [{"name": "Legacy ATM", "lat": 49.89, "lon": -97.14,
+                     "address": "1 Main St", "operator": "",
+                     "website": "", "phone": "", "opening_hours": ""}]
+        return []
+
+    monkeypatch.setattr(geo, "_bank_atm_via_nominatim", empty)
+    monkeypatch.setattr(geo, "_bank_atm_via_overpass", empty)
+    monkeypatch.setattr(geo, "find_pois", fake_find_pois)
+    pois = _aio.run(geo.find_bank_atm_pois(49.8951, -97.1384))
+    assert len(pois) == 1
+    assert pois[0]["poi_type"] == "atm" and pois[0]["brand"] == ""
+
+
 # -- bank_surface scanners -------------------------------------------------
 
 def test_internal_leak_scanner():

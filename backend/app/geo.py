@@ -164,15 +164,93 @@ async def _find_pois_overpass(lat: float, lon: float, poi_type: str,
     return []
 
 
-async def find_bank_atm_pois(lat: float, lon: float,
-                             radius_m: int = 5000,
-                             cap: int = 25) -> List[Dict]:
-    """Banks AND ATMs near a point, in one Overpass query.
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon / 2) ** 2)
+    return 6371000 * 2 * math.asin(math.sqrt(a))
 
-    Unlike find_pois (single amenity, Nominatim-first, tags dropped),
-    this keeps the full OSM tag set - brand, operator, website - because
-    Bank/ATM mode resolves each operator to a domain. Returns dicts with
-    an extra "poi_type" ("bank"|"atm") per element, deduped, capped.
+
+def parse_nominatim_bank_atm(items: List[Dict], poi_type: str,
+                             lat: float, lon: float,
+                             radius_m: int) -> List[Dict]:
+    """Parse Nominatim amenity results (extratags=1) into POI dicts.
+
+    Pure function (fixture-testable). Keeps operator/brand/website from
+    the extratags so Bank/ATM mode can resolve operator domains.
+    """
+    out = []
+    for el in items or []:
+        if el.get("class") != "amenity" or el.get("type") != poi_type:
+            continue
+        try:
+            plat, plon = float(el["lat"]), float(el["lon"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if _haversine_m(lat, lon, plat, plon) > radius_m:
+            continue
+        tags = el.get("extratags") or {}
+        operator = tags.get("operator", "") or ""
+        brand = tags.get("brand", "") or ""
+        name = (tags.get("name") or el.get("name") or brand or operator
+                or f"Unnamed {poi_type.upper()}")
+        addr = el.get("address") or {}
+        addr_parts = [addr.get("house_number", ""), addr.get("road", ""),
+                      addr.get("city", "") or addr.get("town", ""),
+                      addr.get("postcode", "")]
+        address = " ".join(p for p in addr_parts if p).strip() \
+            or el.get("display_name", "")
+        out.append({
+            "name": name, "lat": plat, "lon": plon, "address": address,
+            "operator": operator, "brand": brand,
+            "website": tags.get("website", "")
+                       or tags.get("contact:website", ""),
+            "phone": tags.get("phone", "") or tags.get("contact:phone", ""),
+            "opening_hours": tags.get("opening_hours", ""),
+            "poi_type": poi_type,
+            "_dist": _haversine_m(lat, lon, plat, plon),
+        })
+    return out
+
+
+async def _bank_atm_via_nominatim(lat: float, lon: float,
+                                  radius_m: int, cap: int) -> List[Dict]:
+    """Banks + ATMs via Nominatim amenity search with extratags.
+
+    The fast, reliable path - the same primary find_pois uses. One call
+    per amenity, results merged by distance.
+    """
+    out: List[Dict] = []
+    for poi_type in ("bank", "atm"):
+        try:
+            async with net.async_client(timeout=20) as client:
+                resp = await client.get(
+                    NOMINATIM_URL,
+                    params={"q": f"{poi_type} near {lat},{lon}",
+                            "format": "json", "limit": 50,
+                            "extratags": 1, "addressdetails": 1},
+                    headers=UA)
+                if resp.status_code != 200:
+                    continue
+                out.extend(parse_nominatim_bank_atm(
+                    resp.json(), poi_type, lat, lon, radius_m))
+        except Exception:
+            continue
+    out.sort(key=lambda p: p.get("_dist", 0))
+    for p in out:
+        p.pop("_dist", None)
+    return out[:cap]
+
+
+async def _bank_atm_via_overpass(lat: float, lon: float,
+                                 radius_m: int, cap: int) -> List[Dict]:
+    """Banks + ATMs via one Overpass query (full tags, denser).
+
+    Slower and the public mirrors are often overloaded, so this is the
+    second attempt, not the primary.
     """
     query = (
         f"[out:json][timeout:25];"
@@ -193,6 +271,40 @@ async def find_bank_atm_pois(lat: float, lon: float,
         except Exception:
             continue
     return []
+
+
+async def find_bank_atm_pois(lat: float, lon: float,
+                             radius_m: int = 5000,
+                             cap: int = 25) -> List[Dict]:
+    """Banks AND ATMs near a point, tags kept (brand/operator/website).
+
+    Layered: Nominatim (extratags) -> Overpass -> the legacy per-amenity
+    find_pois. Each layer only runs when the previous found nothing, so
+    a dead Overpass mirror can no longer zero out a location run.
+    Returns dicts with "poi_type" ("bank"|"atm"), deduped, capped.
+    """
+    out = await _bank_atm_via_nominatim(lat, lon, radius_m, cap)
+    if out:
+        return out
+    out = await _bank_atm_via_overpass(lat, lon, radius_m, cap)
+    if out:
+        return out
+    merged: List[Dict] = []
+    seen = set()
+    for poi_type in ("bank", "atm"):
+        for poi in await find_pois(lat, lon, poi_type, radius_m):
+            key = (poi_type, (poi.get("name") or "").lower(),
+                   round(poi.get("lat", 0), 4), round(poi.get("lon", 0), 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            poi = dict(poi)
+            poi.setdefault("brand", "")
+            poi["poi_type"] = poi_type
+            merged.append(poi)
+            if len(merged) >= cap:
+                return merged
+    return merged
 
 
 def parse_bank_atm_elements(data: Dict, cap: int = 25) -> List[Dict]:

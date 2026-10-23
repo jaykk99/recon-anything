@@ -69,6 +69,12 @@ OPERATOR_DOMAINS: Dict[str, str] = {
     "alterna savings": "alterna.ca",
     "access credit union": "accesscu.ca",
     "steinbach credit union": "scu.net",
+    "assiniboine credit union": "assiniboine.mb.ca",
+    "cambrian credit union": "cambriancu.ca",
+    "canada western bank": "cwbank.com",
+    "first nations bank": "fnbc.ca",
+    "first nations bank of canada": "fnbc.ca",
+    "winnipeg police credit union": "wpcu.ca",
     # -- United States -------------------------------------------------
     "chase": "chase.com",
     "jpmorgan chase": "chase.com",
