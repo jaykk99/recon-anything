@@ -596,6 +596,23 @@ def _budget_skip_reason() -> str:
             f"{int(SCAN_BUDGET_S)}s scan ceiling")
 
 
+def _run_selection(run) -> Optional[set]:
+    """The run's explicit plugin selection (queue_meta.plugin_ids).
+
+    Set when the user picked plugins deliberately in the UI (e.g. the
+    Crypto Pack preset posts exactly the cp_* ids). Jay's rule
+    (2026-10-23): SELECTED MEANS RUN - a non-empty selection is
+    exempt from the scan time-budget skips and claims before
+    unselected work. Returns None for unfiltered full scans.
+    """
+    try:
+        ids = ((run.summary or {}).get("queue_meta", {})
+               .get("plugin_ids") or [])
+    except Exception:
+        return None
+    return set(ids) if ids else None
+
+
 def _queued_jobs_query(session):
     """Base fetch of queued jobs (deterministic order: priority, phase,
     estimate, id). The claim pass re-orders these with _dispatch_order
@@ -672,6 +689,20 @@ def _claim_jobs(session, limit: int):
     # from the candidate set entirely, re-creating the starvation this
     # ordering exists to fix.
     candidates = _dispatch_order(q.all())
+    # SELECTED MEANS RUN (2026-10-23): jobs whose plugin belongs to
+    # their run's explicit selection claim before everything else
+    # (stable sort keeps _dispatch_order inside each class) and are
+    # exempt from the budget gates below. Selections come from
+    # queue_meta.plugin_ids, set at run creation.
+    sel_map: Dict[str, Optional[set]] = {}
+    for rid in {j.run_id for j in candidates}:
+        r = session.query(Run).filter_by(id=rid).first()
+        sel_map[rid] = _run_selection(r) if r is not None else None
+    if any(sel_map.values()):
+        candidates.sort(
+            key=lambda j: 0 if (sel_map.get(j.run_id)
+                                and j.plugin_id in sel_map[j.run_id])
+            else 1)
     # Per-run phase-1 pending counts, one GROUP BY for the whole pass
     # (was one COUNT query per phase-2 candidate).
     phase1_pending = dict(
@@ -701,8 +732,10 @@ def _claim_jobs(session, limit: int):
             clock = now_mono
             _run_clocks[job.run_id] = clock
         age = now_mono - clock
-        if age >= SCAN_HARD_STOP_S or (
-                age >= SCAN_SOFT_STOP_S and job.priority > HIGH_TIER):
+        sel = sel_map.get(job.run_id)
+        is_selected = bool(sel) and job.plugin_id in sel
+        if not is_selected and (age >= SCAN_HARD_STOP_S or (
+                age >= SCAN_SOFT_STOP_S and job.priority > HIGH_TIER)):
             job.status = "skipped"
             job.finished_at = dt.datetime.now(dt.timezone.utc)
             job.result = {"status": "skipped",

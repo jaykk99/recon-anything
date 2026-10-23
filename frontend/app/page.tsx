@@ -6,7 +6,8 @@ import BreachWatch from "./breachwatch";
 
 const GROUPS: Record<string, string> = {
   network: "Network / DNS", web: "Web / Frontend", api: "API / Backend",
-  mobile: "Mobile", identity: "Identity / Leaks",
+  mobile: "Mobile", identity: "Identity / Leaks", infra: "Infrastructure",
+  web3: "Web3 / Crypto", financial: "Financial", graph: "Graph / Relationships",
 };
 
 export default function Home() {
@@ -92,6 +93,24 @@ export default function Home() {
 
   const byGroup: Record<string, PluginInfo[]> = {};
   plugins.forEach((p) => { (byGroup[p.group] = byGroup[p.group] || []).push(p); });
+
+  const cryptoIds = plugins.filter((p) => p.id.startsWith("cp_")).map((p) => p.id);
+  const enabledCount = Object.values(enabled).filter(Boolean).length;
+  const cryptoSelected = cryptoIds.filter((id) => enabled[id]).length;
+  const packOnly = cryptoIds.length > 0 && cryptoSelected === cryptoIds.length
+    && enabledCount === cryptoIds.length;
+
+  function selectOnly(ids: string[]) {
+    const e: Record<string, boolean> = {};
+    plugins.forEach((p) => (e[p.id] = ids.includes(p.id)));
+    setEnabled(e);
+  }
+
+  function addToSelection(ids: string[]) {
+    const e = { ...enabled };
+    ids.forEach((id) => (e[id] = true));
+    setEnabled(e);
+  }
 
   return (
     <div className="space-y-6 max-w-full">
@@ -235,6 +254,44 @@ export default function Home() {
       </div>
 
       <BreachWatch />
+
+      <div className="card p-5 border border-amber-800/60">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h2 className="font-semibold text-amber-300">Crypto pack</h2>
+          <span className="text-xs text-slate-400">
+            {cryptoIds.length} detectors: checksum-verified wallet addresses (30+ chains),
+            cryptojacking &amp; miner kits, seed-phrase &amp; private-key leaks, exchange and
+            RPC API keys, wallet drainers &amp; clipboard swappers, Web3 endpoints,
+            payment rails, DNS crypto traces.
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Selected plugins always run to completion: an explicit selection is exempt from
+          the scan time budget that skips unselected plugins on long runs.
+          {cryptoIds.length > 0 && (
+            <> Currently {cryptoSelected}/{cryptoIds.length} crypto detectors selected
+            {packOnly ? " (pack only)" : ""}.</>
+          )}
+        </p>
+        <div className="flex gap-2 flex-wrap mt-3">
+          <button type="button" onClick={() => selectOnly(cryptoIds)}
+            className={`chip px-4 py-2.5 min-h-[44px] text-xs ${packOnly ? "bg-amber-900 text-amber-200" : "text-amber-300 hover:bg-slate-800"}`}>
+            CRYPTO PACK ONLY
+          </button>
+          <button type="button" onClick={() => addToSelection(cryptoIds)}
+            className="chip px-4 py-2.5 min-h-[44px] text-xs text-slate-300 hover:bg-slate-800">
+            ADD PACK TO SELECTION
+          </button>
+          <button type="button" onClick={() => selectOnly(plugins.map((p) => p.id))}
+            className="chip px-4 py-2.5 min-h-[44px] text-xs text-slate-400 hover:bg-slate-800">
+            ALL PLUGINS
+          </button>
+          <button type="button" onClick={() => selectOnly([])}
+            className="chip px-4 py-2.5 min-h-[44px] text-xs text-slate-400 hover:bg-slate-800">
+            NONE
+          </button>
+        </div>
+      </div>
 
       <div className="card p-5">
         <h2 className="font-semibold mb-3">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>
