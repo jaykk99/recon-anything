@@ -151,6 +151,8 @@ async def main():
         # so detection via either method proves the vuln is found.
         if vid == "V08" and not ok:
             ok = ("cmdi", "cmdi_time_based") in seen
+        if vid == "V09" and not ok:
+            ok = ("cmdi", "cmdi_error_based") in seen
         status = "DETECTED " if ok else "MISSED   "
         print(f"  [{status}] {vid} {desc}  ({plugin}/{key})")
         if not ok:
