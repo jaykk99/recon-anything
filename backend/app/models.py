@@ -68,6 +68,9 @@ class Run(Base):
     env_mode = Column(String, default="sandbox")
     source_type = Column(String, default="website")  # website | bank | atm
     status = Column(String, default="running")  # running | done | error
+    # Owning customer (users.id) for GitHub-signed-in runs; NULL for the
+    # owner's access-code runs. Plan gating + reveal caps key off this.
+    user_id = Column(Integer, nullable=True, index=True)
     summary = Column(JSON, default=dict)
     targets = relationship("Target", back_populates="run", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="run", cascade="all, delete-orphan")
@@ -309,6 +312,48 @@ class ResourceCache(Base):
     size_bytes = Column(Integer, default=0)
 
 
+class User(Base):
+    """A GitHub-signed-in customer (app/billing.py). The owner account
+    (OWNER_GITHUB_LOGIN, default jaykk99) also lands here on sign-in;
+    billing.effective_plan gives it full access with no payment UI."""
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    github_id = Column(Integer, unique=True, index=True)
+    github_login = Column(String, index=True)
+    plan = Column(String, default="free")  # free | starter | pro | agency
+    plan_expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class Order(Base):
+    """A BTC checkout order. amount_btc is pinned at creation from the
+    live rate and stored as an exact decimal string. Status flow:
+    pending -> paid (owner-approved from /admin/orders after the
+    payment confirms) | cancelled."""
+    __tablename__ = "orders"
+    id = Column(String, primary_key=True)  # uuid hex
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    plan = Column(String)  # starter | pro | agency
+    amount_usd = Column(Integer)
+    amount_btc = Column(String)  # exact decimal string, 8dp
+    btc_address = Column(String)
+    status = Column(String, default="pending", index=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class FindingReveal(Base):
+    """Free-tier reveal ledger: one row per (user, UTC day) - the single
+    finding that user got fully revealed that day, across all runs."""
+    __tablename__ = "finding_reveals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    run_id = Column(String, index=True)
+    finding_id = Column(Integer, index=True)
+    day = Column(String, index=True)  # YYYY-MM-DD (UTC)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args=connect_args,
@@ -345,6 +390,7 @@ def init_db() -> None:
     for table, column, ddl in (
         ("runs", "source_type", "VARCHAR DEFAULT 'website'"),
         ("runs", "env_mode", "VARCHAR DEFAULT 'sandbox'"),
+        ("runs", "user_id", "INTEGER"),
         ("plugin_jobs", "estimate_s", "INTEGER DEFAULT 12"),
     ):
         try:

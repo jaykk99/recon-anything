@@ -1689,7 +1689,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                       module_overrides: Optional[Dict[str, str]] = None,
                       keys: Optional[Dict[str, str]] = None,
                       source_type: str = "website",
-                      bounty: bool = False):
+                      bounty: bool = False,
+                      excluded_plugin_ids: Optional[List[str]] = None):
     """Enqueue-only: insert every (plugin x target) job into Postgres and
     return immediately. The queue worker (in-process and/or standalone on
     Railway) claims and runs them; a restart resumes from the queue
@@ -1713,6 +1714,14 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         plugins = all_plugins()
         if plugin_ids:
             plugins = [p for p in plugins if p.id in plugin_ids]
+        # Plan gating (app/billing.py): plugins the caller's plan does
+        # not include (e.g. the Crypto Pack on free/starter) are excluded
+        # from the default set. Deliberately NOT folded into plugin_ids:
+        # an explicit selection means "selected means run" (budget-skip
+        # exempt); an exclusion only narrows the default set.
+        if excluded_plugin_ids:
+            plugins = [p for p in plugins
+                       if p.id not in set(excluded_plugin_ids)]
         # Source-type plugins (atm, bank) are silent during website scans:
         # they only run when the user picks ATM or Bank as the source type.
         if source_type == "website":
@@ -1739,6 +1748,7 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         estimated_s = max(int(total_plugin_s / concurrency), 10)
 
         meta = {"mode": mode, "plugin_ids": plugin_ids,
+                "excluded_plugin_ids": excluded_plugin_ids or [],
                 "module_overrides": module_overrides or {},
                 "source_type": source_type,
                 "estimates": "calibrated" if estimates else "static"}
@@ -1787,8 +1797,10 @@ async def launch_run(run_id: str, targets_raw: str, mode: str,
                    module_overrides: Optional[Dict[str, str]] = None,
                    keys: Optional[Dict[str, str]] = None,
                    source_type: str = "website",
-                   bounty: bool = False) -> asyncio.Task:
+                   bounty: bool = False,
+                   excluded_plugin_ids: Optional[List[str]] = None
+                   ) -> asyncio.Task:
     """Fire-and-forget: start execute_run as a background task."""
     return asyncio.create_task(
         execute_run(run_id, targets_raw, mode, plugin_ids, module_overrides,
-                    keys, source_type, bounty))
+                    keys, source_type, bounty, excluded_plugin_ids))

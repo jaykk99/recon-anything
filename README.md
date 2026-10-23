@@ -174,6 +174,35 @@ Manage at `/keys` in the UI or `POST /api/keys`. Secrets are
 Fernet-encrypted at rest when `RECON_MASTER_KEY` is set. Keys are never
 shipped to the browser; plugins get decrypted values server-side.
 
+### Pricing, sign-in and BTC checkout
+
+ReconAnything is a paid product with a free tier (`/pricing`):
+
+| Plan | Price | Scans/day | Findings | Crypto Pack | Extras |
+| --- | --- | --- | --- | --- | --- |
+| Free | $0 | 3 | 1 revealed per day (UTC) | no | locked findings shown as counts |
+| Starter | $19/mo | 10 | full | no | exports |
+| Pro | $49/mo | unlimited | full | yes | API access |
+| Agency | $149/mo | unlimited | full | yes | bulk targets, white-label export |
+
+- Customers sign in with GitHub (OAuth; callback
+  `https://recon-anything.onrender.com/api/auth/github/callback`,
+  also served at `/auth/github/callback` on the API service). Sessions
+  are HMAC-signed cookies; users/orders/reveals live in `users`,
+  `orders`, `finding_reveals` tables.
+- The owner account (`OWNER_GITHUB_LOGIN`, default `jaykk99`) has full
+  access and is never shown payment UI, upgrade prompts or checkout:
+  `/api/me` reports `show_payment_ui: false` for the owner.
+- Free tier: scans run in full (detection only, same scope rules), but
+  exactly 1 finding per UTC day is revealed per account; the rest are
+  masked server-side in run detail and export responses.
+- Paid plans are BTC only. Creating an order pins the BTC amount at
+  the live CoinGecko rate and shows the address from `RECON_BTC_ADDRESS`.
+  Activation is owner-approved at `/admin/orders` after the payment
+  confirms. With `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` unset the
+  sign-in button shows "opens soon"; with `RECON_BTC_ADDRESS` unset
+  checkout shows "checkout opens soon". No address is ever invented.
+
 ## Deploy
 
 ### SnapDeploy (single container, free tier)

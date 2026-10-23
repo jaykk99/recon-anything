@@ -19,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/keys" className="hover:text-sky-300">API keys</a>
             <a href="/hunters" className="hover:text-sky-300">Hunters</a>
             <a href="/runs" className="hover:text-sky-300">Runs</a>
+            <a href="/pricing" className="hover:text-sky-300">Pricing</a>
             <a href="/settings" className="hover:text-sky-300">Settings</a>
           </nav>
         </header>

@@ -43,12 +43,14 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import (HTMLResponse, PlainTextResponse,
+                               RedirectResponse, StreamingResponse)
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
+from . import billing
 from . import config
 from . import net
 from . import modes as app_modes
@@ -56,7 +58,8 @@ from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
-from .models import ApiKey, Finding, Run, RunEvent, Schedule, Target, get_session, init_db
+from .models import (ApiKey, Finding, FindingReveal, Order, Run, RunEvent,
+                     Schedule, Target, User, get_session, init_db)
 from .models import check_db, DATABASE_URL, IS_SQLITE
 from .plugins.registry import describe
 from .reporting import (executive_summary, findings_dump, run_progress,
@@ -113,12 +116,57 @@ app.add_middleware(
 )
 
 
-def gate(x_access_code: Optional[str] = Header(default=None),
+def _session_user(request: Request):
+    """The GitHub-signed-in customer for this request, or None.
+
+    Identity comes from the HMAC-signed session cookie set by the
+    GitHub OAuth callback (app/billing.py). Never raises.
+    """
+    try:
+        uid = billing.parse_session_token(
+            request.cookies.get(billing.SESSION_COOKIE))
+        if uid is None:
+            return None
+        session = get_session()
+        try:
+            return session.query(User).filter_by(id=uid).first()
+        finally:
+            session.close()
+    except Exception:
+        return None
+
+
+def resolve_actor(request: Request, provided_code: Optional[str] = None):
+    """Who is calling: {"kind": "owner"|"user"|"open", "user": User|None}.
+
+    - owner: the access code matched, OR the signed-in GitHub account is
+      the owner login. Full access, never any payment UI or plan gate.
+    - user:  a signed-in customer; plan gating applies.
+    - open:  no access code configured (local dev) - treated as owner.
+    """
+    if config.ACCESS_CODE and provided_code == config.ACCESS_CODE:
+        return {"kind": "owner", "user": None}
+    user = _session_user(request)
+    if user is not None:
+        if billing.is_owner_login(user.github_login):
+            return {"kind": "owner", "user": user}
+        return {"kind": "user", "user": user}
+    if not config.ACCESS_CODE:
+        return {"kind": "open", "user": None}
+    return {"kind": "anon", "user": None}
+
+
+def gate(request: Request,
+         x_access_code: Optional[str] = Header(default=None),
          code: Optional[str] = Query(default=None)):
-    # EventSource cannot set headers, so accept ?code= as a fallback
+    # EventSource cannot set headers, so accept ?code= as a fallback.
+    # A valid GitHub session cookie is the customer alternative to the
+    # owner's access code (Jay's mode is unchanged).
     provided = x_access_code or code
-    if config.ACCESS_CODE and provided != config.ACCESS_CODE:
+    actor = resolve_actor(request, provided)
+    if actor["kind"] == "anon":
         raise HTTPException(status_code=401, detail="bad access code")
+    request.state.actor = actor
     return True
 
 
@@ -291,13 +339,48 @@ class RunIn(BaseModel):
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
-async def api_start_run(body: RunIn):
+async def api_start_run(body: RunIn, request: Request):
     if not body.targets.strip():
         raise HTTPException(400, "targets required")
     if body.mode not in ("passive", "active"):
         raise HTTPException(400, "mode must be passive|active")
     if body.source_type not in ("website", "bank", "atm"):
         raise HTTPException(400, "source_type must be website|bank|atm")
+    # --- plan gating (customers only; owner/open mode unchanged) ------
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    run_user_id = None
+    excluded_plugin_ids: Optional[List[str]] = None
+    plugins = body.plugins
+    if actor["kind"] == "user":
+        user = actor["user"]
+        run_user_id = user.id
+        plan = billing.effective_plan(user)
+        limit = plan.get("scans_per_day")
+        if limit is not None:
+            s = get_session()
+            try:
+                used = (s.query(Run)
+                        .filter(Run.user_id == user.id,
+                                Run.created_at >= billing.today_start_utc())
+                        .count())
+            finally:
+                s.close()
+            if used >= limit:
+                raise HTTPException(
+                    429,
+                    f"{plan['name']} plan allows {limit} scans per day. "
+                    "Upgrade on /pricing for more.")
+        allowed, stripped = billing.filter_plugins_for_plan(plan, plugins)
+        if plugins and stripped and not allowed:
+            raise HTTPException(
+                403,
+                "The Crypto Pack is a Pro feature. Upgrade on /pricing, "
+                "or run without the cp_* plugins.")
+        plugins = allowed
+        if not plugins:
+            from .plugins.registry import describe as _describe
+            excluded_plugin_ids = billing.excluded_plugins_for_plan(
+                plan, [p["id"] for p in _describe()]) or None
     run_id = uuid.uuid4().hex[:12]
     session = get_session()
     try:
@@ -318,7 +401,7 @@ async def api_start_run(body: RunIn):
                     + ". Switch to LIVE in Settings to scan authorized "
                       "external targets.")
         session.add(Run(id=run_id, mode=body.mode, status="running",
-                        env_mode=env_mode,
+                        env_mode=env_mode, user_id=run_user_id,
                         source_type=body.source_type,
                         summary={"bounty": bool(body.bounty)}))
         session.commit()
@@ -333,8 +416,9 @@ async def api_start_run(body: RunIn):
     elif body.source_type == "atm":
         overrides["atm"] = "authorized"
     await launch_run(run_id, body.targets, body.mode,
-                     body.plugins, overrides, keys,
-                     source_type=body.source_type, bounty=body.bounty)
+                     plugins, overrides, keys,
+                     source_type=body.source_type, bounty=body.bounty,
+                     excluded_plugin_ids=excluded_plugin_ids)
     _wake_worker()
     return {"run_id": run_id}
 
@@ -353,7 +437,8 @@ async def api_run_stream(run_id: str):
 
 
 @app.get("/api/runs", dependencies=[Depends(gate)])
-def api_list_runs(limit: int = Query(30, le=200),
+def api_list_runs(request: Request = None,
+                  limit: int = Query(30, le=200),
                   summary: bool = Query(False,
                                         description="include each run's full "
                                         "summary JSON (heavy; default off)")):
@@ -369,9 +454,15 @@ def api_list_runs(limit: int = Query(30, le=200),
         fields.append(Run.summary)
     session = get_session()
     try:
-        runs = (session.query(Run)
-                .options(load_only(*fields))
-                .order_by(Run.created_at.desc()).limit(limit).all())
+        q = session.query(Run).options(load_only(*fields))
+        # Customers see only their own runs; the owner sees everything.
+        # request is None only for direct internal calls (tests) - the
+        # HTTP path always goes through the gate, which sets the actor.
+        actor = (getattr(request.state, "actor", {"kind": "open"})
+                 if request is not None else {"kind": "open"})
+        if actor["kind"] == "user":
+            q = q.filter(Run.user_id == actor["user"].id)
+        runs = (q.order_by(Run.created_at.desc()).limit(limit).all())
         # One GROUP BY for findings counts (indexed on findings.run_id) so
         # the list table keeps its "findings" column without the heavy
         # per-run summary JSON.
@@ -396,14 +487,26 @@ def api_list_runs(limit: int = Query(30, le=200),
 
 
 @app.get("/api/runs/{run_id}", dependencies=[Depends(gate)])
-def api_run_detail(run_id: str, show_secrets: bool = False):
+def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
     session = get_session()
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        # Customers can only open their own runs.
+        actor = getattr(request.state, "actor", {"kind": "open"})
+        access = None
+        if actor["kind"] == "user":
+            if run.user_id != actor["user"].id:
+                raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
+        if actor["kind"] == "user":
+            # Free tier: exactly 1 revealed finding per UTC day,
+            # enforced here on the server, not in the UI.
+            rows, access = billing.apply_reveal(
+                session, actor["user"], run_id, rows,
+                billing.effective_plan(actor["user"]))
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
                     "env_mode": getattr(run, "env_mode", None) or "sandbox",
@@ -415,6 +518,7 @@ def api_run_detail(run_id: str, show_secrets: bool = False):
             "targets": [{"id": t.id, "raw": t.raw, "type": t.type,
                          "normalized": t.normalized} for t in targets],
             "findings": rows,
+            "access": access,
             "executive_summary": executive_summary(rows),
             # Live progress for the UI poll fallback (SSE may be down):
             # done/total, eta_s, and currently-running plugin names.
@@ -609,14 +713,24 @@ def api_apimap(run_id: str):
 
 
 @app.get("/api/runs/{run_id}/export", dependencies=[Depends(gate)])
-def api_export(run_id: str, format: str = "json", show_secrets: bool = False):
+def api_export(run_id: str, request: Request, format: str = "json",
+               show_secrets: bool = False):
     session = get_session()
     try:
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        actor = getattr(request.state, "actor", {"kind": "open"})
+        if actor["kind"] == "user" and run.user_id != actor["user"].id:
+            raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
+        if actor["kind"] == "user":
+            # Same free-tier reveal cap as the run detail view: exports
+            # are not a way around the lock.
+            rows, _access = billing.apply_reveal(
+                session, actor["user"], run_id, rows,
+                billing.effective_plan(actor["user"]))
     finally:
         session.close()
     if format == "json":
@@ -1451,3 +1565,337 @@ def api_hunters_resources():
         return {"resources": resources.catalog(session)}
     finally:
         session.close()
+
+
+# -- product: plans, GitHub sign-in, BTC checkout (app/billing.py) --------
+# Owner rule: the jaykk99 GitHub account (OWNER_GITHUB_LOGIN) gets full
+# access and NO payment UI data, ever - /api/me reports
+# show_payment_ui=False and plan payloads for the owner carry no
+# checkout fields. Free customers: exactly 1 revealed finding per UTC
+# day, enforced server-side in api_run_detail / api_export above.
+
+
+def _me_payload(request: Request) -> Dict:
+    actor = resolve_actor(request, request.headers.get("x-access-code"))
+    # The owner branches below deliberately omit checkout_enabled:
+    # no payment UI data is ever served to the owner account.
+    base = {"github_enabled": billing.github_enabled(),
+            "free_reveals_per_day": billing.FREE_REVEALS_PER_DAY,
+            "day_boundary": "UTC"}
+    user = actor.get("user")
+    if actor["kind"] == "owner" and user is not None:
+        # Signed-in owner: suppress every scrap of payment UI data.
+        return {**base, "signed_in": True, "is_owner": True,
+                "show_payment_ui": False,
+                "user": {"login": user.github_login},
+                "plan": {"id": "owner", "name": "Owner",
+                         "full_findings": True, "crypto_pack": True,
+                         "scans_per_day": None}}
+    if actor["kind"] == "owner":
+        # Access-code session (Jay's existing mode). Payment UI is for
+        # customers; the owner never sees it in his own app either.
+        return {**base, "signed_in": False, "is_owner": True,
+                "show_payment_ui": False, "user": None,
+                "plan": {"id": "owner", "name": "Owner",
+                         "full_findings": True, "crypto_pack": True,
+                         "scans_per_day": None}}
+    if user is None:
+        return {**base, "signed_in": False, "is_owner": False,
+                "show_payment_ui": True,
+                "checkout_enabled": billing.checkout_enabled(),
+                "user": None,
+                "plan": dict(billing.PLANS["free"])}
+    plan = billing.effective_plan(user)
+    session = get_session()
+    try:
+        reveals_used = (session.query(FindingReveal)
+                        .filter_by(user_id=user.id,
+                                   day=billing.today_key()).count())
+        scans_used = (session.query(Run)
+                      .filter(Run.user_id == user.id,
+                              Run.created_at >= billing.today_start_utc())
+                      .count())
+    finally:
+        session.close()
+    return {**base, "signed_in": True, "is_owner": False,
+            "show_payment_ui": True,
+            "checkout_enabled": billing.checkout_enabled(),
+            "user": {"login": user.github_login},
+            "plan": dict(plan),
+            "reveals_used_today": reveals_used,
+            "scans_used_today": scans_used}
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    """Identity + plan for whoever is asking (no gate: anonymous gets
+    the free-plan payload plus the sign-in/checkout availability flags
+    the pricing page renders from)."""
+    return _me_payload(request)
+
+
+@app.get("/api/plans")
+def api_plans():
+    return {"plans": billing.public_plans(),
+            "github_enabled": billing.github_enabled(),
+            "checkout_enabled": billing.checkout_enabled(),
+            "free_rule": ("Free plan: exactly 1 revealed finding per day "
+                          "(resets at UTC midnight). Scans still run in "
+                          "full; the rest are shown as locked counts.")}
+
+
+def _cookie_secure() -> bool:
+    return os.environ.get("RECON_COOKIE_SECURE", "1") != "0"
+
+
+def _github_start():
+    if not billing.github_enabled():
+        return RedirectResponse("/pricing?signin=soon", status_code=303)
+    state, state_cookie = billing.make_state_pair()
+    from urllib.parse import urlencode
+    qs = urlencode({
+        "client_id": os.environ["GITHUB_CLIENT_ID"],
+        "scope": "read:user",
+        "state": state,
+        "allow_signup": "true",
+    })
+    resp = RedirectResponse(
+        f"https://github.com/login/oauth/authorize?{qs}", status_code=303)
+    resp.set_cookie("recon_oauth_state", state_cookie, max_age=600,
+                    httponly=True, samesite="lax", secure=_cookie_secure())
+    return resp
+
+
+def _github_callback(request: Request, code: str = "",
+                     state: str = ""):
+    if not billing.github_enabled():
+        return RedirectResponse("/pricing?signin=soon", status_code=303)
+    if not code or not billing.check_state_token(
+            request.cookies.get("recon_oauth_state"), state):
+        return RedirectResponse("/pricing?signin=failed", status_code=303)
+    import httpx
+    try:
+        tok = httpx.post(
+            "https://github.com/login/oauth/access_token",
+            data={"client_id": os.environ["GITHUB_CLIENT_ID"],
+                  "client_secret": os.environ["GITHUB_CLIENT_SECRET"],
+                  "code": code},
+            headers={"Accept": "application/json"}, timeout=20)
+        access = tok.json().get("access_token")
+        if not access:
+            return RedirectResponse("/pricing?signin=failed", status_code=303)
+        me = httpx.get("https://api.github.com/user",
+                       headers={"Authorization": f"Bearer {access}",
+                                "Accept": "application/vnd.github+json"},
+                       timeout=20)
+        gh = me.json()
+        gh_id, gh_login = int(gh["id"]), str(gh["login"])
+    except Exception:
+        return RedirectResponse("/pricing?signin=failed", status_code=303)
+    session = get_session()
+    try:
+        user = session.query(User).filter_by(github_id=gh_id).first()
+        if user is None:
+            user = User(github_id=gh_id, github_login=gh_login, plan="free")
+            session.add(user)
+            session.commit()
+        elif user.github_login != gh_login:
+            user.github_login = gh_login
+            session.commit()
+        token = billing.make_session_token(user.id)
+    finally:
+        session.close()
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(billing.SESSION_COOKIE, token,
+                    max_age=billing.SESSION_TTL_S, httponly=True,
+                    samesite="lax", secure=_cookie_secure())
+    resp.delete_cookie("recon_oauth_state")
+    return resp
+
+
+# The brief's callback path is /auth/github/callback; the /api/* twins
+# are the ones reachable through the site domain (the frontend proxies
+# only /api/*), so the GitHub OAuth app should register the /api one.
+@app.get("/auth/github")
+@app.get("/api/auth/github")
+def api_github_start():
+    return _github_start()
+
+
+@app.get("/auth/github/callback")
+@app.get("/api/auth/github/callback")
+def api_github_callback(request: Request, code: str = "", state: str = ""):
+    return _github_callback(request, code=code, state=state)
+
+
+@app.post("/api/auth/logout")
+def api_logout():
+    resp = PlainTextResponse("ok")
+    resp.delete_cookie(billing.SESSION_COOKIE)
+    return resp
+
+
+class OrderIn(BaseModel):
+    plan: str
+
+
+def _order_payload(o: Order, login: Optional[str] = None) -> Dict:
+    out = {"id": o.id, "plan": o.plan, "amount_usd": o.amount_usd,
+           "amount_btc": o.amount_btc, "btc_address": o.btc_address,
+           "status": o.status,
+           "created_at": o.created_at.isoformat() if o.created_at else None,
+           "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+           "activation": ("Your plan activates after your BTC payment "
+                          "confirms and the owner approves the order "
+                          "(usually same day).")}
+    if login:
+        out["user_login"] = login
+    return out
+
+
+@app.post("/api/orders", dependencies=[Depends(gate)])
+def api_order_create(body: OrderIn, request: Request):
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    if actor["kind"] == "owner":
+        raise HTTPException(400, "the owner account needs no plan")
+    user = actor.get("user")
+    if user is None:
+        raise HTTPException(401, "sign in with GitHub to buy a plan")
+    plan = billing.PLANS.get((body.plan or "").lower())
+    if plan is None or plan["price_usd"] <= 0:
+        raise HTTPException(400, "plan must be starter, pro or agency")
+    if not billing.checkout_enabled():
+        # No wallet address configured: never invent one.
+        return {"checkout_open": False, "status": "checkout_closed",
+                "message": "Checkout opens soon."}
+    rate = billing.fetch_btc_usd()
+    if rate is None:
+        raise HTTPException(503, "BTC rate unavailable right now; "
+                                 "try again in a minute")
+    amount_btc = billing.btc_amount_for_usd(plan["price_usd"], rate)
+    order = Order(id=uuid.uuid4().hex[:12], user_id=user.id,
+                  plan=plan["id"], amount_usd=plan["price_usd"],
+                  amount_btc=str(amount_btc),
+                  btc_address=billing.btc_address(), status="pending")
+    session = get_session()
+    try:
+        session.add(order)
+        session.commit()
+        payload = _order_payload(order)
+    finally:
+        session.close()
+    return {"checkout_open": True, "order": payload,
+            "checkout_path": f"/checkout?order={order.id}"}
+
+
+@app.get("/api/orders", dependencies=[Depends(gate)])
+def api_orders_mine(request: Request):
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    user = actor.get("user")
+    if user is None:
+        return {"orders": []}
+    session = get_session()
+    try:
+        rows = (session.query(Order).filter_by(user_id=user.id)
+                .order_by(Order.created_at.desc()).all())
+        return {"orders": [_order_payload(o) for o in rows]}
+    finally:
+        session.close()
+
+
+@app.get("/api/orders/{order_id}", dependencies=[Depends(gate)])
+def api_order_detail(order_id: str, request: Request):
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        user = actor.get("user")
+        if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
+            raise HTTPException(404, "order not found")
+        return {"order": _order_payload(o)}
+    finally:
+        session.close()
+
+
+def _require_owner(request: Request) -> None:
+    actor = getattr(request.state, "actor", {"kind": "anon"})
+    if actor["kind"] != "owner":
+        raise HTTPException(403, "owner only")
+
+
+@app.get("/api/admin/orders", dependencies=[Depends(gate)])
+def api_admin_orders(request: Request):
+    _require_owner(request)
+    session = get_session()
+    try:
+        rows = session.query(Order).order_by(Order.created_at.desc()).all()
+        logins = {u.id: u.github_login for u in session.query(User).all()}
+        return {"orders": [_order_payload(o, logins.get(o.user_id))
+                           for o in rows]}
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/orders/{order_id}/approve",
+          dependencies=[Depends(gate)])
+def api_admin_approve(order_id: str, request: Request):
+    """Owner confirms a BTC payment landed: mark the order paid and
+    activate the buyer's plan for PLAN_DURATION_DAYS."""
+    _require_owner(request)
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        if o.status != "paid":
+            o.status = "paid"
+            o.paid_at = dt.datetime.now(dt.timezone.utc)
+            buyer = session.query(User).filter_by(id=o.user_id).first()
+            if buyer is not None:
+                buyer.plan = o.plan
+                buyer.plan_expires_at = (
+                    dt.datetime.now(dt.timezone.utc)
+                    + dt.timedelta(days=billing.PLAN_DURATION_DAYS))
+            session.commit()
+        return {"order": _order_payload(o)}
+    finally:
+        session.close()
+
+
+@app.get("/", include_in_schema=False)
+def root_redirect():
+    return RedirectResponse("/pricing", status_code=303)
+
+
+@app.get("/pricing", include_in_schema=False)
+def pricing_page():
+    """Server-rendered pricing (also reachable on the API service
+    domain; the main site serves the richer Next.js page at the same
+    path). Generated from billing.PLANS so the two never drift."""
+    cards = []
+    for p in billing.public_plans():
+        feats = "".join(f"<li>{f}</li>" for f in p["features"])
+        price = "Free" if p["price_usd"] == 0 else f"${p['price_usd']}/mo"
+        cards.append(
+            f"<section><h2>{p['name']}</h2><p class='price'>{price}</p>"
+            f"<ul>{feats}</ul></section>")
+    signin = ("Sign in with GitHub" if billing.github_enabled()
+              else "GitHub sign-in opens soon")
+    checkout = ("BTC checkout is open." if billing.checkout_enabled()
+                else "BTC checkout opens soon.")
+    html = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>ReconAnything pricing</title><style>
+body{{background:#0b1220;color:#e2e8f0;font-family:system-ui,sans-serif;
+margin:0;padding:2rem}}h1{{color:#7dd3fc}}.price{{font-size:1.5rem}}
+main{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+gap:1rem;max-width:1000px}}section{{border:1px solid #1e293b;
+border-radius:8px;padding:1rem}}</style></head><body>
+<h1>ReconAnything pricing</h1>
+<p>Free plan: exactly 1 revealed finding per day (resets at UTC
+midnight). Scans still run in full; the rest are shown as locked
+counts. Paid plans are paid in BTC only. {checkout}</p>
+<p><a href="/api/auth/github">{signin}</a></p>
+<main>{''.join(cards)}</main></body></html>"""
+    return HTMLResponse(html)
