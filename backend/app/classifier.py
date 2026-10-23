@@ -26,6 +26,26 @@ def _is_jwt(s: str) -> bool:
         return False
 
 
+# $-prefixed password-hash formats (bcrypt, crypt family, Argon2,
+# scrypt, PBKDF2). Matched against the lowercased copy below: the
+# character classes are case-insensitive-safe (length + charset are
+# preserved by lowercasing), and `normalized` keeps the original
+# string, so detection here never corrupts the value.
+_DOLLAR_HASH_TYPES = [
+    (re.compile(r"\$2[aby]\$\d{2}\$[./a-z0-9]{53}"), "bcrypt"),
+    (re.compile(r"\$argon2(?:id|i|d)\$[^$\s]+\$[^$\s]+\$[^$\s]+"
+                r"\$[a-z0-9+/=]+"), "argon2"),
+    (re.compile(r"\$scrypt\$[^$\s]+\$[^$\s]+\$[a-z0-9+/=]+"), "scrypt"),
+    (re.compile(r"\$pbkdf2-sha(?:256|512)\$[^$\s]+\$[^$\s]+"
+                r"\$[a-z0-9+/=]+"), "pbkdf2"),
+    (re.compile(r"\$1\$[./a-z0-9]{1,16}\$[./a-z0-9]{22}"), "md5crypt"),
+    (re.compile(r"\$5\$(?:rounds=\d+\$)?[./a-z0-9]{1,16}"
+                r"\$[./a-z0-9]{43}"), "sha256crypt"),
+    (re.compile(r"\$6\$(?:rounds=\d+\$)?[./a-z0-9]{1,16}"
+                r"\$[./a-z0-9]{86}"), "sha512crypt"),
+]
+
+
 def _hash_type(s: str) -> Optional[str]:
     s = s.strip().lower()
     if re.fullmatch(r"[0-9a-f]{32}", s):
@@ -34,6 +54,9 @@ def _hash_type(s: str) -> Optional[str]:
         return "sha1"
     if re.fullmatch(r"[0-9a-f]{64}", s):
         return "sha256"
+    for pat, name in _DOLLAR_HASH_TYPES:
+        if pat.fullmatch(s):
+            return name
     return None
 
 

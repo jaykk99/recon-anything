@@ -136,6 +136,13 @@ IMPACT_BY_KEY: Dict[str, str] = {
     "hash_analyzed": "An attacker can take this hash offline and crack it "
                      "at full GPU speed with no lockouts - weak passwords "
                      "fall in hours.",
+    "hash_cracked_direct": "This hash was submitted for checking and the "
+                           "built-in dictionary attack recovered the "
+                           "password on the spot - anyone who obtains "
+                           "the hash can do exactly the same.",
+    "hash_crack_attempt": "The submitted hash resisted the built-in "
+                          "dictionary attack; a larger wordlist or a GPU "
+                          "rig may still recover a weak password from it.",
     "hash_identified": "Knowing the exact hash type lets an attacker pick "
                        "the fastest cracking setup and recover weak "
                        "passwords offline, unthrottled.",

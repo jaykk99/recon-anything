@@ -1,0 +1,8 @@
+10k-most-common.txt is the 10,000 most common passwords list from
+SecLists (https://github.com/danielmiessler/SecLists),
+Passwords/Common-Credentials/10k-most-common.txt, by Daniel Miessler
+and contributors, used under its MIT license.
+
+It is bundled server-side for ReconAnything's DIRECT-MODE hash tool
+only: it is tried against hashes a user explicitly submits for
+assessment. It is never used against hashes found by scanning.
