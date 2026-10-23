@@ -136,9 +136,32 @@ def _looks_android_pkg(s: str) -> bool:
         return False
     if " " in s:
         return False
-    tld = s.rsplit(".", 1)[-1]
-    # real domains end in a known TLD; package ids usually do not
-    return tld not in _COMMON_TLDS
+    labels = s.split(".")
+    tld = labels[-1]
+    # Real domains end in a TLD: any 2-letter ending is a country-code
+    # TLD, and the common gTLDs are listed - both mean "domain", never a
+    # package id.
+    if len(tld) == 2 or tld in _COMMON_TLDS:
+        return False
+    # Package ids are reverse-DNS: they START with a TLD-like segment
+    # (com.vendor.app, com.whatsapp). A dotted name that does not start
+    # with one is a hostname - canary.test, victim.gg, data.technology,
+    # www.example.technology. The old heuristic ("package-shaped and
+    # the last label is not a well-known TLD") classified every such
+    # domain as play_store, and since play_store is checked before
+    # domain, every domain plugin (subdomains, secrets, ports, ...)
+    # silently skipped the target as "not applicable": a full scan
+    # reporting all plugins ok with ZERO findings (found 2026-10-23).
+    return labels[0] in _PACKAGE_PREFIXES
+
+
+# First labels of reverse-DNS package ids (com.vendor.app shape).
+_PACKAGE_PREFIXES = {
+    "com", "org", "net", "io", "me", "co", "app", "dev", "ai", "tv",
+    "cc", "us", "uk", "de", "jp", "au", "ca", "fr", "in", "br", "ru",
+    "nl", "se", "pro", "info", "biz", "name", "mobi", "global", "inc",
+    "ltd", "plc", "gmbh", "gov", "edu", "mil",
+}
 
 
 def _is_play_store(s: str) -> bool:

@@ -22,7 +22,7 @@ from .secretutils import evidence_block, finding_value, is_placeholder, redact
 
 PATTERNS = [
     # (name, regex, confidence, severity)
-    ("db_url_mongo", r"mongodb(\+srv)?://([^:/\s]+):([^@/\s]+)@", 90, "critical"),
+    ("db_url_mongo", r"mongodb(?:\+srv)?://([^:/\s]+):([^@/\s]+)@", 90, "critical"),
     ("db_url_postgres", r"postgres(?:ql)?://([^:/\s]+):([^@/\s]+)@", 90, "critical"),
     ("db_url_mysql", r"mysql://([^:/\s]+):([^@/\s]+)@", 90, "critical"),
     ("db_url_redis", r"redis://(?::([^@/\s]+)@)?", 75, "high"),
@@ -121,6 +121,10 @@ class CredsPlugin(Plugin):
 
         def emit(name: str, match: str, where: str, conf: int,
                  severity: str, url: str | None, remed: str = REMED_KEY):
+            # A single malformed match must never kill the whole scan:
+            # patterns with optional groups can yield None values.
+            if not match:
+                return
             m = match.strip()[:300]
             if is_placeholder(m):
                 return
@@ -146,8 +150,26 @@ class CredsPlugin(Plugin):
                                 val = base64.b64decode(m.group(1)).decode("utf-8", "replace")[:120]
                             except Exception:
                                 val = m.group(0)
+                        elif name.startswith("db_url_"):
+                            # Groups are (user, password) - except redis,
+                            # whose single group is an OPTIONAL password.
+                            # Never assume group(1) is the secret: the old
+                            # code took group(1) blindly, so a plain
+                            # mongodb:// URL (optional +srv group = None)
+                            # crashed emit() and zeroed the whole plugin.
+                            present = [g for g in m.groups() if g]
+                            if name == "db_url_redis" and not present:
+                                continue  # redis URL with no password: no credential
+                            if len(present) >= 2:
+                                val = f"{present[0]}:{present[1]}"
+                            elif present:
+                                val = present[0]
+                            else:
+                                continue
                         elif m.groups():
                             val = m.group(1)
+                            if val is None:
+                                continue  # optional group unmatched
                         else:
                             val = m.group(0)
                         emit(name, val, where, conf, sev, url)
