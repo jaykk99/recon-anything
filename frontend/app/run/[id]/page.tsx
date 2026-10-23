@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getCode, api } from "../../../lib/api";
+import AuthGate from "../../../components/AuthGate";
 
 interface Finding {
   plugin: string; category: string; key: string; value: string;
@@ -460,7 +461,7 @@ function PlaygroundPanel({ runId, finding, onClose }: {
   );
 }
 
-export default function RunPage({ params }: { params: { id: string } }) {
+function RunPageInner({ params }: { params: { id: string } }) {
   const id = params.id;
   const [findings, setFindings] = useState<Finding[]>([]);
   const [targets, setTargets] = useState<{ raw: string; normalized: string; type: string }[]>([]);
@@ -2413,5 +2414,13 @@ function ApiMapView({ data }: { data: any }) {
         })}
       </div>
     </div>
+  );
+}
+
+export default function RunPage(props: { params: { id: string } }) {
+  return (
+    <AuthGate>
+      <RunPageInner {...props} />
+    </AuthGate>
   );
 }

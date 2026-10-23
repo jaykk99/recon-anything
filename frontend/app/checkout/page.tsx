@@ -1,10 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
 // BTC checkout for one order. The amount and address come from the
 // server (pinned at order creation); this page never invents either.
-export default function CheckoutPage() {
+function CheckoutPageInner() {
   const [order, setOrder] = useState<any>(null);
   const [err, setErr] = useState("");
 
@@ -39,5 +40,13 @@ export default function CheckoutPage() {
       </div>
       <a className="text-sky-300 text-sm underline" href="/pricing">Back to pricing</a>
     </div>
+  );
+}
+
+export default function CheckoutPage() {
+  return (
+    <AuthGate>
+      <CheckoutPageInner />
+    </AuthGate>
   );
 }

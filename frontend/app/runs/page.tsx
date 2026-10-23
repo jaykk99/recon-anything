@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
-export default function RunsPage() {
+function RunsPageInner() {
   const [runs, setRuns] = useState<any[]>([]);
   const [a, setA] = useState("");
   const [b, setB] = useState("");
@@ -68,5 +69,13 @@ export default function RunsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function RunsPage() {
+  return (
+    <AuthGate>
+      <RunsPageInner />
+    </AuthGate>
   );
 }

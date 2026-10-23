@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, fetchMe, getCode, type MeInfo } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
 type Settings = {
   mode: string;
@@ -9,7 +10,7 @@ type Settings = {
            detail: Record<string, any> }[];
 };
 
-export default function SettingsPage() {
+function SettingsPageInner() {
   const [s, setS] = useState<Settings | null>(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -140,5 +141,13 @@ export default function SettingsPage() {
           ))}
       </div>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <AuthGate>
+      <SettingsPageInner />
+    </AuthGate>
   );
 }
