@@ -69,6 +69,30 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
             annotate_attacker_impact(out)
         except Exception:
             pass
+    # Crypto-class runs (Jay's order, 2026-10-23): exposed private
+    # keys, seed phrases and keystores are THE findings - they sort
+    # to the top of the run, flagged critical, ahead of generic
+    # findings. Stable sort: the rest keep their order. Read-time,
+    # so it applies to every surface findings_dump feeds (run
+    # detail, JSON/CSV/MD/HTML exports).
+    try:
+        run_row = session.query(Run).filter_by(id=run_id).first()
+        qmeta = ((run_row.summary or {}).get("queue_meta", {})
+                 if run_row else {}) or {}
+        if qmeta.get("crypto_target"):
+            from .cryptotarget import is_exposed_key_finding
+            for row in out:
+                if is_exposed_key_finding(row):
+                    row["crypto_key_finding"] = True
+                    row["bounty_value"] = "critical"
+                    ev = row.get("evidence")
+                    if isinstance(ev, dict):
+                        ev["severity"] = "critical"
+                        ev["crypto_key_finding"] = True
+            out.sort(key=lambda r: 0 if r.get("crypto_key_finding")
+                     else 1)
+    except Exception:
+        pass
     return out
 
 

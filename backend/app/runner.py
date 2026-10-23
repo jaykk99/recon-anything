@@ -633,6 +633,25 @@ def _run_selection(run) -> Optional[set]:
     return set(ids) if ids else None
 
 
+def _run_key_hunters(run) -> set:
+    """The run's exposed-key hunter plugin ids (crypto-class runs).
+
+    Recorded as queue_meta.key_hunter_ids at run creation when the
+    seed targets classified as crypto/web3 (app/cryptotarget.py).
+    On such runs the key hunters claim before everything else and
+    are exempt from the scan time-budget skips - generic findings
+    never crowd out the private-key hunt on a crypto target (Jay's
+    order, 2026-10-23). Empty set for non-crypto runs.
+    """
+    try:
+        meta = (run.summary or {}).get("queue_meta", {}) or {}
+        if not meta.get("crypto_target"):
+            return set()
+        return set(meta.get("key_hunter_ids") or [])
+    except Exception:
+        return set()
+
+
 def _run_seed_target_ids(session, run) -> Optional[set]:
     """The run's SEED target ids (targets the user actually asked to
     scan), or None when unknown.
@@ -743,6 +762,11 @@ def _claim_jobs(session, limit: int):
     it never takes a slot a claimable seed job could have used, so
     hunter work fills leftover capacity while seed jobs run, and the
     seed's expensive plugins can no longer be starved by the frontier.
+
+    CRYPTO KEY-HUNTER FIRST (2026-10-23): on crypto-class runs
+    (queue_meta.crypto_target), the exposed-key hunters recorded
+    in queue_meta.key_hunter_ids claim ahead of all other classes
+    and are exempt from the budget gates - see app/cryptotarget.py.
     """
     from sqlalchemy import func
 
@@ -759,11 +783,13 @@ def _claim_jobs(session, limit: int):
     candidates = _dispatch_order(q.all())
     run_cache: Dict[str, Run] = {}
     sel_map: Dict[str, Optional[set]] = {}
+    kh_map: Dict[str, set] = {}
     seed_map: Dict[str, Optional[set]] = {}
     for rid in {j.run_id for j in candidates}:
         r = session.query(Run).filter_by(id=rid).first()
         run_cache[rid] = r
         sel_map[rid] = _run_selection(r) if r is not None else None
+        kh_map[rid] = _run_key_hunters(r) if r is not None else set()
         seed_map[rid] = (_run_seed_target_ids(session, r)
                          if r is not None else None)
 
@@ -782,6 +808,15 @@ def _claim_jobs(session, limit: int):
         candidates.sort(
             key=lambda j: 0 if (sel_map.get(j.run_id)
                                 and j.plugin_id in sel_map[j.run_id])
+            else 1)
+    # CRYPTO KEY-HUNTER FIRST (2026-10-23): on crypto-class runs
+    # the exposed-key hunters sort ahead of everything else -
+    # ahead of the explicit selection too, because a pack
+    # selection's own secret/wallet hunters are exactly the
+    # plugins that must not trail the address-format checks.
+    if any(kh_map.values()):
+        candidates.sort(
+            key=lambda j: 0 if j.plugin_id in kh_map.get(j.run_id, ())
             else 1)
     # Per-run phase-1 pending counts, one GROUP BY for the whole pass
     # (was one COUNT query per phase-2 candidate).
@@ -815,8 +850,13 @@ def _claim_jobs(session, limit: int):
         age = now_mono - clock
         sel = sel_map.get(job.run_id)
         is_selected = bool(sel) and job.plugin_id in sel
-        if not is_selected and (age >= SCAN_HARD_STOP_S or (
-                age >= SCAN_SOFT_STOP_S and job.priority > HIGH_TIER)):
+        # Key hunters on crypto-class runs get the SELECTED MEANS
+        # RUN budget treatment: the budget never starves the
+        # private-key hunt on a crypto target.
+        is_key_hunter = job.plugin_id in kh_map.get(job.run_id, ())
+        if not (is_selected or is_key_hunter) and (
+                age >= SCAN_HARD_STOP_S or (
+                    age >= SCAN_SOFT_STOP_S and job.priority > HIGH_TIER)):
             job.status = "skipped"
             job.finished_at = dt.datetime.now(dt.timezone.utc)
             job.result = {"status": "skipped",
@@ -891,6 +931,10 @@ def _get_run_ctx(run_id: str) -> Ctx:
                   evidence_dir=config.EVIDENCE_DIR,
                   source_type=(run.source_type if run and run.source_type
                                else "website"))
+        # Crypto-class runs: plugins that consult the run context
+        # (e.g. the pack's collect_texts) widen their surface when
+        # this is set - see app/cryptotarget.py.
+        ctx.shared["crypto_target"] = bool(meta.get("crypto_target"))
         # WAF-block accounting baseline: the limiter is shared across
         # runs in this worker, so snapshot per-host WAF stats at run
         # start; _finalize_run turns the delta into findings.
@@ -1761,17 +1805,22 @@ def _calibrated_estimates(session, days: int = 7) -> Dict[str, int]:
 
 def _enqueue_jobs(session, run_id: str, plugins, trobj,
                   bounty: bool = False,
-                  estimates: Optional[Dict[str, int]] = None) -> int:
+                  estimates: Optional[Dict[str, int]] = None,
+                  boost_ids: Optional[set] = None) -> int:
     """Insert one PluginJob per (plugin x target) pair. Returns job count.
 
     estimates overrides the hardcoded PLUGIN_TIME_ESTIMATES per plugin
     (see _calibrated_estimates) so dispatch order reflects observed
-    durations.
+    durations. boost_ids (crypto-class runs): those plugins enqueue
+    at HIGH priority regardless of their static tier - the exposed-
+    key hunters lead the scan (see app/cryptotarget.py).
     """
     estimates = estimates or {}
+    boost = boost_ids or set()
     jobs = [PluginJob(run_id=run_id, target_id=t.id, plugin_id=p.id,
                       phase=getattr(p, "phase", 1),
-                      priority=priority_for(p.id, bounty=bounty),
+                      priority=(HIGH_TIER if p.id in boost
+                                else priority_for(p.id, bounty=bounty)),
                       estimate_s=estimates.get(
                           p.id, PLUGIN_TIME_ESTIMATES.get(
                               p.id, DEFAULT_PLUGIN_ESTIMATE_S)),
@@ -2176,16 +2225,30 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         concurrency = max(getattr(config, "MAX_CONCURRENCY", 5), 1)
         estimated_s = max(int(total_plugin_s / concurrency), 10)
 
+        # Crypto-class targets (Jay's order, 2026-10-23): when the
+        # seed targets are crypto/web3 properties, the exposed-key
+        # hunters lead the scan - claimed first, budget-exempt,
+        # enqueued HIGH - and their findings rank first at read
+        # time. See app/cryptotarget.py.
+        from . import cryptotarget as _ct
+        crypto_info = _ct.classify_crypto_targets(classified, plugin_ids)
+        key_hunters = (_ct.key_hunter_ids([p.id for p in plugins])
+                       if crypto_info["crypto"] else [])
+
         meta = {"mode": mode, "plugin_ids": plugin_ids,
                 "excluded_plugin_ids": excluded_plugin_ids or [],
                 "module_overrides": module_overrides or {},
                 "source_type": source_type,
                 "seed_target_ids": [t.id for t in trobj],
+                "crypto_target": crypto_info["crypto"],
+                "crypto_reasons": crypto_info["reasons"],
+                "key_hunter_ids": key_hunters,
                 "estimates": "calibrated" if estimates else "static"}
         run.summary = {**(run.summary or {}), "queue_meta": meta}
         session.commit()
         n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty,
-                               estimates=estimates)
+                               estimates=estimates,
+                               boost_ids=set(key_hunters) or None)
 
         await _emit(run_id, "run_start",
                     {"run_id": run_id,

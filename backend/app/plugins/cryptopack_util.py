@@ -495,6 +495,34 @@ async def collect_texts(ctx: Ctx, target: Target,
                 texts.append(("JS bundle", jr["text"][:500_000], full))
         except Exception:
             continue
+    # Crypto-class runs (Jay's order, 2026-10-23): the pack's
+    # env-assignment detectors (MNEMONIC=, PRIVATE_KEY=, WIF) must
+    # also see the target's served config files, not just the
+    # homepage and its JS - a leaked .env is the canonical
+    # exposed-key surface on a crypto site. Gated on the run flag
+    # so non-crypto scans keep their exact old fetch profile.
+    # Fetches ride the shared fetch_page cache, so the ~200 pack
+    # plugins together pay for these files once.
+    try:
+        is_crypto_run = bool((getattr(ctx, "shared", None) or {})
+                             .get("crypto_target"))
+    except Exception:
+        is_crypto_run = False
+    if is_crypto_run:
+        for cfg_path in ("/.env", "/.env.local"):
+            cfg_url = urljoin(page_url, cfg_path)
+            try:
+                cr = await ctx.fetch_page(cfg_url, timeout=10)
+            except Exception:
+                continue
+            if cr is None:
+                continue
+            try:
+                if cr["status_code"] == 200 and cr["text"]:
+                    texts.append(("config file", cr["text"][:500_000],
+                                  cfg_url))
+            except Exception:
+                continue
     return texts
 
 
