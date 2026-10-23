@@ -84,9 +84,18 @@ class DnsPlugin(Plugin):
 
         async def _one_type(rtype: str):
             async with sem:
-                vals, _ = await ctx.cache.cached(
-                    "dns", f"{domain}:{rtype}",
-                    lambda rt=rtype: lookup(rt))
+                # Per-type deadline (2026-10-23): on dead/slow domains
+                # the resolver fallback chain could otherwise eat the
+                # whole plugin budget on a single record type. 25s is
+                # generous vs the 6s-lifetime x 3-resolver worst case.
+                try:
+                    vals, _ = await asyncio.wait_for(
+                        ctx.cache.cached(
+                            "dns", f"{domain}:{rtype}",
+                            lambda rt=rtype: lookup(rt)),
+                        timeout=25)
+                except Exception:
+                    vals = []
                 for v in vals:
                     findings.append(self._f("dns", rtype.lower(), v,
                                             source=f"DNS {rtype}",
@@ -121,19 +130,25 @@ class DnsPlugin(Plugin):
         await asyncio.gather(*[_one_ptr(ip) for ip in a_vals[:8]],
                              return_exceptions=True)
 
-        # DNSSEC posture: check for DS at parent via a simple query
-        ds_answer = None
-        ds_missing = False
-        for rs in resolvers:
-            try:
-                await rs.resolve(domain, "DS")
-                ds_answer = True
-                break
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-                ds_missing = True
-                break
-            except Exception:
-                continue
+        # DNSSEC posture: check for DS at parent via a simple query.
+        # Bounded (2026-10-23): sequential resolver chain, dead domains
+        # made this eat up to ~18s of the plugin budget.
+        async def _ds_phase():
+            for rs in resolvers:
+                try:
+                    await rs.resolve(domain, "DS")
+                    return True, False
+                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                    return False, True
+                except Exception:
+                    continue
+            return None, False
+
+        try:
+            ds_answer, ds_missing = await asyncio.wait_for(_ds_phase(),
+                                                           timeout=12)
+        except Exception:
+            ds_answer, ds_missing = None, False
         if ds_answer:
             findings.append(self._f("dns", "dnssec", "DS record present: signed zone",
                                     source="DNS DS", confidence=85))
@@ -141,8 +156,13 @@ class DnsPlugin(Plugin):
             findings.append(self._f("dns", "dnssec", "no DS record: unsigned zone",
                                     source="DNS DS", confidence=80))
 
-        # Zone transfer attempt (detection only - one AXFR query per nameserver)
-        for ns_val in [f.value for f in findings if f.key == "ns"][:4]:
+        # Zone transfer attempt (detection only - one AXFR query per
+        # nameserver). The whole phase is deadline-bounded (2026-10-23):
+        # per-NS resolver chains on dead domains stacked sequentially
+        # and ate the rest of the plugin budget after the record types
+        # had already landed - the plugin then timed out anyway.
+        async def _axfr_phase():
+          for ns_val in [f.value for f in findings if f.key == "ns"][:4]:
             try:
                 # NOTE: dns.query / dns.zone are imported at module level.
                 # Importing them here inside run() would make `dns` a local
@@ -177,6 +197,11 @@ class DnsPlugin(Plugin):
                         continue
             except Exception:
                 continue
+
+        try:
+            await asyncio.wait_for(_axfr_phase(), timeout=20)
+        except Exception:
+            pass
 
         # CAA analysis
         caa_vals = [f.value for f in findings if f.key == "caa"]

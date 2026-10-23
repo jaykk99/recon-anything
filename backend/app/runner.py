@@ -12,6 +12,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import os
 import ssl
 import threading
 import time
@@ -1390,6 +1391,20 @@ async def queue_worker_loop() -> None:
     the next queued job (priority order), and every queued job runs.
     """
     global _worker_http, _worker_limiter
+    # Roomier default executor (2026-10-23): several plugins park
+    # blocking calls in the loop's default executor (dns AXFR, tls cert
+    # grabs, fastmode socket connects). The default pool is
+    # min(32, cpu+4) threads - on the small worker instance that
+    # saturated under 32 concurrent jobs, so blocking calls queued
+    # behind each other and plugins timed out waiting for a thread,
+    # not for the network. 96 threads, env-tunable.
+    try:
+        import concurrent.futures as _cf
+        asyncio.get_running_loop().set_default_executor(_cf.ThreadPoolExecutor(
+            max_workers=int(os.environ.get("RECON_EXECUTOR_WORKERS", "96")),
+            thread_name_prefix="recon-io"))
+    except Exception:
+        pass
     reset_stale_queue_jobs()
     async with net.async_client(
             headers={"User-Agent": config.USER_AGENT},
