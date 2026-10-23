@@ -50,7 +50,15 @@ class DnsPlugin(Plugin):
             except Exception:
                 continue
         for r in resolvers:
-            r.lifetime = 10
+            # 6s (was 10s): with the per-type resolver fallback chain a
+            # dead resolver costs at most one lifetime per record type,
+            # and the lookups below now run concurrently, so a slow
+            # chain can no longer stack 14 types x 3 resolvers x 10s
+            # sequentially past the plugin timeout (measured 2026-10-23:
+            # this plugin timed out at 60s with ZERO findings on
+            # example.com - every record it had already resolved was
+            # discarded with the timeout).
+            r.lifetime = 6
 
         async def lookup(rtype: str):
             # Try every resolver before declaring no answer (2026-10-20):
@@ -68,13 +76,26 @@ class DnsPlugin(Plugin):
                     continue
             return []
 
-        for rtype in RECORDS:
-            vals, _ = await ctx.cache.cached("dns", f"{domain}:{rtype}",
-                                             lambda rt=rtype: lookup(rt))
-            for v in vals:
-                findings.append(self._f("dns", rtype.lower(), v,
-                                        source=f"DNS {rtype}",
-                                        confidence=95, passive=True))
+        # All record types resolve CONCURRENTLY (they are independent),
+        # and each completed type is checkpointed immediately, so a
+        # timeout on the slowest chain keeps every record already found
+        # instead of reporting zero.
+        sem = asyncio.Semaphore(8)
+
+        async def _one_type(rtype: str):
+            async with sem:
+                vals, _ = await ctx.cache.cached(
+                    "dns", f"{domain}:{rtype}",
+                    lambda rt=rtype: lookup(rt))
+                for v in vals:
+                    findings.append(self._f("dns", rtype.lower(), v,
+                                            source=f"DNS {rtype}",
+                                            confidence=95, passive=True))
+                self._checkpoint(findings)
+
+        await asyncio.gather(*[_one_type(rt) for rt in RECORDS],
+                             return_exceptions=True)
+        self._checkpoint(findings)
 
         # PTR for each A record (reverse DNS), same resolver fallback chain
         async def ptr_lookup(rev):
@@ -85,15 +106,20 @@ class DnsPlugin(Plugin):
                     continue
             return []
         a_vals = [f.value for f in findings if f.key == "a"]
-        for ip in a_vals[:8]:
+
+        async def _one_ptr(ip: str):
             try:
                 rev = dns.reversename.from_address(ip)
                 ans = await ptr_lookup(rev)
                 for r in ans:
                     findings.append(self._f("dns", "ptr", f"{ip} -> {r}",
                                             source="Reverse DNS", confidence=90))
+                self._checkpoint(findings)
             except Exception:
-                continue
+                pass
+
+        await asyncio.gather(*[_one_ptr(ip) for ip in a_vals[:8]],
+                             return_exceptions=True)
 
         # DNSSEC posture: check for DS at parent via a simple query
         ds_answer = None

@@ -199,6 +199,29 @@ class SubdomainsPlugin(Plugin):
         findings: List[Finding] = []
         mode = self.module_mode(ctx)
 
+        # Findings are emitted INCREMENTALLY as each source lands and
+        # checkpointed after every stage (2026-10-23). The old flow
+        # accumulated every source first and emitted at the very end,
+        # so when a slow late source (ThreatCrowd has been effectively
+        # dead for years; OTX/urlscan can stall too) ate the remaining
+        # budget, the plugin timed out and reported ZERO - including
+        # the crt.sh subdomains it had already retrieved. Measured on
+        # example.com: timeout at 90s, 0 findings, crt.sh data lost.
+        emitted = set()
+
+        def _emit_new_subs():
+            new = [s for s in sorted(seen) if s not in emitted]
+            for sub in new:
+                emitted.add(sub)
+                ctx.publish("subdomains", sub)
+                findings.append(self._f(
+                    "dns", "subdomain", sub,
+                    source="certificate transparency / hostsearch",
+                    source_url=f"https://crt.sh/?q=%25.{domain}",
+                    confidence=85, passive=True))
+            if new:
+                self._checkpoint(findings)
+
         # --- crt.sh (always passive-safe, free, no key) ---
         async def crtsh():
             url = f"https://crt.sh/?q=%25.{quote(domain)}&output=json"
@@ -225,6 +248,9 @@ class SubdomainsPlugin(Plugin):
             findings.append(self._f("dns", "subdomain_enum_note",
                                     f"crt.sh unavailable: {rows['error']}",
                                     source="crt.sh", confidence=40, passive=True))
+        # crt.sh results are real findings NOW, before any slower
+        # source gets a chance to burn the budget.
+        _emit_new_subs()
 
         # --- fallback: hackertarget hostsearch (free, no key) ---
         if not crt_ok:
@@ -251,6 +277,7 @@ class SubdomainsPlugin(Plugin):
                                             "used hackertarget fallback (crt.sh failed)",
                                             source="api.hackertarget.com",
                                             confidence=50, passive=True))
+                    _emit_new_subs()
 
         # (anubis jldc.me fallback removed 2026-10-17: the service moved to
         # jonlu.ca behind a Cloudflare challenge that server-side calls cannot
@@ -338,25 +365,39 @@ class SubdomainsPlugin(Plugin):
                                         source="threatcrowd.org",
                                         confidence=65, passive=True))
 
+        # Everything the three concurrent sources added is emitted
+        # before the (sequential) staleness probes below.
+        _emit_new_subs()
+
         # --- subdomain permutations: common prefixes on found subs ---
+        # Candidates are tracked SEPARATELY from `seen` (2026-10-23):
+        # the old code added them to `seen`, and the final emission
+        # loop then reported every guessed name (api2., old., beta-...)
+        # as a DISCOVERED subdomain at confidence 85 with a crt.sh
+        # source it never came from - fabricated findings, and the
+        # hunters pivoted jobs onto hosts that do not exist. They are
+        # unverified guesses: noted here, never emitted as subdomains,
+        # never published to the bus. (Active mode still verifies
+        # wordlist names by resolving them, below.)
         perm_prefixes = ["www2", "m2", "api2", "old", "new", "beta",
                          "test", "dev", "staging"]
-        n_before = len(seen)
+        candidates = set()
         for sub in list(seen)[:50]:
             first = sub.split(".")[0]
             rest = ".".join(sub.split(".")[1:])
             for pre in perm_prefixes:
                 cand = f"{pre}.{rest}" if first == "www" else f"{pre}-{first}.{rest}"
                 if cand not in seen and cand.endswith(domain):
-                    # passive only: just note as candidate, don't resolve
-                    seen.add(cand)
-        if len(seen) > n_before:
+                    candidates.add(cand)
+        if candidates:
             findings.append(self._f("dns", "subdomain_enum_note",
                                     f"permutation engine added "
-                                    f"{len(seen) - n_before} candidates",
+                                    f"{len(candidates)} candidates "
+                                    f"(unverified, not reported as "
+                                    f"subdomains)",
                                     source="permutation", confidence=40,
                                     passive=True))
-        # the crt.sh-failure case.)
+            self._checkpoint(findings)
 
         # Staleness probes for interesting subdomains, run concurrently
         # (sequential 2-request probes per subdomain become one window).
@@ -377,11 +418,9 @@ class SubdomainsPlugin(Plugin):
                         in zip(interesting, stale_results)}
 
         for sub in sorted(seen):
-            ctx.publish("subdomains", sub)
-            findings.append(self._f("dns", "subdomain", sub,
-                                    source="certificate transparency / hostsearch",
-                                    source_url=f"https://crt.sh/?q=%25.{domain}",
-                                    confidence=85, passive=True))
+            # Plain subdomain findings were already emitted
+            # incrementally by _emit_new_subs(); this loop only adds
+            # the interesting-subdomain analysis.
             sev, why = classify_subdomain(sub, domain)
             if sev:
                 # Check for staleness on interesting subdomains
@@ -399,6 +438,7 @@ class SubdomainsPlugin(Plugin):
                               "stale_signals": stale_signals,
                               "remediation": "Verify this host is intentional, patched, "
                                              "and not exposing more than the main site."}))
+        self._checkpoint(findings)
 
         # --- active DNS brute force (concurrent: ~170 sequential resolves
         # become one paced window; the 100-hit cap still applies in

@@ -9,7 +9,6 @@ can import the same registry later without changes.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import datetime as dt
 import json
 import logging
@@ -52,25 +51,84 @@ def _sse(event: str, data: Dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-# Event persistence runs on a dedicated single-thread executor: a scan
-# emits ~750 events (plugin start/done, one per finding, progress), and
-# each durable copy is a synchronous DB commit. Doing that on the event
-# loop (the old behavior) stalled every in-flight plugin behind Neon
-# round-trips hundreds of times per scan. One writer thread keeps the
-# per-run seq ordering intact while the loop stays free for plugins.
-_event_writer = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="run-events")
+# Event persistence runs on a dedicated writer thread fed by a queue:
+# _emit only does the in-memory fan-out and enqueues the durable copy,
+# and the writer thread commits events to run_events in BATCHES (one
+# commit per batch instead of one per event).
+#
+# Why (measured 2026-10-23 on the example.com baseline): a 195-plugin
+# scan emitted 1,304 events, and the old design awaited a Neon commit
+# for EVERY event inside the job tasks. The single writer serialized
+# behind ~1,300 remote round-trips, _emit waits inflated plugin
+# durations past their own timeouts (a 60s timeout reported 88s), and
+# jobs sat "running" for many minutes in their persist phase while
+# their findings were already computed - the queue looked wedged and
+# the wall clock went to the scan budget instead of the work. Batching
+# keeps the durable copy (subscribe() replays from run_events) with a
+# sub-second lag, which the 1s replay poll already tolerates.
+import queue as _queue
+
+_event_q: "_queue.Queue" = _queue.Queue()
+_event_writer_started = False
+_event_writer_lock = threading.Lock()
 
 
-def _persist_event_safe(run_id: str, event: str, data: Dict) -> None:
+def _persist_events_batch(items) -> None:
+    """Insert a batch of (run_id, seq, event, data) with ONE commit.
+    Self-healing like the old per-event path: on failure, recreate the
+    schema and retry the batch once, then drop it - a DB failure must
+    never break a scan."""
+    def _write():
+        session = get_session()
+        try:
+            for run_id, seq, event, data in items:
+                session.add(RunEvent(run_id=run_id, seq=seq,
+                                     event=event, data=data))
+            session.commit()
+        finally:
+            session.close()
+
     try:
-        _persist_event(run_id, event, data)
+        _write()
     except Exception:
         try:
             init_db()
-            _persist_event(run_id, event, data)
+            _write()
         except Exception:
             pass
+
+
+def _event_writer_loop() -> None:
+    while True:
+        batch = [_event_q.get()]
+        # Coalesce: brief window to gather a batch before committing.
+        deadline = time.monotonic() + 0.15
+        while len(batch) < 200:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                batch.append(_event_q.get(timeout=remaining))
+            except _queue.Empty:
+                break
+        try:
+            _persist_events_batch(batch)
+        finally:
+            for _ in batch:
+                _event_q.task_done()
+
+
+def _ensure_event_writer() -> None:
+    global _event_writer_started
+    if _event_writer_started:
+        return
+    with _event_writer_lock:
+        if _event_writer_started:
+            return
+        t = threading.Thread(target=_event_writer_loop,
+                             name="run-events", daemon=True)
+        t.start()
+        _event_writer_started = True
 
 
 async def _emit(run_id: str, event: str, data: Dict):
@@ -83,27 +141,14 @@ async def _emit(run_id: str, event: str, data: Dict):
             pass
     # Durable copy in run_events: the in-memory bus is invisible to other
     # worker processes and vanishes on restart, which is what silently
-    # broke live UI updates. A DB failure must never break a scan.
-    # Self-healing: if the table is missing (wiped DB), recreate and retry
-    # (inside _persist_event_safe, on the writer thread).
-    try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_event_writer, _persist_event_safe,
-                                   run_id, event, data)
-    except RuntimeError:
-        _persist_event_safe(run_id, event, data)
-
-
-def _persist_event(run_id: str, event: str, data: Dict):
+    # broke live UI updates. Enqueued for the batch writer; seq is
+    # assigned here, on the event loop, so per-run ordering is exactly
+    # emission order. Never awaited: event persistence must not stall
+    # the plugin that emitted the event.
     RUN_SEQ[run_id] = RUN_SEQ.get(run_id, 0) + 1
     safe_data = json.loads(json.dumps(data, default=str))
-    session = get_session()
-    try:
-        session.add(RunEvent(run_id=run_id, seq=RUN_SEQ[run_id],
-                             event=event, data=safe_data))
-        session.commit()
-    finally:
-        session.close()
+    _ensure_event_writer()
+    _event_q.put((run_id, RUN_SEQ[run_id], event, safe_data))
 
 
 async def subscribe(run_id: str) -> AsyncIterator[str]:
@@ -254,9 +299,16 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     clear note beats a stalled scan.
     """
     if plugin.missing_keys(ctx):
-        return plugin._skipped(
+        result = plugin._skipped(
             "needs API key: " + ", ".join(plugin.missing_keys(ctx)) +
             " (add it in the Keys tab to enable)")
+        # Emit the job's one plugin_done here: this early return skips
+        # the plugin_start/done pair below, and _run_one_job no longer
+        # emits a duplicate done of its own (2026-10-23 dedupe).
+        await _emit(ctx.run_id, "plugin_done",
+                    {"plugin": plugin.id, "status": result.status.value,
+                     "reason": result.reason, "findings": 0, "ms": 0})
+        return result
     await _emit(ctx.run_id, "plugin_start",
                 {"plugin": plugin.id, "label": plugin.label, "target": target.normalized})
     t0 = time.monotonic()
@@ -776,15 +828,18 @@ async def _run_one_job(job_id: int) -> None:
     ctx = _get_run_ctx(run_id)
     clock = _run_clocks.get(run_id, time.monotonic())
     deadline = clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
+    ran_plugin = False
     try:
         if plugin.accepts and target.type not in plugin.accepts:
             result = plugin._skipped(
                 f"not applicable to target type '{target.type}'")
             result.duration_ms = 0
         else:
-            await _emit(run_id, "plugin_start",
-                        {"plugin": plugin.id, "label": plugin.label,
-                         "target": target.normalized})
+            # _run_plugin emits plugin_start/plugin_done itself; the
+            # duplicates that used to be emitted here as well doubled
+            # the run_events write volume for every job (measured
+            # 2026-10-23: 388 starts + 389 dones for 195 plugins).
+            ran_plugin = True
             result = await _run_plugin(plugin, target, ctx,
                                        deadline=deadline)
     except Exception as e:
@@ -853,10 +908,15 @@ async def _run_one_job(job_id: int) -> None:
             session.close()
         except Exception:
             pass
-    await _emit(run_id, "plugin_done",
-                {"plugin": plugin.id, "status": st,
-                 "reason": result.reason, "findings": len(rows),
-                 "ms": result.duration_ms or 0})
+    if not ran_plugin:
+        # Type-mismatch skip: _run_plugin never ran, so this is the only
+        # plugin_done the job produces. (When _run_plugin did run, it
+        # already emitted plugin_done - emitting it here too was the
+        # duplicate removed 2026-10-23.)
+        await _emit(run_id, "plugin_done",
+                    {"plugin": plugin.id, "status": st,
+                     "reason": result.reason, "findings": len(rows),
+                     "ms": result.duration_ms or 0})
     await _emit(run_id, "progress",
                 {"done": counts["done"], "total": counts["total"],
                  "plugin": plugin.id, "target": target.normalized})

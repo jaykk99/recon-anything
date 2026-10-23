@@ -26,8 +26,40 @@ from app.models import PluginJob, Run, Target as TargetRow  # noqa: E402
 
 @pytest.fixture(scope="module", autouse=True)
 def _db():
+    # DB isolation (fixed 2026-10-23): app.models binds its engine ONCE
+    # at import time from DATABASE_URL. Standalone, this module is
+    # imported first, so the engine is this module's throwaway DB and
+    # all 34 tests pass. In a full-suite run, an earlier-collected
+    # module imports app.models first (binding the shared default DB),
+    # the env assignment above becomes a no-op, and these tests run
+    # against a database full of foreign + leftover rows: known-set
+    # adds collide on unique keys (IntegrityError), counts include
+    # other modules' assets, and 16 tests fail. Rebind the engine to
+    # this module's own DB for the module's tests and restore the
+    # original binding afterwards, so the module behaves exactly as it
+    # does standalone without disturbing any other module.
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    orig_engine = models.engine
+    orig_sessionlocal = models.SessionLocal
+    orig_url = str(orig_engine.url)
+    want_url = f"sqlite:///{_TMPDB}"
+    if orig_url != want_url:
+        new_engine = create_engine(
+            want_url, connect_args={"check_same_thread": False},
+            pool_pre_ping=True)
+        models.engine = new_engine
+        models.SessionLocal = sessionmaker(
+            bind=new_engine, autoflush=False, autocommit=False)
+    else:
+        new_engine = None
     models.init_db()
     yield
+    if new_engine is not None:
+        models.engine = orig_engine
+        models.SessionLocal = orig_sessionlocal
+        new_engine.dispose()
 
 
 @pytest.fixture()
