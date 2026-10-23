@@ -5,6 +5,8 @@ Design rules (Jay's orders, 2026-10-23):
   - GitHub OAuth sign-in for customers; env-gated on GITHUB_CLIENT_ID /
     GITHUB_CLIENT_SECRET. When unset, sign-in shows an honest
     "sign-in opens soon" state and the rest of the app is unchanged.
+    When set, the app flips to sign-in mode (see signin_mode): the
+    legacy access code is retired and GitHub sign-in is the only door.
   - The owner (GitHub login from OWNER_GITHUB_LOGIN, default "jaykk99")
     has full access to everything and is NEVER shown payment UI:
     /api/me reports show_payment_ui=False for the owner, and plan
@@ -160,6 +162,22 @@ def today_start_utc():
 def github_enabled() -> bool:
     return bool(os.environ.get("GITHUB_CLIENT_ID")
                 and os.environ.get("GITHUB_CLIENT_SECRET"))
+
+
+def signin_mode() -> bool:
+    """True when GitHub sign-in is the app's only door.
+
+    The mode flips on configuration alone: the moment GITHUB_CLIENT_ID
+    and GITHUB_CLIENT_SECRET are both set, the app runs in sign-in
+    mode and the legacy access code is RETIRED - it is not accepted
+    anywhere (API or UI) and a GitHub session is required for every
+    gated route. While either var is unset, sign-in mode is off and
+    the access-code gate behaves exactly as it always has, so the app
+    is never left ungated mid-transition. Read at call time, like
+    github_enabled(), so flipping the env flips the mode on the next
+    request after a redeploy.
+    """
+    return github_enabled()
 
 
 def btc_address() -> str:

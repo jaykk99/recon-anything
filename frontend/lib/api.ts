@@ -24,6 +24,40 @@ export async function verifyCode(code: string): Promise<boolean> {
   }
 }
 
+// ------------------------------------------------------------ identity
+// /api/me reports which door the app is behind: auth_mode "github"
+// (sign-in mode - the access code is retired and no code field is
+// shown anywhere) or "access_code" (the fallback gate). It answers for
+// anonymous visitors too, so one cached fetch drives every page.
+export interface MeInfo {
+  auth_mode: "github" | "access_code";
+  github_enabled: boolean;
+  signed_in: boolean;
+  is_owner: boolean;
+  show_payment_ui: boolean;
+  user: { login: string } | null;
+  plan: { id: string; name: string } & Record<string, unknown>;
+}
+
+let _mePromise: Promise<MeInfo | null> | null = null;
+
+export function fetchMe(): Promise<MeInfo | null> {
+  if (!_mePromise) {
+    _mePromise = fetch("/api/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return _mePromise;
+}
+
+export async function signOut(): Promise<void> {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    // The cookie may already be gone; signing out stays a no-op then.
+  }
+}
+
 export function headers(): HeadersInit {
   const h: Record<string, string> = { "Content-Type": "application/json" };
   const c = getCode();

@@ -30,8 +30,15 @@ Routes:
 The agents do not chat, they hunt: there is no assistant or chat route.
 Hunters work through the agent data service (app/agentdata).
 
-Single-user gate: if RECON_ACCESS_CODE is set, every /api route except
-/api/health requires header X-Access-Code.
+Gate (two modes, flipped by configuration - billing.signin_mode):
+  - Sign-in mode (GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set): the
+    legacy access code is retired and NOT accepted anywhere; every
+    /api route except /api/health, /api/me and /api/plans requires a
+    GitHub session cookie. The owner login gets full access; other
+    signed-in accounts are plan-gated customers.
+  - Fallback mode (OAuth not configured): if RECON_ACCESS_CODE is
+    set, every /api route except /api/health requires header
+    X-Access-Code (a GitHub session is also accepted, as before).
 """
 from __future__ import annotations
 
@@ -137,13 +144,29 @@ def _session_user(request: Request):
 
 
 def resolve_actor(request: Request, provided_code: Optional[str] = None):
-    """Who is calling: {"kind": "owner"|"user"|"open", "user": User|None}.
+    """Who is calling: {"kind": "owner"|"user"|"open"|"anon",
+    "user": User|None}.
 
-    - owner: the access code matched, OR the signed-in GitHub account is
-      the owner login. Full access, never any payment UI or plan gate.
+    - owner: the signed-in GitHub account is the owner login - or, in
+      fallback mode only, the access code matched. Full access, never
+      any payment UI or plan gate.
     - user:  a signed-in customer; plan gating applies.
-    - open:  no access code configured (local dev) - treated as owner.
+    - open:  fallback mode with no access code configured (local dev)
+      - treated as owner.
+    - anon:  nobody the gate accepts; gated routes answer 401.
+
+    In sign-in mode (billing.signin_mode) the access code is retired:
+    provided_code is ignored entirely, so the old code stops working
+    the moment the GitHub OAuth env vars land - the only way in is a
+    GitHub session.
     """
+    if billing.signin_mode():
+        user = _session_user(request)
+        if user is not None:
+            if billing.is_owner_login(user.github_login):
+                return {"kind": "owner", "user": user}
+            return {"kind": "user", "user": user}
+        return {"kind": "anon", "user": None}
     if config.ACCESS_CODE and provided_code == config.ACCESS_CODE:
         return {"kind": "owner", "user": None}
     user = _session_user(request)
@@ -160,11 +183,16 @@ def gate(request: Request,
          x_access_code: Optional[str] = Header(default=None),
          code: Optional[str] = Query(default=None)):
     # EventSource cannot set headers, so accept ?code= as a fallback.
-    # A valid GitHub session cookie is the customer alternative to the
-    # owner's access code (Jay's mode is unchanged).
+    # In fallback mode a valid GitHub session cookie is the customer
+    # alternative to the owner's access code (Jay's mode is unchanged).
+    # In sign-in mode the code is retired: resolve_actor ignores it and
+    # only the session cookie counts.
     provided = x_access_code or code
     actor = resolve_actor(request, provided)
     if actor["kind"] == "anon":
+        if billing.signin_mode():
+            raise HTTPException(status_code=401,
+                                detail="sign in with GitHub required")
         raise HTTPException(status_code=401, detail="bad access code")
     request.state.actor = actor
     return True
@@ -1585,6 +1613,11 @@ def _me_payload(request: Request) -> Dict:
     # The owner branches below deliberately omit checkout_enabled:
     # no payment UI data is ever served to the owner account.
     base = {"github_enabled": billing.github_enabled(),
+            # Which door the UI should show: "github" in sign-in mode
+            # (access code retired, no code field anywhere), else
+            # "access_code" (the legacy fallback gate).
+            "auth_mode": ("github" if billing.signin_mode()
+                          else "access_code"),
             "free_reveals_per_day": billing.FREE_REVEALS_PER_DAY,
             "day_boundary": "UTC"}
     user = actor.get("user")
@@ -1643,6 +1676,8 @@ def api_me(request: Request):
 def api_plans():
     return {"plans": billing.public_plans(),
             "github_enabled": billing.github_enabled(),
+            "auth_mode": ("github" if billing.signin_mode()
+                          else "access_code"),
             "checkout_enabled": billing.checkout_enabled(),
             "free_rule": ("Free plan: exactly 1 revealed finding per day "
                           "(resets at UTC midnight). Scans still run in "

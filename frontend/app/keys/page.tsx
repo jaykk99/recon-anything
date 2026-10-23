@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
-import { api, getCode } from "../../lib/api";
+import { api, fetchMe, getCode, type MeInfo } from "../../lib/api";
 
 export default function KeysPage() {
   const [keys, setKeys] = useState<Record<string, { configured: boolean; used_by: string[] }>>({});
   const [encrypted, setEncrypted] = useState(false);
   const [form, setForm] = useState({ name: "", label: "", secret: "" });
   const [msg, setMsg] = useState("");
+  const [me, setMe] = useState<MeInfo | null>(null);
 
   async function load() {
     try {
@@ -14,7 +15,7 @@ export default function KeysPage() {
       setKeys(d.keys); setEncrypted(d.encrypted);
     } catch (e: any) { setMsg(e.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); fetchMe().then(setMe); }, []);
 
   async function save() {
     setMsg("");
@@ -36,7 +37,9 @@ export default function KeysPage() {
       <p className="text-xs text-slate-500">
         Keys are stored server-side and never sent to the browser.{" "}
         {encrypted ? "Encryption at rest is ON." : "Set RECON_MASTER_KEY to encrypt at rest."}
-        {" "}Access code: {getCode() ? "set" : "not set"} (set it on the home page).
+        {me?.auth_mode === "github"
+          ? ` Signed in with GitHub${me.user ? ` as ${me.user.login}` : ""}.`
+          : ` Access code: ${getCode() ? "set" : "not set"} (set it on the home page).`}
       </p>
       <div className="card p-4 space-y-2">
         {Object.keys(keys).length === 0 && <p className="text-sm text-slate-500">no keys required by any plugin yet, or none configured</p>}

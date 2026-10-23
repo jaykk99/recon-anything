@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, getCode, setCode, clearCode, verifyCode, PluginInfo, ClassifyResult } from "../lib/api";
+import { api, getCode, setCode, clearCode, verifyCode, fetchMe, PluginInfo, ClassifyResult, type MeInfo } from "../lib/api";
 import BreachWatch from "./breachwatch";
 
 const GROUPS: Record<string, string> = {
@@ -27,8 +27,16 @@ export default function Home() {
   const [codeMsg, setCodeMsg] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const [me, setMe] = useState<MeInfo | null>(null);
+  // Sign-in mode (GitHub OAuth configured server-side): the access
+  // code is retired - no code field, GitHub sign-in is the gate.
+  const githubMode = me?.auth_mode === "github";
 
   useEffect(() => {
+    fetchMe().then((m) => {
+      setMe(m);
+      if (m && m.auth_mode === "github") clearCode();
+    });
     const saved = getCode();
     setCodeState(saved);
     setCodeSaved(!!saved);
@@ -116,11 +124,43 @@ export default function Home() {
     setEnabled(e);
   }
 
+  // Sign-in mode + signed out: GitHub sign-in is the only gate. The
+  // scan form (and the retired access-code field) is not shown at all.
+  if (githubMode && me && !me.signed_in) {
+    return (
+      <div className="card p-6 space-y-4 max-w-xl">
+        <h1 className="text-lg font-semibold">Sign in to run a scan</h1>
+        <p className="text-sm text-slate-400">
+          ReconAnything uses GitHub sign-in. Sign in to create runs,
+          see your findings, export reports, and use the Crypto Pack.
+          The free plan includes 3 scans a day and 1 revealed finding
+          per day.
+        </p>
+        <p>
+          <a href="/api/auth/github" className="btn px-6 py-3 min-h-[48px] inline-flex items-center text-base">
+            Sign in with GitHub
+          </a>
+        </p>
+        <p className="text-xs text-slate-500">
+          Plans and pricing are on the{" "}
+          <a href="/pricing" className="text-sky-300 hover:text-sky-200">pricing page</a>.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 max-w-full">
       <div className="card p-4 sm:p-5 space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="text-lg font-semibold">New recon run</h1>
+          {githubMode ? (
+            <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-slate-400">Signed in as</span>
+              <span className="text-sm text-slate-200">{me?.user?.login}</span>
+              <span className="text-xs text-slate-500">{me?.plan?.name} plan</span>
+            </div>
+          ) : (
           <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2 flex-wrap">
             <span className="text-xs text-slate-400">Access code</span>
             <div className="relative flex-1 sm:flex-none">
@@ -151,8 +191,9 @@ export default function Home() {
               </>
             )}
           </div>
+          )}
         </div>
-        {codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
+        {!githubMode && codeMsg && <p className={`text-xs ${codeMsg.startsWith("Wrong") ? "text-red-400" : "text-green-400"}`}>{codeMsg}</p>}
         <textarea className="input w-full p-3 font-mono text-base min-h-[88px]" rows={sourceType === "bankatm" ? 1 : 3}
           placeholder={sourceType === "website"
             ? "example.com\nhttps://target.com\n8.8.8.8\nuser@example.com"

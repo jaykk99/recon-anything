@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import ModeBanner from "../components/ModeBanner";
+import AuthStatus from "../components/AuthStatus";
 
 export const metadata: Metadata = {
   title: "ReconAnything",
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/runs" className="hover:text-sky-300">Runs</a>
             <a href="/pricing" className="hover:text-sky-300">Pricing</a>
             <a href="/settings" className="hover:text-sky-300">Settings</a>
+            <AuthStatus />
           </nav>
         </header>
         <ModeBanner />

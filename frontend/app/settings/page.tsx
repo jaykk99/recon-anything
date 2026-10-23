@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { api, getCode } from "../../lib/api";
+import { api, fetchMe, getCode, type MeInfo } from "../../lib/api";
 
 type Settings = {
   mode: string;
@@ -14,6 +14,7 @@ export default function SettingsPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [assetsText, setAssetsText] = useState("");
+  const [me, setMe] = useState<MeInfo | null>(null);
 
   async function load() {
     try {
@@ -22,7 +23,7 @@ export default function SettingsPage() {
       setAssetsText((d.owned_assets || []).join("\n"));
     } catch (e: any) { setMsg(e.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); fetchMe().then(setMe); }, []);
 
   async function switchMode(mode: string) {
     if (!s || mode === s.mode) return;
@@ -61,7 +62,9 @@ export default function SettingsPage() {
     <div className="space-y-4 max-w-2xl">
       <h1 className="text-lg font-semibold">Settings</h1>
       <p className="text-xs text-slate-500">
-        Access code: {getCode() ? "set" : "not set"} (set it on the home page).
+        {me?.auth_mode === "github"
+          ? `Signed in with GitHub${me.user ? ` as ${me.user.login}` : ""}.`
+          : `Access code: ${getCode() ? "set" : "not set"} (set it on the home page).`}
       </p>
       {msg && <p className="text-sm text-amber-300">{msg}</p>}
 
