@@ -203,6 +203,33 @@ ReconAnything is a paid product with a free tier (`/pricing`):
   sign-in button shows "opens soon"; with `RECON_BTC_ADDRESS` unset
   checkout shows "checkout opens soon". No address is ever invented.
 
+### Authenticated Mode (Pro / Agency)
+
+Authenticated scans run the same detection plugins behind a target's
+login, using credentials the user supplies for a target they own or
+have written permission to test. Authenticated: scans behind the
+login of your own systems. For authorized testing only.
+
+- **One-time attestation.** The warning is accepted once per account
+  (`POST /api/auth/attestation`); the acceptance (identity, timestamp,
+  text version) is stored in `auth_acceptances`. Authenticated runs
+  are rejected server-side for accounts with no stored acceptance -
+  the owner account accepts once too. After that, runs need no
+  repeated warning: each one is stamped with its acceptance reference
+  and carries an "Authenticated" badge (run detail, run list,
+  findings, exports).
+- **Credentials** (session cookie, bearer token, basic auth, or up to
+  5 custom headers) are supplied per run, Fernet-encrypted into the
+  run's `run_auth` row (`RECON_AUTH_SECRET`; set the same value on the
+  API and worker services), decrypted only in the worker's memory,
+  attached ONLY to requests to the run's seed target hosts, and wiped
+  when the run finishes. They never appear in logs, findings, events,
+  exports or API responses - the API shows only a presence label like
+  "auth: cookie (set)". There is no login-form submission, credential
+  testing or bypass: the user replays a session they already hold.
+- **Plans.** Pro and Agency only (plus the owner). Free and Starter
+  run creation with credentials is rejected server-side.
+
 ## Deploy
 
 ### SnapDeploy (single container, free tier)
@@ -256,6 +283,7 @@ this fix instead of a bare "run not found".
 | `DATABASE_URL` | `sqlite:///./recon.db` | Database. Set to a Postgres URL (e.g. Neon free tier) for persistence; see above. `postgres://` URLs are auto-rewritten and the `psycopg2` driver is pinned (plain `postgresql://` would otherwise make SQLAlchemy 2.x look for the uninstalled `psycopg` v3 driver). |
 | `RECON_ACCESS_CODE` | (empty = no gate) | Single access code gating the UI/API. |
 | `RECON_MASTER_KEY` | (empty = plaintext) | Fernet key for encrypting stored API keys. |
+| `RECON_AUTH_SECRET` | (empty = fallbacks) | Encrypts Authenticated Mode run credentials. Set the SAME value on the API and worker services. Falls back to `RECON_MASTER_KEY`, then to a key derived from `RECON_ACCESS_CODE`. |
 | `REDIS_URL` | (empty = in-memory) | Optional Redis for the cache backend. |
 | `RECON_TIMEOUT` | `20` | Default HTTP timeout (seconds) for plugins. |
 | `RECON_CONCURRENCY` | `5` | Parallel plugins per run. |

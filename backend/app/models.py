@@ -342,6 +342,47 @@ class Order(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class AuthAcceptance(Base):
+    """One-time Authenticated Mode attestation, per account identity.
+
+    The user accepts the warning text ONCE ("I own my targets or have
+    written permission to test them; my attestations are logged"); the
+    acceptance row is the server-side proof. Authenticated runs are
+    rejected for identities with no acceptance of the current text
+    version. identity_key is "owner" for the access-code/owner-login
+    caller, "user:<id>" for signed-in customers.
+    """
+    __tablename__ = "auth_acceptances"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    identity_key = Column(String, unique=True, index=True)
+    identity_label = Column(String)  # github login or "owner"
+    text_version = Column(String)  # version of the accepted text
+    accepted_at = Column(DateTime(timezone=True), default=_utcnow)
+    client_ip = Column(String, nullable=True)
+
+
+class RunAuth(Base):
+    """Per-run authenticated-scan stamp + encrypted credentials.
+
+    secret_enc holds the run's credential config, Fernet-encrypted
+    (app/authscan.py). It is decrypted only inside the worker while
+    the run executes and is WIPED (set NULL, wiped_at stamped) when
+    the run finishes. The attestation columns (acceptance reference,
+    creator, hosts, timestamp) are the permanent audit stamp and
+    contain no secret material.
+    """
+    __tablename__ = "run_auth"
+    run_id = Column(String, ForeignKey("runs.id"), primary_key=True)
+    auth_type = Column(String)  # cookie | bearer | basic | headers
+    secret_enc = Column(Text, nullable=True)
+    acceptance_id = Column(Integer, nullable=True)
+    attested_by = Column(String)  # identity label of the run's creator
+    target_hosts = Column(JSON, default=list)  # seed hosts auth may touch
+    client_ip = Column(String, nullable=True)
+    attested_at = Column(DateTime(timezone=True), default=_utcnow)
+    wiped_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class FindingReveal(Base):
     """Free-tier reveal ledger: one row per (user, UTC day) - the single
     finding that user got fully revealed that day, across all runs."""

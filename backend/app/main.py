@@ -57,6 +57,7 @@ from fastapi.responses import (HTMLResponse, PlainTextResponse,
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
+from . import authscan
 from . import billing
 from . import config
 from . import net
@@ -65,8 +66,9 @@ from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
-from .models import (ApiKey, Finding, FindingReveal, Order, Run, RunEvent,
-                     Schedule, Target, User, get_session, init_db)
+from .models import (ApiKey, AuthAcceptance, Finding, FindingReveal, Order,
+                     Run, RunAuth, RunEvent, Schedule, Target, User,
+                     get_session, init_db)
 from .models import check_db, DATABASE_URL, IS_SQLITE
 from .plugins.registry import describe
 from .reporting import (executive_summary, findings_dump, run_progress,
@@ -356,7 +358,69 @@ def api_set_owned_assets(body: OwnedAssetsIn):
         session.close()
 
 
+# -- authenticated mode: one-time attestation ------------------------------
+class AttestationIn(BaseModel):
+    confirmed: bool = False
+
+
+@app.get("/api/auth/attestation", dependencies=[Depends(gate)])
+def api_get_attestation(request: Request):
+    """Has THIS account accepted the Authenticated Mode warning once?
+
+    Returns the stored acceptance (identity, timestamp, text version)
+    or accepted=false plus the texts, so the UI can show the one-time
+    acceptance exactly once per account.
+    """
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    idkey, _label = authscan.identity_for_actor(actor)
+    session = get_session()
+    try:
+        row = authscan.get_acceptance(session, idkey)
+        if row is None:
+            return {"accepted": False,
+                    "warning": authscan.WARNING_TEXT,
+                    "text": authscan.ACCEPTANCE_TEXT,
+                    "text_version": authscan.ACCEPTANCE_TEXT_VERSION,
+                    "disclaimer": authscan.DISCLAIMER_TEXT}
+        return authscan.acceptance_public(row)
+    finally:
+        session.close()
+
+
+@app.post("/api/auth/attestation", dependencies=[Depends(gate)])
+def api_accept_attestation(body: AttestationIn, request: Request):
+    """Record the one-time acceptance for this account (audit-stamped)."""
+    if body.confirmed is not True:
+        raise HTTPException(400, "confirmed must be true to accept")
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    idkey, idlabel = authscan.identity_for_actor(actor)
+    ip = request.client.host if request.client else None
+    session = get_session()
+    try:
+        row = authscan.record_acceptance(session, idkey, idlabel, ip)
+        return authscan.acceptance_public(row)
+    finally:
+        session.close()
+
+
 # -- runs -----------------------------------------------------------------
+class AuthHeaderIn(BaseModel):
+    name: str
+    value: str
+
+
+class AuthIn(BaseModel):
+    """Run-scoped credentials for an authenticated scan. Values are
+    encrypted at rest, used only for this run's seed target hosts, and
+    wiped when the run finishes. Never returned by any endpoint."""
+    type: str  # cookie | bearer | basic | headers
+    cookie: Optional[str] = None
+    token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    headers: Optional[List[AuthHeaderIn]] = None
+
+
 class RunIn(BaseModel):
     targets: str
     mode: str = "active"
@@ -364,6 +428,7 @@ class RunIn(BaseModel):
     module_overrides: Optional[Dict[str, str]] = None
     source_type: str = "website"  # website | bank | atm | bankatm
     bounty: bool = False  # bounty mode: prioritize high-impact vuln classes
+    auth: Optional[AuthIn] = None  # authenticated scan (Pro/Agency plans)
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
@@ -429,10 +494,55 @@ async def api_start_run(body: RunIn, request: Request):
                         f"{r['raw']} ({r['reason']})" for r in rejected)
                     + ". Switch to LIVE in Settings to scan authorized "
                       "external targets.")
+        # --- authenticated mode (Pro/Agency + owner; one-time ------
+        # attestation required). Credentials are validated, encrypted
+        # into the run's RunAuth row, scoped to the seed target hosts,
+        # and wiped when the run finishes (runner.py). They are never
+        # logged or returned by any endpoint.
+        auth_row = None
+        if body.auth is not None:
+            if actor["kind"] == "user" and not (
+                    billing.effective_plan(actor["user"])
+                    .get("auth_scans")):
+                raise HTTPException(
+                    403,
+                    "Authenticated scans are a Pro feature. Upgrade on "
+                    "/pricing to scan behind a login on your own sites.")
+            clean_auth, auth_err = authscan.validate_auth_config(
+                body.auth.model_dump())
+            if auth_err:
+                raise HTTPException(400, auth_err)
+            idkey, idlabel = authscan.identity_for_actor(actor)
+            acceptance = authscan.get_acceptance(session, idkey)
+            if acceptance is None:
+                raise HTTPException(
+                    403,
+                    "Authenticated Mode needs a one-time acceptance "
+                    "first: POST /api/auth/attestation (the warning is "
+                    "shown once per account, then never again).")
+            hosts = authscan.seed_hosts(classify_batch(body.targets))
+            if not hosts:
+                raise HTTPException(
+                    400,
+                    "authenticated scans need a domain, URL or IP "
+                    "target to scope the credentials to")
+            auth_row = RunAuth(
+                run_id=run_id, auth_type=clean_auth["type"],
+                secret_enc=authscan.encrypt_secret(clean_auth),
+                acceptance_id=acceptance.id, attested_by=idlabel,
+                target_hosts=hosts,
+                client_ip=(request.client.host if request.client
+                           else None))
+        run_summary = {"bounty": bool(body.bounty)}
+        if auth_row is not None:
+            run_summary["authenticated"] = True
+            run_summary["auth_type"] = auth_row.auth_type
         session.add(Run(id=run_id, mode=body.mode, status="running",
                         env_mode=env_mode, user_id=run_user_id,
                         source_type=body.source_type,
-                        summary={"bounty": bool(body.bounty)}))
+                        summary=run_summary))
+        if auth_row is not None:
+            session.add(auth_row)
         session.commit()
         keys = load_all(session)
     finally:
@@ -496,6 +606,14 @@ def api_list_runs(request: Request = None,
         if actor["kind"] == "user":
             q = q.filter(Run.user_id == actor["user"].id)
         runs = (q.order_by(Run.created_at.desc()).limit(limit).all())
+        # Authenticated badge for the list: one query for the page's
+        # RunAuth stamps (no secret material is ever selected here).
+        auth_ids = set()
+        if runs:
+            auth_ids = {rid for (rid,) in
+                        session.query(RunAuth.run_id)
+                        .filter(RunAuth.run_id.in_([r.id for r in runs]))
+                        .all()}
         # One GROUP BY for findings counts (indexed on findings.run_id) so
         # the list table keeps its "findings" column without the heavy
         # per-run summary JSON.
@@ -508,6 +626,7 @@ def api_list_runs(request: Request = None,
             row = {"id": r.id, "mode": r.mode, "status": r.status,
                    "env_mode": getattr(r, "env_mode", None) or "sandbox",
                    "source_type": getattr(r, "source_type", None) or "website",
+                   "authenticated": r.id in auth_ids,
                    "created_at": r.created_at.isoformat()
                    if r.created_at else None,
                    "findings_count": counts.get(r.id, 0)}
@@ -533,6 +652,15 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
             if run.user_id != actor["user"].id:
                 raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
+        # Authenticated stamp: presence label + attestation reference
+        # only (app/authscan.py) - credential values are never loaded
+        # into this response, let alone returned.
+        auth_row = session.query(RunAuth).filter_by(run_id=run_id).first()
+        acceptance = None
+        if auth_row is not None and auth_row.acceptance_id:
+            acceptance = (session.query(AuthAcceptance)
+                          .filter_by(id=auth_row.acceptance_id).first())
+        auth_block = authscan.public_auth_block(auth_row, acceptance)
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
         if actor["kind"] == "user":
             # Free tier: exactly 1 revealed finding per UTC day,
@@ -544,6 +672,7 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
                     "env_mode": getattr(run, "env_mode", None) or "sandbox",
                     "source_type": getattr(run, "source_type", None) or "website",
+                    "authenticated": auth_row is not None,
                     "bounty": bool((run.summary or {}).get("bounty")),
                     "created_at": run.created_at.isoformat() if run.created_at else None,
                     "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -551,6 +680,7 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
             "targets": [{"id": t.id, "raw": t.raw, "type": t.type,
                          "normalized": t.normalized} for t in targets],
             "findings": rows,
+            "auth": auth_block,
             "access": access,
             "executive_summary": executive_summary(rows),
             # Live progress for the UI poll fallback (SSE may be down):

@@ -511,6 +511,26 @@ def reset_stale_queue_jobs() -> int:
             n += 1
         if n:
             session.commit()
+        # Authenticated Mode hygiene: credentials belong to runs that
+        # are still executing. A run that ended without passing through
+        # _finalize_run (crash, force-fail at boot) must not leave its
+        # encrypted credentials sitting in the DB forever.
+        try:
+            from .models import RunAuth as _RunAuth
+            _live = {rid for (rid,) in session.query(Run.id)
+                     .filter(Run.status.in_(
+                         ("running", "finalizing"))).all()}
+            for _ra in (session.query(_RunAuth)
+                        .filter(_RunAuth.secret_enc.isnot(None)).all()):
+                if _ra.run_id not in _live:
+                    _ra.secret_enc = None
+                    _ra.wiped_at = dt.datetime.now(dt.timezone.utc)
+            session.commit()
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
     except Exception:
         try:
             session.rollback()
@@ -885,6 +905,17 @@ def _get_run_ctx(run_id: str) -> Ctx:
             ctx.shared["_waf_base"] = _base
         except Exception:
             pass
+        # Authenticated Mode: attach this run's credentials (if any)
+        # via a dedicated per-run client. Decryption or config problems
+        # degrade to an unauthenticated scan - never a crash, never a
+        # credential in a log line.
+        try:
+            from .models import RunAuth as _RunAuth
+            _ra = session.query(_RunAuth).filter_by(run_id=run_id).first()
+            if _ra is not None and _ra.secret_enc and not _ra.wiped_at:
+                _attach_run_auth(ctx, _ra)
+        except Exception:
+            pass
     finally:
         try:
             session.close()
@@ -892,6 +923,65 @@ def _get_run_ctx(run_id: str) -> Ctx:
             pass
     _run_ctxs[run_id] = ctx
     return ctx
+
+
+def _attach_run_auth(ctx: Ctx, ra) -> bool:
+    """Give an authenticated run a DEDICATED http client.
+
+    The client's httpx request hook injects the run's auth headers
+    ONLY when the request host is one of the run's seed target hosts
+    (RunAuth.target_hosts, frozen at creation). Hunter-expanded hosts,
+    third-party APIs and every other host get a plain request - the
+    credentials cannot leak by construction, no matter what a plugin
+    fetches. The shared worker client is never touched. Credentials
+    are decrypted here, in memory only, and never logged.
+    """
+    from . import authscan
+    cfg = authscan.decrypt_secret(ra.secret_enc)
+    headers = authscan.build_headers(cfg)
+    hosts = {str(h).lower() for h in (ra.target_hosts or [])}
+    if not headers or not hosts:
+        return False
+
+    async def _inject_auth(request: httpx.Request) -> None:
+        try:
+            host = (request.url.host or "").lower()
+        except Exception:
+            return
+        if host in hosts:
+            for name, value in headers.items():
+                request.headers[name] = value
+
+    client = net.async_client(
+        headers={"User-Agent": config.USER_AGENT},
+        timeout=config.DEFAULT_TIMEOUT,
+        follow_redirects=True,
+        event_hooks={"request": [_inject_auth]})
+    ctx.http = client
+    ctx.shared["_auth_http_client"] = client
+    ctx.shared["authenticated"] = True
+    return True
+
+
+def _wipe_run_auth(session, run_id: str) -> None:
+    """Erase a finished run's encrypted credentials.
+
+    The RunAuth row itself stays as the permanent audit stamp
+    (acceptance reference, creator, hosts, timestamps); only the
+    secret material is destroyed.
+    """
+    try:
+        from .models import RunAuth
+        ra = session.query(RunAuth).filter_by(run_id=run_id).first()
+        if ra is not None and ra.secret_enc is not None:
+            ra.secret_enc = None
+            ra.wiped_at = dt.datetime.now(dt.timezone.utc)
+            session.commit()
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
 
 def _attach_poi_meta(session, run_id: str, target) -> None:
@@ -1422,12 +1512,23 @@ async def _finalize_run(run_id: str) -> bool:
             run.finished_at = dt.datetime.now(dt.timezone.utc)
             run.summary = summary
             session.commit()
+        # Authenticated Mode: the run is finished, so its credentials
+        # are wiped from the DB (the audit stamp stays) and the
+        # dedicated per-run http client is closed.
+        _wipe_run_auth(session, run_id)
         run_done_data: Dict = {"run_id": run_id, "findings": total,
                                "nodes": n_nodes, "edges": n_edges}
         if skipped_budget:
             run_done_data["skipped_time_budget"] = skipped_budget
         await _emit(run_id, "run_done", run_done_data)
-        _run_ctxs.pop(run_id, None)
+        _done_ctx = _run_ctxs.pop(run_id, None)
+        if _done_ctx is not None:
+            _aclient = (_done_ctx.shared or {}).get("_auth_http_client")
+            if _aclient is not None:
+                try:
+                    await _aclient.aclose()
+                except Exception:
+                    pass
         _run_clocks.pop(run_id, None)
         _hunter_marks.pop(run_id, None)
         return True
@@ -2107,6 +2208,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                 run.finished_at = dt.datetime.now(dt.timezone.utc)
                 run.summary = {"error": str(e)[:300], "findings": 0}
                 session.commit()
+                # A failed run is finished too: wipe its credentials.
+                _wipe_run_auth(session, run_id)
         except Exception:
             pass
         try:

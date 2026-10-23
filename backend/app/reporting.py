@@ -11,7 +11,7 @@ import html
 import io
 from typing import Dict, List
 
-from .models import Finding, Run, RunEvent, Target
+from .models import Finding, Run, RunAuth, RunEvent, Target
 
 SECRET_KEYS = {"aws_access_key", "apk_aws_access_key", "private_key",
                "apk_private_key", "slack_token", "github_token",
@@ -26,6 +26,14 @@ def _mask(value: str) -> str:
 
 def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict]:
     rows: List[Finding] = session.query(Finding).filter_by(run_id=run_id).all()
+    # Authenticated Mode marker: findings from an authenticated run
+    # were gathered behind the target's login with the user's own
+    # credentials; every row carries the marker into detail + exports.
+    try:
+        is_auth_run = (session.query(RunAuth)
+                       .filter_by(run_id=run_id).first() is not None)
+    except Exception:
+        is_auth_run = False
     # Impact scoring is read-time so old runs get it too (never raises).
     try:
         from .prioritizer import annotate_impact
@@ -47,6 +55,7 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
                "source": f.source, "source_url": f.source_url,
                "evidence": f.evidence,
                "confidence": f.confidence, "passive": f.passive,
+               "authenticated": is_auth_run,
                "bounty_value": getattr(f, "bounty_value", "low"),
                "first_seen": f.first_seen.isoformat() if f.first_seen else None}
         out.append(row)

@@ -31,7 +31,10 @@ export default function RunsPage() {
                 <td className="text-xs">{r.mode}{" "}
                   {(r.env_mode || "sandbox") === "sandbox"
                     ? <span className="text-amber-300 border border-amber-500/40 bg-amber-500/10 rounded px-1">SANDBOX</span>
-                    : <span className="text-emerald-300 border border-emerald-500/40 bg-emerald-500/10 rounded px-1">LIVE</span>}
+                    : <span className="text-emerald-300 border border-emerald-500/40 bg-emerald-500/10 rounded px-1">LIVE</span>}{" "}
+                  {r.authenticated
+                    ? <span className="text-violet-300 border border-violet-500/40 bg-violet-500/10 rounded px-1" title="Authenticated: scanned behind the login of the owner's own system. For authorized testing only.">AUTHENTICATED</span>
+                    : null}
                 </td>
                 <td className="text-xs">{r.status}</td>
                 <td className="text-xs">{r.findings_count ?? r.summary?.findings ?? "-"}</td>

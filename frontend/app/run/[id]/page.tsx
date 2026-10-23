@@ -469,6 +469,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [tab, setTab] = useState("findings");
   const [sourceType, setSourceType] = useState("website");
   const [envMode, setEnvMode] = useState("sandbox");
+  const [authInfo, setAuthInfo] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
@@ -648,6 +649,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
           if (fresh.length > 0) setFindings((prev) => [...prev, ...fresh]);
         }
         if (d.run?.source_type) setSourceType(d.run.source_type);
+        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (Array.isArray(d.targets) && d.targets.length > 0) setTargets(d.targets);
       }
       if (d.run?.status === "done" || d.run?.status === "failed") {
@@ -661,6 +663,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
         });
         if (d.run?.source_type) setSourceType(d.run.source_type);
         if (d.run?.env_mode) setEnvMode(d.run.env_mode);
+        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (d.run.status === "done") {
           const h = { "X-Access-Code": getCode() };
           fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
@@ -822,8 +825,22 @@ export default function RunPage({ params }: { params: { id: string } }) {
               BOUNTY MODE
             </span>
           )}
+          {authInfo && (
+            <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-violet-900 text-violet-200 border border-violet-700"
+              title={`${authInfo.label || "authenticated"} — attested by ${authInfo.attestation?.attested_by || "owner"} at ${authInfo.attestation?.attested_at || ""}. Authenticated: scans behind the login of your own systems. For authorized testing only.`}>
+              AUTHENTICATED
+            </span>
+          )}
           <span className="text-xs text-slate-500">{findings.length} findings</span>
         </div>
+        {authInfo && (
+          <p className="text-xs text-violet-300/80 mt-2">
+            {authInfo.label} — attested by {authInfo.attestation?.attested_by || "owner"}
+            {authInfo.attestation?.attested_at ? ` at ${authInfo.attestation.attested_at}` : ""}.
+            Credentials are scoped to the target hosts only and wiped when the run finishes.{" "}
+            {authInfo.disclaimer || "Authenticated: scans behind the login of your own systems. For authorized testing only."}
+          </p>
+        )}
         {/* live batch panel: 5 at a time, visible batches */}
         {status === "running" && progress.total > 0 && (
           <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/30 p-3">
