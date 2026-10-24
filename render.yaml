@@ -43,12 +43,6 @@ services:
         sync: false # optional; defaults to jaykk99 (owner bypass)
       - key: RECON_SESSION_SECRET
         sync: false # optional; session cookie signing secret
-      # Authenticated Mode (app/authscan.py): encrypts run credentials
-      # at rest. MUST be set to the same value on BOTH services - the
-      # worker decrypts what the API encrypted. Optional: falls back
-      # to RECON_MASTER_KEY, then to a key derived from the access code.
-      - key: RECON_AUTH_SECRET
-        sync: false
       - key: PYTHONUNBUFFERED
         value: "1"
   - type: web
@@ -60,10 +54,6 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false # same Neon Postgres as the UI service
-      # Same value as the UI service (see note above): the worker
-      # decrypts run credentials for authenticated scans.
-      - key: RECON_AUTH_SECRET
-        sync: false
       - key: RECON_MASTER_KEY
         sync: false
       - key: PYTHONUNBUFFERED

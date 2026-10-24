@@ -19,17 +19,6 @@ export default function ScanHome() {
   const [mode, setMode] = useState<"passive" | "active">("active");
   const [bounty, setBounty] = useState(false);
   const [sourceType, setSourceType] = useState<"website" | "bankatm">("website");
-  // Authenticated Mode: one-time per-account acceptance, then a
-  // per-run credential set (this run only, wiped when it finishes).
-  const [acceptance, setAcceptance] = useState<any>(null);
-  const [acceptBusy, setAcceptBusy] = useState(false);
-  const [authOn, setAuthOn] = useState(false);
-  const [authType, setAuthType] = useState<"cookie" | "bearer" | "basic" | "headers">("cookie");
-  const [authCookie, setAuthCookie] = useState("");
-  const [authToken, setAuthToken] = useState("");
-  const [authUser, setAuthUser] = useState("");
-  const [authPass, setAuthPass] = useState("");
-  const [authHeaders, setAuthHeaders] = useState<{ name: string; value: string }[]>([{ name: "", value: "" }]);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginsState, setPluginsState] = useState<"loading" | "ok" | "error">("loading");
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
@@ -54,10 +43,6 @@ export default function ScanHome() {
     setCodeState(saved);
     setCodeSaved(!!saved);
     loadPlugins();
-    // One-time acceptance state for Authenticated Mode (per account).
-    api<any>("/api/auth/attestation")
-      .then((d) => setAcceptance(d))
-      .catch(() => setAcceptance({ accepted: false }));
   }, []);
 
   // Loads the plugin catalog. A previous silent failure here (API down,
@@ -76,19 +61,6 @@ export default function ScanHome() {
         setPluginsState("ok");
       })
       .catch((e) => { setError(e.message); setPluginsState("error"); });
-  }
-
-  async function acceptAuth() {
-    setAcceptBusy(true); setError("");
-    try {
-      const d = await api<any>("/api/auth/attestation", {
-        method: "POST", body: JSON.stringify({ confirmed: true }),
-      });
-      setAcceptance(d);
-    } catch (e: any) {
-      setError(e.message);
-    }
-    setAcceptBusy(false);
   }
 
   useEffect(() => {
@@ -112,7 +84,6 @@ export default function ScanHome() {
       setCode(v);
       setCodeSaved(true);
       setCodeMsg("Code saved, you will not have to enter it again.");
-      api<any>("/api/auth/attestation").then((d) => setAcceptance(d)).catch(() => {});
     } else {
       setCodeMsg("Wrong code, not saved.");
     }
@@ -129,20 +100,13 @@ export default function ScanHome() {
     setError(""); setRunning(true);
     try {
       const ids = Object.keys(enabled).filter((k) => enabled[k]);
-      let auth: any = undefined;
-      if (authOn && acceptance?.accepted) {
-        if (authType === "cookie") auth = { type: "cookie", cookie: authCookie };
-        else if (authType === "bearer") auth = { type: "bearer", token: authToken };
-        else if (authType === "basic") auth = { type: "basic", username: authUser, password: authPass };
-        else auth = { type: "headers", headers: authHeaders.filter((h) => h.name.trim() && h.value) };
-      }
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
         body: JSON.stringify(sourceType === "bankatm"
           // Bank/ATM mode: one input, no options. The server runs the
           // full financial set; no plugin selection is sent at all.
           ? { targets: text, mode: "active", plugins: null, source_type: "bankatm", bounty: false }
-          : { targets: text, mode, plugins: ids, source_type: sourceType, bounty, ...(auth ? { auth } : {}) }),
+          : { targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
       });
       if (!d.run_id) throw new Error("no run id returned");
       if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
@@ -375,121 +339,6 @@ export default function ScanHome() {
         </div>
       </div>
 
-      <div className="card p-5 border border-violet-800/60">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h2 className="font-semibold text-violet-300">Authenticated scan</h2>
-          {authOn && acceptance?.accepted && (
-            <span className="text-xs font-bold px-2 py-1 rounded bg-violet-900 text-violet-200 border border-violet-700">AUTHENTICATED</span>
-          )}
-          <span className="text-xs text-slate-500">Pro and Agency plans</span>
-        </div>
-        <p className="text-xs text-slate-400 mt-1">
-          {"Authenticated: scans behind the login of your own systems. For authorized testing only."}
-        </p>
-        {githubMode && !me?.signed_in ? (
-          <p className="text-xs text-slate-500 mt-3">Sign in with GitHub to use Authenticated Mode.</p>
-        ) : !acceptance ? (
-          <p className="text-xs text-slate-500 mt-3">Checking your one-time acceptance...</p>
-        ) : !acceptance.accepted ? (
-          <div className="mt-3 rounded-lg border border-violet-800/60 bg-violet-950/30 p-3 space-y-3">
-            <p className="text-sm text-violet-200">
-              {"Authenticated scans run with YOUR credentials on targets YOU own or have written permission to test. Attestations are logged."}
-            </p>
-            <p className="text-sm text-slate-200">
-              {"I own my targets or have written permission to test them; my attestations are logged."}
-            </p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button type="button" onClick={acceptAuth} disabled={acceptBusy}
-                className="chip px-4 py-2.5 min-h-[44px] text-sm bg-violet-900 text-violet-100 hover:bg-violet-800 disabled:opacity-40">
-                {acceptBusy ? "Saving..." : "Accept once"}
-              </button>
-              <span className="text-xs text-slate-500">
-                One-time per account. After this, authenticated runs just carry the badge and the stamp, no repeated warning.
-              </span>
-            </div>
-          </div>
-        ) : (
-          <>
-            <p className="text-xs text-slate-500 mt-2">
-              Accepted{acceptance.accepted_at ? ` ${String(acceptance.accepted_at).slice(0, 10)}` : ""} — one-time, you will not be asked again.
-            </p>
-            <label className="flex items-center gap-2 mt-3 text-sm cursor-pointer">
-              <input type="checkbox" className="mt-0.5" checked={authOn}
-                onChange={() => setAuthOn(!authOn)} />
-              <span>Run this scan authenticated — credentials below, this run only, wiped when the run finishes</span>
-            </label>
-            {authOn && (
-              <div className="mt-3 space-y-3">
-                <div className="flex items-center gap-2 flex-wrap text-sm">
-                  <span className="text-slate-400">Credentials:</span>
-                  {(["cookie", "bearer", "basic", "headers"] as const).map((t) => (
-                    <button key={t} type="button" onClick={() => setAuthType(t)}
-                      className={`chip px-3 py-2 min-h-[40px] text-xs ${authType === t ? "bg-violet-900 text-violet-200" : "text-slate-400"}`}>
-                      {t === "cookie" ? "COOKIE" : t === "bearer" ? "BEARER TOKEN" : t === "basic" ? "BASIC AUTH" : "CUSTOM HEADERS"}
-                    </button>
-                  ))}
-                </div>
-                {authType === "cookie" && (
-                  <input className="input w-full p-3 font-mono text-sm min-h-[48px]" type="password"
-                    placeholder="session cookie, e.g. session=abc123; csrf=def456"
-                    value={authCookie} onChange={(e) => setAuthCookie(e.target.value)}
-                    autoComplete="off" spellCheck={false} />
-                )}
-                {authType === "bearer" && (
-                  <input className="input w-full p-3 font-mono text-sm min-h-[48px]" type="password"
-                    placeholder="bearer token (sent as Authorization: Bearer ...)"
-                    value={authToken} onChange={(e) => setAuthToken(e.target.value)}
-                    autoComplete="off" spellCheck={false} />
-                )}
-                {authType === "basic" && (
-                  <div className="flex gap-2 flex-wrap">
-                    <input className="input flex-1 min-w-[160px] p-3 text-sm min-h-[48px]" type="text"
-                      placeholder="username"
-                      value={authUser} onChange={(e) => setAuthUser(e.target.value)}
-                      autoComplete="off" spellCheck={false} />
-                    <input className="input flex-1 min-w-[160px] p-3 text-sm min-h-[48px]" type="password"
-                      placeholder="password"
-                      value={authPass} onChange={(e) => setAuthPass(e.target.value)}
-                      autoComplete="off" spellCheck={false} />
-                  </div>
-                )}
-                {authType === "headers" && (
-                  <div className="space-y-2">
-                    {authHeaders.map((h, i) => (
-                      <div key={i} className="flex gap-2 flex-wrap">
-                        <input className="input flex-1 min-w-[140px] p-3 font-mono text-sm min-h-[48px]" type="text"
-                          placeholder="Header-Name"
-                          value={h.name}
-                          onChange={(e) => { const n = [...authHeaders]; n[i] = { ...n[i], name: e.target.value }; setAuthHeaders(n); }}
-                          autoComplete="off" spellCheck={false} />
-                        <input className="input flex-[2] min-w-[180px] p-3 font-mono text-sm min-h-[48px]" type="password"
-                          placeholder="value"
-                          value={h.value}
-                          onChange={(e) => { const n = [...authHeaders]; n[i] = { ...n[i], value: e.target.value }; setAuthHeaders(n); }}
-                          autoComplete="off" spellCheck={false} />
-                        {authHeaders.length > 1 && (
-                          <button type="button" className="chip px-3 py-2 min-h-[44px] text-xs text-slate-400 hover:text-red-300"
-                            onClick={() => setAuthHeaders(authHeaders.filter((_, j) => j !== i))}>remove</button>
-                        )}
-                      </div>
-                    ))}
-                    {authHeaders.length < 5 && (
-                      <button type="button" className="chip px-3 py-2 min-h-[40px] text-xs text-violet-300 hover:bg-slate-800"
-                        onClick={() => setAuthHeaders([...authHeaders, { name: "", value: "" }])}>
-                        + add header (max 5)
-                      </button>
-                    )}
-                  </div>
-                )}
-                <p className="text-xs text-slate-500">
-                  Sent only to the target hosts above — never to other hosts the scan discovers, never logged, never shown again after this run.
-                </p>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
       <div className="card p-5">
         <div className="flex items-center gap-3 flex-wrap mb-3">
           <h2 className="font-semibold">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>
@@ -521,11 +370,6 @@ export default function ScanHome() {
                       </span>
                     ))}
                     <span className="block text-xs text-slate-500">{p.description}</span>
-                    {authOn && ["web", "api", "identity", "web3", "financial", "mobile"].includes(p.group) && (
-                      <span className="block text-[11px] text-violet-300/70 mt-0.5">
-                        {"Authenticated: scans behind the login of your own systems. For authorized testing only."}
-                      </span>
-                    )}
                   </span>
                 </label>
               ))}

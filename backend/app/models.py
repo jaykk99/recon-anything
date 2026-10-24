@@ -343,7 +343,10 @@ class Order(Base):
 
 
 class AuthAcceptance(Base):
-    """One-time Authenticated Mode attestation, per account identity.
+    """LEGACY (Authenticated Mode removed 2026-10-23): table left in
+    place harmlessly; no code reads or writes it anymore.
+
+    One-time Authenticated Mode attestation, per account identity.
 
     The user accepts the warning text ONCE ("I own my targets or have
     written permission to test them; my attestations are logged"); the
@@ -362,7 +365,10 @@ class AuthAcceptance(Base):
 
 
 class RunAuth(Base):
-    """Per-run authenticated-scan stamp + encrypted credentials.
+    """LEGACY (Authenticated Mode removed 2026-10-23): table left in
+    place harmlessly; no code reads or writes it anymore.
+
+    Per-run authenticated-scan stamp + encrypted credentials.
 
     secret_enc holds the run's credential config, Fernet-encrypted
     (app/authscan.py). It is decrypted only inside the worker while

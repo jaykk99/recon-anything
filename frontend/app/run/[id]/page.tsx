@@ -469,8 +469,6 @@ function RunPageInner({ params }: { params: { id: string } }) {
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
   const [sourceType, setSourceType] = useState("website");
-  const [envMode, setEnvMode] = useState("sandbox");
-  const [authInfo, setAuthInfo] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
@@ -649,7 +647,6 @@ function RunPageInner({ params }: { params: { id: string } }) {
           if (fresh.length > 0) setFindings((prev) => [...prev, ...fresh]);
         }
         if (d.run?.source_type) setSourceType(d.run.source_type);
-        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (Array.isArray(d.targets) && d.targets.length > 0) setTargets(d.targets);
       }
       if (d.run?.status === "done" || d.run?.status === "failed") {
@@ -662,8 +659,6 @@ function RunPageInner({ params }: { params: { id: string } }) {
           seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
         });
         if (d.run?.source_type) setSourceType(d.run.source_type);
-        if (d.run?.env_mode) setEnvMode(d.run.env_mode);
-        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (d.run.status === "done") {
           const h = { "X-Access-Code": getCode() };
           fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
@@ -819,31 +814,14 @@ function RunPageInner({ params }: { params: { id: string } }) {
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-mono text-sm text-sky-300 break-all">run {id}</h1>
           <span className={`text-xs px-2 py-1 rounded min-h-[28px] flex items-center ${status === "done" ? "pill-ok" : status === "failed" ? "pill-err" : "pill-info"}`}>{status}</span>
-          {envMode === "sandbox"
-            ? <span title="Sandbox run: own/lab targets only, does not count as production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-amber-500/40 bg-amber-500/10 text-amber-200">SANDBOX</span>
-            : <span title="Live run: production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-emerald-500/40 bg-emerald-500/10 text-emerald-200">LIVE</span>}
           {bounty && (
             <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-amber-900 text-amber-200 border border-amber-700"
               title="bounty mode: high-impact vuln classes prioritized, findings sorted by impact">
               BOUNTY MODE
             </span>
           )}
-          {authInfo && (
-            <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-violet-900 text-violet-200 border border-violet-700"
-              title={`${authInfo.label || "authenticated"} — attested by ${authInfo.attestation?.attested_by || "owner"} at ${authInfo.attestation?.attested_at || ""}. Authenticated: scans behind the login of your own systems. For authorized testing only.`}>
-              AUTHENTICATED
-            </span>
-          )}
           <span className="text-xs text-slate-500">{findings.length} findings</span>
         </div>
-        {authInfo && (
-          <p className="text-xs text-violet-300/80 mt-2">
-            {authInfo.label} — attested by {authInfo.attestation?.attested_by || "owner"}
-            {authInfo.attestation?.attested_at ? ` at ${authInfo.attestation.attested_at}` : ""}.
-            Credentials are scoped to the target hosts only and wiped when the run finishes.{" "}
-            {authInfo.disclaimer || "Authenticated: scans behind the login of your own systems. For authorized testing only."}
-          </p>
-        )}
         {/* live concurrency panel: real in-flight count, not fake batches */}
         {status === "running" && progress.total > 0 && (
           <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/30 p-3">
