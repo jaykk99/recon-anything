@@ -453,7 +453,31 @@ class Ctx:
         URL reuses the first plugin's response instead of re-fetching.
         Same requests, same findings, fewer packets. Failures are cached
         as status 0 (a sweep miss either way).
+
+        Singleflight (2026-10-23 speed pass): concurrent probes of the
+        same URL share one in-flight request - the cache alone only
+        helped callers that arrived AFTER the first fetch finished, so
+        a wave of sweepers starting together still fetched the same
+        paths once per plugin. Same sharing contract as fetch_page.
         """
+        bus = self.shared.setdefault("probe_cache", {})
+        hit = bus.get(url)
+        if hit is not None:
+            return hit
+        inflight = self.shared.setdefault("_probe_inflight", {})
+        task = inflight.get(url)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(
+                self._probe_once(url, timeout))
+            inflight[url] = task
+            task.add_done_callback(lambda _t: inflight.pop(url, None))
+        try:
+            return await asyncio.shield(task)
+        except Exception:
+            return {"status": 0, "headers": {}, "text": "",
+                    "url": url, "length": 0}
+
+    async def _probe_once(self, url: str, timeout: int) -> Dict[str, Any]:
         from ..ratelimit import fetch as _fetch
         bus = self.shared.setdefault("probe_cache", {})
         hit = bus.get(url)

@@ -403,22 +403,50 @@ class FindingReveal(Base):
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
+    # SQLite concurrency recipe (2026-10-23 speed pass): the worker now
+    # runs job load/persist/claim DB work on executor threads (on
+    # Postgres that is the designed mode - see the pool sizing note
+    # below), which means several threads write this file at once.
+    # Stock SQLite settings turned that into a lock convoy: writers
+    # errored with "database is locked" after the driver's 5s default
+    # wait, SQLAlchemy invalidated the connections, and the pool
+    # churned (measured locally: 294s of cursor time for the same
+    # statements that took 13s serialized). WAL lets readers and the
+    # single writer proceed concurrently, and a 30s busy timeout makes
+    # writers queue inside SQLite instead of erroring. The driver's
+    # own `timeout` connect arg is the same busy handler; both are set
+    # because the PRAGMA is per-connection and the pool recycles them.
+    connect_args = {"check_same_thread": False, "timeout": 30}
     engine = create_engine(DATABASE_URL, connect_args=connect_args,
                            pool_pre_ping=True)
+
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _rec):
+        try:
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.close()
+        except Exception:
+            pass
 else:
     # Postgres: the default pool (5 + 10 overflow, 30s wait) starved under
     # the queue worker's concurrency and every API request 500'd after a
     # 30s pool wait. Size the pool for the worker + API + SSE load and
     # fail faster when it is genuinely exhausted. 30 + 30 since
-    # 2026-10-21 to match the worker's 32 scan slots (jobs check
-    # connections out briefly at load/persist; they never hold one
-    # across plugin execution). Env-tunable per service if a database
-    # plan's connection cap ever requires smaller pools.
+    # 2026-10-21 to match the worker's 32 scan slots; 40 + 40 since
+    # 2026-10-23 for the 64-slot worker (jobs check connections out
+    # briefly at load/persist - now from executor threads - and never
+    # hold one across plugin execution). Env-tunable per service if a
+    # database plan's connection cap ever requires smaller pools.
     engine = create_engine(
         DATABASE_URL, connect_args=connect_args,
         pool_pre_ping=True,
-        pool_size=int(os.environ.get("RECON_DB_POOL_SIZE", "30")),
-        max_overflow=int(os.environ.get("RECON_DB_MAX_OVERFLOW", "30")),
+        pool_size=int(os.environ.get("RECON_DB_POOL_SIZE", "40")),
+        max_overflow=int(os.environ.get("RECON_DB_MAX_OVERFLOW", "40")),
         pool_timeout=10, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
