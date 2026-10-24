@@ -31,6 +31,7 @@ export default function ScanHome() {
   const [authPass, setAuthPass] = useState("");
   const [authHeaders, setAuthHeaders] = useState<{ name: string; value: string }[]>([{ name: "", value: "" }]);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [pluginsState, setPluginsState] = useState<"loading" | "ok" | "error">("loading");
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [code, setCodeState] = useState("");
   const [codeSaved, setCodeSaved] = useState(false);
@@ -52,19 +53,30 @@ export default function ScanHome() {
     const saved = getCode();
     setCodeState(saved);
     setCodeSaved(!!saved);
+    loadPlugins();
+    // One-time acceptance state for Authenticated Mode (per account).
+    api<any>("/api/auth/attestation")
+      .then((d) => setAcceptance(d))
+      .catch(() => setAcceptance({ accepted: false }));
+  }, []);
+
+  // Loads the plugin catalog. A previous silent failure here (API down,
+  // backend cold-starting) left the Plugins card showing "(0/0 enabled)"
+  // forever, indistinguishable from "this scan genuinely has zero
+  // plugins" - with nothing for the user to do about it. Now it tracks
+  // loading/ok/error explicitly so the UI can show a real retry affordance.
+  function loadPlugins() {
+    setPluginsState("loading");
     api<{ plugins: PluginInfo[] }>("/api/plugins")
       .then((d) => {
         setPlugins(d.plugins);
         const e: Record<string, boolean> = {};
         d.plugins.forEach((p) => (e[p.id] = true));
         setEnabled(e);
+        setPluginsState("ok");
       })
-      .catch((e) => setError(e.message));
-    // One-time acceptance state for Authenticated Mode (per account).
-    api<any>("/api/auth/attestation")
-      .then((d) => setAcceptance(d))
-      .catch(() => setAcceptance({ accepted: false }));
-  }, []);
+      .catch((e) => { setError(e.message); setPluginsState("error"); });
+  }
 
   async function acceptAuth() {
     setAcceptBusy(true); setError("");
@@ -301,6 +313,9 @@ export default function ScanHome() {
             className="input flex-1 min-w-[200px] p-3 font-mono text-sm min-h-[48px]"
             placeholder="bc1q... or 0x..."
             id="keyleak-input"
+            aria-label="Wallet address or public key to check for leaks"
+            autoComplete="off" spellCheck={false}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget.nextElementSibling as HTMLButtonElement | null)?.click(); }}
           />
           <button
             className="btn px-6 py-3 min-h-[48px] text-base"
@@ -476,7 +491,19 @@ export default function ScanHome() {
       </div>
 
       <div className="card p-5">
-        <h2 className="font-semibold mb-3">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>
+        <div className="flex items-center gap-3 flex-wrap mb-3">
+          <h2 className="font-semibold">Plugins ({Object.values(enabled).filter(Boolean).length}/{plugins.length} enabled)</h2>
+          {pluginsState === "loading" && (
+            <span className="text-xs text-slate-500 animate-pulse">loading plugin catalog...</span>
+          )}
+        </div>
+        {pluginsState === "error" && (
+          <div className="rounded-lg border border-red-700/50 bg-red-950/30 p-3 mb-3 flex items-center gap-3 flex-wrap">
+            <p className="text-sm text-red-300">Could not load the plugin list{error ? `: ${error}` : "."}</p>
+            <button type="button" onClick={loadPlugins}
+              className="chip px-3 py-2 min-h-[40px] text-xs text-sky-300 hover:bg-slate-800">Retry</button>
+          </div>
+        )}
         {Object.keys(GROUPS).map((g) => (
           <div key={g} className="mb-4">
             <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">{GROUPS[g]}</h3>

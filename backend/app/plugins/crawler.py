@@ -248,6 +248,16 @@ class CrawlerPlugin(Plugin):
                             evidence={"severity": "high",
                                       "comment": comment[:500]}))
 
+            # Checkpoint after each batch: a 50-page, depth-5 crawl can
+            # still outrun the 90s timeout_s (clamped to the scan's
+            # remaining budget by the runner, sometimes well under 90s).
+            # Every other enumerator in this codebase (dns, subdomains,
+            # sqli, git, ...) checkpoints so a mid-run kill keeps what it
+            # already found; this crawl used to lose every comment_secret
+            # and form_risky_method finding on timeout even after
+            # crawling dozens of pages. Cheap: just a list snapshot.
+            self._checkpoint(findings)
+
         # sitemap.xml: crawl every listed URL (cheap, high value).
         # Handles sitemap indexes (nested sitemaps) recursively.
         sitemap_urls = 0
