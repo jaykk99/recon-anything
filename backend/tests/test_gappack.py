@@ -170,7 +170,8 @@ def test_exactly_23_new_detectors_registered():
     gx = sorted(k for k in discover() if k.startswith("gx_"))
     assert gx == sorted(GAP_IDS)
     assert len(gx) == 23
-    assert len(discover()) == 575
+    # 575 when the gx pack landed; +12 fx_* (format & graph pack)
+    assert len(discover()) == 587
 
 
 def test_trello_board_verified_public():
