@@ -570,7 +570,6 @@ function RunPageInner({ params }: { params: { id: string } }) {
       const d = JSON.parse(e.data);
       if (d.source_type) setSourceType(d.source_type);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
-      if (d.source_type) setSourceType(d.source_type);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
       applyBounty(d.bounty);
     });
