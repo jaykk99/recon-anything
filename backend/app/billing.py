@@ -16,12 +16,16 @@ Design rules (Jay's orders, 2026-10-23):
     (detection-only scope rules unchanged); the rest of a run's
     findings are returned as locked counts with values masked.
   - Paid plans are BTC only (no third-party card processors). An order
-    pins the BTC amount at the live rate when it is created. Activation
-    is owner-approved from /admin/orders after payment confirms - there
-    is no automatic on-chain watcher in this build, and the checkout
-    page says so honestly.
-  - RECON_BTC_ADDRESS unset => checkout reports "checkout opens soon".
-    A wallet address is NEVER invented.
+    pins the BTC amount at the live rate when it is created. The DIY
+    payment watcher (app/paywatch.py) then watches Jay's receive
+    address on mempool.space and unlocks the picked tier automatically
+    once a payment from the buyer's declared address reaches 2
+    confirmations, within a 60-minute invoice window and a 1%
+    tolerance. Owner approval at /admin/orders stays as the manual
+    fallback for payments the watcher cannot match.
+  - RECON_BTC_ADDRESS unset => checkout reports "checkout opens soon"
+    and the watcher reports disabled. A wallet address is NEVER
+    invented.
 
 Env is read at call time (not import time) so tests and dashboard
 changes take effect without code edits.

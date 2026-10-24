@@ -60,12 +60,13 @@ from typing import Dict, List, Optional
 from . import billing
 from . import config
 from . import net
+from . import paywatch
 from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
 from .models import (ApiKey, Finding, FindingReveal, Order,
-                     Run, RunEvent, Schedule, Target, User,
+                     PaymentWatch, Run, RunEvent, Schedule, Target, User,
                      get_session, init_db)
 from .models import check_db, DATABASE_URL, IS_SQLITE
 from .plugins.registry import describe
@@ -1717,6 +1718,11 @@ def api_logout():
 
 class OrderIn(BaseModel):
     plan: str
+    payer_address: Optional[str] = None
+
+
+class PayerAddressIn(BaseModel):
+    payer_address: str
 
 
 def _order_payload(o: Order, login: Optional[str] = None) -> Dict:
@@ -1725,11 +1731,28 @@ def _order_payload(o: Order, login: Optional[str] = None) -> Dict:
            "status": o.status,
            "created_at": o.created_at.isoformat() if o.created_at else None,
            "paid_at": o.paid_at.isoformat() if o.paid_at else None,
-           "activation": ("Your plan activates after your BTC payment "
-                          "confirms and the owner approves the order "
-                          "(usually same day).")}
+           "activation": ("Your plan activates automatically once your "
+                          "BTC payment reaches 2 confirmations "
+                          "(usually within an hour). The owner can "
+                          "also approve manually."),
+           "watcher": {"enabled": paywatch.watcher_enabled(),
+                       "required_confirmations":
+                           paywatch.REQUIRED_CONFIRMATIONS,
+                       "invoice_expiry_minutes":
+                           paywatch.INVOICE_EXPIRY_MINUTES,
+                       "tolerance_pct": paywatch.TOLERANCE_PCT,
+                       "explorer": "mempool.space (public, no key)"}}
     if login:
         out["user_login"] = login
+    return out
+
+
+def _order_payload_with_watch(session, o: Order,
+                              login: Optional[str] = None) -> Dict:
+    """Order payload plus its payment-watch status (if any)."""
+    out = _order_payload(o, login)
+    watch = session.query(PaymentWatch).filter_by(order_id=o.id).first()
+    out["watch"] = paywatch.watch_payload(watch, o)
     return out
 
 
@@ -1748,6 +1771,9 @@ def api_order_create(body: OrderIn, request: Request):
         # No wallet address configured: never invent one.
         return {"checkout_open": False, "status": "checkout_closed",
                 "message": "Checkout opens soon."}
+    payer = (body.payer_address or "").strip() or None
+    if payer is not None and not paywatch.valid_btc_address(payer):
+        raise HTTPException(400, "payer_address is not a valid BTC address")
     rate = billing.fetch_btc_usd()
     if rate is None:
         raise HTTPException(503, "BTC rate unavailable right now; "
@@ -1760,12 +1786,84 @@ def api_order_create(body: OrderIn, request: Request):
     session = get_session()
     try:
         session.add(order)
+        session.flush()
+        paywatch.get_or_create_watch(session, order, payer)
         session.commit()
-        payload = _order_payload(order)
+        payload = _order_payload_with_watch(session, order)
     finally:
         session.close()
     return {"checkout_open": True, "order": payload,
             "checkout_path": f"/checkout?order={order.id}"}
+
+
+@app.post("/api/orders/{order_id}/payer-address",
+          dependencies=[Depends(gate)])
+def api_order_payer_address(order_id: str, body: PayerAddressIn,
+                            request: Request):
+    """Set (or change, before paying) the wallet address the buyer
+    will send from. Only the order's owner, only while the invoice is
+    still open. Changing it resets the seen-payment fields so a
+    shortfall from the old address never carries over."""
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    payer = (body.payer_address or "").strip()
+    if not paywatch.valid_btc_address(payer):
+        raise HTTPException(400, "payer_address is not a valid BTC address")
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        user = actor.get("user")
+        if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
+            raise HTTPException(404, "order not found")
+        if o.status != "pending":
+            raise HTTPException(400, "order is no longer open")
+        watch = session.query(PaymentWatch).filter_by(
+            order_id=o.id).first()
+        if watch is None:
+            watch = paywatch.get_or_create_watch(session, o, payer)
+        elif watch.status not in ("pending", "underpaid"):
+            raise HTTPException(400, "payment watch is no longer open")
+        watch.payer_address = payer
+        watch.seen_sats = 0
+        watch.seen_txid = None
+        watch.confirmations = 0
+        session.commit()
+        return {"order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
+
+
+@app.post("/api/orders/{order_id}/check-payment",
+          dependencies=[Depends(gate)])
+def api_order_check_payment(order_id: str, request: Request):
+    """Buyer-triggered watcher check for one order (also what the
+    checkout status page calls). The same check runs on the cron
+    sweep; this endpoint just lets the buyer refresh on demand."""
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        user = actor.get("user")
+        if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
+            raise HTTPException(404, "order not found")
+        if not paywatch.watcher_enabled():
+            return {"watcher_enabled": False,
+                    "message": "Payment watcher is not configured yet.",
+                    "order": _order_payload_with_watch(session, o)}
+        try:
+            res = paywatch.check_order(session, o)
+        except ValueError:
+            paywatch.get_or_create_watch(session, o, None)
+            session.commit()
+            res = paywatch.check_order(session, o)
+        session.commit()
+        return {"watcher_enabled": True, "action": res["action"],
+                "order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
 
 
 @app.get("/api/orders", dependencies=[Depends(gate)])
@@ -1778,7 +1876,8 @@ def api_orders_mine(request: Request):
     try:
         rows = (session.query(Order).filter_by(user_id=user.id)
                 .order_by(Order.created_at.desc()).all())
-        return {"orders": [_order_payload(o) for o in rows]}
+        return {"orders": [_order_payload_with_watch(session, o)
+                           for o in rows]}
     finally:
         session.close()
 
@@ -1794,7 +1893,7 @@ def api_order_detail(order_id: str, request: Request):
         user = actor.get("user")
         if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
             raise HTTPException(404, "order not found")
-        return {"order": _order_payload(o)}
+        return {"order": _order_payload_with_watch(session, o)}
     finally:
         session.close()
 
@@ -1822,7 +1921,10 @@ def api_admin_orders(request: Request):
           dependencies=[Depends(gate)])
 def api_admin_approve(order_id: str, request: Request):
     """Owner confirms a BTC payment landed: mark the order paid and
-    activate the buyer's plan for PLAN_DURATION_DAYS."""
+    activate the buyer's plan for PLAN_DURATION_DAYS. This manual
+    approval stays as the fallback for payments the automatic watcher
+    cannot match (for example a payment from an undeclared address, or
+    one that arrived after invoice expiry)."""
     _require_owner(request)
     session = get_session()
     try:
@@ -1830,16 +1932,33 @@ def api_admin_approve(order_id: str, request: Request):
         if not o:
             raise HTTPException(404, "order not found")
         if o.status != "paid":
-            o.status = "paid"
-            o.paid_at = dt.datetime.now(dt.timezone.utc)
-            buyer = session.query(User).filter_by(id=o.user_id).first()
-            if buyer is not None:
-                buyer.plan = o.plan
-                buyer.plan_expires_at = (
-                    dt.datetime.now(dt.timezone.utc)
-                    + dt.timedelta(days=billing.PLAN_DURATION_DAYS))
+            paywatch.activate_order(
+                session, o, dt.datetime.now(dt.timezone.utc))
             session.commit()
-        return {"order": _order_payload(o)}
+        return {"order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
+
+
+@app.post("/api/cron/paywatch")
+def api_cron_paywatch(request: Request,
+                      authorization: Optional[str] = Header(None)):
+    """Cron-triggered watcher sweep (no new service: an external cron
+    hits this endpoint, same pattern as the keepalive ping, every
+    ~10 minutes). Authorized by EITHER an owner session OR a Bearer
+    PAYWATCH_CRON_SECRET. The buyer-triggered check-payment endpoint
+    covers the same check on demand between sweeps."""
+    actor = resolve_actor(request)
+    secret = paywatch.cron_secret()
+    bearer_ok = bool(secret) and authorization == f"Bearer {secret}"
+    if actor["kind"] != "owner" and not bearer_ok:
+        raise HTTPException(403, "owner or cron secret only")
+    if not paywatch.watcher_enabled():
+        return {"watcher_enabled": False,
+                "message": "RECON_BTC_ADDRESS is not set; watcher disabled."}
+    session = get_session()
+    try:
+        return paywatch.sweep_pending(session)
     finally:
         session.close()
 
@@ -1875,7 +1994,8 @@ border-radius:8px;padding:1rem}}</style></head><body>
 <h1>ReconAnything pricing</h1>
 <p>Free plan: exactly 1 revealed finding per day (resets at UTC
 midnight). Scans still run in full; the rest are shown as locked
-counts. Paid plans are paid in BTC only. {checkout}</p>
+counts. Paid plans are paid in BTC only and activate automatically
+once your payment reaches 2 confirmations. {checkout}</p>
 <p><a href="/api/auth/github">{signin}</a></p>
 <main>{''.join(cards)}</main></body></html>"""
     return HTMLResponse(html)
