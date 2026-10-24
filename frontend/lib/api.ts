@@ -69,7 +69,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, { ...init, headers: { ...headers(), ...(init?.headers || {}) } });
   if (!r.ok) {
     const t = await r.text().catch(() => "");
-    throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`);
+    // FastAPI returns errors as {"detail": "..."}. Surface that message
+    // directly instead of the raw JSON blob ("HTTP 400: {"detail":...}"),
+    // which is noise to the user and buries the actual reason.
+    let detail = "";
+    try {
+      const j = JSON.parse(t);
+      if (typeof j?.detail === "string") detail = j.detail;
+      else if (Array.isArray(j?.detail)) detail = j.detail.map((d: any) => d?.msg || "").filter(Boolean).join("; ");
+    } catch { /* not JSON; fall back to the raw body */ }
+    throw new Error(detail || `HTTP ${r.status}: ${t.slice(0, 200)}`);
   }
   const ct = r.headers.get("content-type") || "";
   if (ct.includes("application/json")) return r.json();

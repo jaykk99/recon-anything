@@ -136,6 +136,24 @@ export default function ScanHome() {
         else if (authType === "basic") auth = { type: "basic", username: authUser, password: authPass };
         else auth = { type: "headers", headers: authHeaders.filter((h) => h.name.trim() && h.value) };
       }
+      // Catch missing credentials here instead of letting the backend
+      // reject them with a raw "HTTP 400: {detail: ...}". Authenticated
+      // scan is on, a credential type is chosen, but the field is empty -
+      // tell the user exactly which field to fill rather than dumping the
+      // server's validation error at them.
+      if (auth) {
+        const authErr =
+          auth.type === "cookie" && !authCookie.trim()
+            ? "Authenticated scan is on with Cookie selected, but the cookie field is empty. Paste your session cookie, or turn off Authenticated scan."
+          : auth.type === "bearer" && !authToken.trim()
+            ? "Authenticated scan is on with Bearer token selected, but the token field is empty. Paste your token, or turn off Authenticated scan."
+          : auth.type === "basic" && (!authUser.trim() || !authPass)
+            ? "Authenticated scan is on with Basic auth selected — both username and password are required."
+          : auth.type === "headers" && auth.headers.length === 0
+            ? "Authenticated scan is on with Custom headers selected, but no header has both a name and a value."
+          : "";
+        if (authErr) { setError(authErr); setRunning(false); return; }
+      }
       const d = await api<{ run_id: string }>("/api/runs", {
         method: "POST",
         body: JSON.stringify(sourceType === "bankatm"
