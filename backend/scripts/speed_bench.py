@@ -196,9 +196,14 @@ async def amain():
         events = s.query(models.RunEvent).filter_by(run_id=run_id).count()
         job_rows = [{
             "plugin": j.plugin_id, "status": j.status,
+            "phase": j.phase,
             "ms": (j.result or {}).get("ms", 0),
             "rstatus": (j.result or {}).get("status", ""),
             "reason": (j.result or {}).get("reason", ""),
+            "started": (j.started_at.timestamp()
+                        if j.started_at else None),
+            "finished": (j.finished_at.timestamp()
+                         if j.finished_at else None),
         } for j in jobs]
         finding_sig = sorted(
             (f.plugin_id, f.key, f.value or "") for f in findings)
@@ -210,6 +215,58 @@ async def amain():
     for j in job_rows:
         plugin_ms[j["plugin"]] = plugin_ms.get(j["plugin"], 0) + (j["ms"] or 0)
     top_slow = sorted(plugin_ms.items(), key=lambda kv: -kv[1])[:25]
+
+    # Phase spans + slot utilization from job start/finish intervals.
+    timed = [j for j in job_rows if j["started"] and j["finished"]]
+    phase_spans = {}
+    for ph in (1, 2):
+        pj = [j for j in timed if j["phase"] == ph]
+        if pj:
+            phase_spans[f"phase{ph}_span_s"] = round(
+                max(j["finished"] for j in pj)
+                - min(j["started"] for j in pj), 2)
+    last_jobs = []
+    if timed:
+        t0_ref = min(j["started"] for j in timed)
+
+        def _lj(j):
+            return {
+                "plugin": j["plugin"], "phase": j["phase"],
+                "ms": j["ms"],
+                "start_offset_s": round(j["started"] - t0_ref, 1),
+                "finish_offset_s": round(j["finished"] - t0_ref, 1),
+            }
+
+        last_jobs = [_lj(j) for j in
+                     sorted(timed, key=lambda x: -x["finished"])[:15]]
+        p1 = [j for j in timed if j["phase"] == 1]
+        last_jobs += [_lj(j) for j in
+                      sorted(p1, key=lambda x: -x["finished"])[:10]]
+    util = {}
+    if timed:
+        t_start = min(j["started"] for j in timed)
+        t_end = max(j["finished"] for j in timed)
+        job_span = t_end - t_start
+        events_t = []
+        for j in timed:
+            events_t.append((j["started"], 1))
+            events_t.append((j["finished"], -1))
+        events_t.sort(key=lambda e: (e[0], -e[1]))
+        cur = peak = 0
+        busy_area = 0.0
+        prev = t_start
+        for ts, delta in events_t:
+            busy_area += cur * (ts - prev)
+            prev = ts
+            cur += delta
+            peak = max(peak, cur)
+        util = {
+            "job_span_s": round(job_span, 2),
+            "wall_minus_job_span_s": round(wall - job_span, 2),
+            "peak_concurrent_jobs": peak,
+            "mean_concurrent_jobs": round(busy_area / job_span, 1)
+            if job_span else 0,
+        }
     report = {
         "scenario": ARGS.scenario,
         "target": ARGS.target,
@@ -242,6 +299,9 @@ async def amain():
                    "time_s": round(CLAIM_STATS["time_s"], 2)},
         "top_slow_plugins_ms": top_slow,
         "plugin_ms_sum": sum(plugin_ms.values()),
+        "phase_spans": phase_spans,
+        "utilization": util,
+        "last_jobs": last_jobs,
     }
     print(json.dumps({k: v for k, v in report.items()
                       if k not in ("finding_sig", "finding_pk")},
