@@ -128,7 +128,14 @@ def cert_weak_issues(summary: Dict) -> List[str]:
     if (summary.get("sig_hash") or "").lower() in ("md5", "sha1"):
         out.append(f"weak signature hash {summary['sig_hash']}")
     bits = summary.get("key_bits")
-    if bits and bits < 2048:
+    kind = str(summary.get("key_kind") or "")
+    # Key-size bars are per algorithm: a 256-bit EC key (P-256) is
+    # standard strength, roughly a 3072-bit RSA key, so the old flat
+    # "< 2048 bits" bar flagged every modern EC certificate as weak
+    # (seen live 2026-10-23 on error-inbox.onrender.com). EC keys are
+    # only weak below P-224; RSA/DSA/unknown kinds keep the 2048 bar.
+    bar = 224 if kind.startswith("EC") else 2048
+    if bits and bits < bar:
         out.append(f"weak public key ({bits} bits, "
                    f"{summary.get('key_kind') or 'key'})")
     if summary.get("tls_version") in ("TLSv1", "TLSv1.1", "SSLv3",
@@ -218,12 +225,15 @@ class FinCertWeakPlugin(_CertPlugin):
         issues = cert_weak_issues(summary)
         if not issues:
             return self._ok([], f"certificate strength ok for {host}")
+        ec_weak = any("ECPublicKey" in i for i in issues)
+        remedy = ("Reissue with a P-256 or stronger EC key and "
+                  "SHA-256 signature; " if ec_weak else
+                  "Reissue with a 2048+ bit key and SHA-256 signature; ")
         return self._ok([self.fin_finding(
             "fin_cert_weak",
             f"Weak TLS on {host}:{port}: {'; '.join(issues)}",
             f"https://{host}:{port}/", "medium",
-            "Reissue with a 2048+ bit key and SHA-256 signature; "
-            "disable TLS below 1.2 on banking hosts.",
+            remedy + "disable TLS below 1.2 on banking hosts.",
             issues=issues)], f"weak TLS material on {host}")
 
 
