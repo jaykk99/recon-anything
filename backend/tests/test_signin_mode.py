@@ -277,12 +277,11 @@ def test_signin_mode_every_tab_api_anonymous_401(client, signin_mode):
     - no data behind any tab may leak to an anonymous caller."""
     _cleanup()
     _mk_run("signin-hidden-run")
-    for path in ("/api/keys", "/api/settings", "/api/hunters",
+    for path in ("/api/keys", "/api/plugins", "/api/hunters",
                  "/api/hunters/knowledge", "/api/hunters/resources",
                  "/api/runs/signin-hidden-run",
                  "/api/runs/signin-hidden-run/export",
-                 "/api/orders", "/api/admin/orders",
-                 "/api/auth/attestation"):
+                 "/api/orders", "/api/admin/orders"):
         r = client.get(path)
         assert r.status_code == 401, path
         # ...and the retired access code opens none of them either.
@@ -296,6 +295,6 @@ def test_fallback_mode_tab_apis_still_open_with_code(client, fallback_mode):
     _cleanup()
     h = {"X-Access-Code": CODE}
     assert client.get("/api/keys", headers=h).status_code == 200
-    assert client.get("/api/settings", headers=h).status_code == 200
+    assert client.get("/api/runs", headers=h).status_code == 200
     assert client.get("/api/hunters", headers=h).status_code == 200
-    assert client.get("/api/auth/attestation", headers=h).status_code == 200
+    assert client.get("/api/plugins", headers=h).status_code == 200

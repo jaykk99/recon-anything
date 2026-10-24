@@ -383,10 +383,6 @@ def test_api_accepts_bankatm(db, monkeypatch):
     monkeypatch.setattr(main_mod, "launch_run", fake_launch)
     monkeypatch.setattr(main_mod, "_wake_worker", lambda: None)
     client = TestClient(main_mod.app)
-    # bankatm targets are external by design; flip the app to LIVE
-    # (sandbox would reject a public location before the mode runs).
-    r = client.put("/api/settings/mode", json={"mode": "live"})
-    assert r.status_code == 200, r.text
     r = client.post("/api/runs", json={
         "targets": "Winnipeg, MB", "mode": "active", "plugins": None,
         "source_type": "bankatm"})

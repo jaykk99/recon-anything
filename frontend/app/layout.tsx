@@ -1,7 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import ModeBanner from "../components/ModeBanner";
 import AuthStatus from "../components/AuthStatus";
 
 export const metadata: Metadata = {
@@ -42,7 +41,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             )}
           </nav>
         </header>
-        <ModeBanner />
         <main className="max-w-6xl mx-auto px-4 py-6">{children}</main>
       </body>
     </html>
