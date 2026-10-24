@@ -437,15 +437,16 @@ else:
     # the queue worker's concurrency and every API request 500'd after a
     # 30s pool wait. Size the pool for the worker + API + SSE load and
     # fail faster when it is genuinely exhausted. 30 + 30 since
-    # 2026-10-21 to match the worker's 32 scan slots (jobs check
-    # connections out briefly at load/persist; they never hold one
-    # across plugin execution). Env-tunable per service if a database
-    # plan's connection cap ever requires smaller pools.
+    # 2026-10-21 to match the worker's 32 scan slots; 40 + 40 since
+    # 2026-10-23 for the 64-slot worker (jobs check connections out
+    # briefly at load/persist - now from executor threads - and never
+    # hold one across plugin execution). Env-tunable per service if a
+    # database plan's connection cap ever requires smaller pools.
     engine = create_engine(
         DATABASE_URL, connect_args=connect_args,
         pool_pre_ping=True,
-        pool_size=int(os.environ.get("RECON_DB_POOL_SIZE", "30")),
-        max_overflow=int(os.environ.get("RECON_DB_MAX_OVERFLOW", "30")),
+        pool_size=int(os.environ.get("RECON_DB_POOL_SIZE", "40")),
+        max_overflow=int(os.environ.get("RECON_DB_MAX_OVERFLOW", "40")),
         pool_timeout=10, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

@@ -1216,7 +1216,14 @@ _hunter_marks: Dict[str, int] = {}  # run_id -> findings at last pass
 # original phase-gate behavior.
 _hunter_swept: set = set()
 _last_hunter_sweep = 0.0
-HUNTER_SWEEP_INTERVAL_S = float(_os.environ.get("RECON_HUNTER_SWEEP_S", "15"))
+# 15s -> 3s on 2026-10-23 (speed pass round 2): at 15s the sweep
+# drip-fed hunter targets to the queue and the worker sat half idle
+# between passes (mean slot use 17.5 of 64); at 3s the same fixture
+# run went 104.1s -> 75.1s with identical findings. The pass itself
+# stays cheap at this cadence: one findings COUNT per running run,
+# and expansion still only runs when >= HUNTER_MIN_NEW_FINDINGS
+# arrived since the last pass.
+HUNTER_SWEEP_INTERVAL_S = float(_os.environ.get("RECON_HUNTER_SWEEP_S", "3"))
 HUNTER_MIN_NEW_FINDINGS = int(_os.environ.get("RECON_HUNTER_MIN_NEW", "8"))
 _HUNTER_ADVISORY_NS = 727272
 
