@@ -48,6 +48,9 @@ MUST_PRODUCE = {
     "graphql_probe": "passive",    # /graphql answers __typename + introspection
     "apidiscover": "passive",      # /openapi.json + API wordlist hits
     "robots": "passive",           # robots.txt with Disallow entries + sitemap
+    "xml_secrets": "passive",      # /appconfig.xml connection string
+    "xml_policy": "passive",       # crossdomain site-control "all"
+    "xml_sitemap_paths": "passive",  # sitemap lists /admin/ + /login
     "forms": "passive",            # login + search forms on the homepage
     "webtech": "passive",          # WordPress/Apache/PHP fingerprints
     # active mode
