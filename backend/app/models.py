@@ -401,6 +401,37 @@ class FindingReveal(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class PaymentWatch(Base):
+    """One row per BTC checkout order: the DIY payment watcher state.
+
+    A NEW table (create_all builds it on fresh DBs and on the live
+    Postgres at boot); the orders table is never altered. The payer
+    address is public on-chain data the buyer voluntarily provides.
+    No private key, seed, or wallet-connection data ever lands here:
+    only public addresses, public txids, and amounts.
+    Status flow: pending -> underpaid | confirmed | expired.
+    A txid is claimed by at most one watch (unique constraint) so one
+    payment can never unlock two purchases.
+    """
+    __tablename__ = "payment_watches"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String, ForeignKey("orders.id"), unique=True,
+                      index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    payer_address = Column(String, nullable=True)
+    expected_sats = Column(Integer)
+    threshold_sats = Column(Integer)
+    status = Column(String, default="pending", index=True)
+    txid = Column(String, unique=True, nullable=True, index=True)
+    tx_received_sats = Column(Integer, default=0)
+    confirmations = Column(Integer, default=0)
+    seen_sats = Column(Integer, default=0)
+    seen_txid = Column(String, nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    late_payment_note = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
     # SQLite concurrency recipe (2026-10-23 speed pass): the worker now

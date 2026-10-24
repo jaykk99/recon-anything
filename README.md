@@ -198,8 +198,13 @@ ReconAnything is a paid product with a free tier (`/pricing`):
   masked server-side in run detail and export responses.
 - Paid plans are BTC only. Creating an order pins the BTC amount at
   the live CoinGecko rate and shows the address from `RECON_BTC_ADDRESS`.
-  Activation is owner-approved at `/admin/orders` after the payment
-  confirms. With `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` unset the
+  The DIY payment watcher (`backend/app/paywatch.py`) watches that
+  address on mempool.space (public, no key) and unlocks the picked tier
+  automatically once a payment from the buyer's declared address reaches
+  2 confirmations, within a 60-minute invoice window and a 1%
+  tolerance. Owner approval at `/admin/orders` stays as the manual
+  fallback for payments the watcher cannot match. With
+  `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` unset the
   sign-in button shows "opens soon"; with `RECON_BTC_ADDRESS` unset
   checkout shows "checkout opens soon". No address is ever invented.
 
