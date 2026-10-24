@@ -2156,6 +2156,47 @@ async def _enqueue_bankatm_run(run_id: str, targets_raw: str, mode: str,
             pass
 
 
+def _select_run_plugins(plugin_ids, excluded_plugin_ids, source_type):
+    """Pick the plugin instances for a website run, never returning empty
+    when the registry has applicable plugins.
+
+    Returns (plugins, selection_note). A selection that matches NO
+    registered plugin (stale/mismatched ids from the client, a renamed or
+    removed plugin) used to enqueue zero jobs, so the run finalized
+    instantly with 0 findings and no explanation - the "it's not running
+    anything" symptom. This falls back to the full applicable default set
+    (minus this source type's silent plugins and any plan exclusions) and
+    returns a human note saying why, so a scan always does something.
+    Only a genuinely empty registry yields an empty list (the caller then
+    fails the run loudly instead of returning a silent empty scan).
+    """
+    def _applicable(pool):
+        out = pool
+        if excluded_plugin_ids:
+            ex = set(excluded_plugin_ids)
+            out = [p for p in out if p.id not in ex]
+        if source_type == "website":
+            out = [p for p in out if p.id not in ("atm", "bank")]
+        return out
+
+    pool = all_plugins()
+    # Plan gating (app/billing.py) via excluded_plugin_ids only narrows the
+    # default set; an explicit plugin_ids selection is "selected means run".
+    if plugin_ids:
+        selected = [p for p in pool if p.id in plugin_ids]
+        plugins = _applicable(selected)
+        if plugins:
+            return plugins, ""
+        # selection matched nothing applicable -> fall back, say why
+        fallback = _applicable(pool)
+        if fallback:
+            return (fallback,
+                    "selected plugins matched nothing in the registry; "
+                    "ran the full default set instead")
+        return [], ""
+    return _applicable(pool), ""
+
+
 async def execute_run(run_id: str, targets_raw: str, mode: str,
                       plugin_ids: Optional[List[str]] = None,
                       module_overrides: Optional[Dict[str, str]] = None,
@@ -2189,21 +2230,16 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
             return
         discover()
         classified = classify_batch(targets_raw)
-        plugins = all_plugins()
-        if plugin_ids:
-            plugins = [p for p in plugins if p.id in plugin_ids]
-        # Plan gating (app/billing.py): plugins the caller's plan does
-        # not include (e.g. the Crypto Pack on free/starter) are excluded
-        # from the default set. Deliberately NOT folded into plugin_ids:
-        # an explicit selection means "selected means run" (budget-skip
-        # exempt); an exclusion only narrows the default set.
-        if excluded_plugin_ids:
-            plugins = [p for p in plugins
-                       if p.id not in set(excluded_plugin_ids)]
-        # Source-type plugins (atm, bank) are silent during website scans:
-        # they only run when the user picks ATM or Bank as the source type.
-        if source_type == "website":
-            plugins = [p for p in plugins if p.id not in ("atm", "bank")]
+        plugins, selection_note = _select_run_plugins(
+            plugin_ids, excluded_plugin_ids, source_type)
+        if selection_note:
+            log.warning("run %s: %s (plugin_ids=%r)",
+                        run_id, selection_note, plugin_ids)
+        if not plugins:
+            # Genuinely nothing to run (empty registry). Fail loudly with a
+            # reason rather than returning a silent empty scan.
+            raise RuntimeError(
+                "no plugins available to run for this target/source type")
 
         # persist targets
         trobj: List[Target] = []
@@ -2244,6 +2280,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                 "crypto_reasons": crypto_info["reasons"],
                 "key_hunter_ids": key_hunters,
                 "estimates": "calibrated" if estimates else "static"}
+        if selection_note:
+            meta["selection_note"] = selection_note
         run.summary = {**(run.summary or {}), "queue_meta": meta}
         session.commit()
         n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty,
@@ -2260,7 +2298,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                      "plugin_count": len(plugins),
                      "target_count": n_targets,
                      "queued": True,
-                     "note": (f"{n_jobs} jobs queued in Postgres; "
+                     "note": ((selection_note + "; " if selection_note else "")
+                              + f"{n_jobs} jobs queued in Postgres; "
                               "worker picks them up, scan survives restarts")})
     except Exception as e:
         # Never leave a run stuck in "running". Mark it failed.
