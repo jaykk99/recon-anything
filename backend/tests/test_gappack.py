@@ -171,8 +171,8 @@ def test_exactly_23_new_detectors_registered():
     assert gx == sorted(GAP_IDS)
     assert len(gx) == 23
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
-    # +5 xml_* (XML reader pack)
-    assert len(discover()) == 592
+    # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack)
+    assert len(discover()) == 602
 
 
 def test_trello_board_verified_public():

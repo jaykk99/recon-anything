@@ -107,7 +107,8 @@ def test_exactly_5_new_detectors_registered():
     xml = sorted(k for k in discover() if k.startswith("xml_"))
     assert xml == sorted(XML_IDS)
     assert len(xml) == 5
-    assert len(discover()) == 592
+    # 592 when the xml pack landed; +10 da_* (deep-artifacts pack)
+    assert len(discover()) == 602
 
 
 def test_connstr_password_masked_with_fingerprint():
