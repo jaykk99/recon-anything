@@ -34,6 +34,20 @@ from .waf import BLOCK_KINDS, WafVerdict, classify_response
 # Per-host request floor once WAF/challenge behavior is seen. 1 RPS keeps
 # lightweight checks alive without hammering a host that is fighting back.
 WAF_RPS_FLOOR = float(os.environ.get("RECON_WAF_RPS", "1.0"))
+# Per-host circuit breaker (speed pass 2026-10-23): after this many
+# CONSECUTIVE connect failures (refused / DNS / connect timeout - i.e.
+# the host never accepted a connection), fetches to the host fail fast
+# with ConnectError for BREAKER_OPEN_S seconds instead of each plugin
+# paying full connect timeouts + retry backoff + limiter pacing for its
+# own doomed requests. Profiling: a dead-host run issued ~6,400 requests
+# to the dead host and spent ~128s of its 179s wall just pacing them
+# through the limiter. Any real HTTP response (even a 500) proves the
+# host is alive and resets the counter; read/write timeouts after a
+# successful connect do NOT count (the host accepted the connection).
+# Half-open after the window: one probe request is allowed through;
+# its success closes the breaker, its connect failure re-opens it.
+BREAKER_THRESHOLD = int(os.environ.get("RECON_BREAKER_THRESHOLD", "5"))
+BREAKER_OPEN_S = float(os.environ.get("RECON_BREAKER_OPEN_S", "20"))
 # Generic (unfingerprinted) 403s also count, but it takes a few of them to
 # trigger graceful mode - a single 403 is often just a path ACL, not a WAF.
 WAF_BLOCK_THRESHOLD = 3
@@ -71,6 +85,10 @@ class RateLimiter:
         self._locks: Dict[str, asyncio.Lock] = {}
         # Per-host WAF state: vendor, counters, graceful-mode flag.
         self._waf: Dict[str, Dict] = {}
+        # Per-host circuit-breaker state (see BREAKER_* above):
+        # consecutive connect failures, open-until timestamp, and a
+        # half-open single-probe flag.
+        self._breaker: Dict[str, Dict] = {}
 
     # -- per-host WAF state -------------------------------------------
     def _waf_state(self, host: str) -> Dict:
@@ -143,6 +161,58 @@ class RateLimiter:
     def protection_hits(self, host: str) -> int:
         return self._waf.get(host, {}).get("blocked", 0)
 
+    # -- per-host circuit breaker --------------------------------------
+    def _breaker_state(self, host: str) -> Dict:
+        return self._breaker.setdefault(host, {
+            "fails": 0, "open_until": 0.0, "probe": False, "probe_at": 0.0,
+        })
+
+    def breaker_allows(self, host: str) -> bool:
+        """False while the host's breaker is open. After the open window
+        elapses, exactly one half-open probe is allowed through. A probe
+        whose caller was cancelled mid-flight never reports back, so a
+        probe older than the staleness bound is treated as abandoned
+        and a fresh one is granted - the breaker can never wedge shut."""
+        st = self._breaker.get(host)
+        if not st or st["open_until"] <= 0:
+            return True
+        now = time.monotonic()
+        if now < st["open_until"]:
+            return False
+        if st["probe"] and now - st["probe_at"] < BREAKER_OPEN_S + 30.0:
+            return False
+        st["probe"] = True
+        st["probe_at"] = now
+        return True
+
+    def breaker_success(self, host: str) -> None:
+        """The host produced an HTTP response: it is alive, close up."""
+        st = self._breaker.get(host)
+        if st:
+            st["fails"] = 0
+            st["open_until"] = 0.0
+            st["probe"] = False
+
+    def breaker_failure(self, host: str) -> None:
+        """One connect-level failure (refused / DNS / connect timeout)."""
+        st = self._breaker_state(host)
+        st["fails"] += 1
+        st["probe"] = False
+        if st["fails"] >= BREAKER_THRESHOLD:
+            st["open_until"] = time.monotonic() + BREAKER_OPEN_S
+
+    def breaker_neutral(self, host: str) -> None:
+        """Attempt ended without a connect verdict (e.g. a read timeout:
+        the host DID accept the connection). Only releases a dangling
+        half-open probe flag; the failure count is left alone."""
+        st = self._breaker.get(host)
+        if st:
+            st["probe"] = False
+
+    def breaker_open(self, host: str) -> bool:
+        st = self._breaker.get(host)
+        return bool(st and st["open_until"] > time.monotonic())
+
     # -- pacing --------------------------------------------------------
     def set_rps(self, host: str, rps: float) -> None:
         self._rps[host] = rps
@@ -209,11 +279,28 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
         extra = kwargs.get("headers") or {}
         merged.update(extra)  # caller-supplied headers still win
         kwargs["headers"] = merged
+    # Circuit breaker hooks (duck-typed: limiter stand-ins without them
+    # keep the exact pre-breaker behavior).
+    _b_allows = getattr(limiter, "breaker_allows", None)
+    _b_open = getattr(limiter, "breaker_open", None)
+    _b_success = getattr(limiter, "breaker_success", None)
+    _b_failure = getattr(limiter, "breaker_failure", None)
+    _b_neutral = getattr(limiter, "breaker_neutral", None)
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
+        if _b_allows is not None and not _b_allows(host):
+            # Host is in its fast-fail window: raise the same exception
+            # a dead host produces, without spending a limiter slot, a
+            # connect timeout, or retry backoff on it. Plugins degrade
+            # exactly as they do for an unreachable host.
+            raise httpx.ConnectError(
+                f"circuit open for unreachable host: {host}",
+                request=httpx.Request(method, url))
         await limiter.wait(host)
         try:
             resp = await client.request(method, url, **kwargs)
+            if _b_success is not None:
+                _b_success(host)
             # Classify every response: vendor attribution + block kinds
             # feed graceful backoff; clean/404/5xx are accounted too.
             verdict: Optional[WafVerdict] = None
@@ -237,7 +324,18 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
             return resp
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
+            if isinstance(e, httpx.ConnectError):
+                # Includes ConnectTimeout (a ConnectError subclass):
+                # the host never accepted a connection.
+                if _b_failure is not None:
+                    _b_failure(host)
+            elif _b_neutral is not None:
+                # Read/write timeout: connection was accepted, so this
+                # is not evidence the host is down.
+                _b_neutral(host)
             if attempt < max_retries:
+                if _b_open is not None and _b_open(host):
+                    raise  # breaker just opened: stop paying retries
                 await asyncio.sleep(random.uniform(0.5, 1.5) * (2 ** attempt))
                 continue
             raise

@@ -403,8 +403,35 @@ class FindingReveal(Base):
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
+    # SQLite concurrency recipe (2026-10-23 speed pass): the worker now
+    # runs job load/persist/claim DB work on executor threads (on
+    # Postgres that is the designed mode - see the pool sizing note
+    # below), which means several threads write this file at once.
+    # Stock SQLite settings turned that into a lock convoy: writers
+    # errored with "database is locked" after the driver's 5s default
+    # wait, SQLAlchemy invalidated the connections, and the pool
+    # churned (measured locally: 294s of cursor time for the same
+    # statements that took 13s serialized). WAL lets readers and the
+    # single writer proceed concurrently, and a 30s busy timeout makes
+    # writers queue inside SQLite instead of erroring. The driver's
+    # own `timeout` connect arg is the same busy handler; both are set
+    # because the PRAGMA is per-connection and the pool recycles them.
+    connect_args = {"check_same_thread": False, "timeout": 30}
     engine = create_engine(DATABASE_URL, connect_args=connect_args,
                            pool_pre_ping=True)
+
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _rec):
+        try:
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.close()
+        except Exception:
+            pass
 else:
     # Postgres: the default pool (5 + 10 overflow, 30s wait) starved under
     # the queue worker's concurrency and every API request 500'd after a

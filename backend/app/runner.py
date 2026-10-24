@@ -720,6 +720,41 @@ def _dispatch_order(jobs):
     return ordered
 
 
+def _hunter_expansion_owed(session, run_id: str) -> bool:
+    """True while the mid-run hunter sweep still owes this run an
+    expansion pass for findings it has already produced.
+
+    Phase-2 (chain) plugins consume the discovery bus, and the phase
+    gate holds them until phase-1 JOBS settle. But hunter expansion
+    runs on a 15s sweep and creates NEW phase-1 jobs (new targets)
+    that also feed the bus. When phase 1 drains faster than the sweep
+    cadence - dead-host fast-fail makes seed jobs settle in seconds -
+    phase-2 used to fire on a half-empty bus and chain plugins found
+    nothing: a silent findings loss that only shows on fast runs
+    (measured 2026-10-23: sourcemap/keyharvest/jwt lost their bus-fed
+    findings on a dead-host scan that finished before the first
+    expansion pass). Defer while the sweep's own trigger condition
+    (findings grew >= HUNTER_MIN_NEW_FINDINGS since its last pass) is
+    met; the sweep runs the pass, advances the mark, and any new
+    phase-1 jobs re-engage the job gate. Only runs the sweep actively
+    tracks are gated (see _hunter_swept).
+    """
+    if run_id not in _hunter_swept:
+        return False
+    try:
+        from .hunters.engine import ENABLED as _hunters_on
+        if not _hunters_on:
+            return False
+    except Exception:
+        return False
+    try:
+        n = (session.query(FindingRow)
+             .filter_by(run_id=run_id).count())
+    except Exception:
+        return False
+    return (n - _hunter_marks.get(run_id, 0)) >= HUNTER_MIN_NEW_FINDINGS
+
+
 def _claim_jobs(session, limit: int):
     """Claim up to `limit` queued jobs for this worker.
 
@@ -845,6 +880,8 @@ def _claim_jobs(session, limit: int):
             return "skip"
         if job.phase == 2 and phase1_pending.get(job.run_id, 0) > 0:
             return "defer"  # phase 1 still producing bus signals
+        if job.phase == 2 and _hunter_expansion_owed(session, job.run_id):
+            return "defer"  # hunter expansion still owes the bus signals
         return "claim"
 
     def do_claim(job) -> None:
@@ -961,21 +998,24 @@ def _attach_poi_meta(session, run_id: str, target) -> None:
         pass
 
 
-async def _run_one_job(job_id: int) -> None:
-    """Run a single claimed job: plugin -> findings -> DB -> events.
+def _load_job(job_id: int):
+    """Phase 1 of _run_one_job as a sync helper (runs in a thread).
 
-    The DB session is NOT held across plugin execution. Plugins run
-    network scans that can take minutes; holding a pooled connection for
-    the whole run starved the pool (16 concurrent jobs vs 15 pooled
-    connections) and every API request timed out waiting 30s for a
-    connection. Load -> close -> run -> persist on a fresh session.
+    Returns (run_id, plugin_id, plugin_cls, target), or None when the
+    job needs nothing more (missing/not running, or the missing-run
+    failure has already been recorded here).
+
+    Speed pass 2026-10-23: this DB work used to run on the event loop
+    for every job. On Postgres each query is a network round trip, so
+    loading one job stalled all 32 in-flight plugin tasks; multiplied
+    by ~800 jobs that was tens of seconds of serialized loop time per
+    scan. Same queries, same order - just off the loop.
     """
-    # Phase 1: load everything needed, then release the connection.
     session = get_session()
     try:
         job = session.query(PluginJob).filter_by(id=job_id).first()
         if job is None or job.status != "running":
-            return
+            return None
         run_id = job.run_id
         plugin_id = job.plugin_id
         run = session.query(Run).filter_by(id=run_id).first()
@@ -988,17 +1028,104 @@ async def _run_one_job(job_id: int) -> None:
                           "reason": "run, target, or plugin missing",
                           "findings": 0, "ms": 0}
             session.commit()
-            return
+            return None
         target = Target(raw=trow.raw, type=trow.type,
                         normalized=trow.normalized)
         target.id = trow.id
         if target.type == "poi":
             _attach_poi_meta(session, run_id, target)
+        return (run_id, plugin_id, plugin_cls, target)
     finally:
         try:
             session.close()
         except Exception:
             pass
+
+
+def _mark_job_failed(job_id: int, reason: str) -> None:
+    """Record a worker-level failure on a claimed job (sync helper)."""
+    session = get_session()
+    try:
+        job = session.query(PluginJob).filter_by(id=job_id).first()
+        if job is not None and job.status == "running":
+            job.status = "failed"
+            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            job.result = {"status": "failed", "reason": reason,
+                          "findings": 0, "ms": 0}
+            session.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _persist_job(job_id: int, run_id: str, target_id, result):
+    """Phase 3 of _run_one_job as a sync helper (runs in a thread).
+
+    Returns (row_ids, counts, status_str). Speed pass 2026-10-23:
+    findings and the job outcome now land in ONE commit (was two), and
+    finding row ids are captured at flush time so the event fan-out
+    does not pay a per-finding refresh query after the commit. Same
+    rows, same values, same counts query - just fewer round trips and
+    none of them on the event loop.
+    """
+    session = get_session()
+    try:
+        rows = [_row_to_finding(f, run_id, target_id)
+                for f in result.findings]
+        for r in rows:
+            session.add(r)
+        st = (result.status.value if hasattr(result.status, "value")
+              else str(result.status))
+        job = session.query(PluginJob).filter_by(id=job_id).first()
+        if job is not None:
+            job.status = "done" if st in ("ok", "skipped") else "failed"
+            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            job.result = {"status": st, "reason": result.reason,
+                          "findings": len(rows),
+                          "ms": result.duration_ms or 0}
+        try:
+            session.flush()
+            row_ids = [r.id for r in rows]
+            session.commit()
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            row_ids = [None] * len(rows)
+        counts = _job_counts(session, run_id)
+        return row_ids, counts, st
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+# Per-run timestamp of the last "progress" event emitted by _run_one_job.
+_progress_marks: Dict[str, float] = {}
+
+
+async def _run_one_job(job_id: int) -> None:
+    """Run a single claimed job: plugin -> findings -> DB -> events.
+
+    The DB session is NOT held across plugin execution. Plugins run
+    network scans that can take minutes; holding a pooled connection for
+    the whole run starved the pool (16 concurrent jobs vs 15 pooled
+    connections) and every API request timed out waiting 30s for a
+    connection. Load -> close -> run -> persist on a fresh session.
+    The load/persist phases run in worker threads (see _load_job /
+    _persist_job) so their DB round trips never block the event loop.
+    """
+    # Phase 1: load everything needed, then release the connection.
+    loaded = await asyncio.to_thread(_load_job, job_id)
+    if loaded is None:
+        return
+    run_id, plugin_id, plugin_cls, target = loaded
 
     # Phase 2: run the plugin with no DB connection held.
     plugin = plugin_cls()
@@ -1020,71 +1147,32 @@ async def _run_one_job(job_id: int) -> None:
             result = await _run_plugin(plugin, target, ctx,
                                        deadline=deadline)
     except Exception as e:
-        session = get_session()
-        try:
-            job = session.query(PluginJob).filter_by(id=job_id).first()
-            if job is not None and job.status == "running":
-                job.status = "failed"
-                job.finished_at = dt.datetime.now(dt.timezone.utc)
-                job.result = {"status": "failed",
-                              "reason": (f"worker error: "
-                                         f"{type(e).__name__}: {str(e)[:150]}"),
-                              "findings": 0, "ms": 0}
-                session.commit()
-        except Exception:
-            pass
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
+        await asyncio.to_thread(
+            _mark_job_failed, job_id,
+            f"worker error: {type(e).__name__}: {str(e)[:150]}")
         return
 
-    # Phase 3: persist findings + job outcome on a fresh session.
-    session = get_session()
-    try:
-        rows = [_row_to_finding(f, run_id, target.id)
-                for f in result.findings]
-        for r in rows:
-            session.add(r)
-        if rows:
-            try:
-                session.commit()
-            except Exception:
-                session.rollback()
-        for f, r in zip(result.findings, rows):
-            try:
-                ctx.publish("poc_findings", {
-                    "plugin_id": f.plugin_id, "category": f.category,
-                    "key": f.key, "value": f.value, "source": f.source,
-                    "source_url": f.source_url, "confidence": f.confidence,
-                    "evidence": dict(f.evidence or {}), "passive": f.passive,
-                    "bounty_value": getattr(f, "bounty_value", "low")})
-            except Exception:
-                pass
-            await _emit(run_id, "finding",
-                        {"fid": r.id, "plugin": f.plugin_id,
-                         "category": f.category, "key": f.key,
-                         "value": f.value, "source": f.source,
-                         "source_url": f.source_url, "evidence": f.evidence,
-                         "confidence": f.confidence, "passive": f.passive,
-                         "target": target.normalized})
-        job = session.query(PluginJob).filter_by(id=job_id).first()
-        st = (result.status.value if hasattr(result.status, "value")
-              else str(result.status))
-        if job is not None:
-            job.status = "done" if st in ("ok", "skipped") else "failed"
-            job.finished_at = dt.datetime.now(dt.timezone.utc)
-            job.result = {"status": st, "reason": result.reason,
-                          "findings": len(rows),
-                          "ms": result.duration_ms or 0}
-            session.commit()
-        counts = _job_counts(session, run_id)
-    finally:
+    # Phase 3: persist findings + job outcome on a fresh session
+    # (in a thread), then fan out the per-finding events.
+    row_ids, counts, st = await asyncio.to_thread(
+        _persist_job, job_id, run_id, target.id, result)
+    for f, rid in zip(result.findings, row_ids):
         try:
-            session.close()
+            ctx.publish("poc_findings", {
+                "plugin_id": f.plugin_id, "category": f.category,
+                "key": f.key, "value": f.value, "source": f.source,
+                "source_url": f.source_url, "confidence": f.confidence,
+                "evidence": dict(f.evidence or {}), "passive": f.passive,
+                "bounty_value": getattr(f, "bounty_value", "low")})
         except Exception:
             pass
+        await _emit(run_id, "finding",
+                    {"fid": rid, "plugin": f.plugin_id,
+                     "category": f.category, "key": f.key,
+                     "value": f.value, "source": f.source,
+                     "source_url": f.source_url, "evidence": f.evidence,
+                     "confidence": f.confidence, "passive": f.passive,
+                     "target": target.normalized})
     if not ran_plugin:
         # Type-mismatch skip: _run_plugin never ran, so this is the only
         # plugin_done the job produces. (When _run_plugin did run, it
@@ -1092,11 +1180,19 @@ async def _run_one_job(job_id: int) -> None:
         # duplicate removed 2026-10-23.)
         await _emit(run_id, "plugin_done",
                     {"plugin": plugin.id, "status": st,
-                     "reason": result.reason, "findings": len(rows),
+                     "reason": result.reason,
+                     "findings": len(result.findings),
                      "ms": result.duration_ms or 0})
-    await _emit(run_id, "progress",
-                {"done": counts["done"], "total": counts["total"],
-                 "plugin": plugin.id, "target": target.normalized})
+    # Progress events: the UI polls run state from the DB, so a progress
+    # row per job (~800/run) is pure write volume. Throttle to ~4/s per
+    # run, but always emit the settling one (done == total).
+    now_m = time.monotonic()
+    if (counts["done"] >= counts["total"]
+            or now_m - _progress_marks.get(run_id, 0.0) >= 0.25):
+        _progress_marks[run_id] = now_m
+        await _emit(run_id, "progress",
+                    {"done": counts["done"], "total": counts["total"],
+                     "plugin": plugin.id, "target": target.normalized})
 
 
 # ---------------------------------------------------------------------------
@@ -1114,6 +1210,11 @@ async def _run_one_job(job_id: int) -> None:
 _hunter_guards: Dict[str, threading.Lock] = {}
 _hunter_guards_mu = threading.Lock()
 _hunter_marks: Dict[str, int] = {}  # run_id -> findings at last pass
+# Runs the incremental hunter sweep has evaluated at least once. The
+# claim gate's expansion-owed check applies only to these, so bare
+# claim pumps (tests, tooling) that never run the sweep keep the
+# original phase-gate behavior.
+_hunter_swept: set = set()
 _last_hunter_sweep = 0.0
 HUNTER_SWEEP_INTERVAL_S = float(_os.environ.get("RECON_HUNTER_SWEEP_S", "15"))
 HUNTER_MIN_NEW_FINDINGS = int(_os.environ.get("RECON_HUNTER_MIN_NEW", "8"))
@@ -1271,6 +1372,7 @@ async def _sweep_hunter_expand() -> None:
             session.close()
         except Exception:
             pass
+    _hunter_swept.update(counts.keys())
     for rid, n_findings in counts.items():
         if (n_findings - _hunter_marks.get(rid, 0)
                 >= HUNTER_MIN_NEW_FINDINGS):
@@ -1279,6 +1381,9 @@ async def _sweep_hunter_expand() -> None:
     for rid in list(_hunter_marks):
         if rid not in counts:
             _hunter_marks.pop(rid, None)
+    for rid in list(_hunter_swept):
+        if rid not in counts:
+            _hunter_swept.discard(rid)
 
 
 def _record_waf_blocks(session, run_id: str, ctx) -> int:
@@ -1488,26 +1593,35 @@ async def _finalize_run(run_id: str) -> bool:
             pass
 
 
-async def _sweep_finalize() -> None:
+async def _sweep_finalize(force: bool = False) -> None:
     """Finalize any running runs whose jobs are all settled (covers the
     crash-between-last-job-and-finalize window). Also heals runs left
     "running" with zero plugin jobs - e.g. a mid-scan redeploy that
     orphaned the run (seen 2026-10-20 when a direct push to master
     redeployed both Render services mid-scan): they are finalized as
-    interrupted so they stop sitting "running" forever. Throttled to ~5s.
+    interrupted so they stop sitting "running" forever. Throttled to ~5s
+    (1s when `force`d by a fresh job completion, so the run whose last
+    job just settled finalizes promptly instead of waiting out the
+    throttle - measured 2026-10-23: up to 5s of dead time at the tail
+    of every scan).
+
+    Speed pass 2026-10-23: candidates are the runs still in "running"
+    status, not every run that ever had a job. _finalize_run only ever
+    claims "running" runs (atomic status update), so finished runs
+    were pure waste: a distinct-scan over the whole plugin_jobs table
+    plus a pending-count per historical run, every 5s, forever - the
+    cost grew with scan history on the production DB.
     """
     global _last_sweep
     now = time.monotonic()
-    if now - _last_sweep < 5:
+    if now - _last_sweep < (1.0 if force else 5.0):
         return
     _last_sweep = now
     session = get_session()
     try:
         run_ids = [r[0] for r in
-                   session.query(PluginJob.run_id)
-                   .filter(PluginJob.status.in_(
-                       ("queued", "running", "done", "skipped", "failed")))
-                   .distinct().all()]
+                   session.query(Run.id)
+                   .filter(Run.status == "running").all()]
         for rid in run_ids:
             if _pending_count(session, rid) == 0:
                 await _finalize_run(rid)
@@ -1531,6 +1645,24 @@ async def _sweep_finalize() -> None:
                                    "far are preserved.")
                 run.summary = summary
                 session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _claim_ids(limit: int) -> List[int]:
+    """Claim up to `limit` queued jobs and return their ids (sync
+    helper). The worker loop runs this via asyncio.to_thread: claiming
+    used to execute on the event loop, and on Postgres every claim pass
+    is several network round trips during which no in-flight plugin
+    task progressed (2026-10-23 speed pass)."""
+    session = get_session()
+    try:
+        claimed = _claim_jobs(session, limit)
+        # capture ids while the session is still open (commit expires attrs)
+        return [j.id for j in claimed]
     finally:
         try:
             session.close()
@@ -1602,15 +1734,28 @@ async def queue_worker_loop() -> None:
         # task -> (job_id, monotonic start) for the watchdog below.
         task_jobs: Dict[Any, Any] = {}
         last_stale_sweep = 0.0
+        # Event-driven slot refill (2026-10-23 speed pass): job
+        # completions set `wake`, so a freed slot is refilled on the
+        # next loop turn instead of up to 0.5s later when the fixed
+        # sleep expires. The sleep stays as an upper bound (watchdog /
+        # sweep cadence), it just stops being the quantization floor
+        # for every completion. last_completion also drives forced
+        # finalize sweeps (see _sweep_finalize).
+        wake = asyncio.Event()
+        last_completion = [0.0]
+        swept_mark = [0.0]
 
         def _swallow(task: "asyncio.Task") -> None:
             # _run_one_job handles its own errors; this only keeps a
             # stray task exception from logging "never retrieved".
+            last_completion[0] = time.monotonic()
+            wake.set()
             if not task.cancelled():
                 task.exception()
 
         while True:
             try:
+                wake.clear()
                 in_flight = {t for t in in_flight if not t.done()}
                 task_jobs = {t: v for t, v in task_jobs.items()
                              if t in in_flight}
@@ -1634,31 +1779,34 @@ async def queue_worker_loop() -> None:
                 # by tasks cancelled while their rows were claimed.
                 if now_m - last_stale_sweep > STALE_SWEEP_INTERVAL_S:
                     last_stale_sweep = now_m
-                    reset_stale_queue_jobs()
+                    await asyncio.to_thread(reset_stale_queue_jobs)
                 free = (max(getattr(config, "MAX_CONCURRENCY", 5), 1)
                         - len(in_flight))
                 claimed_ids = []
                 if free > 0:
-                    session = get_session()
-                    try:
-                        claimed = _claim_jobs(session, free)
-                        # capture ids while the session is still open
-                        # (commit expires attrs)
-                        claimed_ids = [j.id for j in claimed]
-                    finally:
-                        try:
-                            session.close()
-                        except Exception:
-                            pass
+                    claimed_ids = await asyncio.to_thread(
+                        _claim_ids, free)
                 for job_id in claimed_ids:
                     task = asyncio.create_task(_run_one_job(job_id))
                     task.add_done_callback(_swallow)
                     in_flight.add(task)
                     task_jobs[task] = (job_id, time.monotonic())
-                await _sweep_finalize()
+                await _sweep_finalize(
+                    force=last_completion[0] > swept_mark[0])
+                swept_mark[0] = last_completion[0]
                 await _sweep_hunter_expand()
-                await asyncio.sleep(0.5 if (claimed_ids or in_flight)
-                                    else 2.0)
+                # Wait for the next completion (event-driven refill);
+                # the timeout preserves the old 0.5s/2.0s cadence as an
+                # upper bound for watchdog and sweep work. `wake` is
+                # cleared at the top of the loop, so a completion that
+                # lands during claiming still shortens this wait.
+                try:
+                    await asyncio.wait_for(
+                        wake.wait(),
+                        timeout=(0.5 if (claimed_ids or in_flight)
+                                 else 2.0))
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
             except Exception:
                 await asyncio.sleep(2.0)
 
