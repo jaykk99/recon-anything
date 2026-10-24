@@ -2373,6 +2373,25 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         except Exception:
             pass
     finally:
+        # Clear the durable enqueue intent (see api_start_run): normal
+        # completion - jobs queued, or a terminal failed/done outcome
+        # that already rewrote the summary - needs no recovery. A
+        # process killed mid-enqueue never reaches this block, so its
+        # intent survives for boot-time replay. Fresh session on
+        # purpose: the branches above close/replace `session`.
+        try:
+            _s2 = get_session()
+            try:
+                _r = _s2.query(Run).filter_by(id=run_id).first()
+                if _r and (_r.summary or {}).get("pending_enqueue") is not None:
+                    _s = dict(_r.summary or {})
+                    _s.pop("pending_enqueue", None)
+                    _r.summary = _s
+                    _s2.commit()
+            finally:
+                _s2.close()
+        except Exception:
+            pass
         try:
             session.close()
         except Exception:
