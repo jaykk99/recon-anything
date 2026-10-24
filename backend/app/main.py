@@ -205,6 +205,11 @@ async def _startup():
     # so Render's health check doesn't time out on slow cold starts.
     import threading
     import asyncio
+    # Boot instant: _recover_pending_runs only replays runs created
+    # BEFORE this process started. A run created after boot may still
+    # have its original enqueue task in flight in this process, and
+    # replaying it would double-enqueue; the boot cutoff rules that out.
+    _boot_started = dt.datetime.now(dt.timezone.utc)
     _db_ready = asyncio.Event()
     def _bg_init():
         try:
@@ -233,6 +238,22 @@ async def _startup():
                                     .filter_by(run_id=r.id).count() > 0)
                         if has_jobs:
                             continue  # the queue worker resumes this run
+                        pending = (r.summary or {}).get("pending_enqueue")
+                        if pending is not None:
+                            has_targets = (session.query(Target)
+                                           .filter_by(run_id=r.id)
+                                           .count() > 0)
+                            if not has_targets:
+                                # Enqueue died mid-setup (deploy/crash)
+                                # before writing anything: leave it
+                                # "running" for _recover_pending_runs to
+                                # replay at boot instead of failing a
+                                # scan the user never saw start.
+                                continue
+                            # Targets exist but no jobs: replay would
+                            # duplicate rows (random target ids), so
+                            # this partial enqueue still fails loudly
+                            # below, as before.
                         r.status = "failed"
                         r.finished_at = dt.datetime.now(dt.timezone.utc)
                         summary = dict(r.summary or {})
@@ -281,6 +302,81 @@ async def _startup():
         except Exception as e:
             log.error("failed to start queue worker: %s", e)
     asyncio.create_task(_start_worker_when_ready())
+
+    # Replay enqueue intents orphaned by a deploy/crash mid-setup (see
+    # api_start_run). Runs after _db_ready so boot init's failed-marking
+    # has already settled the partial-enqueue cases; this task only sees
+    # clean 0-target/0-job runs, which replay without duplicating rows.
+    async def _recover_pending_runs():
+        try:
+            await asyncio.wait_for(_db_ready.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            log.warning("DB init timed out, skipping pending-run recovery")
+            return
+        # Grace delay (default 180s, env-tunable for tests): a Render
+        # deploy briefly runs the old and new instances side by side,
+        # and the old instance may still be finishing an enqueue for a
+        # run created before this boot. Replaying immediately could
+        # double-enqueue it. Waiting past the deploy overlap, then
+        # re-checking for jobs/targets, means a replay only ever fires
+        # for an enqueue whose process is certainly dead; a run whose
+        # original enqueue completed in the meantime is skipped by the
+        # jobs/targets checks below.
+        try:
+            _delay = int(os.environ.get(
+                "RECON_PENDING_RECOVERY_DELAY_S", "180"))
+        except ValueError:
+            _delay = 180
+        if _delay > 0:
+            await asyncio.sleep(_delay)
+        try:
+            from .models import PluginJob as _PJ
+            session = get_session()
+            try:
+                candidates = (session.query(Run)
+                              .filter_by(status="running").all())
+                pending = []
+                for r in candidates:
+                    intent = (r.summary or {}).get("pending_enqueue")
+                    if intent is None:
+                        continue
+                    _created = r.created_at
+                    if _created is not None:
+                        # SQLite returns naive datetimes; Postgres aware.
+                        if _created.tzinfo is None:
+                            _created = _created.replace(
+                                tzinfo=dt.timezone.utc)
+                        if _created >= _boot_started:
+                            # created after boot: enqueue may be live
+                            continue
+                    if session.query(_PJ).filter_by(run_id=r.id).count():
+                        continue  # worker resumes this run
+                    if session.query(Target).filter_by(run_id=r.id).count():
+                        continue  # partial enqueue: boot init failed it
+                    pending.append((r.id, intent))
+            finally:
+                session.close()
+            for run_id, intent in pending:
+                try:
+                    await launch_run(run_id, intent.get("targets", ""),
+                                     intent.get("mode", "passive"),
+                                     intent.get("plugins"),
+                                     intent.get("module_overrides"),
+                                     None,
+                                     source_type=intent.get("source_type",
+                                                            "website"),
+                                     bounty=bool(intent.get("bounty")),
+                                     excluded_plugin_ids=intent.get(
+                                         "excluded_plugin_ids"))
+                    _wake_worker()
+                    log.info("recovered pending run %s (interrupted "
+                             "enqueue replayed)", run_id)
+                except Exception as e:
+                    log.error("pending-run recovery failed for %s: %s",
+                              run_id, e)
+        except Exception as e:
+            log.error("pending-run recovery failed: %s", e)
+    asyncio.create_task(_recover_pending_runs())
 
 
 @app.get("/api/health")
@@ -369,17 +465,6 @@ async def api_start_run(body: RunIn, request: Request):
             from .plugins.registry import describe as _describe
             excluded_plugin_ids = billing.excluded_plugins_for_plan(
                 plan, [p["id"] for p in _describe()]) or None
-    run_id = uuid.uuid4().hex[:12]
-    session = get_session()
-    try:
-        session.add(Run(id=run_id, mode=body.mode, status="running",
-                        user_id=run_user_id,
-                        source_type=body.source_type,
-                        summary={"bounty": bool(body.bounty)}))
-        session.commit()
-        keys = load_all(session)
-    finally:
-        session.close()
     # Bank/ATM source types imply explicit authorization: the user picked
     # the mode on purpose. Record it as an audit finding in the run.
     overrides = dict(body.module_overrides or {})
@@ -391,6 +476,39 @@ async def api_start_run(body: RunIn, request: Request):
         # Bank/ATM mode is one deliberate pick: both modules authorized.
         overrides["bank"] = "authorized"
         overrides["atm"] = "authorized"
+    run_id = uuid.uuid4().hex[:12]
+    session = get_session()
+    try:
+        # pending_enqueue: durable enqueue intent, written in the SAME
+        # commit as the Run row so there is no window where a run exists
+        # without a recoverable record of how to enqueue it. Bank/ATM
+        # location runs spend seconds on network geocode/POI resolution
+        # BEFORE writing any target or job (see _enqueue_bankatm_run):
+        # a deploy/crash in that window used to leave the run at 0 jobs
+        # with nothing resumable, and boot init marked it failed. The
+        # intent is cleared by execute_run on normal completion (see its
+        # finally block) and replayed at boot by _recover_pending_runs
+        # only for runs created before this process booted with still
+        # zero targets and zero jobs, so a replay can never duplicate
+        # rows (target ids are random uuids) or double-run a live
+        # enqueue. No new columns: it lives in the existing summary JSON.
+        session.add(Run(id=run_id, mode=body.mode, status="running",
+                        user_id=run_user_id,
+                        source_type=body.source_type,
+                        summary={"bounty": bool(body.bounty),
+                                 "pending_enqueue": {
+                                     "targets": body.targets,
+                                     "mode": body.mode,
+                                     "plugins": plugins,
+                                     "module_overrides": overrides,
+                                     "source_type": body.source_type,
+                                     "bounty": bool(body.bounty),
+                                     "excluded_plugin_ids":
+                                         excluded_plugin_ids}}))
+        session.commit()
+        keys = load_all(session)
+    finally:
+        session.close()
     await launch_run(run_id, body.targets, body.mode,
                      plugins, overrides, keys,
                      source_type=body.source_type, bounty=body.bounty,
