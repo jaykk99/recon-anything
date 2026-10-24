@@ -19,7 +19,7 @@ CLOUD_PATTERNS = [
     (r"[a-z0-9-]+\.blob\.core\.windows\.net", "Azure Blob storage reference", "azure"),
     (r"[a-z0-9-]+\.storage\.googleapis\.com|storage\.googleapis\.com/[a-z0-9-]+",
      "GCP Storage bucket reference", "gcp"),
-    (r"[a-z0-9-]+\.s3[.-][a-z0-9-]*\.amazonaws\.com", "AWS S3 bucket reference", "aws"),
+    (r"[a-z0-9-]+\.s3(?:[.-](?:dualstack\.)?[a-z0-9-]+)?\.amazonaws\.com(?![\w.\-])", "AWS S3 bucket reference", "aws"),
     (r"[a-z0-9-]+\.cloudfront\.net", "AWS CloudFront distribution", "aws"),
     (r"iam\.amazonaws\.com|sts\.amazonaws\.com", "AWS IAM/STS reference", "aws"),
     (r"management\.azure\.com", "Azure management endpoint", "azure"),
