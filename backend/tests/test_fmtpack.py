@@ -162,8 +162,8 @@ def test_exactly_12_new_detectors_registered():
     assert fx == sorted(FX_IDS)
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
-    # +10 da_* (deep-artifacts pack)
-    assert len(discover()) == 602
+    # +10 da_* (deep-artifacts pack) +5 sec_* (secret-exposure pack)
+    assert len(discover()) == 607
 
 
 # ---------------------------------------------------------------------------
