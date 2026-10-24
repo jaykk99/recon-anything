@@ -140,27 +140,43 @@ class DirBrutePlugin(Plugin):
                              "location": loc[:120],
                              "snippet": body[:300].replace("\n", " ")[:300]})
 
-        await asyncio.gather(*[probe(p) for p in WORDLIST])
+        def _findings_from(hit_list: List[Dict]) -> List[Finding]:
+            out = []
+            for h in sorted(hit_list, key=lambda x: x["path"]):
+                sev = "high" if h["status"] == 200 else "medium"
+                label = {"401": "auth-gated", "403": "forbidden"}.get(
+                    str(h["status"]), f"HTTP {h['status']}")
+                val = (f"{sev.upper()}: hidden path {h['path']} exists "
+                       f"({label}, {h['length']} bytes)")
+                if h["location"]:
+                    val += f" -> {h['location']}"
+                out.append(self._f(
+                    "web", "dir_brute_hit", val,
+                    source="directory brute force", source_url=h["url"],
+                    confidence=85 if h["status"] == 200 else 70,
+                    passive=False,
+                    evidence={"severity": sev, "path": h["path"],
+                              "status": h["status"],
+                              "remediation": ("Remove or access-control this path. "
+                                              "Backup/config files must never be "
+                                              "web-reachable; admin panels need "
+                                              "auth + IP allowlisting.")}))
+            return out
 
-        for h in sorted(hits, key=lambda x: x["path"]):
-            sev = "high" if h["status"] == 200 else "medium"
-            label = {"401": "auth-gated", "403": "forbidden"}.get(
-                str(h["status"]), f"HTTP {h['status']}")
-            val = (f"{sev.upper()}: hidden path {h['path']} exists "
-                   f"({label}, {h['length']} bytes)")
-            if h["location"]:
-                val += f" -> {h['location']}"
-            findings.append(self._f(
-                "web", "dir_brute_hit", val,
-                source="directory brute force", source_url=h["url"],
-                confidence=85 if h["status"] == 200 else 70,
-                passive=False,
-                evidence={"severity": sev, "path": h["path"],
-                          "status": h["status"],
-                          "remediation": ("Remove or access-control this path. "
-                                          "Backup/config files must never be "
-                                          "web-reachable; admin panels need "
-                                          "auth + IP allowlisting.")}))
+        # Fired as one all-at-once gather() over all ~150 wordlist entries
+        # used to mean a kill at the 300s timeout_s (itself clamped to
+        # MAX_PLUGIN_TIMEOUT_S=120, and further by the scan's remaining
+        # budget) threw away every hit found so far - the findings list
+        # was only ever built AFTER the whole gather returned. Chunking
+        # the same semaphore(10)-gated probes into batches changes
+        # nothing about real concurrency, just adds a checkpoint between
+        # batches so a kill mid-sweep keeps what was already found.
+        CHUNK = 30
+        for i in range(0, len(WORDLIST), CHUNK):
+            await asyncio.gather(*[probe(p) for p in WORDLIST[i:i + CHUNK]])
+            self._checkpoint(_findings_from(hits))
+
+        findings = _findings_from(hits)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,

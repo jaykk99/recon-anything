@@ -802,11 +802,14 @@ function RunPageInner({ params }: { params: { id: string } }) {
     : estimatedS > 0 && status === "running" ? Math.max(estimatedS - elapsed, 0)
     : null;
   const pluginsLeft = Math.max(progress.total - progress.done, 0);
-  // Live batch view: 5 plugins run at a time, show which batch is active.
-  const BATCH = 5;
+  // Live concurrency view. The backend runs continuous slot-filling (a
+  // slot is refilled the moment its job finishes, up to MAX_CONCURRENCY
+  // ~32), NOT fixed batches - the old "Batch X of Y · 5 at a time" label
+  // was wrong on both counts (wrong number and a model that no longer
+  // exists), and made a fast run look ~6x slower than it was. Show the
+  // real observed concurrency instead: how many plugins are in flight
+  // right now, which is live data, not a guess.
   const runningNow = Object.values(plugins).filter((p) => p.status === "running");
-  const batches = Math.ceil(progress.total / BATCH);
-  const batch = progress.total > 0 ? Math.min(Math.floor(progress.done / BATCH) + 1, Math.max(batches, 1)) : 0;
   const runningNames = runningNow.slice(0, 8).map((p) => p.plugin).join(", ");
 
   return (
@@ -841,7 +844,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
             {authInfo.disclaimer || "Authenticated: scans behind the login of your own systems. For authorized testing only."}
           </p>
         )}
-        {/* live batch panel: 5 at a time, visible batches */}
+        {/* live concurrency panel: real in-flight count, not fake batches */}
         {status === "running" && progress.total > 0 && (
           <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/30 p-3">
             <div className="flex items-center gap-2 text-sm flex-wrap">
@@ -850,14 +853,18 @@ function RunPageInner({ params }: { params: { id: string } }) {
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span>
               </span>
               <span className="font-bold text-emerald-300">LIVE</span>
-              <span className="text-slate-200">Batch {batch} of {batches} · 5 at a time</span>
+              <span className="text-slate-200">
+                {runningNow.length > 0
+                  ? <>{runningNow.length} plugin{runningNow.length === 1 ? "" : "s"} running in parallel</>
+                  : "filling the next slots..."}
+              </span>
               <span className="ml-auto text-xs text-slate-400">{findings.length} findings so far</span>
             </div>
             <p className="text-xs text-slate-400 mt-1.5">
-              {progress.done} done · {pluginsLeft} left
-              {runningNow.length > 0
-                ? <> · running now ({runningNow.length}): <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
-                : " · starting next 5..."}
+              {progress.done} of {progress.total} done · {pluginsLeft} left
+              {runningNow.length > 0 && (
+                <> · now: <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
+              )}
             </p>
           </div>
         )}

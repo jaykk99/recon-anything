@@ -156,11 +156,7 @@ class PortScanPlugin(Plugin):
                     return None
                 return port, service, banner, tls_info
 
-        results = await asyncio.gather(
-            *[check(p, s, t) for p, s, t in WEB_PORTS])
-        for res_item in results:
-            if not res_item:
-                continue
+        def _record(res_item) -> None:
             port, service, banner, tls_info = res_item
             val = f"HIGH: Port {port} ({service}) is OPEN on {host}"
             if banner:
@@ -178,6 +174,21 @@ class PortScanPlugin(Plugin):
                                           "exposed to the internet are a "
                                           "common breach path - firewall them "
                                           "or require auth.")}))
+
+        # Batched (instead of one all-at-once gather over all 50 ports) so
+        # a kill at the 300s timeout_s (clamped to MAX_PLUGIN_TIMEOUT_S=120,
+        # and further by the scan's remaining budget - a firewall that
+        # drops instead of resetting can make every connect() run its
+        # full 3s timeout) checkpoints the open ports already found
+        # instead of discarding them all.
+        CHUNK = 15
+        for i in range(0, len(WEB_PORTS), CHUNK):
+            batch_results = await asyncio.gather(
+                *[check(p, s, t) for p, s, t in WEB_PORTS[i:i + CHUNK]])
+            for res_item in batch_results:
+                if res_item:
+                    _record(res_item)
+            self._checkpoint(findings)
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,

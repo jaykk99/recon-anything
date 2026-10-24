@@ -195,12 +195,25 @@ class SubdomainBrutePlugin(Plugin):
                 return word, ips
 
         hits = 0
-        # One gather over the whole wordlist: the semaphore (25) already
-        # bounds in-flight DNS. The old batch-of-100 chunking serialized
-        # batches behind the slowest resolver in each batch (4s lifetime),
-        # which made even small wordlists crawl.
-        results = await asyncio.gather(*[paced(w) for w in words])
-        for word, ips in results:
+        # All 800+ tasks are created up front (the semaphore, not a batch
+        # barrier, bounds real concurrency to 25) - a straight gather()
+        # over the whole wordlist was kept deliberately: the old
+        # batch-of-100 chunking serialized batches behind the slowest
+        # resolver in each batch (4s lifetime), which made even small
+        # wordlists crawl. as_completed() preserves that exact
+        # continuous-slot-filling behavior (no batch boundary, no stall
+        # on one slow resolver) while still yielding results as they
+        # land, so we can checkpoint periodically. Without this, a kill
+        # at timeout_s=600 (clamped to MAX_PLUGIN_TIMEOUT_S=120, and
+        # further by the scan's remaining budget - very real on an 800+
+        # name wordlist at 20 rps, which alone takes ~40s of pure pacing
+        # before DNS latency) discarded every subdomain already found.
+        CHECKPOINT_EVERY = 50
+        done_count = 0
+        tasks = [asyncio.ensure_future(paced(w)) for w in words]
+        for coro in asyncio.as_completed(tasks):
+            word, ips = await coro
+            done_count += 1
             if ips and not set(ips) <= wildcard_ips:
                 hits += 1
                 findings.append(self._f(
@@ -217,9 +230,20 @@ class SubdomainBrutePlugin(Plugin):
                                               "patched, and behind the "
                                               "same security controls.")}))
                 ctx.publish("subdomains", f"{word}.{domain}")
+            if done_count % CHECKPOINT_EVERY == 0:
+                self._checkpoint(findings)
             if hits >= 200:
                 break  # enough; avoid runaway on huge zones
+        else:
+            tasks = []  # loop ran to completion; nothing left to cancel
+        # Early exit (hit cap): cancel whatever is still in flight instead
+        # of leaving ~hundreds of DNS lookups running unawaited in the
+        # background after this plugin has already returned.
+        for t in tasks:
+            if not t.done():
+                t.cancel()
 
+        self._checkpoint(findings)
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
                        f"probed {len(words)} names, {hits} subdomains found")
