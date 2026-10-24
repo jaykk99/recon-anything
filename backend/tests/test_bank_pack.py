@@ -483,3 +483,23 @@ def test_cert_weak_fires(tmp_path):
     assert "fin_cert_weak" in got["fin_cert_weak"], got
     assert got["fin_cert_expired"] == [], got
     assert got["fin_cert_mismatch"] == [], got
+
+
+def test_cert_weak_ec_key_not_flagged():
+    """Regression (live 2026-10-23): a 256-bit EC key (P-256) is
+    standard strength, not weak. The old flat <2048 bar flagged every
+    modern EC certificate, e.g. error-inbox.onrender.com."""
+    from app.plugins.bankpack_infra import cert_weak_issues
+    base = {"sig_hash": "sha256", "tls_version": "TLSv1.3"}
+    assert cert_weak_issues({**base, "key_bits": 256,
+                             "key_kind": "ECPublicKey"}) == []
+    assert cert_weak_issues({**base, "key_bits": 384,
+                             "key_kind": "ECPublicKey"}) == []
+    assert cert_weak_issues({**base, "key_bits": 192,
+                             "key_kind": "ECPublicKey"}) != []
+    assert cert_weak_issues({**base, "key_bits": 1024,
+                             "key_kind": "RSAPublicKey"}) != []
+    assert cert_weak_issues({**base, "key_bits": 2048,
+                             "key_kind": "RSAPublicKey"}) == []
+    assert cert_weak_issues({**base, "key_bits": 1024,
+                             "key_kind": "UnknownKey"}) != []
