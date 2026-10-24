@@ -183,6 +183,12 @@ ROUTES = {
                          '<cross-domain-policy>'
                          '<site-control permitted-cross-domain-policies="all"/>'
                          "</cross-domain-policy>", {}),
+    "/appconfig.xml": (200, "application/xml",
+                       '<?xml version="1.0"?><configuration>'
+                       "<connectionStrings>"
+                       '<add name="db" connectionString="Server=db.fixture.test;'
+                       'User Id=svc;Password=FixturePass123!" />'
+                       "</connectionStrings></configuration>", {}),
     "/manifest.json": (200, "application/json",
                        json.dumps({"name": "Fixture Corp",
                                    "short_name": "Fixture",

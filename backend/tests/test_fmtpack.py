@@ -161,8 +161,8 @@ def test_exactly_12_new_detectors_registered():
     fx = sorted(k for k in discover() if k.startswith("fx_"))
     assert fx == sorted(FX_IDS)
     assert len(fx) == 12
-    # 575 through the gx pack + 12 fx
-    assert len(discover()) == 587
+    # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
+    assert len(discover()) == 592
 
 
 # ---------------------------------------------------------------------------
