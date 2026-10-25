@@ -27,8 +27,26 @@ Routes:
   GET/POST /api/agentdata/...   agent data service (packs, known set,
                                 memory, dead ends, recent finds, library)
 
+  Service API (Error Inbox black team agents only, app/service_auth.py):
+  POST /api/service/scans       start a PASSIVE website scan (returns run_id)
+  GET  /api/service/scans/{id}  status + findings for a service-created run
+
 The agents do not chat, they hunt: there is no assistant or chat route.
 Hunters work through the agent data service (app/agentdata).
+
+Service gate (separate from the human gate below, never a weakening of
+it): /api/service/* requires header X-Recon-Service-Key matching
+RECON_SERVICE_KEY. RECON_SERVICE_KEY unset closes the service API
+entirely. There is deliberately NO per-target gate, NO allowlist, and
+NO authorization table: when Jay explicitly asks for a scan, ANY
+target is pre-approved (the trigger rule lives on the Error Inbox
+side — scans run only on his explicit ask, never autonomously).
+The one standing exclusion Jay's blanket approval does NOT override:
+crypto.com (apex plus all subdomains) is rejected before any work
+starts, with zero contact. Service scans carry the full scan surface
+(any mode, any source type, any plugin selection, bounty, overrides)
+and are tagged service=true in the run summary; the read endpoint
+only serves runs the service key created.
 
 Gate (two modes, flipped by configuration - billing.signin_mode):
   - Sign-in mode (GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set): the
@@ -61,6 +79,7 @@ from . import billing
 from . import config
 from . import net
 from . import paywatch
+from . import service_auth
 from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
@@ -515,6 +534,111 @@ async def api_start_run(body: RunIn, request: Request):
                      excluded_plugin_ids=excluded_plugin_ids)
     _wake_worker()
     return {"run_id": run_id}
+
+
+# -- service API (Error Inbox black team agents) -------------------------
+# Separate from the human gate above: header service key only, fail
+# closed. See app/service_auth.py. There is deliberately NO per-target
+# gate: when Jay explicitly asks, any target is pre-approved. The one
+# exclusion is crypto.com (apex + subdomains), rejected before any
+# work starts.
+class ServiceScanIn(BaseModel):
+    target: str
+    mode: str = "passive"
+    source_type: str = "website"
+    plugins: Optional[List[str]] = None
+    module_overrides: Optional[Dict[str, str]] = None
+    bounty: bool = False
+
+
+@app.post("/api/service/scans", dependencies=[Depends(service_auth.service_gate)])
+async def api_service_start_scan(body: ServiceScanIn):
+    host = service_auth.target_host(body.target)
+    if body.mode not in ("passive", "active"):
+        raise HTTPException(400, "mode must be passive|active")
+    if body.source_type not in ("website", "bank", "atm", "bankatm"):
+        raise HTTPException(400,
+                            "source_type must be website|bank|atm|bankatm")
+    if not host:
+        raise HTTPException(400, "target host could not be parsed")
+    if service_auth.is_blocked_target(host):
+        raise HTTPException(400, "crypto.com is never a scan target")
+    # Full scan surface, same options the human run form offers.
+    # Bank/ATM source types imply explicit authorization exactly as in
+    # api_start_run — here that authorization is Jay's explicit ask
+    # itself, so the override marks it the same way.
+    overrides = dict(body.module_overrides or {})
+    if body.source_type == "bank":
+        overrides["bank"] = "authorized"
+    elif body.source_type == "atm":
+        overrides["atm"] = "authorized"
+    elif body.source_type == "bankatm":
+        overrides["bank"] = "authorized"
+        overrides["atm"] = "authorized"
+    # The pending enqueue intent mirrors api_start_run so a deploy/crash
+    # mid-scan still recovers at boot instead of stranding a 0-job run.
+    run_id = uuid.uuid4().hex[:12]
+    session = get_session()
+    try:
+        session.add(Run(id=run_id, mode=body.mode, status="running",
+                        source_type=body.source_type,
+                        summary={"service": True,
+                                 "service_host": host,
+                                 "pending_enqueue": {
+                                     "targets": body.target,
+                                     "mode": body.mode,
+                                     "plugins": body.plugins,
+                                     "module_overrides": overrides,
+                                     "source_type": body.source_type,
+                                     "bounty": bool(body.bounty),
+                                     "excluded_plugin_ids": None}}))
+        session.commit()
+        keys = load_all(session)
+    finally:
+        session.close()
+    await launch_run(run_id, body.target, body.mode,
+                     body.plugins, overrides, keys,
+                     source_type=body.source_type, bounty=body.bounty,
+                     excluded_plugin_ids=None)
+    _wake_worker()
+    log.info("service scan started run=%s host=%s mode=%s src=%s",
+             run_id, host, body.mode, body.source_type)
+    return {"run_id": run_id, "status": "running", "mode": body.mode,
+            "source_type": body.source_type, "target": host}
+
+
+@app.get("/api/service/scans/{run_id}",
+         dependencies=[Depends(service_auth.service_gate)])
+def api_service_scan_detail(run_id: str):
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        # The service key only ever reads runs it created. Human runs
+        # (and anything else) are 404 here, so the key is not a general
+        # read key over the instance's history.
+        if not (run.summary or {}).get("service"):
+            raise missing_run(run_id)
+        rows = findings_dump(session, run_id, show_secrets=False)
+        counts: Dict[str, int] = {}
+        for r in rows:
+            sev = r.get("bounty_value") or "low"
+            counts[sev] = counts.get(sev, 0) + 1
+        return {
+            "run": {"id": run.id, "mode": run.mode, "status": run.status,
+                    "source_type": getattr(run, "source_type", None) or "website",
+                    "created_at": run.created_at.isoformat() if run.created_at else None,
+                    "finished_at": run.finished_at.isoformat() if run.finished_at else None},
+            "progress": run_progress(session, run_id),
+            "findings_count": len(rows),
+            "severity_counts": counts,
+            # Cap the payload: the full dump lives on GET /api/runs/{id}
+            # behind the human gate. Secrets are masked by findings_dump.
+            "findings": rows[:200],
+        }
+    finally:
+        session.close()
 
 
 @app.get("/api/runs/{run_id}/stream", dependencies=[Depends(gate)])
