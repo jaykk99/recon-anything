@@ -1562,6 +1562,16 @@ async def _finalize_run(run_id: str) -> bool:
             _prev = session.query(Run).filter_by(id=run_id).first()
             if _prev and (_prev.summary or {}).get("bankatm"):
                 summary["bankatm"] = _prev.summary["bankatm"]
+            # Service-created runs (Error Inbox black team): the service
+            # read endpoint only serves runs tagged service=true, so the
+            # tag must survive finalize — otherwise a finished service
+            # run 404s on its own read endpoint (canary-caught: the run
+            # finished done with 1,226 findings, then its status read
+            # 404d because the fresh summary dropped the tag).
+            if _prev and (_prev.summary or {}).get("service"):
+                summary["service"] = True
+                if (_prev.summary or {}).get("service_host"):
+                    summary["service_host"] = _prev.summary["service_host"]
         except Exception:
             pass
         if hunter_section:
@@ -1631,6 +1641,17 @@ async def _sweep_finalize(force: bool = False) -> None:
                    .filter(Run.status == "running").all()]
         for rid in run_ids:
             if _pending_count(session, rid) == 0:
+                # A run still carrying a pending_enqueue intent has not
+                # finished enqueueing yet (intent is cleared by
+                # execute_run only after jobs are queued). Finalizing
+                # it here would end the scan with 0 findings and orphan
+                # the jobs that land a moment later — canary-caught on
+                # a service scan: finalized 3s after creation, then all
+                # 600 jobs skipped as "run no longer active".
+                _row = session.query(Run).filter_by(id=rid).first()
+                if _row and (_row.summary or {}).get(
+                        "pending_enqueue") is not None:
+                    continue
                 await _finalize_run(rid)
         # Orphaned runs: no jobs at all, still "running", older than 10 min.
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
