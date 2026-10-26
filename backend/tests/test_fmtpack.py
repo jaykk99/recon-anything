@@ -163,7 +163,7 @@ def test_exactly_12_new_detectors_registered():
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
     # +10 da_* (deep-artifacts pack); +5 ai_* (AI-crawler pack)
-    assert len(discover()) == 612  # 607 + 5 cmd_* (command-tools pack, 2026-10-26)
+    assert len(discover()) == 615  # 612 + 3 cmdmore_* (command-tools pack 2, 2026-10-26)
 
 
 # ---------------------------------------------------------------------------

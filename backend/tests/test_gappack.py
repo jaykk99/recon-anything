@@ -173,7 +173,7 @@ def test_exactly_23_new_detectors_registered():
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
     # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 612  # 607 + 5 cmd_* (command-tools pack, 2026-10-26)
+    assert len(discover()) == 615  # 612 + 3 cmdmore_* (command-tools pack 2, 2026-10-26)
 
 
 def test_trello_board_verified_public():

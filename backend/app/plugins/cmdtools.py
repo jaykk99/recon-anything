@@ -10,6 +10,12 @@ actually saw:
   cmd_http  curl: redirect chain, raw banner headers, timing, HTTP version
   cmd_ports TCP connect to service ports + banner grabs (nc, socket fallback)
   cmd_smtp  MX-driven SMTP banner + STARTTLS capability (QUIT, never mails)
+  cmd_dns_recurse  dig @NS: open-resolver test (does the domain's own
+    nameserver answer recursive queries for unrelated names?)
+  cmd_dns_nscheck  dig @NS SOA per nameserver: lame delegation + SOA
+    serial disagreement
+  cmd_ocsp  openssl s_client -status: stapled OCSP response present or
+    missing (revocation checking)
 
 DETECTION ONLY. No payloads, no auth attempts, no brute force, no mail
 sent, no private data. Every tool runs via subprocess exec (never a
@@ -506,3 +512,254 @@ class CmdSmtpPlugin(_CmdPlugin):
         if not findings:
             return self._ok([], f"MX hosts for {host} did not answer SMTP (tried {len(mx_hosts[:3])})")
         return self._ok(findings, f"{len(findings)} SMTP observations for {host}")
+
+
+async def _dig_ns_hosts(host: str) -> Optional[List[str]]:
+    """Nameservers for a domain via dig, validated + capped. None = no dig."""
+    probe = await _exec(["dig", "-v"], 5)
+    if probe is None:
+        return None
+    res = await _exec(["dig", "+short", "+time=5", "+tries=1", host, "NS"], 8)
+    if res is None or res[0] == -1:
+        return []
+    out = []
+    for line in _clean_lines(res[1]):
+        ns = _valid_host(line.rstrip("."))
+        if ns and ns not in out:
+            out.append(ns)
+    return out[:4]
+
+
+class CmdDnsRecursePlugin(_CmdPlugin):
+    id = "cmd_dns_recurse"
+    label = "Command DNS Open Resolver (dig)"
+    accepts = ["domain", "url"]
+    passive = True
+    cost = Cost.FREE
+    group = "network"
+    description = "dig @NS test: does the domain's own nameserver answer recursive queries for unrelated names (open resolver)?"
+    timeout_s = 45
+
+    async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        host = self._host(target)
+        if not host:
+            return self._skipped("no domain for nameserver recursion test")
+        ns_hosts = await _dig_ns_hosts(host)
+        if ns_hosts is None:
+            return self._skipped("dig not available for nameserver lookup")
+        if not ns_hosts:
+            return self._skipped(f"no NS records for {host}")
+        findings: List[Finding] = []
+        timed_out = 0
+        sem = asyncio.Semaphore(4)
+
+        async def one(ns: str):
+            nonlocal timed_out
+            async with sem:
+                # One ordinary query for an unrelated, reserved example
+                # name. A nameserver that answers it is recursing for
+                # strangers (open resolver = DNS amplification abuse
+                # vector). No zone data is requested or stored.
+                res = await _exec(["dig", "+short", "+time=5", "+tries=1",
+                                   f"@{ns}", "example.com", "A"], 8)
+                if res is None or res[0] == -1:
+                    timed_out += 1
+                    return
+                if _clean_lines(res[1]):
+                    findings.append(self._f(
+                        "infra", "open_resolver",
+                        f"{ns} answers recursive queries for unrelated "
+                        f"names (open resolver)",
+                        source=f"dig @{ns} example.com A",
+                        confidence=95, passive=True,
+                        evidence={
+                            "severity": "medium",
+                            "remediation": (
+                                "Disable recursion for non-local clients "
+                                "on this nameserver, or firewall UDP/TCP 53 "
+                                "to trusted networks only."),
+                        }))
+                self._checkpoint(findings)
+
+        await asyncio.gather(*[one(ns) for ns in ns_hosts],
+                             return_exceptions=True)
+        if not findings:
+            if timed_out == len(ns_hosts):
+                return self._ok(
+                    [], f"recursion test queries to {host}'s nameservers "
+                    f"all timed out (direct DNS may be blocked here)")
+            return self._ok(
+                [], f"no open resolvers among {len(ns_hosts)} "
+                f"nameservers for {host}")
+        return self._ok(findings,
+                        f"{len(findings)} open resolver(s) for {host}")
+
+
+class CmdDnsNscheckPlugin(_CmdPlugin):
+    id = "cmd_dns_nscheck"
+    label = "Command DNS Nameserver Health (dig)"
+    accepts = ["domain", "url"]
+    passive = True
+    cost = Cost.FREE
+    group = "network"
+    description = "dig @NS SOA per nameserver: lame delegation (NS answers nothing authoritative) + SOA serial disagreement."
+    timeout_s = 45
+
+    async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        host = self._host(target)
+        if not host:
+            return self._skipped("no domain for nameserver health check")
+        ns_hosts = await _dig_ns_hosts(host)
+        if ns_hosts is None:
+            return self._skipped("dig not available for nameserver lookup")
+        if not ns_hosts:
+            return self._skipped(f"no NS records for {host}")
+        findings: List[Finding] = []
+        serials: Dict[str, str] = {}
+        timed_out = 0
+        sem = asyncio.Semaphore(4)
+
+        async def one(ns: str):
+            nonlocal timed_out
+            async with sem:
+                res = await _exec(["dig", "+short", "+time=5", "+tries=1",
+                                   f"@{ns}", host, "SOA"], 8)
+                if res is None or res[0] == -1:
+                    timed_out += 1
+                    return
+                lines = _clean_lines(res[1])
+                serial = None
+                for line in lines:
+                    parts = line.split()
+                    # SOA: mname rname serial refresh retry expire minimum
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        serial = parts[2]
+                        break
+                if serial is None:
+                    findings.append(self._f(
+                        "infra", "dns_lame_delegation",
+                        f"{ns} does not answer SOA for {host} "
+                        f"(lame delegation)",
+                        source=f"dig @{ns} {host} SOA",
+                        confidence=90, passive=True,
+                        evidence={
+                            "severity": "medium",
+                            "remediation": (
+                                "Remove the non-answering nameserver from "
+                                "the delegation, or fix it so it serves "
+                                "the zone authoritatively."),
+                        }))
+                else:
+                    serials[ns] = serial
+                self._checkpoint(findings)
+
+        await asyncio.gather(*[one(ns) for ns in ns_hosts],
+                             return_exceptions=True)
+        if len(set(serials.values())) > 1:
+            detail = ", ".join(f"{ns}={s}" for ns, s in sorted(serials.items()))
+            findings.append(self._f(
+                "infra", "dns_serial_mismatch",
+                f"nameservers disagree on SOA serial for {host}: {detail}",
+                source=f"dig @NS {host} SOA",
+                confidence=90, passive=True,
+                evidence={
+                    "severity": "low",
+                    "remediation": (
+                        "Check zone transfers between the nameservers; "
+                        "a stuck secondary serves stale records."),
+                }))
+        if not findings:
+            if timed_out == len(ns_hosts):
+                return self._ok(
+                    [], f"SOA queries to {host}'s nameservers all timed "
+                    f"out (direct DNS may be blocked here)")
+            return self._ok(
+                [], f"all {len(ns_hosts)} nameservers for {host} answer "
+                f"SOA consistently")
+        return self._ok(findings,
+                        f"{len(findings)} nameserver health findings for {host}")
+
+
+class CmdOcspPlugin(_CmdPlugin):
+    id = "cmd_ocsp"
+    label = "Command OCSP Stapling (openssl)"
+    accepts = ["domain", "url"]
+    passive = True
+    cost = Cost.FREE
+    group = "network"
+    description = "openssl s_client -status: stapled OCSP response present or missing (revocation checking)."
+    timeout_s = 60
+
+    async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        host = self._host(target)
+        if not host:
+            return self._skipped("no domain for OCSP stapling check")
+        port = 443
+        if target.type == "url":
+            try:
+                from urllib.parse import urlparse
+                port = urlparse(target.normalized).port or 443
+            except Exception:
+                port = 443
+        res = await _exec(["openssl", "s_client", "-connect",
+                           f"{host}:{port}", "-servername", host,
+                           "-status"], 12)
+        if res is None:
+            return self._skipped("openssl not available on this host")
+        text = res[1] + "\n" + res[2]
+        if "BEGIN CERTIFICATE" not in text:
+            return self._skipped(
+                f"openssl could not complete a TLS handshake with "
+                f"{host}:{port} (direct TLS may be blocked here)")
+        findings: List[Finding] = []
+        # OpenSSL prints "no response sent" (older) or "No OCSP response
+        # received" (newer) when nothing is stapled; a stapled response
+        # carries an "OCSP Response Status:" line.
+        if "no response sent" in text or "No OCSP response" in text:
+            findings.append(self._f(
+                "infra", "tls_ocsp_no_stapling",
+                f"{host} sends no stapled OCSP response",
+                source=f"openssl s_client -status {host}:{port}",
+                confidence=90, passive=True,
+                evidence={
+                    "severity": "low",
+                    "remediation": (
+                        "Enable OCSP stapling on the web server so "
+                        "clients need not query the OCSP responder "
+                        "themselves."),
+                }))
+        else:
+            m = re.search(r"OCSP Response Status:\s*([A-Za-z]+)", text)
+            if m:
+                status = m.group(1).strip()
+                if status.lower() == "successful":
+                    cert_status = ""
+                    mc = re.search(r"Cert Status:\s*(\w+)", text)
+                    if mc:
+                        cert_status = f" (cert status: {mc.group(1)})"
+                    findings.append(self._f(
+                        "infra", "tls_ocsp_stapled",
+                        f"{host} staples an OCSP response{cert_status}",
+                        source=f"openssl s_client -status {host}:{port}",
+                        confidence=90, passive=True,
+                        evidence={"severity": "low"}))
+                else:
+                    findings.append(self._f(
+                        "infra", "tls_ocsp_bad_status",
+                        f"{host} staples an OCSP response with status "
+                        f"'{status}'",
+                        source=f"openssl s_client -status {host}:{port}",
+                        confidence=90, passive=True,
+                        evidence={
+                            "severity": "low",
+                            "remediation": (
+                                "Check the certificate's OCSP responder; "
+                                "a non-successful stapled status means "
+                                "revocation checks may fail."),
+                        }))
+        if not findings:
+            return self._ok(
+                [], f"OCSP stapling status could not be determined for "
+                f"{host} from s_client output")
+        return self._ok(findings,
+                        f"{len(findings)} OCSP observations for {host}")

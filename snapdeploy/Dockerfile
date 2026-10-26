@@ -17,8 +17,11 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# node for the Next.js standalone server
+# node for the Next.js standalone server; dnsutils/curl/openssl/nc so
+# the cmd_* command detectors (dig, curl, openssl s_client, nc) actually
+# run in this image instead of skipping on missing tools.
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+    dnsutils curl openssl netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # backend
