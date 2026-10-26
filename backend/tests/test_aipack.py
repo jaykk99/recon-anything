@@ -104,7 +104,7 @@ def test_exactly_5_new_detectors_registered():
     assert ai == sorted(AI_IDS)
     assert len(ai) == 5
     # 602 when the xml pack landed; +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 607
+    assert len(discover()) == 612  # 607 + 5 cmd_* (command-tools pack, 2026-10-26)
 
 
 def test_llms_index_present_and_links_fed_to_hunters():

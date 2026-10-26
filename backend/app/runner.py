@@ -457,7 +457,10 @@ MAX_JOB_ATTEMPTS = 3
 # abandons + cancels such tasks (same attempts semantics as the
 # stale-claim reset) and re-runs the stale sweep periodically, so a
 # wedged job costs minutes, not the whole scan.
-JOB_WATCHDOG_S = int(_os.environ.get("RECON_JOB_WATCHDOG_S", "300"))
+# 2026-10-26 (faster, no lost findings): 300s -> 180s. No legit plugin
+# runs past its 120s cap, so 180s still leaves 60s of headroom for
+# cleanup while freeing a wedged slot 2 minutes sooner.
+JOB_WATCHDOG_S = int(_os.environ.get("RECON_JOB_WATCHDOG_S", "180"))
 STALE_SWEEP_INTERVAL_S = 60.0
 
 _queue_worker_task = None
