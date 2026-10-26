@@ -609,7 +609,9 @@ async def api_service_start_scan(body: ServiceScanIn):
 
 @app.get("/api/service/scans/{run_id}",
          dependencies=[Depends(service_auth.service_gate)])
-def api_service_scan_detail(run_id: str):
+def api_service_scan_detail(run_id: str,
+                            limit: int = Query(0, description="0 = full finding set, no cap"),
+                            offset: int = Query(0, ge=0)):
     session = get_session()
     try:
         run = session.query(Run).filter_by(id=run_id).first()
@@ -625,6 +627,12 @@ def api_service_scan_detail(run_id: str):
         for r in rows:
             sev = r.get("bounty_value") or "low"
             counts[sev] = counts.get(sev, 0) + 1
+        # 2026-10-26 (Jay: "everything should be shown"): the old code
+        # hard-capped this payload at rows[:200], so the black-team path
+        # silently never saw findings past 200. Default is now the FULL
+        # set; limit/offset page through it without truncation when a
+        # caller wants pages. findings_count is always the true total.
+        page = rows if limit <= 0 else rows[offset:offset + limit]
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
                     "source_type": getattr(run, "source_type", None) or "website",
@@ -632,10 +640,10 @@ def api_service_scan_detail(run_id: str):
                     "finished_at": run.finished_at.isoformat() if run.finished_at else None},
             "progress": run_progress(session, run_id),
             "findings_count": len(rows),
+            "findings_returned": len(page),
             "severity_counts": counts,
-            # Cap the payload: the full dump lives on GET /api/runs/{id}
-            # behind the human gate. Secrets are masked by findings_dump.
-            "findings": rows[:200],
+            # Secrets are masked by findings_dump.
+            "findings": page,
         }
     finally:
         session.close()
