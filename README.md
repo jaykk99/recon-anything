@@ -1,3 +1,5 @@
+Live: https://recon-anything-9b68f.containers.snapdeploy.app
+
 # ReconAnything
 
 Universal OSINT and attack-surface recon. Give it almost any identifier
@@ -186,7 +188,7 @@ ReconAnything is a paid product with a free tier (`/pricing`):
 | Agency | $149/mo | unlimited | full | yes | bulk targets, white-label export |
 
 - Customers sign in with GitHub (OAuth; callback
-  `https://recon-anything.onrender.com/api/auth/github/callback`,
+  `https://recon-anything-9b68f.containers.snapdeploy.app/api/auth/github/callback`,
   also served at `/auth/github/callback` on the API service). Sessions
   are HMAC-signed cookies; users/orders/reveals live in `users`,
   `orders`, `finding_reveals` tables.
@@ -327,4 +329,4 @@ No em dashes in user-facing text.
 
 ## Live URL
 
-https://recon-anything.onrender.com
+https://recon-anything-9b68f.containers.snapdeploy.app
