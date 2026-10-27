@@ -20,14 +20,20 @@ export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  // Same auth fix as the /live proxy: forward the session cookie first.
+  // In GitHub sign-in mode the retired ?code= value is ignored by the
+  // backend, so forwarding only the code made every signed-in stream
+  // 401 while EventSource auto-retried forever.
   const code = req.nextUrl.searchParams.get("code") || "";
+  const cookie = req.headers.get("cookie") || "";
   const upstream = `${API_BASE}/api/runs/${params.id}/stream`;
 
   let res: Response;
   try {
     res = await fetch(upstream, {
       headers: {
-        "X-Access-Code": code,
+        ...(cookie ? { Cookie: cookie } : {}),
+        ...(code ? { "X-Access-Code": code } : {}),
         Accept: "text/event-stream",
       },
       // The upstream stream stays open for the life of the scan; never cache.

@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getCode, api } from "../../../lib/api";
+import {
+  POLL_BASE_MS,
+  MAX_CONSECUTIVE_FAILURES,
+  isTerminalAuth,
+  nextBackoffMs,
+  shouldStopAfterFailures,
+} from "../../../lib/live-connection";
 import AuthGate from "../../../components/AuthGate";
 
 interface Finding {
@@ -653,9 +660,13 @@ function RunPageInner({ params }: { params: { id: string } }) {
   // connection health: SSE live vs 4s poll fallback vs dead. Never a
   // silent dead page: sseState tracks the event stream, feedState tracks
   // the poll fallback, fatal is a terminal load error (e.g. run wiped).
-  const [sseState, setSseState] = useState<"connecting" | "live" | "down">("connecting");
+  const [sseState, setSseState] = useState<"connecting" | "live" | "reconnecting" | "stopped">("connecting");
   const [feedState, setFeedState] = useState<"ok" | "degraded" | "dead">("ok");
   const [fatal, setFatal] = useState<string | null>(null);
+  // Terminal auth loss: the session is gone, so both loops are stopped
+  // and the page shows a sign-in link instead of a Retry button that
+  // would just 401 again.
+  const [authLost, setAuthLost] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const failCount = useRef(0);
   // file viewer
@@ -684,13 +695,59 @@ function RunPageInner({ params }: { params: { id: string } }) {
     done.current = false;
     failCount.current = 0;
     setFatal(null);
+    setAuthLost(false);
     setSseState("connecting");
     setFeedState("ok");
 
-    const es = new EventSource(`/live/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
+    // Managed connection (2026-10-27 loop fix). The browser's native
+    // EventSource auto-retries forever and never reports the HTTP
+    // status, so a 401 stream looked like "connecting" forever while
+    // the 4s poll hammered the backend forever too. This effect owns
+    // both loops: it closes the stream on error, backs off, and
+    // stops everything on a terminal 401 instead of retrying.
+    let es: EventSource | null = null;
+    let stopped = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let sseFailures = 0;
+    let pollDelay = POLL_BASE_MS;
+    const stopTimers = () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      pollTimer = null; reconnectTimer = null;
+    };
+    const stopAllAuth = () => {
+      // Terminal: signed out / session expired. No retry can fix this;
+      // only a fresh GitHub sign-in can, so stop both loops now.
+      stopped = true;
+      stopTimers();
+      if (es) es.close();
+      es = null;
+      setAuthLost(true);
+      setSseState("stopped");
+      setFeedState("dead");
+    };
+    const stopAllStopped = () => {
+      stopped = true;
+      stopTimers();
+      if (es) es.close();
+      es = null;
+      setSseState("stopped");
+      setFeedState("dead");
+    };
+
+    function connectSse() {
+      if (stopped || done.current) return;
+      // Session cookie, not the retired ?code= param: EventSource sends
+      // same-origin cookies, and the /live proxy now forwards that
+      // cookie to the backend. In sign-in mode the backend ignores
+      // any code value, so the old URL guaranteed a 401 stream.
+      const cur = new EventSource(`/live/runs/${id}/stream`);
+      es = cur;
+      setSseState("connecting");
     // Any SSE event at all means the stream is alive.
     const on = (ev: string, fn: (e: MessageEvent) => void) =>
-      es.addEventListener(ev, ((e: MessageEvent) => { setSseState("live"); fn(e); }) as EventListener);
+      cur.addEventListener(ev, ((e: MessageEvent) => { sseFailures = 0; setSseState("live"); fn(e); }) as EventListener);
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
       if (d.source_type) setSourceType(d.source_type);
@@ -729,9 +786,9 @@ function RunPageInner({ params }: { params: { id: string } }) {
     });
     on("run_done", async (e) => {
       const d = JSON.parse(e.data);
-      setSummary(d); setStatus(d.error ? "failed" : "done"); done.current = true; es.close();
+      setSummary(d); setStatus(d.error ? "failed" : "done"); done.current = true; cur.close(); if (es === cur) es = null; stopTimers();
       if (!d.error) {
-        const h = { "X-Access-Code": getCode() };
+        const _c = getCode(); const h: Record<string, string> = _c ? { "X-Access-Code": _c } : {};
         try {
           // Hydrate the full run detail once: correlation adds attack-path
           // findings and an exposure score at finalize (not streamed over
@@ -752,9 +809,43 @@ function RunPageInner({ params }: { params: { id: string } }) {
         } catch {}
       }
     });
-    // SSE dropped: EventSource auto-retries in the background; the 4s poll
-    // below keeps progress alive meanwhile. Any event flips us back to live.
-    es.onerror = () => { if (!done.current) setSseState("down"); };
+    // SSE dropped: close it ourselves (native auto-retry is disabled
+    // by closing) and reconnect on a backoff, never at a fixed 4s
+    // cadence, and never while claiming to be live. A dropped stream
+    // cannot report its HTTP status, so probe /api/me: signed-in means
+    // a transient drop, signed-out with no stored code means terminal
+    // auth loss, and a stored code means the poll (which does see the
+    // status) is the authority, so keep backing off, do not stop yet.
+    cur.onerror = () => {
+      cur.close();
+      if (es === cur) es = null;
+      if (stopped || done.current) return;
+      sseFailures += 1;
+      setSseState("reconnecting");
+      fetch("/api/me", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (stopped || done.current) return;
+          const me = r.ok ? await r.json().catch(() => null) : null;
+          if (me && me.signed_in === false && !getCode()) { stopAllAuth(); return; }
+          if (sseFailures >= MAX_CONSECUTIVE_FAILURES) {
+            // Stream keeps dying: stop reconnecting it and let the poll
+            // (with its own backoff) carry progress. The Retry button
+            // on the dead-feed banner restarts both loops.
+            setSseState("stopped");
+            return;
+          }
+          const delay = nextBackoffMs(sseFailures);
+          reconnectTimer = setTimeout(connectSse, delay);
+        })
+        .catch(() => {
+          // Backend unreachable: transient, back off and try again.
+          if (stopped || done.current) return;
+          if (sseFailures >= MAX_CONSECUTIVE_FAILURES) { setSseState("stopped"); return; }
+          reconnectTimer = setTimeout(connectSse, nextBackoffMs(sseFailures));
+        });
+    };
+    }
+    connectSse();
 
     // Merge one poll response into state. Returns true when the run is over
     // (stop polling). This is the fallback that keeps progress + ETA +
@@ -799,7 +890,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
         });
         if (d.run?.source_type) setSourceType(d.run.source_type);
         if (d.run.status === "done") {
-          const h = { "X-Access-Code": getCode() };
+          const _c = getCode(); const h: Record<string, string> = _c ? { "X-Access-Code": _c } : {};
           fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
           fetch(`/api/runs/${id}/apimap`, { headers: h }).then((r) => r.json()).then(setApiMap).catch(() => {});
         }
@@ -808,13 +899,17 @@ function RunPageInner({ params }: { params: { id: string } }) {
       return false;
     }
 
-    let stopped = false;
     async function pollOnce(): Promise<boolean> {
-      const r = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, { headers: { "X-Access-Code": getCode() } });
+      const _c = getCode();
+      const r = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, {
+        headers: (_c ? { "X-Access-Code": _c } : {}) as Record<string, string>,
+        credentials: "same-origin",
+      });
       if (r.status === 404) {
         setFatal("Run not found. The scan data may have been wiped (the free-tier database resets on redeploys), or this link is wrong or expired.");
         return true;
       }
+      if (isTerminalAuth(r.status)) throw new Error("AUTH_401");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return applyPoll(await r.json());
     }
@@ -824,19 +919,28 @@ function RunPageInner({ params }: { params: { id: string } }) {
       try {
         const finished = await pollOnce();
         failCount.current = 0;
+        pollDelay = POLL_BASE_MS;
         setFeedState("ok");
-        if (finished) { stopped = true; clearInterval(poll); es.close(); }
-      } catch {
+        if (finished) { stopped = true; stopTimers(); if (es) es.close(); es = null; return; }
+      } catch (e: any) {
+        if (e && e.message === "AUTH_401") { stopAllAuth(); return; }
         // Transient blip vs dead server: 1-2 misses degrade quietly,
-        // 3 in a row means the feed is dead -> loud error + retry button.
+        // 3 in a row shows the dead banner, 6 in a row stops the
+        // auto-poll entirely and waits for the manual Retry button.
+        // Delays back off 4s, 8s, 16s, capped at 30s, instead of
+        // hammering a dead or sleeping backend every 4s forever.
         failCount.current += 1;
+        pollDelay = nextBackoffMs(failCount.current);
         setFeedState(failCount.current >= 3 ? "dead" : "degraded");
+        if (shouldStopAfterFailures(failCount.current)) return;
+      }
+      if (!stopped && !done.current) {
+        pollTimer = setTimeout(tick, pollDelay);
       }
     }
 
-    const poll = setInterval(tick, 4000);
     tick(); // first paint now, not after 4s; also surfaces 404 immediately
-    return () => { stopped = true; es.close(); clearInterval(poll); };
+    return () => { stopped = true; stopTimers(); if (es) es.close(); es = null; };
   }, [id, retryTick]);
 
   async function viewFile(url: string) {
@@ -991,8 +1095,18 @@ function RunPageInner({ params }: { params: { id: string } }) {
             <span className="font-bold">WAF DETECTED:</span> {wafNotice}
           </div>
         )}
-        {/* connection health: never a dead silent page */}
-        {fatal ? (
+        {/* connection health: never a dead silent page, and never a
+            "live" claim while the page is actually reconnecting */}
+        {authLost ? (
+          <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
+            <p className="text-sm font-bold text-red-300">Signed out</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Your sign-in expired, so the live feed stopped instead of
+              reconnecting forever. Sign in again to resume this scan.
+            </p>
+            <a href="/api/auth/github" className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 mt-3 inline-flex items-center">Sign in with GitHub</a>
+          </div>
+        ) : fatal ? (
           <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
             <p className="text-sm font-bold text-red-300">Run not found</p>
             <p className="text-xs text-slate-400 mt-1">{fatal}</p>
@@ -1006,13 +1120,17 @@ function RunPageInner({ params }: { params: { id: string } }) {
           <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
             <p className="text-sm font-bold text-red-300">Connection lost</p>
             <p className="text-xs text-slate-400 mt-1">
-              Cannot reach the scan server (3 failed refreshes). Check your connection, then retry.
+              Cannot reach the scan server (6 failed refreshes, with
+              backoff up to 30s between tries). Automatic refresh has
+              stopped. Check your connection, then retry.
             </p>
             <button onClick={() => setRetryTick((t) => t + 1)}
               className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 mt-3">Retry now</button>
           </div>
-        ) : sseState === "down" ? (
-          <p className="mt-3 text-xs text-amber-300/90">Live stream down, auto-refreshing every 4s.</p>
+        ) : sseState === "reconnecting" ? (
+          <p className="mt-3 text-xs text-amber-300/90">Live stream dropped, reconnecting with backoff. Progress below is from the last good refresh, not live.</p>
+        ) : sseState === "stopped" ? (
+          <p className="mt-3 text-xs text-amber-300/90">Live stream stopped. Use Retry below to restart it.</p>
         ) : null}
         {/* progress bar */}
         {status === "running" && !fatal && (
@@ -1724,12 +1842,27 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
   const [agents, setAgents] = useState<AgentRollup[] | null>(null);
   const [feed, setFeed] = useState<AgentFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLost, setAuthLost] = useState(false);
 
   useEffect(() => {
     let stop = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
     const load = async () => {
       try {
-        const r = await fetch(`/api/runs/${runId}/agent-activity`, { headers: { "X-Access-Code": getCode() } });
+        const _c = getCode();
+        const r = await fetch(`/api/runs/${runId}/agent-activity`, {
+          headers: (_c ? { "X-Access-Code": _c } : {}) as Record<string, string>,
+          credentials: "same-origin",
+        });
+        // Loop fix: a 401 here is terminal auth loss, not a transient
+        // blip. Stop this 4s poll instead of hammering it forever.
+        if (isTerminalAuth(r.status)) {
+          stop = true;
+          if (timer) clearInterval(timer);
+          setAuthLost(true);
+          setLoading(false);
+          return;
+        }
         const d = await r.json();
         if (stop) return;
         setAgents(d.agents || []);
@@ -1743,8 +1876,8 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
     };
     load();
     // Same 4s cadence as the run page's poll fallback while the scan runs.
-    const t = live ? setInterval(load, 4000) : undefined;
-    return () => { stop = true; if (t) clearInterval(t); };
+    timer = live ? setInterval(load, POLL_BASE_MS) : null;
+    return () => { stop = true; if (timer) clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, live]);
 
@@ -1761,6 +1894,7 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
   };
 
   if (loading && agents === null) return <div className="card p-4 text-sm text-slate-400">loading agent activity...</div>;
+  if (authLost) return <div className="card p-4 text-sm text-slate-400">Agent activity stopped: signed out. <a href="/api/auth/github" className="text-sky-300">Sign in again</a> to resume it.</div>;
   const list = [...feed].reverse();
   return (
     <div className="space-y-4">
