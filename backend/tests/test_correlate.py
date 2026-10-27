@@ -244,6 +244,31 @@ def test_determinism_and_shape():
         assert ev["severity"] in ("low", "medium", "high", "critical")
 
 
+def test_weaponized_cve_path():
+    # a weaponized CVE finding becomes a critical attack path on its own
+    rows = [
+        _f("cves", "web", "cve_match",
+           "F5 BIG-IP iControl REST auth bypass to RCE (CVE-2022-1388)",
+           "critical", "weaponized"),
+        _f("apidiscover", "api", "endpoint", "/mgmt/tm/util/bash", "medium"),
+    ]
+    paths, exp = correlate(rows, host_hint="target.com")
+    assert any("weaponized exploit" in n.lower() for n in _names(paths)), _names(paths)
+    p = [p for p in paths if "weaponized" in p["evidence"]["path_name"].lower()][0]
+    assert p["evidence"]["severity"] == "critical"
+    assert p["evidence"]["exploitability"] == "weaponized"
+    assert exp["band"] == "critical"
+
+
+def test_weaponized_cve_alone_still_fires():
+    # even with nothing else reachable, a weaponized CVE is surfaced
+    rows = [_f("cves", "web", "cve_match",
+               "WebLogic console unauth RCE (CVE-2020-14882)",
+               "critical", "weaponized")]
+    paths, _ = correlate(rows)
+    assert any("weaponized exploit" in n.lower() for n in _names(paths))
+
+
 def test_malformed_rows_never_raise():
     rows = [None, {}, {"key": None}, 42, "nope", {"plugin": "x", "key": "y"}]
     paths, exp = correlate(rows)  # must not raise

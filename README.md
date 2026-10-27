@@ -123,6 +123,31 @@ requests `?show_secrets=true` and a **🔓 secrets revealed / 🔒 masked**
 toggle flips it live; the server still enforces its own per-plan reveal
 limits, so full values appear wherever the account is entitled to them.
 
+### Vulnerability hunting: version → weaponized CVE
+
+The CVE matcher fingerprints software versions from Server / X-Powered-By
+headers, HTML, meta generators and JS filenames and matches them against
+a curated database of **real, public, version-bounded CVEs** (142
+entries, ~93 with public exploits). Coverage spans web servers,
+languages and CMS/plugins plus the high-value, exploited-in-the-wild edge
+and enterprise targets bug-bounty hunters prize: F5 BIG-IP, Exchange
+(ProxyLogon/ProxyShell), vCenter, MOVEit, Zimbra, PaperCut, ColdFusion,
+WebLogic, ActiveMQ, OFBiz, GeoServer, Ivanti, Citrix Bleed, Cisco ASA,
+SonicWall, Webmin, Roundcube, Kibana/Elasticsearch and more. Each match
+carries a severity and an **exploitability** rating (weaponized /
+public_poc / theoretical) so a working RCE sorts above theoretical noise.
+Detection only — it reads the version and references the CVE; it never
+runs an exploit. Add an entry to `VERSION_CVES` in
+`plugins/cves.py`; gate is `tests/test_cves_db.py`.
+
+A **weaponized CVE is now also an attack path.** The correlation engine
+raises any finding rated `weaponized` into a critical attack path on its
+own ("Weaponized exploit available: …"), and when the same run shows a
+reachable privileged/management endpoint the narrative links them. That
+pushes the single most valuable thing a scan can find — a public exploit
+against a live service — to the top of the Attack Paths tab and the
+exposure score.
+
 ### Multi-chain crypto OSINT
 
 The checksum-verified address detectors find wallets across ~15 chains,

@@ -209,6 +209,12 @@ def _detect_signals(r: Dict[str, Any]) -> Set[str]:
     if _OPEN_MGMT_PORT.search(key) or (
             key in ("port_open", "open_port") and _PORT_VAL_META.search(val)):
         sig.add("mgmt_port")
+    # Weaponized known-CVE: a finding with a public exploit (from the CVE
+    # matcher or any plugin that rates exploitability). These are the
+    # crown-jewel findings - a working exploit against a reachable service.
+    if _row_expl(r) == "weaponized" or (
+            _row_plugin(r) == "cves" and _row_sev(r) in ("high", "critical")):
+        sig.add("weaponized_cve")
     if _DEFAULT_CREDS.search(key):
         sig.add("default_creds")
     if _API_DOCS.search(blob):
@@ -922,6 +928,60 @@ def _rule_debug_disclosure(idx: SignalIndex) -> List[Dict[str, Any]]:
                      confidence=70, tags=["web", "disclosure"])]
 
 
+def _rule_weaponized_cve(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """A weaponized public exploit against a reachable service = top finding.
+
+    The CVE matcher (and some detectors) rate exploitability. A weaponized
+    rating means a public exploit exists. That is the single most valuable
+    thing a scan can surface, so it becomes a critical attack path on its
+    own - and if the same run shows the service is privileged/auth-gated or
+    internet-exposed, the narrative says so."""
+    cves = idx.get("weaponized_cve")
+    if not cves:
+        return []
+    # one path per distinct weaponized finding (top few by severity)
+    out: List[Dict[str, Any]] = []
+    reach = (_top(idx, "privileged_endpoint", 1) + _top(idx, "mgmt_port", 1)
+             + _top(idx, "auth_surface", 1))
+    seen_val: Set[str] = set()
+    for cve in cves[:4]:
+        v = _norm(cve.get("value"))[:120]
+        if v in seen_val:
+            continue
+        seen_val.add(v)
+        comps = [cve] + reach[:1]
+        reached = ("the same run found a reachable privileged/management "
+                   "entry point on this host, so the exploit has somewhere "
+                   "to land" if reach else
+                   "confirm the affected service is reachable from your "
+                   "testing position")
+        name = f"Weaponized exploit available: {cve.get('value', 'known CVE')}"[:140]
+        summary = (
+            "A fingerprinted service matches a CVE with a public, working "
+            f"exploit. {reached[0].upper() + reached[1:]}. Weaponized bugs "
+            "are the highest-value finding in a scan - treat this as an "
+            "active, exploitable entry point until patched.")
+        impact = ("Direct compromise of the affected service using a "
+                  "publicly available exploit - frequently unauthenticated "
+                  "code execution.")
+        remediation = (cve.get("evidence", {}) or {}).get("remediation") or (
+            "Patch or upgrade the affected software to a fixed version "
+            "immediately and restrict the service's exposure.")
+        steps = [
+            "Version/product fingerprint matched a CVE with a public exploit.",
+            ("A reachable privileged/management endpoint was also found."
+             if reach else "Confirm the service is reachable."),
+            "A known exploit turns the match into code execution / takeover.",
+        ]
+        out.append(_mk_path(
+            name=name, severity="critical",
+            exploitability="weaponized", summary=summary,
+            attacker_impact=impact, remediation=remediation, steps=steps,
+            components=comps, confidence=int(cve.get("confidence") or 85),
+            tags=["cve", "weaponized"]))
+    return out
+
+
 def _rule_kill_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
     """Compound path: when several high-value stages co-occur, synthesize a
     single multi-stage kill chain from foothold -> escalation -> impact.
@@ -996,6 +1056,7 @@ def _rule_kill_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
 
 
 RULES = [
+    _rule_weaponized_cve,
     _rule_kill_chain,
     _rule_cloud_cred_blast,
     _rule_jwt_authbypass,
