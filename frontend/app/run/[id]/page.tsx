@@ -461,6 +461,58 @@ function PlaygroundPanel({ runId, finding, onClose }: {
   );
 }
 
+// Attack paths: composite findings synthesized by the correlation engine
+// at finalize. They are real findings (plugin "correlation", key
+// "attack_path") carrying a narrative, chained component findings, and a
+// severity in evidence. The Attack Paths tab surfaces them specially.
+function isAttackPath(f: Finding): boolean {
+  return f.key === "attack_path" || f.plugin === "correlation";
+}
+function attackPaths(findings: Finding[]): Finding[] {
+  const sevRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const explRank: Record<string, number> = { weaponized: 0, public_poc: 1, theoretical: 2, unknown: 3 };
+  return findings.filter(isAttackPath).slice().sort((a, b) => {
+    const as = sevRank[(a.evidence?.severity || "low")] ?? 3;
+    const bs = sevRank[(b.evidence?.severity || "low")] ?? 3;
+    if (as !== bs) return as - bs;
+    const ae = explRank[(a.evidence?.exploitability || "unknown")] ?? 3;
+    const be = explRank[(b.evidence?.exploitability || "unknown")] ?? 3;
+    return ae - be;
+  });
+}
+
+interface Exposure {
+  score: number; band: string; headline: string;
+  attack_path_count?: number; worst_severity?: string;
+  severity_counts?: Record<string, number>;
+}
+// Prefer the server's exposure (run.summary.exposure); fall back to a
+// client-side estimate from the findings so the banner still renders if a
+// run finished over pure SSE before the detail hydrate lands.
+function deriveExposure(findings: Finding[], summary: any): Exposure | null {
+  const s = summary?.exposure;
+  if (s && typeof s.score === "number") return s as Exposure;
+  if (!findings.length) return null;
+  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  let worst = 0; const rank: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+  for (const f of findings) {
+    const sev = (f.evidence?.severity || "low").toLowerCase();
+    counts[sev] = (counts[sev] || 0) + 1;
+    worst = Math.max(worst, rank[sev] || 1);
+  }
+  const paths = findings.filter(isAttackPath).length;
+  const floor = ({ 4: 70, 3: 45, 2: 22, 1: 6 } as Record<number, number>)[worst] || 0;
+  const vol = 18 * Math.log1p(counts.critical * 3 + counts.high * 2 + counts.medium);
+  const score = Math.min(100, Math.round(floor + vol + Math.min(paths * 6, 24)));
+  const band = score >= 80 ? "critical" : score >= 55 ? "high" : score >= 30 ? "medium" : score > 0 ? "low" : "clean";
+  const headline: Record<string, string> = {
+    critical: "Critical exposure — act now.", high: "High exposure — prioritize remediation.",
+    medium: "Moderate exposure — several issues to fix.", low: "Low exposure — minor findings only.",
+    clean: "No material exposure found.",
+  };
+  return { score, band, headline: headline[band], attack_path_count: paths, severity_counts: counts };
+}
+
 function RunPageInner({ params }: { params: { id: string } }) {
   const id = params.id;
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -605,6 +657,18 @@ function RunPageInner({ params }: { params: { id: string } }) {
       setSummary(d); setStatus(d.error ? "failed" : "done"); done.current = true; es.close();
       if (!d.error) {
         const h = { "X-Access-Code": getCode() };
+        try {
+          // Hydrate the full run detail once: correlation adds attack-path
+          // findings and an exposure score at finalize (not streamed over
+          // SSE), so pull them in here. run.summary carries exposure.
+          const detail = await fetch(`/api/runs/${id}`, { headers: h }).then((r) => r.json());
+          if (Array.isArray(detail.findings)) {
+            setFindings(detail.findings);
+            detail.findings.forEach((f: any) => seenFids.current.add(
+              f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`));
+          }
+          if (detail.run?.summary) setSummary(detail.run.summary);
+        } catch {}
         try {
           const g = await fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json());
           setGraph(g);
@@ -949,12 +1013,19 @@ function RunPageInner({ params }: { params: { id: string } }) {
         </div>
       </div>
 
+      {/* Exposure score + attack-path summary: the headline read for the
+          whole run. Clicking jumps to the Attack Paths tab. */}
+      <ExposureBanner exposure={deriveExposure(findings, summary)}
+        pathCount={attackPaths(findings).length}
+        onOpen={() => setTab("paths")} />
+
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
         {((() => {
           const tabCount = (t: string): number => {
             if (t === "findings") return findings.length;
+            if (t === "paths") return attackPaths(findings).length;
             if (t === "secrets") return findings.filter(isSecretFinding).length;
             if (t === "creds") return findings.filter(isCredFinding).length;
             if (t === "subdomains") return findings.filter(isSubdomainFinding).length;
@@ -974,12 +1045,15 @@ function RunPageInner({ params }: { params: { id: string } }) {
             const name = t;
             return c > 0 ? `${name} (${c})` : name;
           };
-          return (["findings", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
+          return (["findings", "paths", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
             .filter((t) => t !== "atm" || sourceType === "atm" || sourceType === "bankatm")
-            .map((t) => (
+            .map((t) => {
+              const isPaths = t === "paths";
+              const n = tabCount(t);
+              return (
               <button key={t} onClick={() => setTab(t)}
-                className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{tabLabel(t)}</button>
-            ));
+                className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : isPaths && n > 0 ? "text-rose-300 border border-rose-500/40" : "text-slate-400"}`}>{isPaths && n > 0 ? `⚡ ${tabLabel(t)}` : tabLabel(t)}</button>
+            );});
         })())}
       </div>
       <div className="flex gap-2 flex-wrap">
@@ -1139,6 +1213,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
       </div>
       )}
 
+      {tab === "paths" && <AttackPathsView findings={findings} onOpenFindings={() => setTab("findings")} />}
       {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "atm" && <AtmView runId={id} findings={findings} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
@@ -1643,6 +1718,151 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---- Exposure score banner -------------------------------------------
+const BAND_COLOR: Record<string, string> = {
+  critical: "#ff4d4d", high: "#ff7a45", medium: "#fbbf24", low: "#64748b", clean: "#22c55e",
+};
+function ExposureBanner({ exposure, pathCount, onOpen }:
+  { exposure: Exposure | null; pathCount: number; onOpen: () => void }) {
+  if (!exposure || !exposure.score) return null;
+  const col = BAND_COLOR[exposure.band] || "#ff7a45";
+  const c = exposure.severity_counts || {};
+  return (
+    <div className="card p-4 flex items-center gap-4 flex-wrap"
+      style={{ borderLeft: `4px solid ${col}` }}>
+      <div className="flex items-baseline gap-1">
+        <span className="text-4xl font-extrabold leading-none" style={{ color: col }}>{exposure.score}</span>
+        <span className="text-slate-500 text-sm">/100</span>
+      </div>
+      <div className="flex-1 min-w-[180px]">
+        <div className="font-bold text-sm tracking-wide" style={{ color: col }}>
+          {exposure.band.toUpperCase()} EXPOSURE
+        </div>
+        <div className="text-slate-300 text-sm">{exposure.headline}</div>
+        <div className="text-slate-500 text-xs mt-1 flex gap-3 flex-wrap">
+          {(["critical", "high", "medium", "low"] as const).map((k) =>
+            (c[k] || 0) > 0 ? <span key={k}>{c[k]} {k}</span> : null)}
+        </div>
+      </div>
+      {pathCount > 0 && (
+        <button onClick={onOpen}
+          className="chip px-4 py-2.5 min-h-[44px] text-rose-200 border border-rose-500/40 bg-rose-950/30 whitespace-nowrap">
+          ⚡ {pathCount} attack path{pathCount === 1 ? "" : "s"} →
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---- Attack Paths tab -------------------------------------------------
+const PATH_SEV_STYLE: Record<string, string> = {
+  critical: "text-red-300 border-red-500/50 bg-red-500/10",
+  high: "text-orange-300 border-orange-500/50 bg-orange-500/10",
+  medium: "text-amber-300 border-amber-500/40 bg-amber-500/10",
+  low: "text-slate-400 border-slate-700 bg-slate-800/50",
+};
+function AttackPathsView({ findings, onOpenFindings }:
+  { findings: Finding[]; onOpenFindings: () => void }) {
+  const paths = attackPaths(findings);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (paths.length === 0) {
+    return (
+      <div className="card p-6 text-center text-slate-400 text-sm">
+        <div className="text-2xl mb-2">🔗</div>
+        No attack paths synthesized for this run.
+        <div className="text-slate-500 text-xs mt-2">
+          Attack paths chain individual findings into exploitable sequences
+          (e.g. exposed credential → reachable cloud, forgeable token →
+          admin endpoint). They appear once a run finishes and the
+          correlation pass runs. A clean target, or findings that don't
+          combine into a known path, produces none.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-slate-400">
+        {paths.length} exploitable sequence{paths.length === 1 ? "" : "s"} synthesized
+        across findings — what a real attacker chains together, highest severity first.
+      </div>
+      {paths.map((p, i) => {
+        const ev = p.evidence || {};
+        const sev = (ev.severity || "low").toLowerCase();
+        const pid = ev.path_id || String(i);
+        const isOpen = open[pid];
+        const steps: string[] = Array.isArray(ev.chain_steps) ? ev.chain_steps : [];
+        const comps: any[] = Array.isArray(ev.components) ? ev.components : [];
+        const tags: string[] = Array.isArray(ev.tags) ? ev.tags : [];
+        const expl = ev.exploitability && ev.exploitability !== "unknown" ? ev.exploitability : null;
+        return (
+          <div key={pid} className={`card p-4 border ${PATH_SEV_STYLE[sev] || PATH_SEV_STYLE.low}`}>
+            <button onClick={() => setOpen((o) => ({ ...o, [pid]: !o[pid] }))}
+              className="w-full text-left flex items-start gap-3">
+              <span className={`text-[10px] font-extrabold px-2 py-1 rounded uppercase tracking-wide shrink-0 ${PATH_SEV_STYLE[sev] || PATH_SEV_STYLE.low}`}>
+                {sev}
+              </span>
+              <span className="flex-1">
+                <span className="font-semibold text-slate-100 text-sm">{ev.path_name || p.value}</span>
+                <span className="flex gap-2 flex-wrap mt-1 items-center">
+                  {expl && <span className="text-[10px] uppercase tracking-wide text-rose-300 border border-rose-700 rounded px-1.5 py-0.5">{expl.replace("_", " ")}</span>}
+                  <span className="text-[11px] text-slate-500">{comps.length} finding{comps.length === 1 ? "" : "s"} chained</span>
+                  {tags.map((t) => <span key={t} className="text-[10px] text-sky-300/70">#{t}</span>)}
+                </span>
+              </span>
+              <span className="text-slate-500 text-xs shrink-0">{isOpen ? "▲" : "▼"}</span>
+            </button>
+
+            <p className="text-slate-300 text-sm mt-3">{ev.narrative}</p>
+
+            {isOpen && (
+              <div className="mt-3 space-y-3 text-sm">
+                {ev.attacker_impact && (
+                  <div className="bg-orange-500/5 border border-orange-500/20 rounded p-2.5">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-300/80 mb-1">What an attacker can do</div>
+                    <div className="text-orange-100/90">{ev.attacker_impact}</div>
+                  </div>
+                )}
+                {steps.length > 0 && (
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">How it chains</div>
+                    <ol className="list-decimal ml-5 space-y-1 text-slate-300">
+                      {steps.map((s, j) => <li key={j}>{s}</li>)}
+                    </ol>
+                  </div>
+                )}
+                {comps.length > 0 && (
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Built from these findings</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {comps.map((c, j) => (
+                        <span key={j} className="text-[11px] bg-slate-800/70 border border-slate-700 rounded px-2 py-1">
+                          <code className="text-amber-300">{c.key}</code>
+                          <span className="text-slate-500"> · {c.plugin}</span>
+                          {c.severity && c.severity !== "low" && <span className="text-slate-400"> · {c.severity}</span>}
+                        </span>
+                      ))}
+                    </div>
+                    <button onClick={onOpenFindings} className="text-sky-400 text-xs mt-2 hover:underline">
+                      view all findings →
+                    </button>
+                  </div>
+                )}
+                {ev.remediation && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded p-2.5">
+                    <div className="text-[11px] uppercase tracking-wide text-emerald-300/80 mb-1">Fix</div>
+                    <div className="text-emerald-100/90">{ev.remediation}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

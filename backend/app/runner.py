@@ -1451,6 +1451,68 @@ def _record_waf_blocks(session, run_id: str, ctx) -> int:
     return added
 
 
+def _correlate_run(session, run_id: str):
+    """Cross-finding correlation: synthesize attack paths + exposure score.
+
+    Runs once at finalize, after every plugin and hunter pass has settled,
+    over the whole finding set. Produces composite "attack path" findings
+    no single plugin could (persisted as plugin_id="correlation") plus a
+    run-level exposure score for the summary. Detection/analysis only.
+
+    Idempotent across re-finalizes: deletes prior correlation rows before
+    re-inserting, and the engine itself ignores correlation rows when
+    reading, so a hunter-triggered reopen never double-counts or feeds its
+    own output back in. Best-effort: any failure returns an empty block and
+    never breaks finalize.
+    """
+    try:
+        from .correlate import correlate
+    except Exception:
+        return [], {}
+    try:
+        # Drop any correlation rows from a previous finalize of this run so
+        # the pass is idempotent (hunter expansion can reopen a run).
+        (session.query(FindingRow)
+         .filter_by(run_id=run_id, plugin_id="correlation").delete())
+        rows = session.query(FindingRow).filter_by(run_id=run_id).all()
+        as_dicts = [{
+            "id": r.id, "plugin": r.plugin_id, "category": r.category,
+            "key": r.key, "value": r.value, "source": r.source,
+            "source_url": r.source_url, "confidence": r.confidence,
+            "evidence": r.evidence, "bounty_value": r.bounty_value,
+        } for r in rows]
+        paths, exposure = correlate(as_dicts)
+        # Attach correlation findings to the run's first target (they are
+        # run-level, but FindingRow requires a target_id).
+        first_target = session.query(TargetRow).filter_by(
+            run_id=run_id).first()
+        tid = first_target.id if first_target else run_id
+        now = dt.datetime.now(dt.timezone.utc)
+        for p in paths:
+            session.add(FindingRow(
+                run_id=run_id, target_id=tid, plugin_id="correlation",
+                category=p["category"], key=p["key"], value=p["value"],
+                source=p["source"], source_url=p.get("source_url"),
+                confidence=p["confidence"], evidence=p["evidence"],
+                passive=p.get("passive", True), first_seen=now,
+                raw=None, bounty_value=p["bounty_value"]))
+        if paths:
+            session.flush()
+        # Compact summary block (full detail lives on the findings).
+        compact = [{
+            "name": p["evidence"]["path_name"],
+            "path_id": p["evidence"]["path_id"],
+            "severity": p["evidence"]["severity"],
+            "exploitability": p["evidence"]["exploitability"],
+            "component_count": p["evidence"]["component_count"],
+            "tags": p["evidence"].get("tags", []),
+        } for p in paths]
+        return compact, exposure
+    except Exception:
+        session.rollback()
+        return [], {}
+
+
 async def _finalize_run(run_id: str) -> bool:
     """Finalize a run whose jobs are all settled. Atomic claim so only one
     worker finalizes. Returns True if this worker did it."""
@@ -1553,10 +1615,22 @@ async def _finalize_run(run_id: str) -> bool:
                     hunter_section = finalize_hunt(session, _hrun, _accum)
         except Exception:
             hunter_section = None
+        # Cross-finding correlation pass (attack paths + exposure score).
+        # Runs here, once, after the hunter loop has fully settled (the
+        # reopen paths above all return before this point), over the whole
+        # finding set. Recompute `total` so the finding count includes the
+        # synthesized paths.
+        attack_paths, exposure = _correlate_run(session, run_id)
+        if attack_paths:
+            total = session.query(FindingRow).filter_by(run_id=run_id).count()
         run = session.query(Run).filter_by(id=run_id).first()
         summary: Dict = {"findings": total, "nodes": n_nodes,
                          "edges": n_edges, "targets": n_targets,
                          "plugins": plugin_statuses}
+        if exposure:
+            summary["exposure"] = exposure
+        if attack_paths:
+            summary["attack_paths"] = attack_paths
         # Bank/ATM mode: keep the mode's own record (input, locations,
         # resolved domains) in the final summary - it is the run's
         # headline, set at enqueue time and preserved here like

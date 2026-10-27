@@ -60,6 +60,43 @@ Leave it empty for local dev only.
         +-----------+
 ```
 
+### Attack-path correlation (cross-finding synthesis)
+
+Individual plugins each see one slice of a target. The correlation
+engine (`backend/app/correlate.py`) runs once at finalize — after every
+plugin and hunter pass has settled — over the *whole* finding set, and
+synthesizes **attack paths**: exploitable sequences that no single
+plugin could see. A forgeable JWT is one finding; an admin endpoint is
+another; together they are an *authentication bypass path*, and that is
+what gets reported.
+
+What it chains (detection/analysis only — never sends a payload):
+
+- exposed cloud credential + reachable bucket/cloud host → live
+  infrastructure access
+- forgeable JWT + privileged/auth endpoint → auth-bypass path
+- exposed source/.git/.env + a recovered secret → source leaks creds
+- SSRF on a cloud-hosted target → instance-metadata credential theft
+- dangling CNAME → subdomain takeover
+- permissive CORS + authenticated API → cross-origin data theft
+- internet-exposed management port (+ default creds) → direct access
+- breached email + live login → credential-stuffing path
+- IDOR/BOLA candidate + mapped API surface → object-level authz gap
+- 3+ distinct secret classes → "secret sprawl"
+- public OpenAPI/GraphQL introspection → self-documenting attack surface
+
+Each path carries a plain-language narrative, the chained component
+findings (credential values redacted), an attacker-impact line, the fix,
+a severity and an exploitability rating. The engine also computes a
+single **exposure score** (0–100, banded clean→critical) for the run.
+
+Paths are persisted as ordinary findings (`plugin_id="correlation"`,
+`key="attack_path"`), so they flow through the API, the JSON/CSV/MD/HTML
+exports, and the UI's new **Attack Paths** tab + exposure banner. The
+engine is pure-stdlib, deterministic, idempotent across hunter reopens,
+and never raises on bad input. Add a rule by appending a pure function
+to `RULES` in `correlate.py`; unit gate is `tests/test_correlate.py`.
+
 ### Plugin architecture
 
 Every capability is an isolated plugin in `backend/app/plugins/`.
