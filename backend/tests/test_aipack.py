@@ -104,7 +104,7 @@ def test_exactly_5_new_detectors_registered():
     assert ai == sorted(AI_IDS)
     assert len(ai) == 5
     # 602 when the xml pack landed; +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 623  # 617 master + 5 cp_web3 gap plugins + 1 chain_followups (crypto-chain, rebased 2026-10-27)
+    assert len(discover()) == 624  # 623 master + 1 secret_identity (finding-id, rebased 2026-10-27)
 
 
 def test_llms_index_present_and_links_fed_to_hunters():
