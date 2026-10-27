@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 624  # 623 master + 1 secret_identity (finding-id, rebased 2026-10-27)
+    assert len(discover()) == 625  # 624 master + 1 passive_subdomains (detection-expand, rebased 2026-10-27)
 
 
 def test_connstr_password_masked_with_fingerprint():

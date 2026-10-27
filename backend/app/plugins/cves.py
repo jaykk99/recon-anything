@@ -16,6 +16,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from ..classifier import domain_from_target
+from ..kev import annotate_findings, load_catalog
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
@@ -1303,6 +1304,17 @@ class CvesPlugin(Plugin):
                                   "remediation": "Restrict /wp-json/wp/v2/users to authenticated users."}))
             except Exception:
                 pass
+
+        # CISA KEV badge (2026-10-27): findings whose CVE is in the
+        # KEV catalog get kev=True + the badge label; the live
+        # catalog is tried first and the bundled fixture snapshot is
+        # the offline fallback. A failed catalog load never invents
+        # a match - it just leaves findings unbadged (kev=False).
+        try:
+            catalog = await load_catalog(ctx)
+            annotate_findings(findings, catalog)
+        except Exception:
+            pass
 
         dur = int((time.monotonic() - t0) * 1000)
         # No "nothing found" noise finding: silence is fine, Jay hates noise.
