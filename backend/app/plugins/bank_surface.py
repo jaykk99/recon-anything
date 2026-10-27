@@ -29,26 +29,61 @@ TIMEOUT = 10
 LOCATOR_PATHS = (
     "/atm-locator", "/branch-locator", "/branch-and-atm-locator",
     "/locations", "/find-a-branch", "/branches", "/atms", "/atm",
+    "/find-atm", "/find-an-atm", "/atm-finder", "/branch-finder",
+    "/find-us", "/find-a-location", "/locate-us", "/locator",
+    "/branch-atm-locator", "/atm-branch-locator", "/where-to-bank",
+    "/en/locations", "/personal/locations", "/about/locations",
+    "/contact/locations", "/maps", "/store-locator",
 )
 
-# Paths that smell like fleet-management consoles (GET existence +
-# fingerprint only, same pattern as the atm plugin's mgmt paths).
+# Paths that smell like fleet-management / payment-switch consoles
+# (GET existence + fingerprint only, same pattern as the atm plugin's
+# mgmt paths - never a login attempt).
 PANEL_PATHS = (
     "/kalignite", "/aptra", "/aptra-activate", "/gasper",
     "/postilion", "/base24", "/fleet-manager", "/terminal-manager",
+    "/vynamic", "/opticash", "/moniview", "/esq", "/inetco",
+    "/auriga", "/wws", "/bankworld", "/tranzware", "/smartvista",
+    "/way4", "/tango", "/switch-manager", "/atm-monitoring",
+    "/terminal-management", "/device-manager", "/fleet", "/nmc",
+    "/network-management", "/atmmonitor", "/atm-manager",
 )
 
-# ATM fleet platform fingerprints: (display name, distinctive pattern).
+# ATM fleet / payment-switch platform fingerprints:
+# (display name, distinctive pattern). Covers ATM fleet-management,
+# ATM software stacks, and the core payment switches a financial
+# institution runs. Fingerprint = identify the platform from a public
+# page; detection only, no interaction beyond a read.
 FLEET_PLATFORMS = (
+    # --- ATM fleet-management / monitoring ---
     ("KAL Kalignite", r"kalignite"),
-    ("NCR APTRA", r"aptra"),
+    ("NCR APTRA", r"\baptra\b"),
+    ("NCR Vision (fleet monitoring)", r"ncr\s+vision|\baptra\s+vision"),
+    ("NCR OptiCash (cash management)", r"opticash"),
     ("Gasper (NCR Gasper V5)", r"\bgasper\b"),
+    ("Diebold Nixdorf Vynamic", r"vynamic"),
+    ("Diebold Agilis", r"\bagilis\b"),
+    ("Nautilus Hyosung MoniView", r"moniview"),
+    ("Auriga WWS (WinWebServer)", r"\bauriga\b|winwebserver|\bwws\b"),
+    ("Phoenix Interactive / Vista ATM", r"vista\s+atm|phoenix\s+interactive"),
+    ("ESQ Operations Bridge", r"esq\s+operations\s+bridge|\besq\b\s+bridge"),
+    ("INETCO Insight", r"inetco"),
+    ("Cennox / fleet services", r"\bcennox\b"),
+    # --- payment switches / processors (bank core) ---
     ("Postilion (ACI Postilion)", r"postilion"),
     ("BASE24 (ACI BASE24-eps)", r"base24"),
-    ("Diebold Agilis", r"\bagilis\b"),
-    ("ESQ Operations Bridge", r"esq\s+operations\s+bridge"),
-    ("INETCO Insight", r"inetco"),
-    ("Phoenix Vista ATM", r"vista\s+atm|phoenix\s+interactive"),
+    ("Compass Plus TranzWare", r"tranzware|compass\s+plus"),
+    ("OpenWay WAY4", r"\bway4\b|openway"),
+    ("BPC SmartVista", r"smartvista|\bbpc\b"),
+    ("Lusis TANGO", r"lusis|\btango\b\s+(switch|payments)"),
+    ("CR2 BankWorld", r"bankworld|\bcr2\b"),
+    ("FIS (payment processing)", r"\bfis\s+global|fis\s+payment"),
+    ("Fiserv", r"\bfiserv\b"),
+    ("Jack Henry / Symitar", r"jack\s+henry|symitar"),
+    ("Euronet", r"euronet"),
+    ("Worldline / Six Payment", r"worldline"),
+    ("Clear2Pay / Open Payment", r"clear2pay"),
+    ("FICO (fraud / Falcon)", r"\bfalcon\b\s+fraud|\bfico\b\s+falcon"),
 )
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")

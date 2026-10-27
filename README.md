@@ -123,6 +123,35 @@ requests `?show_secrets=true` and a **🔓 secrets revealed / 🔒 masked**
 toggle flips it live; the server still enforces its own per-plan reveal
 limits, so full values appear wherever the account is entitled to them.
 
+### Multi-chain crypto OSINT
+
+The checksum-verified address detectors find wallets across ~15 chains,
+and every detection now feeds the enrichment bus with a chain tag — so a
+discovered address gets looked up, not just listed. `chain_osint` keeps
+the deep Ethereum view (balance, tx history, counterparties, verified
+source); `chain_enrich` adds keyless balance/activity for **Bitcoin,
+Litecoin, Dogecoin, Bitcoin Cash, Dash, Zcash, Tron, XRP and Solana**
+(Blockchair / TronScan / XRPScan / Solana RPC, no keys). `cryptolabels`
+tags **every** address against a public label set — burn/null, known
+mixers, bridges, major-exchange hot wallets, and OFAC-sanctioned
+addresses — so "an address" becomes "an address linked to X". All
+read-only public-explorer data; it never signs or sends. Pure parsers
+live in `app/chaindata.py` / `app/cryptolabels.py`; gate is
+`tests/test_chain_enrich.py`.
+
+### Deeper bank / ATM surface
+
+The financial packs recognize far more platforms now. `bank_surface`
+fingerprints 27 ATM-fleet and payment-switch platforms (NCR APTRA/Vision,
+Diebold Vynamic/Agilis, Nautilus Hyosung MoniView, Auriga WWS, ACI
+Postilion/BASE24, Compass Plus TranzWare, OpenWay WAY4, BPC SmartVista,
+FIS, Fiserv, Euronet…) across an expanded set of locator and console
+paths, and the `atm` plugin covers more vendors (Nautilus Hyosung,
+Fujitsu, OKI, Genmega, Hantle, Euronet, Cardtronics, Auriga, KAL) and
+more subdomains / portal / management paths. Detection-only: it
+fingerprints what a public page runs and references public CVEs — it
+never logs in or interacts with a console.
+
 ### Plugin architecture
 
 Every capability is an isolated plugin in `backend/app/plugins/`.
