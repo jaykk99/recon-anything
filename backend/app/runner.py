@@ -1481,12 +1481,14 @@ def _correlate_run(session, run_id: str):
             "source_url": r.source_url, "confidence": r.confidence,
             "evidence": r.evidence, "bounty_value": r.bounty_value,
         } for r in rows]
-        paths, exposure = correlate(as_dicts)
         # Attach correlation findings to the run's first target (they are
-        # run-level, but FindingRow requires a target_id).
+        # run-level, but FindingRow requires a target_id). Its normalized
+        # value is also the host hint for verification commands.
         first_target = session.query(TargetRow).filter_by(
             run_id=run_id).first()
         tid = first_target.id if first_target else run_id
+        host_hint = first_target.normalized if first_target else None
+        paths, exposure = correlate(as_dicts, host_hint=host_hint)
         now = dt.datetime.now(dt.timezone.utc)
         for p in paths:
             session.add(FindingRow(

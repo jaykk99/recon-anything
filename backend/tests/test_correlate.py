@@ -39,13 +39,79 @@ def test_cloud_credential_blast():
         _f("asm", "infra", "cloud_provider", "hosted on amazonaws ec2", "low"),
         _f("buckets", "leak", "s3_public_write", "s3://acme-backups", "high"),
     ]
-    paths, exp = correlate(rows)
+    paths, exp = correlate(rows, host_hint="acme.com")
     assert any("cloud credential" in n.lower() for n in _names(paths)), _names(paths)
-    # the raw key must never appear verbatim in any path
-    blob = str(paths)
-    assert "AKIAIOSFODNN7EXAMPLEKEY" not in blob, "raw credential leaked into path"
     assert exp["band"] in ("high", "critical")
     assert 0 < exp["score"] <= 100
+
+
+def test_secrets_are_shown_in_paths():
+    # Product intent (changed 2026-10-27): secrets ARE shown to the operator
+    # in path components and verification commands. The exposed key IS the
+    # finding; masking it defeats the tool.
+    rows = [
+        _f("keyharvest", "leak", "exposed_aws_access_key",
+           "AKIAIOSFODNN7EXAMPLEKEY", "high", "weaponized"),
+        _f("buckets", "leak", "s3_public_write", "s3://acme-backups", "high"),
+    ]
+    paths, _ = correlate(rows, host_hint="acme.com")
+    cc = [p for p in paths if "cloud credential" in p["evidence"]["path_name"].lower()][0]
+    vals = [c.get("value", "") for c in cc["evidence"]["components"]]
+    assert any("AKIAIOSFODNN7EXAMPLEKEY" in v for v in vals), "secret should be shown in components"
+
+
+def test_paths_carry_verification_commands():
+    rows = [
+        _f("artifacts", "leak", "git_exposed", "/.git/config readable", "high"),
+        _f("secrets", "leak", "js_secret", "stripe_sk_live_abc", "high"),
+    ]
+    paths, _ = correlate(rows, host_hint="acme.com")
+    p = [p for p in paths if "exposed source" in p["evidence"]["path_name"].lower()][0]
+    cmds = p["evidence"].get("commands")
+    assert cmds and isinstance(cmds, list), "path should carry commands"
+    assert all(c.get("safe") is True for c in cmds), "commands must be read-only"
+    assert any("curl" in c["cmd"] or "git" in c["cmd"] for c in cmds)
+
+
+def test_complexity_and_killchain_fields():
+    rows = [
+        _f("apidiscover", "api", "openapi", "schema at /openapi.json", "medium"),
+        _f("keyharvest", "leak", "exposed_aws_access_key", "AKIA", "high", "weaponized"),
+        _f("apidiscover", "api", "endpoint", "/api/admin", "medium"),
+        _f("asm", "infra", "cloud_provider", "amazonaws ec2", "low"),
+    ]
+    paths, _ = correlate(rows, host_hint="acme.com")
+    kc = [p for p in paths if "kill chain" in p["evidence"]["path_name"].lower()]
+    assert kc, "multi-stage kill chain should fire: " + str(_names(paths))
+    ev = kc[0]["evidence"]
+    assert ev["complexity"] in ("two-stage", "multi-stage")
+    assert isinstance(ev["kill_chain"], list) and len(ev["kill_chain"]) >= 3
+    # every path carries a complexity rating
+    for p in paths:
+        assert p["evidence"]["complexity"] in ("single-stage", "two-stage", "multi-stage")
+
+
+def test_new_rules_fire():
+    # open redirect + oauth
+    p1, _ = correlate([
+        _f("redirect", "web", "open_redirect", "?next= redirects offsite", "medium"),
+        _f("auth", "web", "oauth_callback", "/oauth/callback", "low")], host_hint="acme.com")
+    assert any("account takeover" in n.lower() for n in _names(p1)), _names(p1)
+    # internal host + ssrf
+    p2, _ = correlate([
+        _f("jsdeep", "web", "internal_host", "api.internal.acme.corp in bundle", "medium"),
+        _f("ssrf", "web", "ssrf_prone_param", "url= fetch", "high")], host_hint="acme.com")
+    assert any("internal" in n.lower() for n in _names(p2)), _names(p2)
+    # ci config + secret
+    p3, _ = correlate([
+        _f("artifacts", "leak", "github_workflow_exposed", "/.github/workflows/deploy.yml", "medium"),
+        _f("secrets", "leak", "exposed_env", "AWS_SECRET=...", "high")], host_hint="acme.com")
+    assert any("ci/cd" in n.lower() for n in _names(p3)), _names(p3)
+    # debug mode + secret
+    p4, _ = correlate([
+        _f("errors", "web", "django_debug", "DEBUG=True page", "medium"),
+        _f("secrets", "leak", "js_secret", "SECRET_KEY=...", "high")], host_hint="acme.com")
+    assert any("debug mode" in n.lower() for n in _names(p4)), _names(p4)
 
 
 def test_jwt_auth_bypass():
@@ -72,7 +138,6 @@ def test_source_to_secret():
     ]
     paths, _ = correlate(rows)
     assert any("exposed source" in n.lower() for n in _names(paths)), _names(paths)
-    assert "stripe_sk_live_abc123secret" not in str(paths)
 
 
 def test_ssrf_metadata():

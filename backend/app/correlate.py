@@ -39,6 +39,12 @@ import hashlib
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+try:
+    from .commands import commands_for as _commands_for
+except Exception:  # pragma: no cover - keeps the module import-safe
+    def _commands_for(finding, host_hint=None):  # type: ignore
+        return []
+
 # ---------------------------------------------------------------------------
 # Signals: the abstract vocabulary rules reason over. Each finding is mapped
 # to zero or more signals by matching its key / category / value. A signal
@@ -138,6 +144,23 @@ _WALLET_KEY = re.compile(r"(wallet_?private|seed_?phrase|mnemonic|keystore|"
                          r"xprv|private_?key_?hex)")
 _MISSING_HDR = re.compile(r"(missing_?security_?header|clickjack|"
                           r"missing_?hsts|csp_?missing|x_?frame)")
+_OPEN_REDIRECT = re.compile(r"open_?redirect")
+_OAUTH = re.compile(r"(oauth|/callback|redirect_?uri|sso|openid|saml)")
+_INTERNAL_HOST = re.compile(
+    r"(internal_?host|internal_?url|private_?ip|rfc1918|\.internal\b|"
+    r"\.corp\b|\.local\b|10\.\d+\.\d+\.\d+|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
+    r"intranet|staging_?url|dev_?endpoint)")
+_CI_CONFIG = re.compile(
+    r"(github_?workflow|\.github/|gitlab[-_]?ci|\.gitlab-ci|circleci|"
+    r"\.circleci|jenkinsfile|azure-?pipelines|travis|bitbucket-?pipelines|"
+    r"drone\.yml|pipeline_?config)")
+_PKG_MANIFEST = re.compile(
+    r"(package\.json|composer\.json|requirements\.txt|gemfile|go\.mod|"
+    r"pom\.xml|yarn\.lock|package-?lock|pipfile|internal_?package|"
+    r"private_?scope|npmrc)")
+_DEBUG_MODE = re.compile(r"(debug_?mode|debug_?enabled|stack_?trace|"
+                         r"error_?debug|django_?debug|rails_?console|"
+                         r"symfony_?profiler|laravel_?telescope|whoops)")
 
 # A finding counts as "high-value credential material" if its key hits the
 # cloud-cred or wallet pattern. These are what blast-radius rules pivot on.
@@ -195,6 +218,18 @@ def _detect_signals(r: Dict[str, Any]) -> Set[str]:
     if cat == "leak" or re.search(r"(exposed|leak|secret|password|token)",
                                   key):
         sig.add("exposure")
+    if _OPEN_REDIRECT.search(key):
+        sig.add("open_redirect")
+    if _OAUTH.search(blob):
+        sig.add("oauth")
+    if _INTERNAL_HOST.search(blob):
+        sig.add("internal_host")
+    if _CI_CONFIG.search(blob):
+        sig.add("ci_config")
+    if _PKG_MANIFEST.search(blob):
+        sig.add("pkg_manifest")
+    if _DEBUG_MODE.search(key):
+        sig.add("debug_mode")
     return sig
 
 
@@ -204,15 +239,15 @@ def _detect_signals(r: Dict[str, Any]) -> Set[str]:
 # values are truncated and credential-like values are redacted.
 # ---------------------------------------------------------------------------
 
-_REDACT_SIG = ("credential", "wallet_key")
-
-
 def _cite(r: Dict[str, Any], redact: bool = False) -> Dict[str, Any]:
+    # `redact` is retained for API compatibility but secrets are shown in
+    # full to the operator (that is the product intent - an exposed secret
+    # IS the finding). Values are only length-capped for display sanity;
+    # the full value always lives on the underlying finding in the
+    # Secrets/Creds surfaces.
     val = str(r.get("value") or "")
-    if redact and len(val) > 8:
-        val = val[:4] + "…(redacted)"
-    elif len(val) > 160:
-        val = val[:157] + "…"
+    if len(val) > 240:
+        val = val[:237] + "…"
     out = {
         "plugin": _row_plugin(r),
         "key": r.get("key"),
@@ -241,13 +276,44 @@ def _path_id(name: str, comps: List[Dict[str, Any]]) -> str:
     return h.hexdigest()[:12]
 
 
+def _path_commands(components: List[Dict[str, Any]],
+                   host_hint: Optional[str]) -> List[Dict[str, str]]:
+    """Verification commands for a path: the read-only command(s) to
+    confirm each stage, deduped and capped. Read-only only (same contract
+    as app.commands)."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for c in components:
+        for cmd in _commands_for(c, host_hint):
+            key = cmd.get("cmd", "")
+            if key and key not in seen:
+                seen.add(key)
+                out.append(cmd)
+            if len(out) >= 8:
+                return out
+    return out
+
+
+def _complexity(components: List[Dict[str, Any]], steps: List[str]) -> str:
+    """How many distinct moving parts the path chains."""
+    plugins = {c.get("plugin") for c in components}
+    n = max(len(components), len(steps))
+    if len(plugins) >= 3 or n >= 4:
+        return "multi-stage"
+    if len(plugins) == 2 or n >= 2:
+        return "two-stage"
+    return "single-stage"
+
+
 def _mk_path(*, name: str, severity: str, exploitability: str,
              summary: str, attacker_impact: str, remediation: str,
              steps: List[str], components: List[Dict[str, Any]],
              confidence: int, tags: Optional[List[str]] = None,
-             redact_components: bool = False) -> Dict[str, Any]:
+             redact_components: bool = False,
+             kill_chain: Optional[List[str]] = None,
+             host_hint: Optional[str] = None) -> Dict[str, Any]:
     """Build one attack-path finding (finding-shaped dict)."""
-    cites = [_cite(c, redact=redact_components) for c in components]
+    cites = [_cite(c) for c in components]
     pid = _path_id(name, cites)
     # bounty value tracks severity (critical -> critical tier)
     bounty = "critical" if severity == "critical" else (
@@ -262,10 +328,13 @@ def _mk_path(*, name: str, severity: str, exploitability: str,
         "path_name": name,
         "narrative": summary,
         "chain_steps": steps,
+        "kill_chain": kill_chain or steps,
+        "complexity": _complexity(components, steps),
         "components": cites,
         "component_count": len(cites),
         "attacker_impact": attacker_impact,
         "remediation": remediation,
+        "commands": _path_commands(components, host_hint),
         "tags": tags or [],
     }
     return {
@@ -695,16 +764,252 @@ def _rule_api_docs_exposed(idx: SignalIndex) -> List[Dict[str, Any]]:
                      confidence=70, tags=["api", "exposure"])]
 
 
+def _rule_open_redirect_oauth(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """Open redirect on an OAuth/SSO flow -> token/account takeover."""
+    if not idx.get("open_redirect"):
+        return []
+    oauth = _top(idx, "oauth", 2)
+    if not oauth:
+        return []
+    comps = _top(idx, "open_redirect", 1) + oauth
+    name = "Open redirect on an OAuth/SSO flow enables account takeover"
+    summary = (
+        "An open redirect was found on a host that also runs an OAuth/SSO "
+        "login flow. Attackers abuse the redirect to steal the authorization "
+        "code or access token mid-flow (the token is appended to a URL that "
+        "now points at attacker infrastructure), taking over the account.")
+    impact = ("Capture a victim's OAuth code/token during login and sign in "
+              "as them — full account takeover with no password needed.")
+    remediation = (
+        "Strictly allow-list redirect targets (exact match, no open "
+        "parameters), validate OAuth redirect_uri against a fixed registered "
+        "list server-side, and never reflect a user-controlled 'next'/'return' "
+        "URL without validation.")
+    steps = [
+        "An endpoint redirects to an attacker-controlled URL (open redirect).",
+        "The same host runs an OAuth/SSO flow that carries a code/token in a "
+        "redirect.",
+        "Chaining them routes the victim's token to the attacker.",
+    ]
+    return [_mk_path(name=name, severity="high", exploitability="public_poc",
+                     summary=summary, attacker_impact=impact,
+                     remediation=remediation, steps=steps, components=comps,
+                     confidence=73, tags=["auth", "oauth"])]
+
+
+def _rule_internal_host_ssrf(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """Leaked internal hostnames + an SSRF vector -> internal pivot."""
+    if not idx.get("internal_host"):
+        return []
+    ssrf = _top(idx, "ssrf", 1)
+    comps = _top(idx, "internal_host", 2) + ssrf
+    sev = "high" if ssrf else "medium"
+    if ssrf:
+        summary = (
+            "Internal hostnames/URLs leaked into client-side code or "
+            "responses, and an SSRF vector was found. The leaked names are "
+            "exactly the internal targets an attacker points the SSRF at — "
+            "the reconnaissance for an internal pivot is already done.")
+        expl = "public_poc"
+    else:
+        summary = (
+            "Internal hostnames, private IPs or staging/dev URLs leaked into "
+            "client-facing code or responses. They map the internal network "
+            "and become the target list for any future SSRF or access to a "
+            "mistakenly exposed internal service.")
+        expl = "theoretical"
+    name = "Leaked internal hostnames expand the internal attack surface"
+    impact = ("A map of internal services an attacker can target via SSRF or "
+              "a misconfigured gateway to reach systems behind the perimeter.")
+    remediation = (
+        "Strip internal hostnames, private IPs and staging URLs from "
+        "client-side bundles and error responses; segment internal services "
+        "so a leaked name is not directly reachable.")
+    steps = [
+        "Internal hostnames/IPs were found in client-facing content.",
+        ("An SSRF vector can be pointed at those internal names."
+         if ssrf else "They become the target list for a future SSRF."),
+        "Internal services become reachable from outside.",
+    ]
+    return [_mk_path(name=name, severity=sev, exploitability=expl,
+                     summary=summary, attacker_impact=impact,
+                     remediation=remediation, steps=steps, components=comps,
+                     confidence=68, tags=["infra", "ssrf"])]
+
+
+def _rule_ci_supply_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """Exposed CI config / package manifest -> supply-chain exposure."""
+    ci = idx.get("ci_config") or []
+    pkg = idx.get("pkg_manifest") or []
+    if not (ci or pkg):
+        return []
+    comps = (ci[:2] + pkg[:2])
+    creds = idx.get("credential") or []
+    if ci and creds:
+        sev, expl, conf = "high", "public_poc", 78
+        summary = (
+            "CI/CD pipeline configuration is exposed AND secrets were "
+            "recovered. Pipeline configs routinely reference deploy keys, "
+            "registry tokens and environment secrets — an attacker reads the "
+            "build to learn where the keys are and what they unlock.")
+        comps = ci[:2] + creds[:2]
+        tags = ["supply-chain", "ci", "secrets"]
+        name = "Exposed CI/CD config leaks pipeline secrets (supply-chain risk)"
+    elif pkg:
+        sev, expl, conf = "medium", "theoretical", 64
+        summary = (
+            "A dependency manifest is exposed and references internal/private "
+            "package scopes. If those scoped names are not reserved on the "
+            "public registry, an attacker can publish a malicious package "
+            "under the same name (dependency confusion) and have the build "
+            "pull it.")
+        tags = ["supply-chain", "dependency-confusion"]
+        name = "Exposed manifest enables a dependency-confusion attack"
+    else:
+        sev, expl, conf = "medium", "theoretical", 62
+        summary = (
+            "CI/CD pipeline configuration is publicly readable. It reveals the "
+            "build and deploy process, referenced secrets and infrastructure — "
+            "a roadmap for supply-chain and deployment attacks.")
+        tags = ["supply-chain", "ci"]
+        name = "Exposed CI/CD configuration (supply-chain reconnaissance)"
+    impact = ("Insight into (or direct access to) the build/deploy pipeline "
+              "and its secrets — a route to poisoning releases.")
+    remediation = (
+        "Remove CI config and manifests from the public web root, reserve all "
+        "internal package names on the public registry, rotate any secret the "
+        "pipeline references, and scope CI tokens to least privilege.")
+    steps = [
+        "A CI config or dependency manifest is publicly readable.",
+        "It exposes the pipeline's secrets / internal package names.",
+        "An attacker targets the build to reach production.",
+    ]
+    return [_mk_path(name=name, severity=sev, exploitability=expl,
+                     summary=summary, attacker_impact=impact,
+                     remediation=remediation, steps=steps, components=comps,
+                     confidence=conf, tags=tags)]
+
+
+def _rule_debug_disclosure(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """Debug mode / stack traces + any secret or internal detail."""
+    if not idx.get("debug_mode"):
+        return []
+    extra = (idx.get("credential") or [])[:1] + (idx.get("internal_host") or [])[:1]
+    comps = _top(idx, "debug_mode", 2) + extra
+    sev = "high" if idx.get("credential") else "medium"
+    name = "Production debug mode leaks internals (and secrets)"
+    summary = (
+        "The application runs with debug mode on / verbose error pages in "
+        "production" + (
+            ", and secrets were recovered from exactly that kind of output"
+            if idx.get("credential") else "") +
+        ". Debug pages expose stack traces, environment variables, framework "
+        "internals and often live credentials to anyone who triggers an "
+        "error.")
+    impact = ("Disclosure of source paths, environment variables, framework "
+              "versions and frequently live secrets via error pages.")
+    remediation = (
+        "Turn off debug mode in production, return generic error pages, and "
+        "rotate anything that appeared in a debug/stack-trace response.")
+    steps = [
+        "Debug mode / verbose errors are on in production.",
+        "Triggering an error dumps internals (and sometimes secrets).",
+        "An attacker harvests that output.",
+    ]
+    return [_mk_path(name=name, severity=sev, exploitability="public_poc",
+                     summary=summary, attacker_impact=impact,
+                     remediation=remediation, steps=steps, components=comps,
+                     confidence=70, tags=["web", "disclosure"])]
+
+
+def _rule_kill_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
+    """Compound path: when several high-value stages co-occur, synthesize a
+    single multi-stage kill chain from foothold -> escalation -> impact.
+
+    This is the "more complex finding" - it does not just report each weak
+    spot, it orders them into the sequence an attacker would actually walk.
+    """
+    # Stage buckets, in kill-chain order. Each maps to a short stage line
+    # and the findings that satisfy it.
+    stages: List[Tuple[str, str, List[Dict[str, Any]]]] = []
+
+    def add(label: str, desc: str, *signals: str):
+        found: List[Dict[str, Any]] = []
+        for s in signals:
+            found += idx.get(s, [])
+        if found:
+            stages.append((label, desc, found[:2]))
+
+    add("Recon / surface", "map the surface from exposed docs and sources",
+        "api_docs", "source_exposed", "internal_host", "ci_config")
+    add("Foothold", "obtain a credential or forge a token",
+        "credential", "forgeable_token", "default_creds", "breach")
+    add("Access", "reach a privileged/management entry point",
+        "privileged_endpoint", "mgmt_port", "auth_surface")
+    add("Escalation / pivot", "pivot into cloud or internal infrastructure",
+        "storage", "cloud_hosted", "ssrf", "takeover_candidate")
+
+    # Only fire when the chain spans at least 3 of the 4 stages AND there is
+    # real severity behind it (a foothold or an escalation stage present).
+    labels = [s[0] for s in stages]
+    has_foothold = "Foothold" in labels
+    has_escalation = "Escalation / pivot" in labels
+    if len(stages) < 3 or not (has_foothold or has_escalation):
+        return []
+
+    comps: List[Dict[str, Any]] = []
+    for _l, _d, found in stages:
+        comps += found
+    # dedup components by (plugin,key,value)
+    uniq: List[Dict[str, Any]] = []
+    seen = set()
+    for c in comps:
+        k = (_row_plugin(c), _norm(c.get("key")), _norm(c.get("value")))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+
+    # severity: critical if the chain reaches escalation off a real foothold
+    sev = "critical" if (has_foothold and has_escalation) else "high"
+    kill_chain = [f"{i+1}. {lbl}: {desc}"
+                  for i, (lbl, desc, _f) in enumerate(stages)]
+    name = f"Full kill chain across {len(stages)} stages"
+    summary = (
+        "Several findings line up into one end-to-end attack sequence, not "
+        "just isolated weak spots. An attacker can walk it from initial "
+        "recon through a foothold to real impact: "
+        + " → ".join(lbl for lbl, _d, _f in stages) + ".")
+    impact = ("A complete, chainable route from outside the perimeter to "
+              "privileged access / infrastructure control — the findings "
+              "reinforce each other rather than standing alone.")
+    remediation = (
+        "Break the chain at any stage: close the earliest/cheapest links "
+        "first (remove exposed docs/source, rotate the foothold credential), "
+        "then the escalation links (lock down the privileged entry point and "
+        "segment cloud/internal infra). Breaking one link defeats the whole "
+        "path.")
+    return [_mk_path(name=name, severity=sev, exploitability="public_poc",
+                     summary=summary, attacker_impact=impact,
+                     remediation=remediation, steps=kill_chain,
+                     kill_chain=kill_chain, components=uniq,
+                     confidence=76, tags=["kill-chain", "compound"])]
+
+
 RULES = [
+    _rule_kill_chain,
     _rule_cloud_cred_blast,
     _rule_jwt_authbypass,
     _rule_source_to_secret,
     _rule_ssrf_metadata,
+    _rule_internal_host_ssrf,
     _rule_subdomain_takeover,
     _rule_cors_data_theft,
+    _rule_open_redirect_oauth,
     _rule_mgmt_port,
     _rule_breach_credstuff,
     _rule_idor_surface,
+    _rule_ci_supply_chain,
+    _rule_debug_disclosure,
     _rule_secret_sprawl,
     _rule_api_docs_exposed,
 ]
@@ -780,12 +1085,14 @@ def _build_index(rows: List[Dict[str, Any]]) -> SignalIndex:
     return idx
 
 
-def correlate(rows: List[Dict[str, Any]]
+def correlate(rows: List[Dict[str, Any]], host_hint: Optional[str] = None
               ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Synthesize attack paths and an exposure score from a run's findings.
 
     ``rows`` are finding dicts (as produced by reporting.findings_dump, or
-    any dict with key/value/category/evidence/plugin fields). Returns
+    any dict with key/value/category/evidence/plugin fields).
+    ``host_hint`` is the run's primary target, used to resolve verification
+    commands where a finding carries no host of its own. Returns
     ``(paths, exposure)``: ``paths`` is a list of finding-shaped dicts to
     persist (plugin_id "correlation"), ``exposure`` is the summary block.
 
@@ -803,6 +1110,12 @@ def correlate(rows: List[Dict[str, Any]]
                 if pid in seen:
                     continue
                 seen.add(pid)
+                # fill verification commands with the real host hint
+                try:
+                    p["evidence"]["commands"] = _path_commands(
+                        p["evidence"].get("components", []), host_hint)
+                except Exception:
+                    pass
                 paths.append(p)
         except Exception:
             # one bad rule never sinks the pass

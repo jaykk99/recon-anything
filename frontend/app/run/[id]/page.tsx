@@ -225,6 +225,52 @@ function fmtTime(s: number): string {
 
 function copyText(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
 
+interface CmdEntry { label?: string; cmd: string; confirms?: string; safe?: boolean }
+// Read-only verification commands attached to a finding or attack path.
+// Each is the exact command to reproduce/confirm the finding; tap to copy.
+function CommandBlock({ commands }: { commands?: CmdEntry[] }) {
+  if (!Array.isArray(commands) || commands.length === 0) return null;
+  return (
+    <div className="mt-1.5 bg-black/40 border border-slate-700/60 rounded-lg p-2.5">
+      <div className="text-[10px] uppercase tracking-wide text-sky-300/80 mb-1.5 flex items-center gap-1">
+        <span>⌘ verify</span>
+        <span className="text-slate-600 normal-case tracking-normal">(read-only — confirm it yourself)</span>
+      </div>
+      <div className="space-y-1.5">
+        {commands.map((c, i) => (
+          <div key={i}>
+            {c.label && <div className="text-[11px] text-slate-500">{c.label}</div>}
+            <div className="flex items-start gap-2">
+              <code className="flex-1 text-[11px] font-mono text-emerald-300 bg-slate-900/80 rounded px-2 py-1.5 overflow-x-auto whitespace-pre break-all">{c.cmd}</code>
+              <button onClick={() => copyText(c.cmd)}
+                className="text-[11px] text-sky-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">copy</button>
+            </div>
+            {c.confirms && <div className="text-[10px] text-slate-500 mt-0.5">↳ {c.confirms}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Full-value secret/cred display with a copy button and reveal state.
+function SecretValue({ value }: { value: string }) {
+  const [hidden, setHidden] = useState(false);
+  return (
+    <div className="mt-2">
+      <div className="flex items-start gap-2">
+        <code className="flex-1 text-xs font-mono text-slate-100 bg-slate-900/80 rounded px-2 py-1.5 break-all whitespace-pre-wrap">
+          {hidden ? "•".repeat(Math.min(value.length, 40)) : value}
+        </code>
+        <button onClick={() => copyText(value)}
+          className="text-[11px] text-sky-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">copy</button>
+        <button onClick={() => setHidden((h) => !h)}
+          className="text-[11px] text-slate-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">{hidden ? "show" : "hide"}</button>
+      </div>
+    </div>
+  );
+}
+
 // One finding as an expandable card. Used in both the top-findings list
 // and inside collapsed noise groups.
 function FindingCard({ f, open, onToggle, onPlayground }: {
@@ -272,6 +318,7 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
           {ev.remediation && (
             <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
           )}
+          <CommandBlock commands={ev.commands} />
           {ev.pattern && <p className="text-slate-400 break-words"><span className="font-semibold">Pattern: </span>{ev.pattern}</p>}
           {ev.match && (
             <p className="text-slate-400 break-all"><span className="font-semibold">Match: </span>
@@ -522,6 +569,34 @@ function RunPageInner({ params }: { params: { id: string } }) {
   const [tab, setTab] = useState("findings");
   const [sourceType, setSourceType] = useState("website");
   const [summary, setSummary] = useState<any>(null);
+  // Reveal full secrets/creds. Default ON: an exposed secret IS the finding,
+  // and the operator needs the real value to rotate/triage it. Flips the
+  // show_secrets query param; the server still enforces its own free-tier
+  // reveal limit, so this only unmasks where the account is allowed to.
+  const [revealSecrets, setRevealSecrets] = useState(true);
+  const revealRef = useRef(true);
+  useEffect(() => { revealRef.current = revealSecrets; }, [revealSecrets]);
+  // Re-pull findings when the reveal toggle flips (done runs only): the
+  // server re-masks or unmasks server-side, so we refetch the detail.
+  const revealInit = useRef(true);
+  useEffect(() => {
+    if (revealInit.current) { revealInit.current = false; return; }
+    if (status !== "done") return;
+    let live = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/runs/${id}?show_secrets=${revealSecrets}`,
+          { headers: { "X-Access-Code": getCode() } });
+        if (!r.ok || !live) return;
+        const d = await r.json();
+        if (live && Array.isArray(d.findings)) {
+          setFindings(d.findings);
+          if (d.run?.summary) setSummary(d.run.summary);
+        }
+      } catch { /* keep current view on failure */ }
+    })();
+    return () => { live = false; };
+  }, [revealSecrets]);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
   const [cat, setCat] = useState("all");
@@ -661,7 +736,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
           // Hydrate the full run detail once: correlation adds attack-path
           // findings and an exposure score at finalize (not streamed over
           // SSE), so pull them in here. run.summary carries exposure.
-          const detail = await fetch(`/api/runs/${id}`, { headers: h }).then((r) => r.json());
+          const detail = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, { headers: h }).then((r) => r.json());
           if (Array.isArray(detail.findings)) {
             setFindings(detail.findings);
             detail.findings.forEach((f: any) => seenFids.current.add(
@@ -735,7 +810,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
 
     let stopped = false;
     async function pollOnce(): Promise<boolean> {
-      const r = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } });
+      const r = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, { headers: { "X-Access-Code": getCode() } });
       if (r.status === 404) {
         setFatal("Run not found. The scan data may have been wiped (the free-tier database resets on redeploys), or this link is wrong or expired.");
         return true;
@@ -992,11 +1067,17 @@ function RunPageInner({ params }: { params: { id: string } }) {
             )}
           </div>
         )}
-        <div className="flex gap-2 text-xs mt-3 flex-wrap">
+        <div className="flex gap-2 text-xs mt-3 flex-wrap items-center">
           {(["json", "csv", "md", "html"] as const).map((f) => (
             <a key={f} className="chip px-3 py-2 min-h-[44px] flex items-center hover:bg-slate-800"
-              href={`/api/runs/${id}/export?format=${f}`}>{f.toUpperCase()}</a>
+              href={`/api/runs/${id}/export?format=${f}&show_secrets=${revealSecrets}`}>{f.toUpperCase()}</a>
           ))}
+          <button
+            onClick={() => setRevealSecrets((v) => !v)}
+            title="Show full secret/credential values. An exposed secret is the finding — reveal it to rotate it."
+            className={`chip px-3 py-2 min-h-[44px] flex items-center ml-auto ${revealSecrets ? "bg-red-950/50 text-red-300 border border-red-800/50" : "text-slate-400"}`}>
+            {revealSecrets ? "🔓 secrets revealed" : "🔒 secrets masked"}
+          </button>
         </div>
       </div>
 
@@ -1810,6 +1891,7 @@ function AttackPathsView({ findings, onOpenFindings }:
                 <span className="font-semibold text-slate-100 text-sm">{ev.path_name || p.value}</span>
                 <span className="flex gap-2 flex-wrap mt-1 items-center">
                   {expl && <span className="text-[10px] uppercase tracking-wide text-rose-300 border border-rose-700 rounded px-1.5 py-0.5">{expl.replace("_", " ")}</span>}
+                  {ev.complexity && <span className="text-[10px] uppercase tracking-wide text-indigo-300 border border-indigo-700/60 rounded px-1.5 py-0.5">{String(ev.complexity).replace("-", " ")}</span>}
                   <span className="text-[11px] text-slate-500">{comps.length} finding{comps.length === 1 ? "" : "s"} chained</span>
                   {tags.map((t) => <span key={t} className="text-[10px] text-sky-300/70">#{t}</span>)}
                 </span>
@@ -1829,12 +1911,15 @@ function AttackPathsView({ findings, onOpenFindings }:
                 )}
                 {steps.length > 0 && (
                   <div>
-                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">How it chains</div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+                      {Array.isArray(ev.kill_chain) && ev.kill_chain.length > 0 && ev.tags?.includes("kill-chain") ? "Kill chain" : "How it chains"}
+                    </div>
                     <ol className="list-decimal ml-5 space-y-1 text-slate-300">
                       {steps.map((s, j) => <li key={j}>{s}</li>)}
                     </ol>
                   </div>
                 )}
+                <CommandBlock commands={ev.commands} />
                 {comps.length > 0 && (
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Built from these findings</div>
@@ -2140,11 +2225,18 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
     s.key.replace("exposed_", "").replace("wallet_", "").split("_")[0])));
   const shown = typeFilter === "all" ? secrets :
     secrets.filter((s) => s.key.includes(typeFilter));
-  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+  function copyAll() {
+    copyText(shown.map((s) => `${s.key}\t${s.value}\t${s.source}`).join("\n"));
+  }
   return (
     <div className="card p-4">
-      <h2 className="font-semibold text-red-300 mb-1">Secrets <span className="text-slate-500 text-xs">({secrets.length})</span></h2>
-      <p className="text-xs text-slate-500 mb-3">API keys, tokens, wallet keys found. Tap to view source. Rotate immediately.</p>
+      <div className="flex items-center gap-2 flex-wrap mb-1">
+        <h2 className="font-semibold text-red-300">Secrets <span className="text-slate-500 text-xs">({secrets.length})</span></h2>
+        {shown.length > 0 && (
+          <button onClick={copyAll} className="chip px-3 py-1.5 text-xs text-sky-400 ml-auto">copy all</button>
+        )}
+      </div>
+      <p className="text-xs text-slate-500 mb-3">API keys, tokens, wallet keys found — shown in full. Copy, verify with the command, then rotate immediately.</p>
       <div className="flex gap-2 flex-wrap mb-3">
         <button onClick={() => setTypeFilter("all")}
           className={`chip px-3 py-2 min-h-[44px] text-xs ${typeFilter === "all" ? "bg-red-900 text-red-200" : "text-slate-400"}`}>all</button>
@@ -2165,11 +2257,12 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
                 </span>
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
-              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <SecretValue value={f.value} />
               <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
               {attackerImpactOf(f) && (
                 <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
               )}
+              <CommandBlock commands={f.evidence?.commands} />
               {f.source_url && (
                 <button onClick={() => onView(f.source_url!)}
                   className="text-xs text-sky-400 mt-2 min-h-[44px]">tap to view source</button>
@@ -2200,11 +2293,12 @@ function CredsView({ findings }: { findings: Finding[] }) {
                 </span>
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
-              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <SecretValue value={f.value} />
               <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
               {attackerImpactOf(f) && (
                 <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
               )}
+              <CommandBlock commands={f.evidence?.commands} />
               {f.source_url && (
                 <p className="text-xs text-slate-500 mt-1 break-all">{f.source_url}</p>
               )}

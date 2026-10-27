@@ -15,7 +15,17 @@ from .models import Finding, Run, RunEvent, Target
 
 SECRET_KEYS = {"aws_access_key", "apk_aws_access_key", "private_key",
                "apk_private_key", "slack_token", "github_token",
-               "stripe_sk_hint", "google_api_key", "jwt_token"}
+               "stripe_sk_hint", "google_api_key", "jwt_token",
+               # broadened so the masked (free-tier) view is consistent -
+               # these are all full-secret keys plugins emit:
+               "exposed_aws_access_key", "exposed_aws_key",
+               "exposed_github_token", "exposed_stripe_key",
+               "exposed_private_key", "exposed_env", "laravel_env",
+               "hardcoded_password", "exposed_hardcoded_password",
+               "plaintext_password", "exposed_card_number",
+               "wallet_private_key", "seed_phrase", "mnemonic",
+               "js_secret", "sourcemap_secret", "slack_webhook",
+               "bearer_token", "api_key", "secret_key"}
 
 
 def _mask(value: str) -> str:
@@ -60,6 +70,15 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
             annotate_attacker_impact(out)
         except Exception:
             pass
+    # Verification commands: every actionable finding gets the exact
+    # read-only command(s) to reproduce/confirm it. Read-time, so old
+    # runs get them too. Host hint = the run's primary target.
+    try:
+        from .commands import annotate_commands
+        _t = session.query(Target).filter_by(run_id=run_id).first()
+        annotate_commands(out, host_hint=(_t.normalized if _t else None))
+    except Exception:
+        pass
     # Crypto-class runs (Jay's order, 2026-10-23): exposed private
     # keys, seed phrases and keystores are THE findings - they sort
     # to the top of the run, flagged critical, ahead of generic
@@ -147,6 +166,11 @@ def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
                                    for c in comps[:6]))
             if ev.get("remediation"):
                 L.append(f"- Fix: {ev['remediation']}")
+            cmds = ev.get("commands") or []
+            if cmds:
+                L.append("- Verify (read-only):")
+                for cm in cmds[:6]:
+                    L.append(f"  - {cm.get('label','')}: `{cm.get('cmd','')}`")
             L.append("")
     L += ["## Executive summary",
           f"- {len(rows)} findings across {len(by_cat)} categories",
@@ -214,18 +238,31 @@ def _attack_paths_html(run: Run, rows: List[Dict]) -> str:
             expl = ev.get("exploitability", "unknown")
             expl_badge = (f"<span class='expl'>{html.escape(str(expl))}</span>"
                           if expl and expl != "unknown" else "")
+            cmds = ev.get("commands") or []
+            cmd_html = ""
+            if cmds:
+                items = "".join(
+                    f"<li><span class='clabel'>{html.escape(str(c.get('label','')))}</span>"
+                    f"<code>{html.escape(str(c.get('cmd','')))}</code></li>"
+                    for c in cmds[:6])
+                cmd_html = (f"<div class='cmds'><div class='chd'>Verify "
+                            f"(read-only)</div><ul>{items}</ul></div>")
+            comp = str(ev.get("complexity") or "")
+            comp_badge = (f"<span class='cplx'>{html.escape(comp)}</span>"
+                          if comp else "")
             out.append(
                 f'<div class="path" style="border-left-color:{col}">'
                 f'<div class="path-h"><span class="sev" '
                 f'style="background:{col}">{html.escape(sev.upper())}</span>'
                 f'<strong>{html.escape(str(ev.get("path_name") or p.get("value")))}'
-                f'</strong>{expl_badge}</div>'
+                f'</strong>{expl_badge}{comp_badge}</div>'
                 f'<p>{html.escape(str(ev.get("narrative","")))}</p>'
                 f'<p class="imp"><strong>Attacker impact:</strong> '
                 f'{html.escape(str(ev.get("attacker_impact","")))}</p>'
                 + (f'<ol>{steps}</ol>' if steps else "")
                 + (f'<div class="comps">Chained from: {comp_html}</div>'
                    if comp_html else "")
+                + cmd_html
                 + f'<p class="fix"><strong>Fix:</strong> '
                 f'{html.escape(str(ev.get("remediation","")))}</p>'
                 '</div>')
@@ -276,7 +313,19 @@ color:#fca5a5;border:1px solid #7f1d1d;border-radius:6px;padding:.1rem .45rem}}
 .comps{{margin:.4rem 0;font-size:.78rem;color:#94a3b8}}
 .chip{{display:inline-block;background:#1e293b;border:1px solid #334155;
 border-radius:6px;padding:.08rem .45rem;margin:.12rem;font-size:.72rem}}
-.chip em{{color:#7dd3fc;font-style:normal}}</style></head><body>
+.chip em{{color:#7dd3fc;font-style:normal}}
+.cplx{{font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;
+color:#a5b4fc;border:1px solid #3730a3;border-radius:6px;padding:.1rem .45rem}}
+.cmds{{margin:.5rem 0;background:#0a0f1a;border:1px solid #1e293b;
+border-radius:8px;padding:.5rem .7rem}}
+.cmds .chd{{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;
+color:#7dd3fc;margin-bottom:.35rem}}
+.cmds ul{{list-style:none;margin:0;padding:0}}
+.cmds li{{margin:.3rem 0}}
+.cmds .clabel{{display:block;font-size:.72rem;color:#94a3b8;margin-bottom:.1rem}}
+.cmds code{{display:block;background:#11161f;border:1px solid #243044;
+border-radius:5px;padding:.35rem .5rem;font-size:.76rem;color:#86efac;
+overflow-x:auto;white-space:pre}}</style></head><body>
 <h1>ReconAnything report</h1>
 <p>Run {html.escape(run.id)} | mode {html.escape(run.mode)} |
 targets: {html.escape(", ".join(t.normalized for t in targets))}</p>

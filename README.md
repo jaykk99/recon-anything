@@ -97,6 +97,32 @@ engine is pure-stdlib, deterministic, idempotent across hunter reopens,
 and never raises on bad input. Add a rule by appending a pure function
 to `RULES` in `correlate.py`; unit gate is `tests/test_correlate.py`.
 
+Each path also carries a **complexity** rating and, when enough stages
+line up, a compound **kill chain** (recon → foothold → access →
+escalation) that orders isolated weak spots into the sequence an
+attacker would actually walk.
+
+### Verification commands on every finding
+
+Every actionable finding (and every attack path) carries the exact
+**read-only command(s) to reproduce/confirm it** — `curl` the exposed
+`.git/config`, `dig` the dangling CNAME, `openssl s_client` the TLS,
+base64-decode the JWT, `aws sts get-caller-identity` to see whose key it
+is. Generated in `backend/app/commands.py` (pure stdlib, read-time so old
+runs get them too) and shown with copy buttons in the UI and the exports.
+These are *verification* commands — they confirm a finding exists or
+identify its scope; they never exfiltrate data, modify the target, or
+weaponize the finding. Gate: `tests/test_commands.py`.
+
+### Full secret / credential reveal
+
+An exposed secret **is** the finding, so the Secrets and Credentials
+tabs show full values (with copy / copy-all and a per-value hide) rather
+than masking them — you can't rotate a leaked key you can't see. The UI
+requests `?show_secrets=true` and a **🔓 secrets revealed / 🔒 masked**
+toggle flips it live; the server still enforces its own per-plan reveal
+limits, so full values appear wherever the account is entitled to them.
+
 ### Plugin architecture
 
 Every capability is an isolated plugin in `backend/app/plugins/`.
