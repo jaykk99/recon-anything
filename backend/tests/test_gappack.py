@@ -173,7 +173,7 @@ def test_exactly_23_new_detectors_registered():
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
     # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 617  # 616 + 1 exposed-secret expansion on master (ac254f2)
+    assert len(discover()) == 623  # 617 master + 5 cp_web3 gap plugins + 1 chain_followups (crypto-chain, rebased 2026-10-27)
 
 
 def test_trello_board_verified_public():
