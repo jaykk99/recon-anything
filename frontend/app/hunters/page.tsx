@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
 // Hunters view: read-only window into the agent data service.
 // The 20 hunters do not chat, they hunt: they expand the known set
@@ -21,7 +22,7 @@ interface ResourceInfo {
   cached: boolean; cached_at: string | null; cached_bytes: number;
 }
 
-export default function HuntersPage() {
+function HuntersPageInner() {
   const [hunters, setHunters] = useState<HunterDef[]>([]);
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [resources, setResources] = useState<ResourceInfo[]>([]);
@@ -162,5 +163,13 @@ export default function HuntersPage() {
         </ul>
       </section>
     </div>
+  );
+}
+
+export default function HuntersPage() {
+  return (
+    <AuthGate>
+      <HuntersPageInner />
+    </AuthGate>
   );
 }

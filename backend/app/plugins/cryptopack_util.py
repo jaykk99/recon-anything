@@ -495,6 +495,34 @@ async def collect_texts(ctx: Ctx, target: Target,
                 texts.append(("JS bundle", jr["text"][:500_000], full))
         except Exception:
             continue
+    # Crypto-class runs (Jay's order, 2026-10-23): the pack's
+    # env-assignment detectors (MNEMONIC=, PRIVATE_KEY=, WIF) must
+    # also see the target's served config files, not just the
+    # homepage and its JS - a leaked .env is the canonical
+    # exposed-key surface on a crypto site. Gated on the run flag
+    # so non-crypto scans keep their exact old fetch profile.
+    # Fetches ride the shared fetch_page cache, so the ~200 pack
+    # plugins together pay for these files once.
+    try:
+        is_crypto_run = bool((getattr(ctx, "shared", None) or {})
+                             .get("crypto_target"))
+    except Exception:
+        is_crypto_run = False
+    if is_crypto_run:
+        for cfg_path in ("/.env", "/.env.local"):
+            cfg_url = urljoin(page_url, cfg_path)
+            try:
+                cr = await ctx.fetch_page(cfg_url, timeout=10)
+            except Exception:
+                continue
+            if cr is None:
+                continue
+            try:
+                if cr["status_code"] == 200 and cr["text"]:
+                    texts.append(("config file", cr["text"][:500_000],
+                                  cfg_url))
+            except Exception:
+                continue
     return texts
 
 
@@ -582,6 +610,20 @@ class PackPlugin(Plugin):
                         self.CATEGORY, key, display,
                         source=f"{self.label}", source_url=url,
                         confidence=conf, passive=True, evidence=ev))
+                    # Feed the enrichment bus. Every checksum-verified
+                    # address detector publishes its hit to crypto_addresses
+                    # with a chain tag (derived from the key prefix) so the
+                    # multi-chain enrichment plugin can look up balance,
+                    # activity and labels. Was missing: only ETH contracts
+                    # reached the bus, so BTC/LTC/DOGE/XRP/... addresses were
+                    # detected but never enriched. Skip redacted secrets and
+                    # bad-checksum non-addresses.
+                    if ("address" in key and "bad_checksum" not in key
+                            and not self.SECRET):
+                        chain = key.split("_", 1)[0]
+                        ctx.publish("crypto_addresses",
+                                    {"address": value, "chain": chain,
+                                     "key": key})
                     if len(findings) >= self.MAX_FINDINGS:
                         break
                 if len(findings) >= self.MAX_FINDINGS:

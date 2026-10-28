@@ -16,12 +16,16 @@ Design rules (Jay's orders, 2026-10-23):
     (detection-only scope rules unchanged); the rest of a run's
     findings are returned as locked counts with values masked.
   - Paid plans are BTC only (no third-party card processors). An order
-    pins the BTC amount at the live rate when it is created. Activation
-    is owner-approved from /admin/orders after payment confirms - there
-    is no automatic on-chain watcher in this build, and the checkout
-    page says so honestly.
-  - RECON_BTC_ADDRESS unset => checkout reports "checkout opens soon".
-    A wallet address is NEVER invented.
+    pins the BTC amount at the live rate when it is created. The DIY
+    payment watcher (app/paywatch.py) then watches Jay's receive
+    address on mempool.space and unlocks the picked tier automatically
+    once a payment from the buyer's declared address reaches 2
+    confirmations, within a 60-minute invoice window and a 1%
+    tolerance. Owner approval at /admin/orders stays as the manual
+    fallback for payments the watcher cannot match.
+  - RECON_BTC_ADDRESS unset => checkout reports "checkout opens soon"
+    and the watcher reports disabled. A wallet address is NEVER
+    invented.
 
 Env is read at call time (not import time) so tests and dashboard
 changes take effect without code edits.
@@ -44,7 +48,6 @@ PLANS: Dict[str, Dict] = {
         "id": "free", "name": "Free", "price_usd": 0,
         "scans_per_day": 3, "full_findings": False,
         "crypto_pack": False, "api_access": False,
-        "auth_scans": False,
         "bulk_targets": False, "white_label": False,
         "features": [
             "3 scans per day",
@@ -57,7 +60,6 @@ PLANS: Dict[str, Dict] = {
         "id": "starter", "name": "Starter", "price_usd": 19,
         "scans_per_day": 10, "full_findings": True,
         "crypto_pack": False, "api_access": False,
-        "auth_scans": False,
         "bulk_targets": False, "white_label": False,
         "features": [
             "10 scans per day",
@@ -70,30 +72,24 @@ PLANS: Dict[str, Dict] = {
         "id": "pro", "name": "Pro", "price_usd": 49,
         "scans_per_day": None, "full_findings": True,
         "crypto_pack": True, "api_access": True,
-        "auth_scans": True,
         "bulk_targets": False, "white_label": False,
         "features": [
             "Unlimited scans",
             "Full findings, nothing locked",
             "All plugins, including the Crypto Pack (110 checks)",
             "API access",
-            "Authenticated scans (your own sites, behind login). "
-            "For authorized testing only.",
         ],
     },
     "agency": {
         "id": "agency", "name": "Agency", "price_usd": 149,
         "scans_per_day": None, "full_findings": True,
         "crypto_pack": True, "api_access": True,
-        "auth_scans": True,
         "bulk_targets": True, "white_label": True,
         "features": [
             "Everything in Pro",
             "Bulk targets",
             "White-label report export",
             "Priority scan queue",
-            "Authenticated scans (your own sites, behind login). "
-            "For authorized testing only.",
         ],
     },
 }
@@ -104,7 +100,6 @@ OWNER_PLAN: Dict = {
     "id": "owner", "name": "Owner", "price_usd": 0,
     "scans_per_day": None, "full_findings": True,
     "crypto_pack": True, "api_access": True,
-    "auth_scans": True,
     "bulk_targets": True, "white_label": True,
     "features": ["Full access (owner account)"],
 }

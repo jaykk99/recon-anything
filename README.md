@@ -1,3 +1,5 @@
+Live: https://recon-anything-9b68f.containers.snapdeploy.app
+
 # ReconAnything
 
 Universal OSINT and attack-surface recon. Give it almost any identifier
@@ -57,6 +59,123 @@ Leave it empty for local dev only.
         |  fallback)|               +--------------+
         +-----------+
 ```
+
+### Attack-path correlation (cross-finding synthesis)
+
+Individual plugins each see one slice of a target. The correlation
+engine (`backend/app/correlate.py`) runs once at finalize — after every
+plugin and hunter pass has settled — over the *whole* finding set, and
+synthesizes **attack paths**: exploitable sequences that no single
+plugin could see. A forgeable JWT is one finding; an admin endpoint is
+another; together they are an *authentication bypass path*, and that is
+what gets reported.
+
+What it chains (detection/analysis only — never sends a payload):
+
+- exposed cloud credential + reachable bucket/cloud host → live
+  infrastructure access
+- forgeable JWT + privileged/auth endpoint → auth-bypass path
+- exposed source/.git/.env + a recovered secret → source leaks creds
+- SSRF on a cloud-hosted target → instance-metadata credential theft
+- dangling CNAME → subdomain takeover
+- permissive CORS + authenticated API → cross-origin data theft
+- internet-exposed management port (+ default creds) → direct access
+- breached email + live login → credential-stuffing path
+- IDOR/BOLA candidate + mapped API surface → object-level authz gap
+- 3+ distinct secret classes → "secret sprawl"
+- public OpenAPI/GraphQL introspection → self-documenting attack surface
+
+Each path carries a plain-language narrative, the chained component
+findings (credential values redacted), an attacker-impact line, the fix,
+a severity and an exploitability rating. The engine also computes a
+single **exposure score** (0–100, banded clean→critical) for the run.
+
+Paths are persisted as ordinary findings (`plugin_id="correlation"`,
+`key="attack_path"`), so they flow through the API, the JSON/CSV/MD/HTML
+exports, and the UI's new **Attack Paths** tab + exposure banner. The
+engine is pure-stdlib, deterministic, idempotent across hunter reopens,
+and never raises on bad input. Add a rule by appending a pure function
+to `RULES` in `correlate.py`; unit gate is `tests/test_correlate.py`.
+
+Each path also carries a **complexity** rating and, when enough stages
+line up, a compound **kill chain** (recon → foothold → access →
+escalation) that orders isolated weak spots into the sequence an
+attacker would actually walk.
+
+### Verification commands on every finding
+
+Every actionable finding (and every attack path) carries the exact
+**read-only command(s) to reproduce/confirm it** — `curl` the exposed
+`.git/config`, `dig` the dangling CNAME, `openssl s_client` the TLS,
+base64-decode the JWT, `aws sts get-caller-identity` to see whose key it
+is. Generated in `backend/app/commands.py` (pure stdlib, read-time so old
+runs get them too) and shown with copy buttons in the UI and the exports.
+These are *verification* commands — they confirm a finding exists or
+identify its scope; they never exfiltrate data, modify the target, or
+weaponize the finding. Gate: `tests/test_commands.py`.
+
+### Full secret / credential reveal
+
+An exposed secret **is** the finding, so the Secrets and Credentials
+tabs show full values (with copy / copy-all and a per-value hide) rather
+than masking them — you can't rotate a leaked key you can't see. The UI
+requests `?show_secrets=true` and a **🔓 secrets revealed / 🔒 masked**
+toggle flips it live; the server still enforces its own per-plan reveal
+limits, so full values appear wherever the account is entitled to them.
+
+### Vulnerability hunting: version → weaponized CVE
+
+The CVE matcher fingerprints software versions from Server / X-Powered-By
+headers, HTML, meta generators and JS filenames and matches them against
+a curated database of **real, public, version-bounded CVEs** (142
+entries, ~93 with public exploits). Coverage spans web servers,
+languages and CMS/plugins plus the high-value, exploited-in-the-wild edge
+and enterprise targets bug-bounty hunters prize: F5 BIG-IP, Exchange
+(ProxyLogon/ProxyShell), vCenter, MOVEit, Zimbra, PaperCut, ColdFusion,
+WebLogic, ActiveMQ, OFBiz, GeoServer, Ivanti, Citrix Bleed, Cisco ASA,
+SonicWall, Webmin, Roundcube, Kibana/Elasticsearch and more. Each match
+carries a severity and an **exploitability** rating (weaponized /
+public_poc / theoretical) so a working RCE sorts above theoretical noise.
+Detection only — it reads the version and references the CVE; it never
+runs an exploit. Add an entry to `VERSION_CVES` in
+`plugins/cves.py`; gate is `tests/test_cves_db.py`.
+
+A **weaponized CVE is now also an attack path.** The correlation engine
+raises any finding rated `weaponized` into a critical attack path on its
+own ("Weaponized exploit available: …"), and when the same run shows a
+reachable privileged/management endpoint the narrative links them. That
+pushes the single most valuable thing a scan can find — a public exploit
+against a live service — to the top of the Attack Paths tab and the
+exposure score.
+
+### Multi-chain crypto OSINT
+
+The checksum-verified address detectors find wallets across ~15 chains,
+and every detection now feeds the enrichment bus with a chain tag — so a
+discovered address gets looked up, not just listed. `chain_osint` keeps
+the deep Ethereum view (balance, tx history, counterparties, verified
+source); `chain_enrich` adds keyless balance/activity for **Bitcoin,
+Litecoin, Dogecoin, Bitcoin Cash, Dash, Zcash, Tron, XRP and Solana**
+(Blockchair / TronScan / XRPScan / Solana RPC, no keys). `cryptolabels`
+tags **every** address against a public label set — burn/null, known
+mixers, bridges, major-exchange hot wallets, and OFAC-sanctioned
+addresses — so "an address" becomes "an address linked to X". All
+read-only public-explorer data; it never signs or sends. Pure parsers
+live in `app/chaindata.py` / `app/cryptolabels.py`; gate is
+`tests/test_chain_enrich.py`.
+
+### Deeper bank / ATM surface
+
+The financial packs recognize far more platforms now. `bank_surface`
+fingerprints 27 ATM-fleet and payment-switch platforms (NCR APTRA/Vision,
+Diebold Vynamic/Agilis, Nautilus Hyosung MoniView, Auriga WWS, ACI
+Postilion/BASE24, Compass Plus TranzWare, OpenWay WAY4, BPC SmartVista,
+FIS, Fiserv, Euronet…) across an expanded set of locator and console
+paths, and the `atm` plugin covers more vendors (Nautilus Hyosung,
+Fujitsu, OKI, Genmega, Hantle, Euronet, Cardtronics, Auriga, KAL) and
+more subdomains / portal / management paths. Detection-only: it
+fingerprints what a public page runs and references public CVEs — it
+never logs in or interacts with a console.
 
 ### Plugin architecture
 
@@ -186,7 +305,7 @@ ReconAnything is a paid product with a free tier (`/pricing`):
 | Agency | $149/mo | unlimited | full | yes | bulk targets, white-label export |
 
 - Customers sign in with GitHub (OAuth; callback
-  `https://recon-anything.onrender.com/api/auth/github/callback`,
+  `https://recon-anything-9b68f.containers.snapdeploy.app/api/auth/github/callback`,
   also served at `/auth/github/callback` on the API service). Sessions
   are HMAC-signed cookies; users/orders/reveals live in `users`,
   `orders`, `finding_reveals` tables.
@@ -198,8 +317,13 @@ ReconAnything is a paid product with a free tier (`/pricing`):
   masked server-side in run detail and export responses.
 - Paid plans are BTC only. Creating an order pins the BTC amount at
   the live CoinGecko rate and shows the address from `RECON_BTC_ADDRESS`.
-  Activation is owner-approved at `/admin/orders` after the payment
-  confirms. With `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` unset the
+  The DIY payment watcher (`backend/app/paywatch.py`) watches that
+  address on mempool.space (public, no key) and unlocks the picked tier
+  automatically once a payment from the buyer's declared address reaches
+  2 confirmations, within a 60-minute invoice window and a 1%
+  tolerance. Owner approval at `/admin/orders` stays as the manual
+  fallback for payments the watcher cannot match. With
+  `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` unset the
   sign-in button shows "opens soon"; with `RECON_BTC_ADDRESS` unset
   checkout shows "checkout opens soon". No address is ever invented.
 
@@ -322,4 +446,4 @@ No em dashes in user-facing text.
 
 ## Live URL
 
-https://recon-anything.onrender.com
+https://recon-anything-9b68f.containers.snapdeploy.app

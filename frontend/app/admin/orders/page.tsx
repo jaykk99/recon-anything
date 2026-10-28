@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "../../../lib/api";
+import AuthGate from "../../../components/AuthGate";
 
 // Owner-only: BTC orders awaiting payment confirmation. Approving an
 // order activates the buyer's plan for 30 days. The API enforces the
 // owner gate server-side; this page just renders what it is given.
-export default function AdminOrdersPage() {
+function AdminOrdersPageInner() {
   const [orders, setOrders] = useState<any[]>([]);
   const [err, setErr] = useState("");
 
@@ -66,5 +67,13 @@ export default function AdminOrdersPage() {
         </table>
       </div>
     </div>
+  );
+}
+
+export default function AdminOrdersPage() {
+  return (
+    <AuthGate>
+      <AdminOrdersPageInner />
+    </AuthGate>
   );
 }

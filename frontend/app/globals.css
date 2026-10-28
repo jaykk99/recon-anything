@@ -18,3 +18,24 @@ table.grid td, table.grid th { border: 1px solid #243044; padding: 0.4rem 0.6rem
 .pill-err { background: #7f1d1d; color: #fecaca; }
 .pill-warn { background: #78350f; color: #fde68a; }
 .pill-info { background: #1e3a5f; color: #bfdbfe; }
+
+/* --- additive polish (new rules only; existing rules above unchanged) --- */
+body {
+  background:
+    radial-gradient(1100px 600px at 15% -10%, rgba(56,189,248,0.06), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(244,63,94,0.05), transparent 55%),
+    #0b0e14;
+  background-attachment: fixed;
+}
+.card { transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.card:hover { border-color: #2b3a4f; }
+.chip { transition: background .12s ease, color .12s ease, border-color .12s ease; }
+.btn { transition: background .12s ease, transform .08s ease; }
+.btn:active { transform: translateY(1px); }
+/* gentle attention pulse, opt-in via class (used by high-severity surfaces) */
+@keyframes ra-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+.ra-pulse { animation: ra-pulse 1.8s ease-in-out infinite; }
+/* thinner, less jittery horizontal scrollbars on the tab strip */
+.overflow-x-auto { scrollbar-width: thin; scrollbar-color: #243044 transparent; }
+.overflow-x-auto::-webkit-scrollbar { height: 6px; }
+.overflow-x-auto::-webkit-scrollbar-thumb { background: #243044; border-radius: 3px; }

@@ -27,8 +27,26 @@ Routes:
   GET/POST /api/agentdata/...   agent data service (packs, known set,
                                 memory, dead ends, recent finds, library)
 
+  Service API (Error Inbox black team agents only, app/service_auth.py):
+  POST /api/service/scans       start a PASSIVE website scan (returns run_id)
+  GET  /api/service/scans/{id}  status + findings for a service-created run
+
 The agents do not chat, they hunt: there is no assistant or chat route.
 Hunters work through the agent data service (app/agentdata).
+
+Service gate (separate from the human gate below, never a weakening of
+it): /api/service/* requires header X-Recon-Service-Key matching
+RECON_SERVICE_KEY. RECON_SERVICE_KEY unset closes the service API
+entirely. There is deliberately NO per-target gate, NO allowlist, and
+NO authorization table: when Jay explicitly asks for a scan, ANY
+target is pre-approved (the trigger rule lives on the Error Inbox
+side — scans run only on his explicit ask, never autonomously).
+The one standing exclusion Jay's blanket approval does NOT override:
+crypto.com (apex plus all subdomains) is rejected before any work
+starts, with zero contact. Service scans carry the full scan surface
+(any mode, any source type, any plugin selection, bounty, overrides)
+and are tagged service=true in the run summary; the read endpoint
+only serves runs the service key created.
 
 Gate (two modes, flipped by configuration - billing.signin_mode):
   - Sign-in mode (GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set): the
@@ -57,17 +75,17 @@ from fastapi.responses import (HTMLResponse, PlainTextResponse,
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
-from . import authscan
 from . import billing
 from . import config
 from . import net
-from . import modes as app_modes
+from . import paywatch
+from . import service_auth
 from .classifier import classify, classify_batch
 from .diff import diff_runs
 from .graph import graph_payload
 from .keys import encrypt, key_status, load_all
-from .models import (ApiKey, AuthAcceptance, Finding, FindingReveal, Order,
-                     Run, RunAuth, RunEvent, Schedule, Target, User,
+from .models import (ApiKey, Finding, FindingReveal, Order,
+                     PaymentWatch, Run, RunEvent, Schedule, Target, User,
                      get_session, init_db)
 from .models import check_db, DATABASE_URL, IS_SQLITE
 from .plugins.registry import describe
@@ -200,12 +218,43 @@ def gate(request: Request,
     return True
 
 
+def _owned_run(session, run_id: str, request: Request):
+    """Load a run, or 404 - including when a signed-in customer asks
+    for someone else's run. Mirrors the ownership rule api_run_detail
+    and api_export already enforce; every other per-run endpoint must
+    use this instead of a bare existence check, or a free customer
+    can read (and, on write endpoints, probe or modify) another
+    customer's scan. Owner and local-dev "open" actors see all runs."""
+    run = session.query(Run).filter_by(id=run_id).first()
+    if not run:
+        raise missing_run(run_id)
+    actor = getattr(request.state, "actor", {"kind": "open"})
+    if actor["kind"] == "user" and run.user_id != actor["user"].id:
+        raise missing_run(run_id)
+    return run
+
+
+def _require_owner_setting(request: Request) -> None:
+    """Global settings (API keys, schedules, monitored breach-watch
+    addresses) have no per-user owner column, so only the owner may
+    manage them. Local-dev "open" actors are the owner equivalent;
+    signed-in non-owner customers get 403, same as /api/admin/*."""
+    actor = getattr(request.state, "actor", {"kind": "anon"})
+    if actor["kind"] not in ("owner", "open"):
+        raise HTTPException(403, "owner only")
+
+
 @app.on_event("startup")
 async def _startup():
     # Start accepting requests immediately; do heavy init in background
     # so Render's health check doesn't time out on slow cold starts.
     import threading
     import asyncio
+    # Boot instant: _recover_pending_runs only replays runs created
+    # BEFORE this process started. A run created after boot may still
+    # have its original enqueue task in flight in this process, and
+    # replaying it would double-enqueue; the boot cutoff rules that out.
+    _boot_started = dt.datetime.now(dt.timezone.utc)
     _db_ready = asyncio.Event()
     def _bg_init():
         try:
@@ -234,6 +283,22 @@ async def _startup():
                                     .filter_by(run_id=r.id).count() > 0)
                         if has_jobs:
                             continue  # the queue worker resumes this run
+                        pending = (r.summary or {}).get("pending_enqueue")
+                        if pending is not None:
+                            has_targets = (session.query(Target)
+                                           .filter_by(run_id=r.id)
+                                           .count() > 0)
+                            if not has_targets:
+                                # Enqueue died mid-setup (deploy/crash)
+                                # before writing anything: leave it
+                                # "running" for _recover_pending_runs to
+                                # replay at boot instead of failing a
+                                # scan the user never saw start.
+                                continue
+                            # Targets exist but no jobs: replay would
+                            # duplicate rows (random target ids), so
+                            # this partial enqueue still fails loudly
+                            # below, as before.
                         r.status = "failed"
                         r.finished_at = dt.datetime.now(dt.timezone.utc)
                         summary = dict(r.summary or {})
@@ -283,6 +348,81 @@ async def _startup():
             log.error("failed to start queue worker: %s", e)
     asyncio.create_task(_start_worker_when_ready())
 
+    # Replay enqueue intents orphaned by a deploy/crash mid-setup (see
+    # api_start_run). Runs after _db_ready so boot init's failed-marking
+    # has already settled the partial-enqueue cases; this task only sees
+    # clean 0-target/0-job runs, which replay without duplicating rows.
+    async def _recover_pending_runs():
+        try:
+            await asyncio.wait_for(_db_ready.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            log.warning("DB init timed out, skipping pending-run recovery")
+            return
+        # Grace delay (default 180s, env-tunable for tests): a Render
+        # deploy briefly runs the old and new instances side by side,
+        # and the old instance may still be finishing an enqueue for a
+        # run created before this boot. Replaying immediately could
+        # double-enqueue it. Waiting past the deploy overlap, then
+        # re-checking for jobs/targets, means a replay only ever fires
+        # for an enqueue whose process is certainly dead; a run whose
+        # original enqueue completed in the meantime is skipped by the
+        # jobs/targets checks below.
+        try:
+            _delay = int(os.environ.get(
+                "RECON_PENDING_RECOVERY_DELAY_S", "180"))
+        except ValueError:
+            _delay = 180
+        if _delay > 0:
+            await asyncio.sleep(_delay)
+        try:
+            from .models import PluginJob as _PJ
+            session = get_session()
+            try:
+                candidates = (session.query(Run)
+                              .filter_by(status="running").all())
+                pending = []
+                for r in candidates:
+                    intent = (r.summary or {}).get("pending_enqueue")
+                    if intent is None:
+                        continue
+                    _created = r.created_at
+                    if _created is not None:
+                        # SQLite returns naive datetimes; Postgres aware.
+                        if _created.tzinfo is None:
+                            _created = _created.replace(
+                                tzinfo=dt.timezone.utc)
+                        if _created >= _boot_started:
+                            # created after boot: enqueue may be live
+                            continue
+                    if session.query(_PJ).filter_by(run_id=r.id).count():
+                        continue  # worker resumes this run
+                    if session.query(Target).filter_by(run_id=r.id).count():
+                        continue  # partial enqueue: boot init failed it
+                    pending.append((r.id, intent))
+            finally:
+                session.close()
+            for run_id, intent in pending:
+                try:
+                    await launch_run(run_id, intent.get("targets", ""),
+                                     intent.get("mode", "passive"),
+                                     intent.get("plugins"),
+                                     intent.get("module_overrides"),
+                                     None,
+                                     source_type=intent.get("source_type",
+                                                            "website"),
+                                     bounty=bool(intent.get("bounty")),
+                                     excluded_plugin_ids=intent.get(
+                                         "excluded_plugin_ids"))
+                    _wake_worker()
+                    log.info("recovered pending run %s (interrupted "
+                             "enqueue replayed)", run_id)
+                except Exception as e:
+                    log.error("pending-run recovery failed for %s: %s",
+                              run_id, e)
+        except Exception as e:
+            log.error("pending-run recovery failed: %s", e)
+    asyncio.create_task(_recover_pending_runs())
+
 
 @app.get("/api/health")
 def health():
@@ -316,111 +456,7 @@ def api_plugins():
     return {"plugins": plugins}
 
 
-# -- settings: scan mode (sandbox | live) ----------------------------------
-class ModeIn(BaseModel):
-    mode: str
-
-
-class OwnedAssetsIn(BaseModel):
-    assets: List[str]
-
-
-@app.get("/api/settings", dependencies=[Depends(gate)])
-def api_settings():
-    session = get_session()
-    try:
-        return {"mode": app_modes.get_mode(session),
-                "owned_assets": app_modes.get_owned_assets(session),
-                "audit": app_modes.audit_tail(session)}
-    finally:
-        session.close()
-
-
-@app.put("/api/settings/mode", dependencies=[Depends(gate)])
-def api_set_mode(body: ModeIn):
-    if body.mode not in app_modes.MODES:
-        raise HTTPException(400, "mode must be sandbox|live")
-    session = get_session()
-    try:
-        detail = app_modes.set_mode(session, body.mode, actor="ui")
-        return {"ok": True, "mode": body.mode, "audit": detail}
-    finally:
-        session.close()
-
-
-@app.put("/api/settings/owned-assets", dependencies=[Depends(gate)])
-def api_set_owned_assets(body: OwnedAssetsIn):
-    session = get_session()
-    try:
-        assets = app_modes.set_owned_assets(session, body.assets, actor="ui")
-        return {"ok": True, "owned_assets": assets}
-    finally:
-        session.close()
-
-
-# -- authenticated mode: one-time attestation ------------------------------
-class AttestationIn(BaseModel):
-    confirmed: bool = False
-
-
-@app.get("/api/auth/attestation", dependencies=[Depends(gate)])
-def api_get_attestation(request: Request):
-    """Has THIS account accepted the Authenticated Mode warning once?
-
-    Returns the stored acceptance (identity, timestamp, text version)
-    or accepted=false plus the texts, so the UI can show the one-time
-    acceptance exactly once per account.
-    """
-    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
-    idkey, _label = authscan.identity_for_actor(actor)
-    session = get_session()
-    try:
-        row = authscan.get_acceptance(session, idkey)
-        if row is None:
-            return {"accepted": False,
-                    "warning": authscan.WARNING_TEXT,
-                    "text": authscan.ACCEPTANCE_TEXT,
-                    "text_version": authscan.ACCEPTANCE_TEXT_VERSION,
-                    "disclaimer": authscan.DISCLAIMER_TEXT}
-        return authscan.acceptance_public(row)
-    finally:
-        session.close()
-
-
-@app.post("/api/auth/attestation", dependencies=[Depends(gate)])
-def api_accept_attestation(body: AttestationIn, request: Request):
-    """Record the one-time acceptance for this account (audit-stamped)."""
-    if body.confirmed is not True:
-        raise HTTPException(400, "confirmed must be true to accept")
-    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
-    idkey, idlabel = authscan.identity_for_actor(actor)
-    ip = request.client.host if request.client else None
-    session = get_session()
-    try:
-        row = authscan.record_acceptance(session, idkey, idlabel, ip)
-        return authscan.acceptance_public(row)
-    finally:
-        session.close()
-
-
 # -- runs -----------------------------------------------------------------
-class AuthHeaderIn(BaseModel):
-    name: str
-    value: str
-
-
-class AuthIn(BaseModel):
-    """Run-scoped credentials for an authenticated scan. Values are
-    encrypted at rest, used only for this run's seed target hosts, and
-    wiped when the run finishes. Never returned by any endpoint."""
-    type: str  # cookie | bearer | basic | headers
-    cookie: Optional[str] = None
-    token: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    headers: Optional[List[AuthHeaderIn]] = None
-
-
 class RunIn(BaseModel):
     targets: str
     mode: str = "active"
@@ -428,7 +464,6 @@ class RunIn(BaseModel):
     module_overrides: Optional[Dict[str, str]] = None
     source_type: str = "website"  # website | bank | atm | bankatm
     bounty: bool = False  # bounty mode: prioritize high-impact vuln classes
-    auth: Optional[AuthIn] = None  # authenticated scan (Pro/Agency plans)
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
@@ -475,78 +510,6 @@ async def api_start_run(body: RunIn, request: Request):
             from .plugins.registry import describe as _describe
             excluded_plugin_ids = billing.excluded_plugins_for_plan(
                 plan, [p["id"] for p in _describe()]) or None
-    run_id = uuid.uuid4().hex[:12]
-    session = get_session()
-    try:
-        # App mode gate: SANDBOX restricts targets to owned assets +
-        # local/lab space. The mode is a settings-level switch (audited),
-        # never a per-scan option. LIVE keeps the long-standing behavior.
-        env_mode = app_modes.get_mode(session)
-        if env_mode == app_modes.SANDBOX:
-            rejected = app_modes.check_sandbox_targets(
-                classify_batch(body.targets),
-                app_modes.get_owned_assets(session))
-            if rejected:
-                raise HTTPException(
-                    400,
-                    "SANDBOX mode: targets must be your own assets or "
-                    "local/lab targets. Rejected: " + "; ".join(
-                        f"{r['raw']} ({r['reason']})" for r in rejected)
-                    + ". Switch to LIVE in Settings to scan authorized "
-                      "external targets.")
-        # --- authenticated mode (Pro/Agency + owner; one-time ------
-        # attestation required). Credentials are validated, encrypted
-        # into the run's RunAuth row, scoped to the seed target hosts,
-        # and wiped when the run finishes (runner.py). They are never
-        # logged or returned by any endpoint.
-        auth_row = None
-        if body.auth is not None:
-            if actor["kind"] == "user" and not (
-                    billing.effective_plan(actor["user"])
-                    .get("auth_scans")):
-                raise HTTPException(
-                    403,
-                    "Authenticated scans are a Pro feature. Upgrade on "
-                    "/pricing to scan behind a login on your own sites.")
-            clean_auth, auth_err = authscan.validate_auth_config(
-                body.auth.model_dump())
-            if auth_err:
-                raise HTTPException(400, auth_err)
-            idkey, idlabel = authscan.identity_for_actor(actor)
-            acceptance = authscan.get_acceptance(session, idkey)
-            if acceptance is None:
-                raise HTTPException(
-                    403,
-                    "Authenticated Mode needs a one-time acceptance "
-                    "first: POST /api/auth/attestation (the warning is "
-                    "shown once per account, then never again).")
-            hosts = authscan.seed_hosts(classify_batch(body.targets))
-            if not hosts:
-                raise HTTPException(
-                    400,
-                    "authenticated scans need a domain, URL or IP "
-                    "target to scope the credentials to")
-            auth_row = RunAuth(
-                run_id=run_id, auth_type=clean_auth["type"],
-                secret_enc=authscan.encrypt_secret(clean_auth),
-                acceptance_id=acceptance.id, attested_by=idlabel,
-                target_hosts=hosts,
-                client_ip=(request.client.host if request.client
-                           else None))
-        run_summary = {"bounty": bool(body.bounty)}
-        if auth_row is not None:
-            run_summary["authenticated"] = True
-            run_summary["auth_type"] = auth_row.auth_type
-        session.add(Run(id=run_id, mode=body.mode, status="running",
-                        env_mode=env_mode, user_id=run_user_id,
-                        source_type=body.source_type,
-                        summary=run_summary))
-        if auth_row is not None:
-            session.add(auth_row)
-        session.commit()
-        keys = load_all(session)
-    finally:
-        session.close()
     # Bank/ATM source types imply explicit authorization: the user picked
     # the mode on purpose. Record it as an audit finding in the run.
     overrides = dict(body.module_overrides or {})
@@ -558,6 +521,39 @@ async def api_start_run(body: RunIn, request: Request):
         # Bank/ATM mode is one deliberate pick: both modules authorized.
         overrides["bank"] = "authorized"
         overrides["atm"] = "authorized"
+    run_id = uuid.uuid4().hex[:12]
+    session = get_session()
+    try:
+        # pending_enqueue: durable enqueue intent, written in the SAME
+        # commit as the Run row so there is no window where a run exists
+        # without a recoverable record of how to enqueue it. Bank/ATM
+        # location runs spend seconds on network geocode/POI resolution
+        # BEFORE writing any target or job (see _enqueue_bankatm_run):
+        # a deploy/crash in that window used to leave the run at 0 jobs
+        # with nothing resumable, and boot init marked it failed. The
+        # intent is cleared by execute_run on normal completion (see its
+        # finally block) and replayed at boot by _recover_pending_runs
+        # only for runs created before this process booted with still
+        # zero targets and zero jobs, so a replay can never duplicate
+        # rows (target ids are random uuids) or double-run a live
+        # enqueue. No new columns: it lives in the existing summary JSON.
+        session.add(Run(id=run_id, mode=body.mode, status="running",
+                        user_id=run_user_id,
+                        source_type=body.source_type,
+                        summary={"bounty": bool(body.bounty),
+                                 "pending_enqueue": {
+                                     "targets": body.targets,
+                                     "mode": body.mode,
+                                     "plugins": plugins,
+                                     "module_overrides": overrides,
+                                     "source_type": body.source_type,
+                                     "bounty": bool(body.bounty),
+                                     "excluded_plugin_ids":
+                                         excluded_plugin_ids}}))
+        session.commit()
+        keys = load_all(session)
+    finally:
+        session.close()
     await launch_run(run_id, body.targets, body.mode,
                      plugins, overrides, keys,
                      source_type=body.source_type, bounty=body.bounty,
@@ -566,12 +562,124 @@ async def api_start_run(body: RunIn, request: Request):
     return {"run_id": run_id}
 
 
-@app.get("/api/runs/{run_id}/stream", dependencies=[Depends(gate)])
-async def api_run_stream(run_id: str):
+# -- service API (Error Inbox black team agents) -------------------------
+# Separate from the human gate above: header service key only, fail
+# closed. See app/service_auth.py. There is deliberately NO per-target
+# gate: when Jay explicitly asks, any target is pre-approved. The one
+# exclusion is crypto.com (apex + subdomains), rejected before any
+# work starts.
+class ServiceScanIn(BaseModel):
+    target: str
+    mode: str = "passive"
+    source_type: str = "website"
+    plugins: Optional[List[str]] = None
+    module_overrides: Optional[Dict[str, str]] = None
+    bounty: bool = False
+
+
+@app.post("/api/service/scans", dependencies=[Depends(service_auth.service_gate)])
+async def api_service_start_scan(body: ServiceScanIn):
+    host = service_auth.target_host(body.target)
+    if body.mode not in ("passive", "active"):
+        raise HTTPException(400, "mode must be passive|active")
+    if body.source_type not in ("website", "bank", "atm", "bankatm"):
+        raise HTTPException(400,
+                            "source_type must be website|bank|atm|bankatm")
+    if not host:
+        raise HTTPException(400, "target host could not be parsed")
+    if service_auth.is_blocked_target(host):
+        raise HTTPException(400, "crypto.com is never a scan target")
+    # Full scan surface, same options the human run form offers.
+    # Bank/ATM source types imply explicit authorization exactly as in
+    # api_start_run — here that authorization is Jay's explicit ask
+    # itself, so the override marks it the same way.
+    overrides = dict(body.module_overrides or {})
+    if body.source_type == "bank":
+        overrides["bank"] = "authorized"
+    elif body.source_type == "atm":
+        overrides["atm"] = "authorized"
+    elif body.source_type == "bankatm":
+        overrides["bank"] = "authorized"
+        overrides["atm"] = "authorized"
+    # The pending enqueue intent mirrors api_start_run so a deploy/crash
+    # mid-scan still recovers at boot instead of stranding a 0-job run.
+    run_id = uuid.uuid4().hex[:12]
     session = get_session()
     try:
-        if not session.query(Run).filter_by(id=run_id).first():
+        session.add(Run(id=run_id, mode=body.mode, status="running",
+                        source_type=body.source_type,
+                        summary={"service": True,
+                                 "service_host": host,
+                                 "pending_enqueue": {
+                                     "targets": body.target,
+                                     "mode": body.mode,
+                                     "plugins": body.plugins,
+                                     "module_overrides": overrides,
+                                     "source_type": body.source_type,
+                                     "bounty": bool(body.bounty),
+                                     "excluded_plugin_ids": None}}))
+        session.commit()
+        keys = load_all(session)
+    finally:
+        session.close()
+    await launch_run(run_id, body.target, body.mode,
+                     body.plugins, overrides, keys,
+                     source_type=body.source_type, bounty=body.bounty,
+                     excluded_plugin_ids=None)
+    _wake_worker()
+    log.info("service scan started run=%s host=%s mode=%s src=%s",
+             run_id, host, body.mode, body.source_type)
+    return {"run_id": run_id, "status": "running", "mode": body.mode,
+            "source_type": body.source_type, "target": host}
+
+
+@app.get("/api/service/scans/{run_id}",
+         dependencies=[Depends(service_auth.service_gate)])
+def api_service_scan_detail(run_id: str,
+                            limit: int = Query(0, description="0 = full finding set, no cap"),
+                            offset: int = Query(0, ge=0)):
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
             raise missing_run(run_id)
+        # The service key only ever reads runs it created. Human runs
+        # (and anything else) are 404 here, so the key is not a general
+        # read key over the instance's history.
+        if not (run.summary or {}).get("service"):
+            raise missing_run(run_id)
+        rows = findings_dump(session, run_id, show_secrets=False)
+        counts: Dict[str, int] = {}
+        for r in rows:
+            sev = r.get("bounty_value") or "low"
+            counts[sev] = counts.get(sev, 0) + 1
+        # 2026-10-26 (Jay: "everything should be shown"): the old code
+        # hard-capped this payload at rows[:200], so the black-team path
+        # silently never saw findings past 200. Default is now the FULL
+        # set; limit/offset page through it without truncation when a
+        # caller wants pages. findings_count is always the true total.
+        page = rows if limit <= 0 else rows[offset:offset + limit]
+        return {
+            "run": {"id": run.id, "mode": run.mode, "status": run.status,
+                    "source_type": getattr(run, "source_type", None) or "website",
+                    "created_at": run.created_at.isoformat() if run.created_at else None,
+                    "finished_at": run.finished_at.isoformat() if run.finished_at else None},
+            "progress": run_progress(session, run_id),
+            "findings_count": len(rows),
+            "findings_returned": len(page),
+            "severity_counts": counts,
+            # Secrets are masked by findings_dump.
+            "findings": page,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/runs/{run_id}/stream", dependencies=[Depends(gate)])
+async def api_run_stream(run_id: str, request: Request):
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
     finally:
         session.close()
     return StreamingResponse(subscribe(run_id), media_type="text/event-stream",
@@ -591,7 +699,7 @@ def api_list_runs(request: Request = None,
     # summary column out unless ?summary=1 is passed explicitly.
     from sqlalchemy.orm import load_only
     from sqlalchemy import func
-    fields = [Run.id, Run.mode, Run.status, Run.env_mode, Run.source_type,
+    fields = [Run.id, Run.mode, Run.status, Run.source_type,
               Run.created_at]
     if summary:
         fields.append(Run.summary)
@@ -606,14 +714,6 @@ def api_list_runs(request: Request = None,
         if actor["kind"] == "user":
             q = q.filter(Run.user_id == actor["user"].id)
         runs = (q.order_by(Run.created_at.desc()).limit(limit).all())
-        # Authenticated badge for the list: one query for the page's
-        # RunAuth stamps (no secret material is ever selected here).
-        auth_ids = set()
-        if runs:
-            auth_ids = {rid for (rid,) in
-                        session.query(RunAuth.run_id)
-                        .filter(RunAuth.run_id.in_([r.id for r in runs]))
-                        .all()}
         # One GROUP BY for findings counts (indexed on findings.run_id) so
         # the list table keeps its "findings" column without the heavy
         # per-run summary JSON.
@@ -624,9 +724,7 @@ def api_list_runs(request: Request = None,
         out = []
         for r in runs:
             row = {"id": r.id, "mode": r.mode, "status": r.status,
-                   "env_mode": getattr(r, "env_mode", None) or "sandbox",
                    "source_type": getattr(r, "source_type", None) or "website",
-                   "authenticated": r.id in auth_ids,
                    "created_at": r.created_at.isoformat()
                    if r.created_at else None,
                    "findings_count": counts.get(r.id, 0)}
@@ -652,15 +750,6 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
             if run.user_id != actor["user"].id:
                 raise missing_run(run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
-        # Authenticated stamp: presence label + attestation reference
-        # only (app/authscan.py) - credential values are never loaded
-        # into this response, let alone returned.
-        auth_row = session.query(RunAuth).filter_by(run_id=run_id).first()
-        acceptance = None
-        if auth_row is not None and auth_row.acceptance_id:
-            acceptance = (session.query(AuthAcceptance)
-                          .filter_by(id=auth_row.acceptance_id).first())
-        auth_block = authscan.public_auth_block(auth_row, acceptance)
         rows = findings_dump(session, run_id, show_secrets=show_secrets)
         if actor["kind"] == "user":
             # Free tier: exactly 1 revealed finding per UTC day,
@@ -670,9 +759,7 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
                 billing.effective_plan(actor["user"]))
         return {
             "run": {"id": run.id, "mode": run.mode, "status": run.status,
-                    "env_mode": getattr(run, "env_mode", None) or "sandbox",
                     "source_type": getattr(run, "source_type", None) or "website",
-                    "authenticated": auth_row is not None,
                     "bounty": bool((run.summary or {}).get("bounty")),
                     "created_at": run.created_at.isoformat() if run.created_at else None,
                     "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -680,7 +767,6 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
             "targets": [{"id": t.id, "raw": t.raw, "type": t.type,
                          "normalized": t.normalized} for t in targets],
             "findings": rows,
-            "auth": auth_block,
             "access": access,
             "executive_summary": executive_summary(rows),
             # Live progress for the UI poll fallback (SSE may be down):
@@ -693,7 +779,8 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
 
 @app.get("/api/runs/{run_id}/agent-activity",
          dependencies=[Depends(gate)])
-def api_run_agent_activity(run_id: str, limit: int = 500):
+def api_run_agent_activity(run_id: str, request: Request,
+                           limit: int = 500):
     """Live agent-activity feed for one run: every hunt_actions row
     in order with a plain-language description and agent
     attribution, plus a per-agent rollup (actions, assets found,
@@ -702,9 +789,7 @@ def api_run_agent_activity(run_id: str, limit: int = 500):
     from .agentdata import store
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        run = _owned_run(session, run_id, request)
         return store.run_agent_activity(
             session, store.DEFAULT_SYSTEM, run_id, limit=limit)
     finally:
@@ -713,7 +798,8 @@ def api_run_agent_activity(run_id: str, limit: int = 500):
 
 @app.post("/api/runs/{run_id}/findings/{finding_id}/retest",
           dependencies=[Depends(gate)])
-async def api_finding_retest(run_id: str, finding_id: int):
+async def api_finding_retest(run_id: str, finding_id: int,
+                             request: Request):
     """Findings playground: re-run the ONE plugin that produced this
     finding, against this finding's own target, and compare fresh vs
     stored (unchanged / changed / gone / error).
@@ -725,6 +811,11 @@ async def api_finding_retest(run_id: str, finding_id: int):
     (app/playground.py). See app/playground.py for the full design.
     """
     from .playground import PlaygroundError, retest_finding
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+    finally:
+        session.close()
     try:
         return await retest_finding(run_id, finding_id)
     except PlaygroundError as e:
@@ -735,16 +826,17 @@ async def api_finding_retest(run_id: str, finding_id: int):
 
 
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])
-def api_graph(run_id: str):
+def api_graph(run_id: str, request: Request):
     session = get_session()
     try:
+        _owned_run(session, run_id, request)
         return graph_payload(session, run_id)
     finally:
         session.close()
 
 
 @app.get("/api/runs/{run_id}/apimap", dependencies=[Depends(gate)])
-def api_apimap(run_id: str):
+def api_apimap(run_id: str, request: Request):
     """Application attack-surface map, grouped.
 
     Returns the legacy flat ``entries`` (backward compatible) plus
@@ -754,6 +846,7 @@ def api_apimap(run_id: str):
     from urllib.parse import urlparse
     session = get_session()
     try:
+        _owned_run(session, run_id, request)
         rows = session.query(Finding).filter_by(run_id=run_id).all()
         entries = {}
         for f in rows:
@@ -915,15 +1008,14 @@ def api_export(run_id: str, request: Request, format: str = "json",
 
 
 @app.get("/api/runs/{run_id}/fetch", dependencies=[Depends(gate)])
-async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
+async def api_fetch_file(run_id: str, request: Request,
+                         url: str = Query(..., max_length=2000)):
     """Fetch a URL found during a run so Jay can view file contents.
     Only allows URLs that appeared in this run's findings (SSRF guard)."""
     from urllib.parse import urlparse
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        _owned_run(session, run_id, request)
         rows = findings_dump(session, run_id)
     finally:
         session.close()
@@ -958,7 +1050,7 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
 
 
 @app.get("/api/runs/{run_id}/vulns", dependencies=[Depends(gate)])
-def api_vulns(run_id: str):
+def api_vulns(run_id: str, request: Request):
     """Possible-vulnerabilities advisor: ranked attack paths from scan findings.
 
     Heuristic only (no LLM). PoCs are detection-only and non-destructive.
@@ -966,9 +1058,7 @@ def api_vulns(run_id: str):
     from .vuln_advisor import advise
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        run = _owned_run(session, run_id, request)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -986,7 +1076,7 @@ class DryRunIn(BaseModel):
 
 
 @app.post("/api/runs/{run_id}/vulns/test", dependencies=[Depends(gate)])
-def api_vuln_test(run_id: str):
+def api_vuln_test(run_id: str, request: Request):
     """Real safe testing: run non-destructive detection probes against the
     actual target. GET/HEAD only, rate-limited, nothing modified.
 
@@ -997,9 +1087,7 @@ def api_vuln_test(run_id: str):
     from .vuln_advisor import advise
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        run = _owned_run(session, run_id, request)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -1018,7 +1106,7 @@ def api_vuln_test(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/vulns/dry-run", dependencies=[Depends(gate)])
-def api_vuln_dry_run(run_id: str, body: DryRunIn):
+def api_vuln_dry_run(run_id: str, body: DryRunIn, request: Request):
     """Safe-test terminal: narrates what a detection check WOULD do.
 
     Sends zero requests. Pure dry-run simulation for authorized testing prep.
@@ -1026,9 +1114,7 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn):
     from .vuln_advisor import dry_run
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        _owned_run(session, run_id, request)
     finally:
         session.close()
     base = body.base or "TARGET"
@@ -1046,7 +1132,8 @@ class SubVerifyIn(BaseModel):
 
 
 @app.post("/api/runs/{run_id}/subdomains/verify", dependencies=[Depends(gate)])
-async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
+async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
+                               request: Request):
     """Probe every subdomain from this run's findings for HTTP liveness.
 
     Returns {host: {live, status, url, server, title}}. Results are cached
@@ -1060,9 +1147,7 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
 
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        run = _owned_run(session, run_id, request)
         rows = findings_dump(session, run_id)
         summary = dict(run.summary or {})
     finally:
@@ -1132,7 +1217,8 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
 
 
 @app.get("/api/runs/{run_id}/probe/port", dependencies=[Depends(gate)])
-async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(...)):
+async def api_probe_port(run_id: str, request: Request,
+                         host: str = Query(...), port: int = Query(...)):
     """Probe a single host:port for banner/service info.
 
     SSRF-guarded: host must be a run target or a subdomain from this run's
@@ -1150,9 +1236,7 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
 
     session = get_session()
     try:
-        run = session.query(Run).filter_by(id=run_id).first()
-        if not run:
-            raise missing_run(run_id)
+        run = _owned_run(session, run_id, request)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
     finally:
@@ -1226,9 +1310,11 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
 
 
 @app.get("/api/diff", dependencies=[Depends(gate)])
-def api_diff(a: str, b: str):
+def api_diff(a: str, b: str, request: Request):
     session = get_session()
     try:
+        _owned_run(session, a, request)
+        _owned_run(session, b, request)
         return diff_runs(session, a, b)
     finally:
         session.close()
@@ -1368,7 +1454,8 @@ class KeyIn(BaseModel):
 
 
 @app.get("/api/keys", dependencies=[Depends(gate)])
-def api_keys():
+def api_keys(request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         return {"keys": key_status(session),
@@ -1378,7 +1465,8 @@ def api_keys():
 
 
 @app.post("/api/keys", dependencies=[Depends(gate)])
-def api_key_add(body: KeyIn):
+def api_key_add(body: KeyIn, request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         row = session.query(ApiKey).filter_by(name=body.name).first()
@@ -1395,7 +1483,8 @@ def api_key_add(body: KeyIn):
 
 
 @app.delete("/api/keys/{name}", dependencies=[Depends(gate)])
-def api_key_del(name: str):
+def api_key_del(name: str, request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         session.query(ApiKey).filter_by(name=name).delete()
@@ -1414,7 +1503,8 @@ class SchedIn(BaseModel):
 
 
 @app.get("/api/schedules", dependencies=[Depends(gate)])
-def api_sched_list():
+def api_sched_list(request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         rows = session.query(Schedule).all()
@@ -1427,7 +1517,8 @@ def api_sched_list():
 
 
 @app.post("/api/schedules", dependencies=[Depends(gate)])
-def api_sched_add(body: SchedIn):
+def api_sched_add(body: SchedIn, request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         sid = uuid.uuid4().hex[:12]
@@ -1441,7 +1532,8 @@ def api_sched_add(body: SchedIn):
 
 
 @app.delete("/api/schedules/{sid}", dependencies=[Depends(gate)])
-def api_sched_del(sid: str):
+def api_sched_del(sid: str, request: Request):
+    _require_owner_setting(request)
     session = get_session()
     try:
         session.query(Schedule).filter_by(id=sid).delete()
@@ -1493,7 +1585,8 @@ class BreachCheckIn(BaseModel):
 
 
 @app.get("/api/breachwatch", dependencies=[Depends(gate)])
-def api_breachwatch_list():
+def api_breachwatch_list(request: Request):
+    _require_owner_setting(request)
     emails = _bw_load_emails()
     cache = _bw_load_cache()
     return {"emails": [
@@ -1907,6 +2000,11 @@ def api_logout():
 
 class OrderIn(BaseModel):
     plan: str
+    payer_address: Optional[str] = None
+
+
+class PayerAddressIn(BaseModel):
+    payer_address: str
 
 
 def _order_payload(o: Order, login: Optional[str] = None) -> Dict:
@@ -1915,11 +2013,28 @@ def _order_payload(o: Order, login: Optional[str] = None) -> Dict:
            "status": o.status,
            "created_at": o.created_at.isoformat() if o.created_at else None,
            "paid_at": o.paid_at.isoformat() if o.paid_at else None,
-           "activation": ("Your plan activates after your BTC payment "
-                          "confirms and the owner approves the order "
-                          "(usually same day).")}
+           "activation": ("Your plan activates automatically once your "
+                          "BTC payment reaches 2 confirmations "
+                          "(usually within an hour). The owner can "
+                          "also approve manually."),
+           "watcher": {"enabled": paywatch.watcher_enabled(),
+                       "required_confirmations":
+                           paywatch.REQUIRED_CONFIRMATIONS,
+                       "invoice_expiry_minutes":
+                           paywatch.INVOICE_EXPIRY_MINUTES,
+                       "tolerance_pct": paywatch.TOLERANCE_PCT,
+                       "explorer": "mempool.space (public, no key)"}}
     if login:
         out["user_login"] = login
+    return out
+
+
+def _order_payload_with_watch(session, o: Order,
+                              login: Optional[str] = None) -> Dict:
+    """Order payload plus its payment-watch status (if any)."""
+    out = _order_payload(o, login)
+    watch = session.query(PaymentWatch).filter_by(order_id=o.id).first()
+    out["watch"] = paywatch.watch_payload(watch, o)
     return out
 
 
@@ -1938,6 +2053,9 @@ def api_order_create(body: OrderIn, request: Request):
         # No wallet address configured: never invent one.
         return {"checkout_open": False, "status": "checkout_closed",
                 "message": "Checkout opens soon."}
+    payer = (body.payer_address or "").strip() or None
+    if payer is not None and not paywatch.valid_btc_address(payer):
+        raise HTTPException(400, "payer_address is not a valid BTC address")
     rate = billing.fetch_btc_usd()
     if rate is None:
         raise HTTPException(503, "BTC rate unavailable right now; "
@@ -1950,12 +2068,84 @@ def api_order_create(body: OrderIn, request: Request):
     session = get_session()
     try:
         session.add(order)
+        session.flush()
+        paywatch.get_or_create_watch(session, order, payer)
         session.commit()
-        payload = _order_payload(order)
+        payload = _order_payload_with_watch(session, order)
     finally:
         session.close()
     return {"checkout_open": True, "order": payload,
             "checkout_path": f"/checkout?order={order.id}"}
+
+
+@app.post("/api/orders/{order_id}/payer-address",
+          dependencies=[Depends(gate)])
+def api_order_payer_address(order_id: str, body: PayerAddressIn,
+                            request: Request):
+    """Set (or change, before paying) the wallet address the buyer
+    will send from. Only the order's owner, only while the invoice is
+    still open. Changing it resets the seen-payment fields so a
+    shortfall from the old address never carries over."""
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    payer = (body.payer_address or "").strip()
+    if not paywatch.valid_btc_address(payer):
+        raise HTTPException(400, "payer_address is not a valid BTC address")
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        user = actor.get("user")
+        if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
+            raise HTTPException(404, "order not found")
+        if o.status != "pending":
+            raise HTTPException(400, "order is no longer open")
+        watch = session.query(PaymentWatch).filter_by(
+            order_id=o.id).first()
+        if watch is None:
+            watch = paywatch.get_or_create_watch(session, o, payer)
+        elif watch.status not in ("pending", "underpaid"):
+            raise HTTPException(400, "payment watch is no longer open")
+        watch.payer_address = payer
+        watch.seen_sats = 0
+        watch.seen_txid = None
+        watch.confirmations = 0
+        session.commit()
+        return {"order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
+
+
+@app.post("/api/orders/{order_id}/check-payment",
+          dependencies=[Depends(gate)])
+def api_order_check_payment(order_id: str, request: Request):
+    """Buyer-triggered watcher check for one order (also what the
+    checkout status page calls). The same check runs on the cron
+    sweep; this endpoint just lets the buyer refresh on demand."""
+    actor = getattr(request.state, "actor", {"kind": "open", "user": None})
+    session = get_session()
+    try:
+        o = session.query(Order).filter_by(id=order_id).first()
+        if not o:
+            raise HTTPException(404, "order not found")
+        user = actor.get("user")
+        if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
+            raise HTTPException(404, "order not found")
+        if not paywatch.watcher_enabled():
+            return {"watcher_enabled": False,
+                    "message": "Payment watcher is not configured yet.",
+                    "order": _order_payload_with_watch(session, o)}
+        try:
+            res = paywatch.check_order(session, o)
+        except ValueError:
+            paywatch.get_or_create_watch(session, o, None)
+            session.commit()
+            res = paywatch.check_order(session, o)
+        session.commit()
+        return {"watcher_enabled": True, "action": res["action"],
+                "order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
 
 
 @app.get("/api/orders", dependencies=[Depends(gate)])
@@ -1968,7 +2158,8 @@ def api_orders_mine(request: Request):
     try:
         rows = (session.query(Order).filter_by(user_id=user.id)
                 .order_by(Order.created_at.desc()).all())
-        return {"orders": [_order_payload(o) for o in rows]}
+        return {"orders": [_order_payload_with_watch(session, o)
+                           for o in rows]}
     finally:
         session.close()
 
@@ -1984,7 +2175,7 @@ def api_order_detail(order_id: str, request: Request):
         user = actor.get("user")
         if actor["kind"] != "owner" and (user is None or o.user_id != user.id):
             raise HTTPException(404, "order not found")
-        return {"order": _order_payload(o)}
+        return {"order": _order_payload_with_watch(session, o)}
     finally:
         session.close()
 
@@ -2012,7 +2203,10 @@ def api_admin_orders(request: Request):
           dependencies=[Depends(gate)])
 def api_admin_approve(order_id: str, request: Request):
     """Owner confirms a BTC payment landed: mark the order paid and
-    activate the buyer's plan for PLAN_DURATION_DAYS."""
+    activate the buyer's plan for PLAN_DURATION_DAYS. This manual
+    approval stays as the fallback for payments the automatic watcher
+    cannot match (for example a payment from an undeclared address, or
+    one that arrived after invoice expiry)."""
     _require_owner(request)
     session = get_session()
     try:
@@ -2020,16 +2214,33 @@ def api_admin_approve(order_id: str, request: Request):
         if not o:
             raise HTTPException(404, "order not found")
         if o.status != "paid":
-            o.status = "paid"
-            o.paid_at = dt.datetime.now(dt.timezone.utc)
-            buyer = session.query(User).filter_by(id=o.user_id).first()
-            if buyer is not None:
-                buyer.plan = o.plan
-                buyer.plan_expires_at = (
-                    dt.datetime.now(dt.timezone.utc)
-                    + dt.timedelta(days=billing.PLAN_DURATION_DAYS))
+            paywatch.activate_order(
+                session, o, dt.datetime.now(dt.timezone.utc))
             session.commit()
-        return {"order": _order_payload(o)}
+        return {"order": _order_payload_with_watch(session, o)}
+    finally:
+        session.close()
+
+
+@app.post("/api/cron/paywatch")
+def api_cron_paywatch(request: Request,
+                      authorization: Optional[str] = Header(None)):
+    """Cron-triggered watcher sweep (no new service: an external cron
+    hits this endpoint, same pattern as the keepalive ping, every
+    ~10 minutes). Authorized by EITHER an owner session OR a Bearer
+    PAYWATCH_CRON_SECRET. The buyer-triggered check-payment endpoint
+    covers the same check on demand between sweeps."""
+    actor = resolve_actor(request)
+    secret = paywatch.cron_secret()
+    bearer_ok = bool(secret) and authorization == f"Bearer {secret}"
+    if actor["kind"] != "owner" and not bearer_ok:
+        raise HTTPException(403, "owner or cron secret only")
+    if not paywatch.watcher_enabled():
+        return {"watcher_enabled": False,
+                "message": "RECON_BTC_ADDRESS is not set; watcher disabled."}
+    session = get_session()
+    try:
+        return paywatch.sweep_pending(session)
     finally:
         session.close()
 
@@ -2065,7 +2276,8 @@ border-radius:8px;padding:1rem}}</style></head><body>
 <h1>ReconAnything pricing</h1>
 <p>Free plan: exactly 1 revealed finding per day (resets at UTC
 midnight). Scans still run in full; the rest are shown as locked
-counts. Paid plans are paid in BTC only. {checkout}</p>
+counts. Paid plans are paid in BTC only and activate automatically
+once your payment reaches 2 confirmations. {checkout}</p>
 <p><a href="/api/auth/github">{signin}</a></p>
 <main>{''.join(cards)}</main></body></html>"""
     return HTMLResponse(html)

@@ -9,8 +9,9 @@ Hosting (2026-10-20 split, Jay's order): the worker runs as its OWN
 Render free web service (recon-anything-worker) so scan load can never
 slow or wedge the UI/API service Jay uses. Render free web services
 must bind an HTTP port, so this process also serves a trivial health
-endpoint on $PORT (default 10000). A keepalive ping every 10 minutes
-stops the free instance from spinning down, and the API pings the
+endpoint on $PORT (default 10000). A self-keepalive ping every 5 min
+(RECON_KEEPALIVE_S, to its own RECON_WORKER_URL / RENDER_EXTERNAL_URL)
+stops the free instance from spinning down, and the API also pings the
 worker URL whenever a new run is created (RECON_WORKER_URL).
 
 Start command (service root = backend/):
@@ -28,6 +29,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 logging.basicConfig(level=logging.INFO)
@@ -54,11 +56,54 @@ def _serve_health() -> None:
     server.serve_forever()
 
 
+def _self_url() -> str:
+    """Public URL this worker can hit to keep itself warm.
+
+    Prefers RECON_WORKER_URL (the same value the API uses to wake the
+    worker), falls back to RENDER_EXTERNAL_URL (injected automatically
+    into every Render web service). Empty string = no URL known, so
+    keepalive is skipped (e.g. in-process or local dev)."""
+    return (os.environ.get("RECON_WORKER_URL")
+            or os.environ.get("RENDER_EXTERNAL_URL")
+            or "").rstrip("/")
+
+
+def _keepalive_loop() -> None:
+    """Ping our own public URL on an interval so Render's free tier does
+    not spin the worker down for lack of inbound traffic.
+
+    The queue loop only talks to Postgres, which Render does not count
+    as inbound HTTP, so without this the instance sleeps after ~15 min
+    idle and the next scan stalls at "plugins starting..." until a cold
+    start finishes. Interval defaults to 300s (safely under the ~15 min
+    window, with margin for cold-start jitter); set RECON_KEEPALIVE_S=0
+    to disable. Fire-and-forget: every error is swallowed."""
+    import urllib.request
+
+    try:
+        interval = int(os.environ.get("RECON_KEEPALIVE_S", "300"))
+    except ValueError:
+        interval = 300
+    url = _self_url()
+    if interval <= 0 or not url:
+        log.info("keepalive disabled (interval=%ss, url=%r)", interval, url)
+        return
+    log.info("keepalive pinging %s every %ss", url, interval)
+    while True:
+        time.sleep(interval)
+        try:
+            req = urllib.request.Request(url + "/", method="GET")
+            urllib.request.urlopen(req, timeout=10).close()
+        except Exception as e:  # noqa: BLE001 - keepalive must never crash
+            log.debug("keepalive ping failed: %s", e)
+
+
 def main() -> None:
     from .models import check_db, init_db
     from .runner import queue_worker_loop, reset_stale_queue_jobs
 
     threading.Thread(target=_serve_health, daemon=True).start()
+    threading.Thread(target=_keepalive_loop, daemon=True).start()
     check_db()
     init_db()
     n = reset_stale_queue_jobs()

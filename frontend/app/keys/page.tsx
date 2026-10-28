@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, fetchMe, getCode, type MeInfo } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
-export default function KeysPage() {
+function KeysPageInner() {
   const [keys, setKeys] = useState<Record<string, { configured: boolean; used_by: string[] }>>({});
   const [encrypted, setEncrypted] = useState(false);
   const [form, setForm] = useState({ name: "", label: "", secret: "" });
@@ -71,5 +72,13 @@ export default function KeysPage() {
         <p>github_token: github.com/settings/tokens (code search)</p>
       </div>
     </div>
+  );
+}
+
+export default function KeysPage() {
+  return (
+    <AuthGate>
+      <KeysPageInner />
+    </AuthGate>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import AuthGate from "../../components/AuthGate";
 
-export default function RunsPage() {
+function RunsPageInner() {
   const [runs, setRuns] = useState<any[]>([]);
   const [a, setA] = useState("");
   const [b, setB] = useState("");
@@ -28,14 +29,7 @@ export default function RunsPage() {
             {runs.map((r) => (
               <tr key={r.id}>
                 <td><a className="text-sky-400 font-mono" href={`/run/${r.id}`}>{r.id}</a></td>
-                <td className="text-xs">{r.mode}{" "}
-                  {(r.env_mode || "sandbox") === "sandbox"
-                    ? <span className="text-amber-300 border border-amber-500/40 bg-amber-500/10 rounded px-1">SANDBOX</span>
-                    : <span className="text-emerald-300 border border-emerald-500/40 bg-emerald-500/10 rounded px-1">LIVE</span>}{" "}
-                  {r.authenticated
-                    ? <span className="text-violet-300 border border-violet-500/40 bg-violet-500/10 rounded px-1" title="Authenticated: scanned behind the login of the owner's own system. For authorized testing only.">AUTHENTICATED</span>
-                    : null}
-                </td>
+                <td className="text-xs">{r.mode}</td>
                 <td className="text-xs">{r.status}</td>
                 <td className="text-xs">{r.findings_count ?? r.summary?.findings ?? "-"}</td>
                 <td className="text-xs text-slate-500">{(r.created_at || "").slice(0, 19)}</td>
@@ -68,5 +62,13 @@ export default function RunsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function RunsPage() {
+  return (
+    <AuthGate>
+      <RunsPageInner />
+    </AuthGate>
   );
 }

@@ -21,9 +21,12 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # Bucket name patterns in code and responses
 BUCKET_PATTERNS = [
-    # s3.amazonaws.com/bucket or bucket.s3.amazonaws.com
-    (r"https?://([a-z0-9][a-z0-9\-.]{1,61}[a-z0-9])\.s3[.-][a-z0-9\-]*\.amazonaws\.com", "aws"),
-    (r"https?://s3[.-][a-z0-9\-]*\.amazonaws\.com/([a-z0-9][a-z0-9\-.]{1,61}[a-z0-9])", "aws"),
+    # bucket.s3.amazonaws.com or bucket.s3.<region>.amazonaws.com
+    # (region segment optional: region-less is the most common form;
+    # dash regions s3-us-west-2 and dualstack endpoints also match)
+    (r"https?://([a-z0-9][a-z0-9\-.]{1,61}[a-z0-9])\.s3(?:[.-](?:dualstack\.)?[a-z0-9\-]+)?\.amazonaws\.com(?![\w.\-])", "aws"),
+    # s3.amazonaws.com/bucket or s3.<region>.amazonaws.com/bucket
+    (r"https?://s3(?:[.-](?:dualstack\.)?[a-z0-9\-]+)?\.amazonaws\.com/([a-z0-9][a-z0-9\-.]{1,61}[a-z0-9])", "aws"),
     # GCS
     (r"https?://([a-z0-9][a-z0-9\-_.]{1,61})\.storage\.googleapis\.com", "gcp"),
     (r"https?://storage\.googleapis\.com/([a-z0-9][a-z0-9\-_.]{1,61})", "gcp"),

@@ -532,6 +532,71 @@ def test_chaining_graphql_and_jwt(session):
 
 
 # ---------------------------------------------------------------------------
+# High-value chaining: panels -> access control, API maps -> IDOR/BOLA,
+# secret pointers -> secret sweep, source maps -> deep JS, dangling ->
+# takeover, open redirect -> SSRF, CORS -> token audit. Detection-only;
+# each chained id is an existing plugin. These are the signals that
+# precede the high-$ bounty finding classes.
+# ---------------------------------------------------------------------------
+
+def _plan_for(key, value, ttype="domain"):
+    from app.hunters.chaining import plan_chains
+    target = TargetRow(id="hv", run_id="r-hv", raw="hv.test",
+                       type=ttype, normalized="hv.test")
+    f = _finding(key, value, plugin="p", category="web")
+    f.target_id = "hv"
+    plan, _hot, _sig = plan_chains([f], [target])
+    return set(plan.get("hv", []))
+
+
+def test_chaining_admin_panel_pulls_access_control_set():
+    # An exposed admin panel is where broken-access-control / IDOR live.
+    got = _plan_for("dir_brute_hit", "hidden path /admin exists (HTTP 200)")
+    assert {"auth", "auth_surface", "endpointauth", "idor", "bola",
+            "param_fuzzer"} <= got
+    # And via the dedicated key, not just the value match.
+    assert {"auth", "idor", "bola"} <= _plan_for("exposed_admin_panel",
+                                                  "/wp-admin")
+
+
+def test_chaining_api_surface_pulls_idor_bola():
+    got = _plan_for("openapi_paths", "/api/v1/users/{id}")
+    assert {"apidiscover", "param_discovery", "param_fuzzer", "bola",
+            "idor", "idor_comparator"} <= got
+
+
+def test_chaining_secret_pointer_triggers_secret_sweep():
+    got = _plan_for("exposed_env", "https://hv.test/.env")
+    assert {"secrets", "gitleaks_scan", "js_secrets", "keyleak"} <= got
+
+
+def test_chaining_sourcemap_triggers_deep_js():
+    got = _plan_for("sourcemap_exposed", "https://hv.test/app.js.map")
+    assert {"sourcemap", "jsdeep", "js_secrets", "js_endpoints"} <= got
+
+
+def test_chaining_takeover_candidate_confirms_takeover():
+    assert "takeover" in _plan_for("takeover_candidate",
+                                   "dangling CNAME -> s3 bucket")
+
+
+def test_chaining_open_redirect_chains_to_ssrf():
+    assert "ssrf" in _plan_for("open_redirect",
+                               "/out?url= redirects off-domain")
+
+
+def test_chaining_cors_misconfig_audits_token():
+    got = _plan_for("cors_misconfig", "ACAO reflects Origin with credentials")
+    assert {"jwt", "jwt_audit", "endpointauth"} <= got
+
+
+def test_chaining_plain_tech_finding_stays_quiet():
+    # A benign tech string with no high-value signal queues nothing: the
+    # expansion must not fire on everything, or the budget is wasted.
+    assert _plan_for("tech", "nginx") == set()
+
+
+# ---------------------------------------------------------------------------
 # New hunter source plugins: parsers (network-free)
 # ---------------------------------------------------------------------------
 

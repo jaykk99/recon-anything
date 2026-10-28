@@ -1,6 +1,8 @@
 """Finding prioritizer: auto-prioritize by exploitability.
 
 Sort order (what Jay looks at first):
+  0. CISA KEV badge: actively exploited findings rank first, ahead
+     of non-KEV findings at the same severity (2026-10-27).
   1. Exploitability tier: weaponized > public_poc > theoretical > unknown
      (a weaponized medium beats a theoretical high - it can be used NOW)
   2. Severity within a tier: critical > high > medium > low
@@ -102,9 +104,21 @@ def confidence_of(f: Any) -> int:
         return 0
 
 
-def priority_key(f: Any) -> Tuple[int, int, int]:
-    """Sort key: (exploitability rank, severity rank, -confidence)."""
-    return (EXPLOITABILITY_ORDER[exploitability_of(f)],
+def kev_of(f: Any) -> bool:
+    """True when the finding carries a CISA KEV badge (evidence kev)."""
+    ev = _evidence(f)
+    return bool(ev.get("kev"))
+
+
+def priority_key(f: Any) -> Tuple[int, int, int, int]:
+    """Sort key: (KEV rank, exploitability rank, severity rank, -conf).
+
+    2026-10-27: CISA KEV findings rank first, ahead of non-KEV
+    findings at the same severity (and ahead of non-KEV findings in
+    general - actively exploited beats theoretical at any tier).
+    """
+    return (0 if kev_of(f) else 1,
+            EXPLOITABILITY_ORDER[exploitability_of(f)],
             SEVERITY_ORDER[severity_of(f)],
             -confidence_of(f))
 

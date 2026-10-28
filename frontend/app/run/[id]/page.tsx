@@ -1,6 +1,14 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getCode, api } from "../../../lib/api";
+import {
+  POLL_BASE_MS,
+  MAX_CONSECUTIVE_FAILURES,
+  isTerminalAuth,
+  nextBackoffMs,
+  shouldStopAfterFailures,
+} from "../../../lib/live-connection";
+import AuthGate from "../../../components/AuthGate";
 
 interface Finding {
   plugin: string; category: string; key: string; value: string;
@@ -224,6 +232,52 @@ function fmtTime(s: number): string {
 
 function copyText(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
 
+interface CmdEntry { label?: string; cmd: string; confirms?: string; safe?: boolean }
+// Read-only verification commands attached to a finding or attack path.
+// Each is the exact command to reproduce/confirm the finding; tap to copy.
+function CommandBlock({ commands }: { commands?: CmdEntry[] }) {
+  if (!Array.isArray(commands) || commands.length === 0) return null;
+  return (
+    <div className="mt-1.5 bg-black/40 border border-slate-700/60 rounded-lg p-2.5">
+      <div className="text-[10px] uppercase tracking-wide text-sky-300/80 mb-1.5 flex items-center gap-1">
+        <span>⌘ verify</span>
+        <span className="text-slate-600 normal-case tracking-normal">(read-only — confirm it yourself)</span>
+      </div>
+      <div className="space-y-1.5">
+        {commands.map((c, i) => (
+          <div key={i}>
+            {c.label && <div className="text-[11px] text-slate-500">{c.label}</div>}
+            <div className="flex items-start gap-2">
+              <code className="flex-1 text-[11px] font-mono text-emerald-300 bg-slate-900/80 rounded px-2 py-1.5 overflow-x-auto whitespace-pre break-all">{c.cmd}</code>
+              <button onClick={() => copyText(c.cmd)}
+                className="text-[11px] text-sky-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">copy</button>
+            </div>
+            {c.confirms && <div className="text-[10px] text-slate-500 mt-0.5">↳ {c.confirms}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Full-value secret/cred display with a copy button and reveal state.
+function SecretValue({ value }: { value: string }) {
+  const [hidden, setHidden] = useState(false);
+  return (
+    <div className="mt-2">
+      <div className="flex items-start gap-2">
+        <code className="flex-1 text-xs font-mono text-slate-100 bg-slate-900/80 rounded px-2 py-1.5 break-all whitespace-pre-wrap">
+          {hidden ? "•".repeat(Math.min(value.length, 40)) : value}
+        </code>
+        <button onClick={() => copyText(value)}
+          className="text-[11px] text-sky-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">copy</button>
+        <button onClick={() => setHidden((h) => !h)}
+          className="text-[11px] text-slate-400 px-2 py-1.5 min-h-[36px] rounded bg-slate-800 shrink-0">{hidden ? "show" : "hide"}</button>
+      </div>
+    </div>
+  );
+}
+
 // One finding as an expandable card. Used in both the top-findings list
 // and inside collapsed noise groups.
 function FindingCard({ f, open, onToggle, onPlayground }: {
@@ -271,6 +325,7 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
           {ev.remediation && (
             <p className="text-green-300/90 break-words"><span className="font-semibold">Fix: </span>{ev.remediation}</p>
           )}
+          <CommandBlock commands={ev.commands} />
           {ev.pattern && <p className="text-slate-400 break-words"><span className="font-semibold">Pattern: </span>{ev.pattern}</p>}
           {ev.match && (
             <p className="text-slate-400 break-all"><span className="font-semibold">Match: </span>
@@ -460,7 +515,59 @@ function PlaygroundPanel({ runId, finding, onClose }: {
   );
 }
 
-export default function RunPage({ params }: { params: { id: string } }) {
+// Attack paths: composite findings synthesized by the correlation engine
+// at finalize. They are real findings (plugin "correlation", key
+// "attack_path") carrying a narrative, chained component findings, and a
+// severity in evidence. The Attack Paths tab surfaces them specially.
+function isAttackPath(f: Finding): boolean {
+  return f.key === "attack_path" || f.plugin === "correlation";
+}
+function attackPaths(findings: Finding[]): Finding[] {
+  const sevRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const explRank: Record<string, number> = { weaponized: 0, public_poc: 1, theoretical: 2, unknown: 3 };
+  return findings.filter(isAttackPath).slice().sort((a, b) => {
+    const as = sevRank[(a.evidence?.severity || "low")] ?? 3;
+    const bs = sevRank[(b.evidence?.severity || "low")] ?? 3;
+    if (as !== bs) return as - bs;
+    const ae = explRank[(a.evidence?.exploitability || "unknown")] ?? 3;
+    const be = explRank[(b.evidence?.exploitability || "unknown")] ?? 3;
+    return ae - be;
+  });
+}
+
+interface Exposure {
+  score: number; band: string; headline: string;
+  attack_path_count?: number; worst_severity?: string;
+  severity_counts?: Record<string, number>;
+}
+// Prefer the server's exposure (run.summary.exposure); fall back to a
+// client-side estimate from the findings so the banner still renders if a
+// run finished over pure SSE before the detail hydrate lands.
+function deriveExposure(findings: Finding[], summary: any): Exposure | null {
+  const s = summary?.exposure;
+  if (s && typeof s.score === "number") return s as Exposure;
+  if (!findings.length) return null;
+  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  let worst = 0; const rank: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+  for (const f of findings) {
+    const sev = (f.evidence?.severity || "low").toLowerCase();
+    counts[sev] = (counts[sev] || 0) + 1;
+    worst = Math.max(worst, rank[sev] || 1);
+  }
+  const paths = findings.filter(isAttackPath).length;
+  const floor = ({ 4: 70, 3: 45, 2: 22, 1: 6 } as Record<number, number>)[worst] || 0;
+  const vol = 18 * Math.log1p(counts.critical * 3 + counts.high * 2 + counts.medium);
+  const score = Math.min(100, Math.round(floor + vol + Math.min(paths * 6, 24)));
+  const band = score >= 80 ? "critical" : score >= 55 ? "high" : score >= 30 ? "medium" : score > 0 ? "low" : "clean";
+  const headline: Record<string, string> = {
+    critical: "Critical exposure — act now.", high: "High exposure — prioritize remediation.",
+    medium: "Moderate exposure — several issues to fix.", low: "Low exposure — minor findings only.",
+    clean: "No material exposure found.",
+  };
+  return { score, band, headline: headline[band], attack_path_count: paths, severity_counts: counts };
+}
+
+function RunPageInner({ params }: { params: { id: string } }) {
   const id = params.id;
   const [findings, setFindings] = useState<Finding[]>([]);
   const [targets, setTargets] = useState<{ raw: string; normalized: string; type: string }[]>([]);
@@ -468,9 +575,35 @@ export default function RunPage({ params }: { params: { id: string } }) {
   const [status, setStatus] = useState("running");
   const [tab, setTab] = useState("findings");
   const [sourceType, setSourceType] = useState("website");
-  const [envMode, setEnvMode] = useState("sandbox");
-  const [authInfo, setAuthInfo] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
+  // Reveal full secrets/creds. Default ON: an exposed secret IS the finding,
+  // and the operator needs the real value to rotate/triage it. Flips the
+  // show_secrets query param; the server still enforces its own free-tier
+  // reveal limit, so this only unmasks where the account is allowed to.
+  const [revealSecrets, setRevealSecrets] = useState(true);
+  const revealRef = useRef(true);
+  useEffect(() => { revealRef.current = revealSecrets; }, [revealSecrets]);
+  // Re-pull findings when the reveal toggle flips (done runs only): the
+  // server re-masks or unmasks server-side, so we refetch the detail.
+  const revealInit = useRef(true);
+  useEffect(() => {
+    if (revealInit.current) { revealInit.current = false; return; }
+    if (status !== "done") return;
+    let live = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/runs/${id}?show_secrets=${revealSecrets}`,
+          { headers: { "X-Access-Code": getCode() } });
+        if (!r.ok || !live) return;
+        const d = await r.json();
+        if (live && Array.isArray(d.findings)) {
+          setFindings(d.findings);
+          if (d.run?.summary) setSummary(d.run.summary);
+        }
+      } catch { /* keep current view on failure */ }
+    })();
+    return () => { live = false; };
+  }, [revealSecrets]);
   const [graph, setGraph] = useState<any>(null);
   const [apiMap, setApiMap] = useState<any>(null);
   const [cat, setCat] = useState("all");
@@ -527,9 +660,13 @@ export default function RunPage({ params }: { params: { id: string } }) {
   // connection health: SSE live vs 4s poll fallback vs dead. Never a
   // silent dead page: sseState tracks the event stream, feedState tracks
   // the poll fallback, fatal is a terminal load error (e.g. run wiped).
-  const [sseState, setSseState] = useState<"connecting" | "live" | "down">("connecting");
+  const [sseState, setSseState] = useState<"connecting" | "live" | "reconnecting" | "stopped">("connecting");
   const [feedState, setFeedState] = useState<"ok" | "degraded" | "dead">("ok");
   const [fatal, setFatal] = useState<string | null>(null);
+  // Terminal auth loss: the session is gone, so both loops are stopped
+  // and the page shows a sign-in link instead of a Retry button that
+  // would just 401 again.
+  const [authLost, setAuthLost] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const failCount = useRef(0);
   // file viewer
@@ -558,18 +695,63 @@ export default function RunPage({ params }: { params: { id: string } }) {
     done.current = false;
     failCount.current = 0;
     setFatal(null);
+    setAuthLost(false);
     setSseState("connecting");
     setFeedState("ok");
 
-    const es = new EventSource(`/live/runs/${id}/stream?code=${encodeURIComponent(getCode())}`);
+    // Managed connection (2026-10-27 loop fix). The browser's native
+    // EventSource auto-retries forever and never reports the HTTP
+    // status, so a 401 stream looked like "connecting" forever while
+    // the 4s poll hammered the backend forever too. This effect owns
+    // both loops: it closes the stream on error, backs off, and
+    // stops everything on a terminal 401 instead of retrying.
+    let es: EventSource | null = null;
+    let stopped = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let sseFailures = 0;
+    let pollDelay = POLL_BASE_MS;
+    const stopTimers = () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      pollTimer = null; reconnectTimer = null;
+    };
+    const stopAllAuth = () => {
+      // Terminal: signed out / session expired. No retry can fix this;
+      // only a fresh GitHub sign-in can, so stop both loops now.
+      stopped = true;
+      stopTimers();
+      if (es) es.close();
+      es = null;
+      setAuthLost(true);
+      setSseState("stopped");
+      setFeedState("dead");
+    };
+    const stopAllStopped = () => {
+      stopped = true;
+      stopTimers();
+      if (es) es.close();
+      es = null;
+      setSseState("stopped");
+      setFeedState("dead");
+    };
+
+    function connectSse() {
+      if (stopped || done.current) return;
+      // Session cookie, not the retired ?code= param: EventSource sends
+      // same-origin cookies, and the /live proxy now forwards that
+      // cookie to the backend. In sign-in mode the backend ignores
+      // any code value, so the old URL guaranteed a 401 stream.
+      const cur = new EventSource(`/live/runs/${id}/stream`);
+      es = cur;
+      setSseState("connecting");
     // Any SSE event at all means the stream is alive.
     const on = (ev: string, fn: (e: MessageEvent) => void) =>
-      es.addEventListener(ev, ((e: MessageEvent) => { setSseState("live"); fn(e); }) as EventListener);
+      cur.addEventListener(ev, ((e: MessageEvent) => { sseFailures = 0; setSseState("live"); fn(e); }) as EventListener);
     on("run_start", (e) => {
       const d = JSON.parse(e.data);
       if (d.source_type) setSourceType(d.source_type);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
-      if (d.source_type) setSourceType(d.source_type);
       if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
       applyBounty(d.bounty);
     });
@@ -604,9 +786,21 @@ export default function RunPage({ params }: { params: { id: string } }) {
     });
     on("run_done", async (e) => {
       const d = JSON.parse(e.data);
-      setSummary(d); setStatus(d.error ? "failed" : "done"); done.current = true; es.close();
+      setSummary(d); setStatus(d.error ? "failed" : "done"); done.current = true; cur.close(); if (es === cur) es = null; stopTimers();
       if (!d.error) {
-        const h = { "X-Access-Code": getCode() };
+        const _c = getCode(); const h: Record<string, string> = _c ? { "X-Access-Code": _c } : {};
+        try {
+          // Hydrate the full run detail once: correlation adds attack-path
+          // findings and an exposure score at finalize (not streamed over
+          // SSE), so pull them in here. run.summary carries exposure.
+          const detail = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, { headers: h }).then((r) => r.json());
+          if (Array.isArray(detail.findings)) {
+            setFindings(detail.findings);
+            detail.findings.forEach((f: any) => seenFids.current.add(
+              f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`));
+          }
+          if (detail.run?.summary) setSummary(detail.run.summary);
+        } catch {}
         try {
           const g = await fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json());
           setGraph(g);
@@ -615,9 +809,43 @@ export default function RunPage({ params }: { params: { id: string } }) {
         } catch {}
       }
     });
-    // SSE dropped: EventSource auto-retries in the background; the 4s poll
-    // below keeps progress alive meanwhile. Any event flips us back to live.
-    es.onerror = () => { if (!done.current) setSseState("down"); };
+    // SSE dropped: close it ourselves (native auto-retry is disabled
+    // by closing) and reconnect on a backoff, never at a fixed 4s
+    // cadence, and never while claiming to be live. A dropped stream
+    // cannot report its HTTP status, so probe /api/me: signed-in means
+    // a transient drop, signed-out with no stored code means terminal
+    // auth loss, and a stored code means the poll (which does see the
+    // status) is the authority, so keep backing off, do not stop yet.
+    cur.onerror = () => {
+      cur.close();
+      if (es === cur) es = null;
+      if (stopped || done.current) return;
+      sseFailures += 1;
+      setSseState("reconnecting");
+      fetch("/api/me", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (stopped || done.current) return;
+          const me = r.ok ? await r.json().catch(() => null) : null;
+          if (me && me.signed_in === false && !getCode()) { stopAllAuth(); return; }
+          if (sseFailures >= MAX_CONSECUTIVE_FAILURES) {
+            // Stream keeps dying: stop reconnecting it and let the poll
+            // (with its own backoff) carry progress. The Retry button
+            // on the dead-feed banner restarts both loops.
+            setSseState("stopped");
+            return;
+          }
+          const delay = nextBackoffMs(sseFailures);
+          reconnectTimer = setTimeout(connectSse, delay);
+        })
+        .catch(() => {
+          // Backend unreachable: transient, back off and try again.
+          if (stopped || done.current) return;
+          if (sseFailures >= MAX_CONSECUTIVE_FAILURES) { setSseState("stopped"); return; }
+          reconnectTimer = setTimeout(connectSse, nextBackoffMs(sseFailures));
+        });
+    };
+    }
+    connectSse();
 
     // Merge one poll response into state. Returns true when the run is over
     // (stop polling). This is the fallback that keeps progress + ETA +
@@ -649,7 +877,6 @@ export default function RunPage({ params }: { params: { id: string } }) {
           if (fresh.length > 0) setFindings((prev) => [...prev, ...fresh]);
         }
         if (d.run?.source_type) setSourceType(d.run.source_type);
-        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (Array.isArray(d.targets) && d.targets.length > 0) setTargets(d.targets);
       }
       if (d.run?.status === "done" || d.run?.status === "failed") {
@@ -662,10 +889,8 @@ export default function RunPage({ params }: { params: { id: string } }) {
           seenFids.current.add(f.id != null ? `fid:${f.id}` : `c:${f.plugin}|${f.key}|${f.value}`);
         });
         if (d.run?.source_type) setSourceType(d.run.source_type);
-        if (d.run?.env_mode) setEnvMode(d.run.env_mode);
-        if (d.auth !== undefined) setAuthInfo(d.auth);
         if (d.run.status === "done") {
-          const h = { "X-Access-Code": getCode() };
+          const _c = getCode(); const h: Record<string, string> = _c ? { "X-Access-Code": _c } : {};
           fetch(`/api/runs/${id}/graph`, { headers: h }).then((r) => r.json()).then(setGraph).catch(() => {});
           fetch(`/api/runs/${id}/apimap`, { headers: h }).then((r) => r.json()).then(setApiMap).catch(() => {});
         }
@@ -674,13 +899,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
       return false;
     }
 
-    let stopped = false;
     async function pollOnce(): Promise<boolean> {
-      const r = await fetch(`/api/runs/${id}`, { headers: { "X-Access-Code": getCode() } });
+      const _c = getCode();
+      const r = await fetch(`/api/runs/${id}?show_secrets=${revealRef.current}`, {
+        headers: (_c ? { "X-Access-Code": _c } : {}) as Record<string, string>,
+        credentials: "same-origin",
+      });
       if (r.status === 404) {
         setFatal("Run not found. The scan data may have been wiped (the free-tier database resets on redeploys), or this link is wrong or expired.");
         return true;
       }
+      if (isTerminalAuth(r.status)) throw new Error("AUTH_401");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return applyPoll(await r.json());
     }
@@ -690,19 +919,28 @@ export default function RunPage({ params }: { params: { id: string } }) {
       try {
         const finished = await pollOnce();
         failCount.current = 0;
+        pollDelay = POLL_BASE_MS;
         setFeedState("ok");
-        if (finished) { stopped = true; clearInterval(poll); es.close(); }
-      } catch {
+        if (finished) { stopped = true; stopTimers(); if (es) es.close(); es = null; return; }
+      } catch (e: any) {
+        if (e && e.message === "AUTH_401") { stopAllAuth(); return; }
         // Transient blip vs dead server: 1-2 misses degrade quietly,
-        // 3 in a row means the feed is dead -> loud error + retry button.
+        // 3 in a row shows the dead banner, 6 in a row stops the
+        // auto-poll entirely and waits for the manual Retry button.
+        // Delays back off 4s, 8s, 16s, capped at 30s, instead of
+        // hammering a dead or sleeping backend every 4s forever.
         failCount.current += 1;
+        pollDelay = nextBackoffMs(failCount.current);
         setFeedState(failCount.current >= 3 ? "dead" : "degraded");
+        if (shouldStopAfterFailures(failCount.current)) return;
+      }
+      if (!stopped && !done.current) {
+        pollTimer = setTimeout(tick, pollDelay);
       }
     }
 
-    const poll = setInterval(tick, 4000);
     tick(); // first paint now, not after 4s; also surfaces 404 immediately
-    return () => { stopped = true; es.close(); clearInterval(poll); };
+    return () => { stopped = true; stopTimers(); if (es) es.close(); es = null; };
   }, [id, retryTick]);
 
   async function viewFile(url: string) {
@@ -802,11 +1040,14 @@ export default function RunPage({ params }: { params: { id: string } }) {
     : estimatedS > 0 && status === "running" ? Math.max(estimatedS - elapsed, 0)
     : null;
   const pluginsLeft = Math.max(progress.total - progress.done, 0);
-  // Live batch view: 5 plugins run at a time, show which batch is active.
-  const BATCH = 5;
+  // Live concurrency view. The backend runs continuous slot-filling (a
+  // slot is refilled the moment its job finishes, up to MAX_CONCURRENCY
+  // ~32), NOT fixed batches - the old "Batch X of Y · 5 at a time" label
+  // was wrong on both counts (wrong number and a model that no longer
+  // exists), and made a fast run look ~6x slower than it was. Show the
+  // real observed concurrency instead: how many plugins are in flight
+  // right now, which is live data, not a guess.
   const runningNow = Object.values(plugins).filter((p) => p.status === "running");
-  const batches = Math.ceil(progress.total / BATCH);
-  const batch = progress.total > 0 ? Math.min(Math.floor(progress.done / BATCH) + 1, Math.max(batches, 1)) : 0;
   const runningNames = runningNow.slice(0, 8).map((p) => p.plugin).join(", ");
 
   return (
@@ -816,32 +1057,15 @@ export default function RunPage({ params }: { params: { id: string } }) {
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="font-mono text-sm text-sky-300 break-all">run {id}</h1>
           <span className={`text-xs px-2 py-1 rounded min-h-[28px] flex items-center ${status === "done" ? "pill-ok" : status === "failed" ? "pill-err" : "pill-info"}`}>{status}</span>
-          {envMode === "sandbox"
-            ? <span title="Sandbox run: own/lab targets only, does not count as production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-amber-500/40 bg-amber-500/10 text-amber-200">SANDBOX</span>
-            : <span title="Live run: production findings" className="text-xs px-2 py-1 rounded min-h-[28px] flex items-center border border-emerald-500/40 bg-emerald-500/10 text-emerald-200">LIVE</span>}
           {bounty && (
             <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-amber-900 text-amber-200 border border-amber-700"
               title="bounty mode: high-impact vuln classes prioritized, findings sorted by impact">
               BOUNTY MODE
             </span>
           )}
-          {authInfo && (
-            <span className="text-xs font-bold px-2 py-1 rounded min-h-[28px] flex items-center bg-violet-900 text-violet-200 border border-violet-700"
-              title={`${authInfo.label || "authenticated"} — attested by ${authInfo.attestation?.attested_by || "owner"} at ${authInfo.attestation?.attested_at || ""}. Authenticated: scans behind the login of your own systems. For authorized testing only.`}>
-              AUTHENTICATED
-            </span>
-          )}
           <span className="text-xs text-slate-500">{findings.length} findings</span>
         </div>
-        {authInfo && (
-          <p className="text-xs text-violet-300/80 mt-2">
-            {authInfo.label} — attested by {authInfo.attestation?.attested_by || "owner"}
-            {authInfo.attestation?.attested_at ? ` at ${authInfo.attestation.attested_at}` : ""}.
-            Credentials are scoped to the target hosts only and wiped when the run finishes.{" "}
-            {authInfo.disclaimer || "Authenticated: scans behind the login of your own systems. For authorized testing only."}
-          </p>
-        )}
-        {/* live batch panel: 5 at a time, visible batches */}
+        {/* live concurrency panel: real in-flight count, not fake batches */}
         {status === "running" && progress.total > 0 && (
           <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/30 p-3">
             <div className="flex items-center gap-2 text-sm flex-wrap">
@@ -850,14 +1074,18 @@ export default function RunPage({ params }: { params: { id: string } }) {
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span>
               </span>
               <span className="font-bold text-emerald-300">LIVE</span>
-              <span className="text-slate-200">Batch {batch} of {batches} · 5 at a time</span>
+              <span className="text-slate-200">
+                {runningNow.length > 0
+                  ? <>{runningNow.length} plugin{runningNow.length === 1 ? "" : "s"} running in parallel</>
+                  : "filling the next slots..."}
+              </span>
               <span className="ml-auto text-xs text-slate-400">{findings.length} findings so far</span>
             </div>
             <p className="text-xs text-slate-400 mt-1.5">
-              {progress.done} done · {pluginsLeft} left
-              {runningNow.length > 0
-                ? <> · running now ({runningNow.length}): <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
-                : " · starting next 5..."}
+              {progress.done} of {progress.total} done · {pluginsLeft} left
+              {runningNow.length > 0 && (
+                <> · now: <span className="text-sky-300 font-mono">{runningNames}{runningNow.length > 8 ? "..." : ""}</span></>
+              )}
             </p>
           </div>
         )}
@@ -867,8 +1095,18 @@ export default function RunPage({ params }: { params: { id: string } }) {
             <span className="font-bold">WAF DETECTED:</span> {wafNotice}
           </div>
         )}
-        {/* connection health: never a dead silent page */}
-        {fatal ? (
+        {/* connection health: never a dead silent page, and never a
+            "live" claim while the page is actually reconnecting */}
+        {authLost ? (
+          <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
+            <p className="text-sm font-bold text-red-300">Signed out</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Your sign-in expired, so the live feed stopped instead of
+              reconnecting forever. Sign in again to resume this scan.
+            </p>
+            <a href="/api/auth/github" className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 mt-3 inline-flex items-center">Sign in with GitHub</a>
+          </div>
+        ) : fatal ? (
           <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
             <p className="text-sm font-bold text-red-300">Run not found</p>
             <p className="text-xs text-slate-400 mt-1">{fatal}</p>
@@ -882,13 +1120,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
           <div className="mt-3 rounded-lg border border-red-700/50 bg-red-950/30 p-4">
             <p className="text-sm font-bold text-red-300">Connection lost</p>
             <p className="text-xs text-slate-400 mt-1">
-              Cannot reach the scan server (3 failed refreshes). Check your connection, then retry.
+              Cannot reach the scan server (6 failed refreshes, with
+              backoff up to 30s between tries). Automatic refresh has
+              stopped. Check your connection, then retry.
             </p>
             <button onClick={() => setRetryTick((t) => t + 1)}
               className="chip px-4 py-2.5 min-h-[44px] text-sm text-sky-300 mt-3">Retry now</button>
           </div>
-        ) : sseState === "down" ? (
-          <p className="mt-3 text-xs text-amber-300/90">Live stream down, auto-refreshing every 4s.</p>
+        ) : sseState === "reconnecting" ? (
+          <p className="mt-3 text-xs text-amber-300/90">Live stream dropped, reconnecting with backoff. Progress below is from the last good refresh, not live.</p>
+        ) : sseState === "stopped" ? (
+          <p className="mt-3 text-xs text-amber-300/90">Live stream stopped. Use Retry below to restart it.</p>
         ) : null}
         {/* progress bar */}
         {status === "running" && !fatal && (
@@ -943,11 +1185,17 @@ export default function RunPage({ params }: { params: { id: string } }) {
             )}
           </div>
         )}
-        <div className="flex gap-2 text-xs mt-3 flex-wrap">
+        <div className="flex gap-2 text-xs mt-3 flex-wrap items-center">
           {(["json", "csv", "md", "html"] as const).map((f) => (
             <a key={f} className="chip px-3 py-2 min-h-[44px] flex items-center hover:bg-slate-800"
-              href={`/api/runs/${id}/export?format=${f}`}>{f.toUpperCase()}</a>
+              href={`/api/runs/${id}/export?format=${f}&show_secrets=${revealSecrets}`}>{f.toUpperCase()}</a>
           ))}
+          <button
+            onClick={() => setRevealSecrets((v) => !v)}
+            title="Show full secret/credential values. An exposed secret is the finding — reveal it to rotate it."
+            className={`chip px-3 py-2 min-h-[44px] flex items-center ml-auto ${revealSecrets ? "bg-red-950/50 text-red-300 border border-red-800/50" : "text-slate-400"}`}>
+            {revealSecrets ? "🔓 secrets revealed" : "🔒 secrets masked"}
+          </button>
         </div>
       </div>
 
@@ -964,12 +1212,19 @@ export default function RunPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
+      {/* Exposure score + attack-path summary: the headline read for the
+          whole run. Clicking jumps to the Attack Paths tab. */}
+      <ExposureBanner exposure={deriveExposure(findings, summary)}
+        pathCount={attackPaths(findings).length}
+        onOpen={() => setTab("paths")} />
+
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
         {((() => {
           const tabCount = (t: string): number => {
             if (t === "findings") return findings.length;
+            if (t === "paths") return attackPaths(findings).length;
             if (t === "secrets") return findings.filter(isSecretFinding).length;
             if (t === "creds") return findings.filter(isCredFinding).length;
             if (t === "subdomains") return findings.filter(isSubdomainFinding).length;
@@ -989,12 +1244,15 @@ export default function RunPage({ params }: { params: { id: string } }) {
             const name = t;
             return c > 0 ? `${name} (${c})` : name;
           };
-          return (["findings", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
+          return (["findings", "paths", "vulns", "atm", "connections", "secrets", "creds", "subdomains", "ports", "files", "graph", "agents", "apimap", "raw"] as const)
             .filter((t) => t !== "atm" || sourceType === "atm" || sourceType === "bankatm")
-            .map((t) => (
+            .map((t) => {
+              const isPaths = t === "paths";
+              const n = tabCount(t);
+              return (
               <button key={t} onClick={() => setTab(t)}
-                className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>{tabLabel(t)}</button>
-            ));
+                className={`chip px-4 py-2.5 min-h-[44px] whitespace-nowrap ${tab === t ? "bg-sky-900 text-sky-200" : isPaths && n > 0 ? "text-rose-300 border border-rose-500/40" : "text-slate-400"}`}>{isPaths && n > 0 ? `⚡ ${tabLabel(t)}` : tabLabel(t)}</button>
+            );});
         })())}
       </div>
       <div className="flex gap-2 flex-wrap">
@@ -1154,6 +1412,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
       </div>
       )}
 
+      {tab === "paths" && <AttackPathsView findings={findings} onOpenFindings={() => setTab("findings")} />}
       {tab === "vulns" && <VulnsView runId={id} />}
       {tab === "atm" && <AtmView runId={id} findings={findings} />}
       {tab === "connections" && <ConnectionsView findings={findings} graph={graph} />}
@@ -1583,12 +1842,27 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
   const [agents, setAgents] = useState<AgentRollup[] | null>(null);
   const [feed, setFeed] = useState<AgentFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLost, setAuthLost] = useState(false);
 
   useEffect(() => {
     let stop = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
     const load = async () => {
       try {
-        const r = await fetch(`/api/runs/${runId}/agent-activity`, { headers: { "X-Access-Code": getCode() } });
+        const _c = getCode();
+        const r = await fetch(`/api/runs/${runId}/agent-activity`, {
+          headers: (_c ? { "X-Access-Code": _c } : {}) as Record<string, string>,
+          credentials: "same-origin",
+        });
+        // Loop fix: a 401 here is terminal auth loss, not a transient
+        // blip. Stop this 4s poll instead of hammering it forever.
+        if (isTerminalAuth(r.status)) {
+          stop = true;
+          if (timer) clearInterval(timer);
+          setAuthLost(true);
+          setLoading(false);
+          return;
+        }
         const d = await r.json();
         if (stop) return;
         setAgents(d.agents || []);
@@ -1602,8 +1876,8 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
     };
     load();
     // Same 4s cadence as the run page's poll fallback while the scan runs.
-    const t = live ? setInterval(load, 4000) : undefined;
-    return () => { stop = true; if (t) clearInterval(t); };
+    timer = live ? setInterval(load, POLL_BASE_MS) : null;
+    return () => { stop = true; if (timer) clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, live]);
 
@@ -1620,6 +1894,7 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
   };
 
   if (loading && agents === null) return <div className="card p-4 text-sm text-slate-400">loading agent activity...</div>;
+  if (authLost) return <div className="card p-4 text-sm text-slate-400">Agent activity stopped: signed out. <a href="/api/auth/github" className="text-sky-300">Sign in again</a> to resume it.</div>;
   const list = [...feed].reverse();
   return (
     <div className="space-y-4">
@@ -1658,6 +1933,155 @@ function AgentsView({ runId, live, onCount }: { runId: string; live: boolean; on
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---- Exposure score banner -------------------------------------------
+const BAND_COLOR: Record<string, string> = {
+  critical: "#ff4d4d", high: "#ff7a45", medium: "#fbbf24", low: "#64748b", clean: "#22c55e",
+};
+function ExposureBanner({ exposure, pathCount, onOpen }:
+  { exposure: Exposure | null; pathCount: number; onOpen: () => void }) {
+  if (!exposure || !exposure.score) return null;
+  const col = BAND_COLOR[exposure.band] || "#ff7a45";
+  const c = exposure.severity_counts || {};
+  return (
+    <div className="card p-4 flex items-center gap-4 flex-wrap"
+      style={{ borderLeft: `4px solid ${col}` }}>
+      <div className="flex items-baseline gap-1">
+        <span className="text-4xl font-extrabold leading-none" style={{ color: col }}>{exposure.score}</span>
+        <span className="text-slate-500 text-sm">/100</span>
+      </div>
+      <div className="flex-1 min-w-[180px]">
+        <div className="font-bold text-sm tracking-wide" style={{ color: col }}>
+          {exposure.band.toUpperCase()} EXPOSURE
+        </div>
+        <div className="text-slate-300 text-sm">{exposure.headline}</div>
+        <div className="text-slate-500 text-xs mt-1 flex gap-3 flex-wrap">
+          {(["critical", "high", "medium", "low"] as const).map((k) =>
+            (c[k] || 0) > 0 ? <span key={k}>{c[k]} {k}</span> : null)}
+        </div>
+      </div>
+      {pathCount > 0 && (
+        <button onClick={onOpen}
+          className="chip px-4 py-2.5 min-h-[44px] text-rose-200 border border-rose-500/40 bg-rose-950/30 whitespace-nowrap">
+          ⚡ {pathCount} attack path{pathCount === 1 ? "" : "s"} →
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---- Attack Paths tab -------------------------------------------------
+const PATH_SEV_STYLE: Record<string, string> = {
+  critical: "text-red-300 border-red-500/50 bg-red-500/10",
+  high: "text-orange-300 border-orange-500/50 bg-orange-500/10",
+  medium: "text-amber-300 border-amber-500/40 bg-amber-500/10",
+  low: "text-slate-400 border-slate-700 bg-slate-800/50",
+};
+function AttackPathsView({ findings, onOpenFindings }:
+  { findings: Finding[]; onOpenFindings: () => void }) {
+  const paths = attackPaths(findings);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (paths.length === 0) {
+    return (
+      <div className="card p-6 text-center text-slate-400 text-sm">
+        <div className="text-2xl mb-2">🔗</div>
+        No attack paths synthesized for this run.
+        <div className="text-slate-500 text-xs mt-2">
+          Attack paths chain individual findings into exploitable sequences
+          (e.g. exposed credential → reachable cloud, forgeable token →
+          admin endpoint). They appear once a run finishes and the
+          correlation pass runs. A clean target, or findings that don't
+          combine into a known path, produces none.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-slate-400">
+        {paths.length} exploitable sequence{paths.length === 1 ? "" : "s"} synthesized
+        across findings — what a real attacker chains together, highest severity first.
+      </div>
+      {paths.map((p, i) => {
+        const ev = p.evidence || {};
+        const sev = (ev.severity || "low").toLowerCase();
+        const pid = ev.path_id || String(i);
+        const isOpen = open[pid];
+        const steps: string[] = Array.isArray(ev.chain_steps) ? ev.chain_steps : [];
+        const comps: any[] = Array.isArray(ev.components) ? ev.components : [];
+        const tags: string[] = Array.isArray(ev.tags) ? ev.tags : [];
+        const expl = ev.exploitability && ev.exploitability !== "unknown" ? ev.exploitability : null;
+        return (
+          <div key={pid} className={`card p-4 border ${PATH_SEV_STYLE[sev] || PATH_SEV_STYLE.low}`}>
+            <button onClick={() => setOpen((o) => ({ ...o, [pid]: !o[pid] }))}
+              className="w-full text-left flex items-start gap-3">
+              <span className={`text-[10px] font-extrabold px-2 py-1 rounded uppercase tracking-wide shrink-0 ${PATH_SEV_STYLE[sev] || PATH_SEV_STYLE.low}`}>
+                {sev}
+              </span>
+              <span className="flex-1">
+                <span className="font-semibold text-slate-100 text-sm">{ev.path_name || p.value}</span>
+                <span className="flex gap-2 flex-wrap mt-1 items-center">
+                  {expl && <span className="text-[10px] uppercase tracking-wide text-rose-300 border border-rose-700 rounded px-1.5 py-0.5">{expl.replace("_", " ")}</span>}
+                  {ev.complexity && <span className="text-[10px] uppercase tracking-wide text-indigo-300 border border-indigo-700/60 rounded px-1.5 py-0.5">{String(ev.complexity).replace("-", " ")}</span>}
+                  <span className="text-[11px] text-slate-500">{comps.length} finding{comps.length === 1 ? "" : "s"} chained</span>
+                  {tags.map((t) => <span key={t} className="text-[10px] text-sky-300/70">#{t}</span>)}
+                </span>
+              </span>
+              <span className="text-slate-500 text-xs shrink-0">{isOpen ? "▲" : "▼"}</span>
+            </button>
+
+            <p className="text-slate-300 text-sm mt-3">{ev.narrative}</p>
+
+            {isOpen && (
+              <div className="mt-3 space-y-3 text-sm">
+                {ev.attacker_impact && (
+                  <div className="bg-orange-500/5 border border-orange-500/20 rounded p-2.5">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-300/80 mb-1">What an attacker can do</div>
+                    <div className="text-orange-100/90">{ev.attacker_impact}</div>
+                  </div>
+                )}
+                {steps.length > 0 && (
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+                      {Array.isArray(ev.kill_chain) && ev.kill_chain.length > 0 && ev.tags?.includes("kill-chain") ? "Kill chain" : "How it chains"}
+                    </div>
+                    <ol className="list-decimal ml-5 space-y-1 text-slate-300">
+                      {steps.map((s, j) => <li key={j}>{s}</li>)}
+                    </ol>
+                  </div>
+                )}
+                <CommandBlock commands={ev.commands} />
+                {comps.length > 0 && (
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Built from these findings</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {comps.map((c, j) => (
+                        <span key={j} className="text-[11px] bg-slate-800/70 border border-slate-700 rounded px-2 py-1">
+                          <code className="text-amber-300">{c.key}</code>
+                          <span className="text-slate-500"> · {c.plugin}</span>
+                          {c.severity && c.severity !== "low" && <span className="text-slate-400"> · {c.severity}</span>}
+                        </span>
+                      ))}
+                    </div>
+                    <button onClick={onOpenFindings} className="text-sky-400 text-xs mt-2 hover:underline">
+                      view all findings →
+                    </button>
+                  </div>
+                )}
+                {ev.remediation && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded p-2.5">
+                    <div className="text-[11px] uppercase tracking-wide text-emerald-300/80 mb-1">Fix</div>
+                    <div className="text-emerald-100/90">{ev.remediation}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1935,11 +2359,18 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
     s.key.replace("exposed_", "").replace("wallet_", "").split("_")[0])));
   const shown = typeFilter === "all" ? secrets :
     secrets.filter((s) => s.key.includes(typeFilter));
-  function copy(t: string) { navigator.clipboard.writeText(t).catch(() => {}); }
+  function copyAll() {
+    copyText(shown.map((s) => `${s.key}\t${s.value}\t${s.source}`).join("\n"));
+  }
   return (
     <div className="card p-4">
-      <h2 className="font-semibold text-red-300 mb-1">Secrets <span className="text-slate-500 text-xs">({secrets.length})</span></h2>
-      <p className="text-xs text-slate-500 mb-3">API keys, tokens, wallet keys found. Tap to view source. Rotate immediately.</p>
+      <div className="flex items-center gap-2 flex-wrap mb-1">
+        <h2 className="font-semibold text-red-300">Secrets <span className="text-slate-500 text-xs">({secrets.length})</span></h2>
+        {shown.length > 0 && (
+          <button onClick={copyAll} className="chip px-3 py-1.5 text-xs text-sky-400 ml-auto">copy all</button>
+        )}
+      </div>
+      <p className="text-xs text-slate-500 mb-3">API keys, tokens, wallet keys found — shown in full. Copy, verify with the command, then rotate immediately.</p>
       <div className="flex gap-2 flex-wrap mb-3">
         <button onClick={() => setTypeFilter("all")}
           className={`chip px-3 py-2 min-h-[44px] text-xs ${typeFilter === "all" ? "bg-red-900 text-red-200" : "text-slate-400"}`}>all</button>
@@ -1960,11 +2391,12 @@ function SecretsView({ findings, onView }: { findings: Finding[]; onView: (url: 
                 </span>
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
-              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <SecretValue value={f.value} />
               <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
               {attackerImpactOf(f) && (
                 <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
               )}
+              <CommandBlock commands={f.evidence?.commands} />
               {f.source_url && (
                 <button onClick={() => onView(f.source_url!)}
                   className="text-xs text-sky-400 mt-2 min-h-[44px]">tap to view source</button>
@@ -1995,11 +2427,12 @@ function CredsView({ findings }: { findings: Finding[] }) {
                 </span>
                 <span className="text-[10px] text-slate-500 ml-auto">{f.confidence}%</span>
               </div>
-              <p className="text-sm text-slate-200 mt-2 break-words whitespace-pre-wrap font-mono text-xs">{f.value}</p>
+              <SecretValue value={f.value} />
               <p className="text-xs text-slate-500 mt-1 break-words"><span className="font-semibold">Source: </span>{f.source}</p>
               {attackerImpactOf(f) && (
                 <p className="text-xs text-red-300/80 mt-1 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
               )}
+              <CommandBlock commands={f.evidence?.commands} />
               {f.source_url && (
                 <p className="text-xs text-slate-500 mt-1 break-all">{f.source_url}</p>
               )}
@@ -2413,5 +2846,13 @@ function ApiMapView({ data }: { data: any }) {
         })}
       </div>
     </div>
+  );
+}
+
+export default function RunPage(props: { params: { id: string } }) {
+  return (
+    <AuthGate>
+      <RunPageInner {...props} />
+    </AuthGate>
   );
 }

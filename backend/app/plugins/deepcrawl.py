@@ -55,6 +55,33 @@ class DeepCrawlPlugin(Plugin):
         css_files: Set[str] = set()
         api_calls: Set[str] = set()
 
+        def _snapshot() -> List[Finding]:
+            # Same shape as the end-of-run findings below, built from
+            # whatever has been discovered so far. Called after every
+            # batch so a mid-crawl timeout (this plugin crawls up to 80
+            # pages at depth 6, well able to outrun its 90s timeout_s
+            # once the runner clamps that to the scan's remaining
+            # budget) still reports real findings instead of the empty
+            # result this plugin used to return: js_files/api_calls were
+            # only ever turned into findings after the loop finished, so
+            # every page of real crawling was thrown away on a kill.
+            snap: List[Finding] = []
+            for js in sorted(js_files)[:50]:
+                snap.append(self._f("web", "js_file_deep", js,
+                                    "deepcrawl: JS file found at depth",
+                                    source_url=js, confidence=75))
+            for api in sorted(api_calls)[:50]:
+                snap.append(self._f("api", "api_call", api,
+                                    "deepcrawl: API call in page JS",
+                                    confidence=70))
+            snap.append(self._f(
+                "web", "crawl_summary",
+                f"{pages_crawled} pages crawled so far (depth {MAX_DEPTH}), "
+                f"{len(js_files)} JS files, {len(css_files)} CSS files, "
+                f"{len(api_calls)} API calls",
+                "deepcrawl", source_url=base, confidence=90))
+            return snap
+
         async def fetch_page(url: str) -> str:
             try:
                 resp = await fetch(ctx.http, ctx.limiter, "GET", url)
@@ -117,6 +144,8 @@ class DeepCrawlPlugin(Plugin):
                 # Comment paths
                 for m in COMMENT_PATH_RE.finditer(html):
                     ctx.publish("endpoints", urljoin(url, m.group(1)))
+
+            self._checkpoint(_snapshot())
 
         for js in sorted(js_files)[:50]:
             findings.append(self._f("web", "js_file_deep", js,

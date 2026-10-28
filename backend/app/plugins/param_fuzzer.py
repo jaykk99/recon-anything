@@ -198,6 +198,16 @@ class ParamFuzzerPlugin(Plugin):
                                   "scope_note": "GET-only differential test. "
                                                 "Authorized testing only."}))
 
+            # Checkpoint after each endpoint's full param pass (up to 50
+            # sequential requests, each with its own baseline + possible
+            # timing-confirmation re-request). timeout_s=180 is clamped
+            # to MAX_PLUGIN_TIMEOUT_S=120 by the runner, and can be
+            # clamped further by the scan's remaining budget - a slow
+            # target can blow that well before all MAX_ENDPOINTS finish.
+            # Without this, a kill mid-fuzz discarded every anomaly
+            # already found on earlier endpoints.
+            self._checkpoint(findings)
+
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings, f"{tested} endpoints fuzzed ({len(FUZZ_PARAMS)} params each), {len(findings)} anomalies")
         res.duration_ms = dur

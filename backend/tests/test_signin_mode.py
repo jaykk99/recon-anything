@@ -265,3 +265,36 @@ def test_fallback_mode_open_when_no_code_configured(client, monkeypatch):
     assert client.get("/api/plugins").status_code == 200
     me = client.get("/api/me").json()
     assert me["auth_mode"] == "access_code"
+
+
+# -------------------------------- hidden nav, server side (2026-10-23)
+
+def test_signin_mode_every_tab_api_anonymous_401(client, signin_mode):
+    """The hidden-tabs rule, server side: the frontend hides the nav
+    and every protected page from signed-out visitors in sign-in
+    mode (middleware + server-rendered shell). That cosmetics layer
+    is only honest if the APIs behind those tabs are equally closed
+    - no data behind any tab may leak to an anonymous caller."""
+    _cleanup()
+    _mk_run("signin-hidden-run")
+    for path in ("/api/keys", "/api/plugins", "/api/hunters",
+                 "/api/hunters/knowledge", "/api/hunters/resources",
+                 "/api/runs/signin-hidden-run",
+                 "/api/runs/signin-hidden-run/export",
+                 "/api/orders", "/api/admin/orders"):
+        r = client.get(path)
+        assert r.status_code == 401, path
+        # ...and the retired access code opens none of them either.
+        r = client.get(path, headers={"X-Access-Code": CODE})
+        assert r.status_code == 401, path
+
+
+def test_fallback_mode_tab_apis_still_open_with_code(client, fallback_mode):
+    """Fallback mode is untouched by the hidden-tabs work: the same
+    tab APIs keep answering to the legacy access code."""
+    _cleanup()
+    h = {"X-Access-Code": CODE}
+    assert client.get("/api/keys", headers=h).status_code == 200
+    assert client.get("/api/runs", headers=h).status_code == 200
+    assert client.get("/api/hunters", headers=h).status_code == 200
+    assert client.get("/api/plugins", headers=h).status_code == 200

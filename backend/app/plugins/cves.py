@@ -16,6 +16,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from ..classifier import domain_from_target
+from ..kev import annotate_findings, load_catalog
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
@@ -955,6 +956,232 @@ VERSION_CVES: List[Dict] = [
      "title": "Sonos Era 100 wifi stack RCE - check firmware",
      "remediation": "Update Sonos firmware. Isolate IoT on separate VLAN.",
      "version_optional": True},
+    # ======================================================================
+    # Enterprise / edge appliances + high-value apps (2026-10-27 batch).
+    # The exploited-in-the-wild, big-bounty targets: fingerprint the product
+    # from its login page / headers and reference the public CVE. Detection
+    # only - no exploitation payloads, version_optional where the fingerprint
+    # carries no version.
+    # ======================================================================
+    # -- F5 BIG-IP -----------------------------------------------------------
+    {"software": "F5 BIG-IP", "where": "html",
+     "version_re": r"big-?ip|f5 networks|tmui|/tmui/login",
+     "vuln": [], "cve": "CVE-2022-1388", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "F5 BIG-IP iControl REST auth bypass to RCE (< 16.1.2.2 / 15.1.5.1 / 14.1.4.6) - check version (public exploit, exploited in the wild)",
+     "remediation": "Patch BIG-IP immediately and restrict iControl REST / TMUI to the management network.",
+     "version_optional": True},
+    {"software": "F5 BIG-IP", "where": "html",
+     "version_re": r"big-?ip|/tmui/",
+     "vuln": [], "cve": "CVE-2020-5902", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "F5 BIG-IP TMUI directory traversal to RCE - check version (public exploit, mass-exploited)",
+     "remediation": "Patch BIG-IP and never expose the TMUI management interface to the internet.",
+     "version_optional": True},
+    # -- Microsoft Exchange / OWA -------------------------------------------
+    {"software": "Microsoft Exchange", "where": "html",
+     "version_re": r"outlook web app|/owa/|x-owa-version|exchange server",
+     "vuln": [], "cve": "CVE-2021-26855 (ProxyLogon)", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Exchange ProxyLogon SSRF to unauth RCE - check CU/patch level (public exploit, mass-exploited)",
+     "remediation": "Apply the latest Exchange cumulative update + security update. Hunt for webshells in OWA/ECP paths.",
+     "version_optional": True},
+    {"software": "Microsoft Exchange", "where": "html",
+     "version_re": r"outlook web app|/owa/|/ecp/|x-owa-version",
+     "vuln": [], "cve": "CVE-2021-34473 (ProxyShell)", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Exchange ProxyShell pre-auth RCE chain - check patch level (public exploit, mass-exploited)",
+     "remediation": "Apply current Exchange security updates. Restrict external access to /autodiscover and /ecp.",
+     "version_optional": True},
+    # -- VMware vCenter ------------------------------------------------------
+    {"software": "VMware vCenter", "where": "html",
+     "version_re": r"vsphere|vcenter|/ui/|vmware",
+     "vuln": [], "cve": "CVE-2021-21972", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "vCenter Server vSphere Client unauth RCE via /ui/vropspluginui - check version (public exploit)",
+     "remediation": "Patch vCenter and remove internet exposure of the vSphere Client.",
+     "version_optional": True},
+    {"software": "VMware vCenter", "where": "html",
+     "version_re": r"vsphere|vcenter",
+     "vuln": [], "cve": "CVE-2021-22005", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "vCenter Analytics (/analytics/telemetry) arbitrary file upload to RCE - check version (public exploit)",
+     "remediation": "Apply the VMware patch immediately.",
+     "version_optional": True},
+    # -- Progress MOVEit Transfer -------------------------------------------
+    {"software": "MOVEit Transfer", "where": "html",
+     "version_re": r"moveit|human\.aspx|ipsgw",
+     "vuln": [], "cve": "CVE-2023-34362", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "MOVEit Transfer SQL injection to RCE - check version (Cl0p mass-exploitation)",
+     "remediation": "Apply the Progress MOVEit patch and hunt for the human2.aspx webshell.",
+     "version_optional": True},
+    # -- Zimbra --------------------------------------------------------------
+    {"software": "Zimbra Collaboration", "where": "html",
+     "version_re": r"zimbra",
+     "vuln": [], "cve": "CVE-2022-27925 + CVE-2022-37042", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Zimbra mboximport unauth RCE chain - check version (public exploit, exploited in the wild)",
+     "remediation": "Patch Zimbra to the latest release and audit for webshells.",
+     "version_optional": True},
+    # -- PaperCut ------------------------------------------------------------
+    {"software": "PaperCut", "where": "html",
+     "version_re": r"papercut",
+     "vuln": [], "cve": "CVE-2023-27350", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "PaperCut MF/NG auth bypass to RCE (< 20.1.7 / 21.2.11 / 22.0.9) - check version (public exploit, ransomware-exploited)",
+     "remediation": "Upgrade PaperCut immediately and restrict admin access by IP.",
+     "version_optional": True},
+    # -- Adobe ColdFusion ----------------------------------------------------
+    {"software": "Adobe ColdFusion", "where": "html",
+     "version_re": r"coldfusion|cfid=|cftoken=|/cfide/",
+     "vuln": [], "cve": "CVE-2023-26360", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "ColdFusion improper access control to RCE - check version (public exploit, exploited in the wild)",
+     "remediation": "Apply the ColdFusion security update and block /CFIDE/administrator externally.",
+     "version_optional": True},
+    # -- Oracle WebLogic -----------------------------------------------------
+    {"software": "Oracle WebLogic", "where": "html",
+     "version_re": r"weblogic|/console/login|oracle weblogic",
+     "vuln": [], "cve": "CVE-2020-14882", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "WebLogic console unauth RCE - check version (public exploit, mass-exploited)",
+     "remediation": "Patch WebLogic and never expose the admin console to the internet.",
+     "version_optional": True},
+    {"software": "Oracle WebLogic", "where": "html",
+     "version_re": r"weblogic|/wls-wsat/",
+     "vuln": [], "cve": "CVE-2019-2725", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "WebLogic wls-wsat deserialization RCE - check version (public exploit)",
+     "remediation": "Patch WebLogic and remove the wls9_async/wls-wsat components if unused.",
+     "version_optional": True},
+    # -- Apache ActiveMQ -----------------------------------------------------
+    {"software": "Apache ActiveMQ", "where": "html",
+     "version_re": r"activemq",
+     "vuln": [], "cve": "CVE-2023-46604", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "ActiveMQ OpenWire unauth RCE (< 5.15.16 / 5.16.7 / 5.17.6 / 5.18.3) - check version (public exploit, ransomware-exploited)",
+     "remediation": "Upgrade ActiveMQ immediately and firewall the 61616 OpenWire port.",
+     "version_optional": True},
+    # -- Apache OFBiz --------------------------------------------------------
+    {"software": "Apache OFBiz", "where": "html",
+     "version_re": r"ofbiz",
+     "vuln": [], "cve": "CVE-2023-51467 + CVE-2023-49070", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Apache OFBiz auth bypass to SSRF/RCE (< 18.12.11) - check version (public exploit, exploited in the wild)",
+     "remediation": "Upgrade OFBiz to 18.12.11+.",
+     "version_optional": True},
+    # -- GeoServer -----------------------------------------------------------
+    {"software": "GeoServer", "where": "html",
+     "version_re": r"geoserver",
+     "vuln": [], "cve": "CVE-2024-36401", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "GeoServer OGC-filter evaluation unauth RCE (< 2.23.6 / 2.24.4 / 2.25.2) - check version (public exploit, exploited in the wild)",
+     "remediation": "Upgrade GeoServer immediately.",
+     "version_optional": True},
+    # -- Ivanti Connect Secure ----------------------------------------------
+    {"software": "Ivanti Connect Secure", "where": "html",
+     "version_re": r"ivanti|pulse secure|/dana-na/",
+     "vuln": [], "cve": "CVE-2023-46805 + CVE-2024-21887", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Ivanti Connect/Policy Secure auth bypass + command injection chain - check version (public exploit, mass-exploited)",
+     "remediation": "Apply Ivanti's patch, run the integrity checker, and assume compromise if it was internet-facing while unpatched.",
+     "version_optional": True},
+    # -- Citrix (adds Citrix Bleed to the existing entries) ------------------
+    {"software": "Citrix NetScaler/Gateway", "where": "html",
+     "version_re": r"citrix|netscaler|/vpn/index\.html",
+     "vuln": [], "cve": "CVE-2023-4966 (Citrix Bleed)", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Citrix NetScaler ADC/Gateway session-token leak (Citrix Bleed) - check version (public exploit, mass-exploited)",
+     "remediation": "Patch NetScaler and terminate all active/persistent sessions after patching.",
+     "version_optional": True},
+    # -- Cisco ASA / AnyConnect ---------------------------------------------
+    {"software": "Cisco ASA", "where": "html",
+     "version_re": r"\+cscoe\+|cisco (asa|anyconnect)|/\+webvpn",
+     "vuln": [], "cve": "CVE-2020-3452", "severity": "high",
+     "exploitability": "weaponized",
+     "title": "Cisco ASA/FTD WebVPN unauth file read - check version (public exploit)",
+     "remediation": "Patch Cisco ASA/FTD software.",
+     "version_optional": True},
+    # -- SonicWall SMA/SSLVPN ------------------------------------------------
+    {"software": "SonicWall SMA", "where": "html",
+     "version_re": r"sonicwall",
+     "vuln": [], "cve": "CVE-2021-20016", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "SonicWall SMA100 SQL injection to session hijack - check firmware (public exploit, exploited in the wild)",
+     "remediation": "Upgrade SMA100 firmware and restrict management access.",
+     "version_optional": True},
+    # -- Webmin --------------------------------------------------------------
+    {"software": "Webmin", "where": "html",
+     "version_re": r"webmin",
+     "vuln": [], "cve": "CVE-2019-15107", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Webmin password_change.cgi unauth RCE (<= 1.920) - check version (public Metasploit module)",
+     "remediation": "Upgrade Webmin to 1.930+ and disable password change if unused.",
+     "version_optional": True},
+    # -- Roundcube -----------------------------------------------------------
+    {"software": "Roundcube Webmail", "where": "html",
+     "version_re": r"roundcube",
+     "vuln": [], "cve": "CVE-2020-12641", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Roundcube < 1.4.4 RCE via rcmail option injection - check version (public exploit)",
+     "remediation": "Upgrade Roundcube to 1.4.4+.",
+     "version_optional": True},
+    # -- Elasticsearch / Kibana ---------------------------------------------
+    {"software": "Kibana", "where": "html",
+     "version_re": r"kibana",
+     "vuln": [], "cve": "CVE-2019-7609", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Kibana < 5.6.15 / < 6.6.1 Timelion prototype-pollution RCE - check version (public exploit)",
+     "remediation": "Upgrade Kibana and never expose it unauthenticated.",
+     "version_optional": True},
+    {"software": "Elasticsearch", "where": "html",
+     "version_re": r"you know, for search|elasticsearch",
+     "vuln": [], "cve": "CVE-2015-1427", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Elasticsearch < 1.4.3 Groovy sandbox bypass RCE - check version; any unauthenticated ES is itself exposure (public exploit)",
+     "remediation": "Upgrade Elasticsearch and require authentication; never expose 9200 to the internet.",
+     "version_optional": True},
+    # -- Apache Airflow ------------------------------------------------------
+    {"software": "Apache Airflow", "where": "html",
+     "version_re": r"airflow",
+     "vuln": [], "cve": "CVE-2020-11978", "severity": "high",
+     "exploitability": "public_poc",
+     "title": "Apache Airflow < 1.10.11 example-DAG command injection - check version (public PoC)",
+     "remediation": "Upgrade Airflow, disable example DAGs, and require auth on the web UI.",
+     "version_optional": True},
+    # -- Atlassian Bitbucket -------------------------------------------------
+    {"software": "Atlassian Bitbucket", "where": "html",
+     "version_re": r"bitbucket",
+     "vuln": [], "cve": "CVE-2022-36804", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "Bitbucket Server/DC command injection to RCE (6.10.17-8.3.0 range) - check version (public exploit)",
+     "remediation": "Upgrade Bitbucket to a patched release.",
+     "version_optional": True},
+    # -- Jupyter (exposed notebook = RCE by design) -------------------------
+    {"software": "Jupyter", "where": "html",
+     "version_re": r"jupyter",
+     "vuln": [], "cve": "EXPOSURE", "severity": "high",
+     "exploitability": "weaponized",
+     "title": "Jupyter Notebook/Lab exposed - an unauthenticated notebook is arbitrary code execution by design; confirm a token/password is required",
+     "remediation": "Require a token or password on Jupyter and never expose it to the internet without auth.",
+     "version_optional": True},
+    # -- Grafana path traversal (adds to existing grafana entries) ----------
+    {"software": "Grafana", "where": "html",
+     "version_re": r"grafana",
+     "vuln": [], "cve": "CVE-2021-43798", "severity": "high",
+     "exploitability": "weaponized",
+     "title": "Grafana 8.0.0-8.3.0 plugin path traversal (arbitrary file read) - check version (public exploit, mass-exploited)",
+     "remediation": "Upgrade Grafana to 8.3.1+.",
+     "version_optional": True},
+    # -- phpMyAdmin RCE (adds to existing entries) --------------------------
+    {"software": "phpMyAdmin", "where": "html",
+     "version_re": r"phpmyadmin",
+     "vuln": [], "cve": "CVE-2018-12613", "severity": "critical",
+     "exploitability": "weaponized",
+     "title": "phpMyAdmin 4.8.0-4.8.1 LFI to RCE via include - check version (public exploit)",
+     "remediation": "Upgrade phpMyAdmin to 4.8.2+ and restrict access by IP/auth.",
+     "version_optional": True},
 ]
 
 POC_HINT = ("Verify: curl -sI {url} | grep -iE '^(server|x-powered-by):' "
@@ -1077,6 +1304,17 @@ class CvesPlugin(Plugin):
                                   "remediation": "Restrict /wp-json/wp/v2/users to authenticated users."}))
             except Exception:
                 pass
+
+        # CISA KEV badge (2026-10-27): findings whose CVE is in the
+        # KEV catalog get kev=True + the badge label; the live
+        # catalog is tried first and the bundled fixture snapshot is
+        # the offline fallback. A failed catalog load never invents
+        # a match - it just leaves findings unbadged (kev=False).
+        try:
+            catalog = await load_catalog(ctx)
+            annotate_findings(findings, catalog)
+        except Exception:
+            pass
 
         dur = int((time.monotonic() - t0) * 1000)
         # No "nothing found" noise finding: silence is fine, Jay hates noise.
