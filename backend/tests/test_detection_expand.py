@@ -245,4 +245,4 @@ def test_cves_plugin_badges_kev_and_not_non_kev():
 def test_registry_grew_by_passive_subdomains():
     reg = discover()
     assert "passive_subdomains" in reg
-    assert len(reg) == 618  # 617 at master ac254f2 + 1 new plugin
+    assert len(reg) == 625  # 624 master + 1 passive_subdomains
