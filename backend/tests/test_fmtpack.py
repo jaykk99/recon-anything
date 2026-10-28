@@ -163,7 +163,7 @@ def test_exactly_12_new_detectors_registered():
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
     # +10 da_* (deep-artifacts pack); +5 ai_* (AI-crawler pack)
-    assert len(discover()) == 616  # 615 + 1 altsvc_audit (Alt-Svc header audit, 2026-10-27)
+    assert len(discover()) == 617  # 616 + 1 exposed-secret expansion on master (ac254f2)
 
 
 # ---------------------------------------------------------------------------

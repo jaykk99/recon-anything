@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 616  # 615 + 1 altsvc_audit (Alt-Svc header audit, 2026-10-27)
+    assert len(discover()) == 617  # 616 + 1 exposed-secret expansion on master (ac254f2)
 
 
 def test_connstr_password_masked_with_fingerprint():
