@@ -173,7 +173,7 @@ def test_exactly_23_new_detectors_registered():
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
     # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 616  # 615 + 1 altsvc_audit (Alt-Svc header audit, 2026-10-27)
+    assert len(discover()) == 617  # 616 + 1 exposed-secret expansion on master (ac254f2)
 
 
 def test_trello_board_verified_public():
