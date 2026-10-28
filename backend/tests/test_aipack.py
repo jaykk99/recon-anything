@@ -104,7 +104,7 @@ def test_exactly_5_new_detectors_registered():
     assert ai == sorted(AI_IDS)
     assert len(ai) == 5
     # 602 when the xml pack landed; +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 626  # 624 master + 1 passive_subdomains (detection-expand, rebased 2026-10-27)
+    assert len(discover()) == 634  # 626 on master + 8 crypto-protocol plugins
 
 
 def test_llms_index_present_and_links_fed_to_hunters():
