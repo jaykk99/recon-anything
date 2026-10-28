@@ -52,6 +52,26 @@ TAKEOVER_FINGERPRINTS = [
     ("readme.io", "Readme.io", "Project doesnt exist"),
     ("datocms", "DatoCMS", "not found"),
     ("webflow.io", "Webflow", "The page you are looking for doesn't exist"),
+    # 2026-10-27 detection expansion: more hosted-platform fingerprints.
+    # Same contract as above: flag as possible takeover only when the
+    # CNAME target is dangling or the provider's own "nothing here"
+    # page matches. Never claim or register anything.
+    ("storage.googleapis.com", "Google Cloud Storage", "NoSuchBucket"),
+    ("appspot.com", "Google App Engine", "404"),
+    ("azureedge.net", "Azure CDN", "404"),
+    ("trafficmanager.net", "Azure Traffic Manager", "404"),
+    ("cloudapp.azure.com", "Azure Cloud Services", "404"),
+    ("elasticbeanstalk.com", "AWS Elastic Beanstalk", "404"),
+    ("squarespace.com", "Squarespace", "No Such Account"),
+    ("blogger.com", "Blogger", "Blog not found"),
+    ("weebly.com", "Weebly", "This site is not currently available"),
+    ("strikingly.com", "Strikingly", "This page is not available"),
+    ("bigcartel.com", "Big Cartel", "This shop is currently unavailable"),
+    ("smugmug.com", "SmugMug", "Page Not Found"),
+    ("hs-sites.com", "HubSpot", "This page doesn't exist"),
+    ("intercom.help", "Intercom", "This page doesn't exist"),
+    ("desk.com", "Salesforce Desk", "This page is no longer available"),
+    ("list-manage.com", "Mailchimp", "404"),
 ]
 
 REMEDIATION = ("Remove the stale DNS record (CNAME/A) pointing at the "
