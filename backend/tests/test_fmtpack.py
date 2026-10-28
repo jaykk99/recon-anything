@@ -163,7 +163,7 @@ def test_exactly_12_new_detectors_registered():
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
     # +10 da_* (deep-artifacts pack); +5 ai_* (AI-crawler pack)
-    assert len(discover()) == 626  # 624 master + 1 passive_subdomains (detection-expand, rebased 2026-10-27)
+    assert len(discover()) == 634  # 626 on master + 8 crypto-protocol plugins
 
 
 # ---------------------------------------------------------------------------
