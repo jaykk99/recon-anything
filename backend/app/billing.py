@@ -210,10 +210,28 @@ SESSION_TTL_S = 30 * 24 * 3600
 
 
 def _session_secret() -> str:
-    return (os.environ.get("RECON_SESSION_SECRET")
-            or os.environ.get("RECON_MASTER_KEY")
-            or os.environ.get("RECON_ACCESS_CODE")
-            or "recon-dev-session-secret")
+    secret = (os.environ.get("RECON_SESSION_SECRET")
+              or os.environ.get("RECON_MASTER_KEY")
+              or os.environ.get("RECON_ACCESS_CODE"))
+    if secret:
+        return secret
+    if github_enabled():
+        # Sign-in mode is the app's only door (see signin_mode()): every
+        # customer session cookie is an HMAC over this secret. Falling
+        # back to a hardcoded string here would let anyone forge a
+        # session for any user_id/login (including the owner's), since
+        # the access code is retired the moment GitHub creds land and
+        # can no longer act as the real secret either. Fail loudly
+        # instead of silently shipping a forgeable auth system.
+        raise RuntimeError(
+            "GITHUB_CLIENT_ID/SECRET are set (sign-in mode) but none of "
+            "RECON_SESSION_SECRET, RECON_MASTER_KEY, or RECON_ACCESS_CODE "
+            "are - set RECON_SESSION_SECRET to a long random value before "
+            "customers can sign in.")
+    # No GitHub sign-in and no access code: the app is already in fully
+    # open local-dev mode (resolve_actor treats every request as
+    # "owner"), so a fixed dev secret here grants nothing extra.
+    return "recon-dev-session-secret"
 
 
 def _sign(payload_b64: str) -> str:

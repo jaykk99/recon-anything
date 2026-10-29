@@ -118,6 +118,25 @@ def missing_run(run_id: str) -> HTTPException:
         ),
     )
 
+
+def _check_run_access(request: Request, run: "Run") -> None:
+    """Enforce the same per-customer ownership rule /api/runs/{run_id} and
+    /export already apply, on every other route that loads a specific
+    run's data by id.
+
+    Run ids are random (uuid4 hex), not sequential, but that is not an
+    access control: a run_id a customer saw once (a shared link, a
+    screenshot, a support ticket) must not let any OTHER signed-in
+    customer read that run's findings, graph, API map, agent activity,
+    or fetched file contents, nor re-trigger live probes (retest,
+    subdomain verify, port probe) against a target that isn't theirs.
+    The owner (access-code or owner GitHub login) is unaffected.
+    """
+    actor = getattr(request.state, "actor", {"kind": "open"})
+    if actor["kind"] == "user" and run.user_id != actor["user"].id:
+        raise missing_run(run.id)
+
+
 app = FastAPI(title="ReconAnything", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -567,11 +586,13 @@ async def api_start_run(body: RunIn, request: Request):
 
 
 @app.get("/api/runs/{run_id}/stream", dependencies=[Depends(gate)])
-async def api_run_stream(run_id: str):
+async def api_run_stream(run_id: str, request: Request):
     session = get_session()
     try:
-        if not session.query(Run).filter_by(id=run_id).first():
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
     finally:
         session.close()
     return StreamingResponse(subscribe(run_id), media_type="text/event-stream",
@@ -693,7 +714,7 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
 
 @app.get("/api/runs/{run_id}/agent-activity",
          dependencies=[Depends(gate)])
-def api_run_agent_activity(run_id: str, limit: int = 500):
+def api_run_agent_activity(run_id: str, request: Request, limit: int = 500):
     """Live agent-activity feed for one run: every hunt_actions row
     in order with a plain-language description and agent
     attribution, plus a per-agent rollup (actions, assets found,
@@ -705,6 +726,7 @@ def api_run_agent_activity(run_id: str, limit: int = 500):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         return store.run_agent_activity(
             session, store.DEFAULT_SYSTEM, run_id, limit=limit)
     finally:
@@ -713,7 +735,7 @@ def api_run_agent_activity(run_id: str, limit: int = 500):
 
 @app.post("/api/runs/{run_id}/findings/{finding_id}/retest",
           dependencies=[Depends(gate)])
-async def api_finding_retest(run_id: str, finding_id: int):
+async def api_finding_retest(run_id: str, finding_id: int, request: Request):
     """Findings playground: re-run the ONE plugin that produced this
     finding, against this finding's own target, and compare fresh vs
     stored (unchanged / changed / gone / error).
@@ -725,6 +747,14 @@ async def api_finding_retest(run_id: str, finding_id: int):
     (app/playground.py). See app/playground.py for the full design.
     """
     from .playground import PlaygroundError, retest_finding
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        _check_run_access(request, run)
+    finally:
+        session.close()
     try:
         return await retest_finding(run_id, finding_id)
     except PlaygroundError as e:
@@ -735,16 +765,20 @@ async def api_finding_retest(run_id: str, finding_id: int):
 
 
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])
-def api_graph(run_id: str):
+def api_graph(run_id: str, request: Request):
     session = get_session()
     try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        _check_run_access(request, run)
         return graph_payload(session, run_id)
     finally:
         session.close()
 
 
 @app.get("/api/runs/{run_id}/apimap", dependencies=[Depends(gate)])
-def api_apimap(run_id: str):
+def api_apimap(run_id: str, request: Request):
     """Application attack-surface map, grouped.
 
     Returns the legacy flat ``entries`` (backward compatible) plus
@@ -754,6 +788,10 @@ def api_apimap(run_id: str):
     from urllib.parse import urlparse
     session = get_session()
     try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = session.query(Finding).filter_by(run_id=run_id).all()
         entries = {}
         for f in rows:
@@ -915,7 +953,8 @@ def api_export(run_id: str, request: Request, format: str = "json",
 
 
 @app.get("/api/runs/{run_id}/fetch", dependencies=[Depends(gate)])
-async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
+async def api_fetch_file(run_id: str, request: Request,
+                         url: str = Query(..., max_length=2000)):
     """Fetch a URL found during a run so Jay can view file contents.
     Only allows URLs that appeared in this run's findings (SSRF guard)."""
     from urllib.parse import urlparse
@@ -924,6 +963,7 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = findings_dump(session, run_id)
     finally:
         session.close()
@@ -958,7 +998,7 @@ async def api_fetch_file(run_id: str, url: str = Query(..., max_length=2000)):
 
 
 @app.get("/api/runs/{run_id}/vulns", dependencies=[Depends(gate)])
-def api_vulns(run_id: str):
+def api_vulns(run_id: str, request: Request):
     """Possible-vulnerabilities advisor: ranked attack paths from scan findings.
 
     Heuristic only (no LLM). PoCs are detection-only and non-destructive.
@@ -969,6 +1009,7 @@ def api_vulns(run_id: str):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -986,7 +1027,7 @@ class DryRunIn(BaseModel):
 
 
 @app.post("/api/runs/{run_id}/vulns/test", dependencies=[Depends(gate)])
-def api_vuln_test(run_id: str):
+def api_vuln_test(run_id: str, request: Request):
     """Real safe testing: run non-destructive detection probes against the
     actual target. GET/HEAD only, rate-limited, nothing modified.
 
@@ -1000,6 +1041,7 @@ def api_vuln_test(run_id: str):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
         summary = {
@@ -1018,7 +1060,7 @@ def api_vuln_test(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/vulns/dry-run", dependencies=[Depends(gate)])
-def api_vuln_dry_run(run_id: str, body: DryRunIn):
+def api_vuln_dry_run(run_id: str, body: DryRunIn, request: Request):
     """Safe-test terminal: narrates what a detection check WOULD do.
 
     Sends zero requests. Pure dry-run simulation for authorized testing prep.
@@ -1029,6 +1071,7 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
     finally:
         session.close()
     base = body.base or "TARGET"
@@ -1046,7 +1089,7 @@ class SubVerifyIn(BaseModel):
 
 
 @app.post("/api/runs/{run_id}/subdomains/verify", dependencies=[Depends(gate)])
-async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
+async def api_subdomain_verify(run_id: str, body: SubVerifyIn, request: Request):
     """Probe every subdomain from this run's findings for HTTP liveness.
 
     Returns {host: {live, status, url, server, title}}. Results are cached
@@ -1063,6 +1106,7 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = findings_dump(session, run_id)
         summary = dict(run.summary or {})
     finally:
@@ -1132,7 +1176,8 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn):
 
 
 @app.get("/api/runs/{run_id}/probe/port", dependencies=[Depends(gate)])
-async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(...)):
+async def api_probe_port(run_id: str, request: Request,
+                         host: str = Query(...), port: int = Query(...)):
     """Probe a single host:port for banner/service info.
 
     SSRF-guarded: host must be a run target or a subdomain from this run's
@@ -1153,6 +1198,7 @@ async def api_probe_port(run_id: str, host: str = Query(...), port: int = Query(
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
         rows = findings_dump(session, run_id)
         targets = session.query(Target).filter_by(run_id=run_id).all()
     finally:
@@ -1317,7 +1363,7 @@ def _atm_overpass(lat: float, lon: float, radius_m: float):
 
 
 @app.post("/api/runs/{run_id}/atm/locate", dependencies=[Depends(gate)])
-def api_atm_locate(run_id: str, body: AtmLocateIn):
+def api_atm_locate(run_id: str, body: AtmLocateIn, request: Request):
     """Public ATM locations via OpenStreetMap (read-only).
 
     Hard gate: body.authorized must be true, else 403. The claim is
@@ -1330,8 +1376,10 @@ def api_atm_locate(run_id: str, body: AtmLocateIn):
                    "authorization (authorized=true)")
     session = get_session()
     try:
-        if not session.query(Run).filter_by(id=run_id).first():
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
             raise missing_run(run_id)
+        _check_run_access(request, run)
     finally:
         session.close()
 
