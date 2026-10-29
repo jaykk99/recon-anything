@@ -1563,7 +1563,7 @@ def _atm_overpass(lat: float, lon: float, radius_m: float):
 
 
 @app.post("/api/runs/{run_id}/atm/locate", dependencies=[Depends(gate)])
-def api_atm_locate(run_id: str, body: AtmLocateIn):
+def api_atm_locate(run_id: str, body: AtmLocateIn, request: Request):
     """Public ATM locations via OpenStreetMap (read-only).
 
     Hard gate: body.authorized must be true, else 403. The claim is
@@ -1576,8 +1576,7 @@ def api_atm_locate(run_id: str, body: AtmLocateIn):
                    "authorization (authorized=true)")
     session = get_session()
     try:
-        if not session.query(Run).filter_by(id=run_id).first():
-            raise missing_run(run_id)
+        _owned_run(session, run_id, request)
     finally:
         session.close()
 

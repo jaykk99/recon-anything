@@ -47,6 +47,10 @@ def signin_mode(monkeypatch):
     state: the code must stop working the moment the env vars land)."""
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-client-secret")
+    # Sign-in mode retires the access code as a session-signing fallback
+    # too (same "stops working the moment the env vars land" rule), so
+    # a real session secret is required here, not CODE.
+    monkeypatch.setenv("RECON_SESSION_SECRET", "test-session-secret")
     monkeypatch.setattr(config, "ACCESS_CODE", CODE)
     yield
     monkeypatch.setattr(config, "ACCESS_CODE", "")
