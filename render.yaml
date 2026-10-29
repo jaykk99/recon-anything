@@ -9,8 +9,10 @@
 #                              via SELECT ... FOR UPDATE SKIP LOCKED.
 #                              Serves a trivial health page on $PORT so
 #                              Render's free web service stays happy;
-#                              keepalive pings + a wake ping on run
-#                              creation (RECON_WORKER_URL) stop spin-down.
+#                              Both services ping themselves AND each
+#                              other every ~4 min (app/keepalive.py), plus
+#                              a GitHub Actions cron backstop
+#                              (.github/workflows/keepalive.yml).
 #   - Neon Postgres (DATABASE_URL) is the shared queue + results store.
 #     Scans survive restarts: jobs left queued/running are requeued on boot.
 services:
@@ -31,6 +33,8 @@ services:
         value: "0" # UI/API only: the worker service runs the queue
       - key: RECON_WORKER_URL
         sync: false # https://recon-anything-worker.onrender.com (wake ping)
+      - key: RECON_KEEPALIVE_S
+        value: "240" # pings self + worker every ~4 min (app/keepalive.py)
       # Sellable-product layer (app/billing.py), all optional: unset =
       # honest "opens soon" states, app unchanged. Set in dashboard.
       - key: GITHUB_CLIENT_ID
@@ -51,7 +55,12 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerCommand: python -m app.worker_main
     plan: free
+    healthCheckPath: /
     envVars:
+      - key: RECON_API_PUBLIC_URL
+        sync: false # https://recon-anything.onrender.com (worker pings it awake)
+      - key: RECON_KEEPALIVE_S
+        value: "240" # pings self + API every ~4 min (app/keepalive.py)
       - key: DATABASE_URL
         sync: false # same Neon Postgres as the UI service
       - key: RECON_MASTER_KEY

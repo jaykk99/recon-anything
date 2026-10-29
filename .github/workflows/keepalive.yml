@@ -1,0 +1,39 @@
+# Outside backstop for Render free-tier spin-down (2026-10-29).
+#
+# The two services already ping themselves and each other every ~4 min
+# (backend/app/keepalive.py). This cron catches the case where BOTH are
+# asleep at once (Render restart, deploy, crash) and nothing inside can
+# wake them. GitHub runs */5 crons on a best-effort schedule (often
+# 5-15 min apart), which is still inside Render's ~15 min window.
+#
+# URLs: set repo variables RECON_API_URL / RECON_WORKER_URL
+# (Settings -> Secrets and variables -> Actions -> Variables) to
+# override the defaults below.
+#
+# Note: GitHub pauses scheduled workflows after 60 days with no commits
+# to the repo; push anything (or re-enable in the Actions tab) to resume.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping API and worker
+        env:
+          API_URL: ${{ vars.RECON_API_URL || 'https://recon-anything.onrender.com' }}
+          WORKER_URL: ${{ vars.RECON_WORKER_URL || 'https://recon-anything-worker.onrender.com' }}
+        run: |
+          for url in "${API_URL%/}/api/health" "${WORKER_URL%/}/"; do
+            # A cold start can take ~60s on the free tier: allow it.
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 90 \
+                   --retry 2 --retry-delay 10 "$url" || echo 000)
+            echo "$url -> $code"
+          done

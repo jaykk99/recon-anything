@@ -205,9 +205,26 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
     # Follow live: poll for new rows. 1s granularity is plenty "live"
     # for the UI and is correct across processes.
     idle = 0
+    db_errors = 0
     while True:
         await asyncio.sleep(1)
-        rows = await asyncio.to_thread(_fetch_events_sync, run_id, last_seq)
+        # A transient DB error (Neon waking up, a recycled socket) used
+        # to end the whole stream, so the browser saw "connection lost"
+        # mid-scan and reconnected from event 0. Now the stream stays
+        # open: keep the client alive with a heartbeat and retry from
+        # the same last_seq with a short backoff. Only after ~2 min of
+        # straight failures do we give up and let the outer
+        # self-heal path take over.
+        try:
+            rows = await asyncio.to_thread(_fetch_events_sync, run_id, last_seq)
+            db_errors = 0
+        except Exception:
+            db_errors += 1
+            if db_errors > 30:
+                raise
+            yield ": ping\n\n"
+            await asyncio.sleep(min(2 * db_errors, 10))
+            continue
         if rows:
             idle = 0
             for seq, event, data in rows:
@@ -217,7 +234,10 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
                     return
         else:
             idle += 1
-            if idle >= 15:
+            # Heartbeat every ~10s of silence so no proxy hop (Render,
+            # the Next.js /live proxy, mobile networks) treats the
+            # stream as idle and cuts it during a quiet stretch.
+            if idle >= 10:
                 idle = 0
                 yield ": ping\n\n"
 

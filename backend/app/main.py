@@ -255,6 +255,14 @@ async def _startup():
     # have its original enqueue task in flight in this process, and
     # replaying it would double-enqueue; the boot cutoff rules that out.
     _boot_started = dt.datetime.now(dt.timezone.utc)
+    # Keep this service AND the worker awake on Render free tier: an open
+    # SSE stream does not count as inbound traffic, so without this the
+    # API slept mid-scan and the live feed dropped (app/keepalive.py).
+    try:
+        from . import keepalive
+        keepalive.start(keepalive.api_targets())
+    except Exception as e:  # noqa: BLE001 - never block boot on this
+        log.warning("keepalive not started: %s", e)
     _db_ready = asyncio.Event()
     def _bg_init():
         try:
