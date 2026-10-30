@@ -260,6 +260,18 @@ IMPACT_BY_KEY.update({
     "idor_confirmed": "An attacker can pull other users' records simply "
                       "by changing an ID - confirmed working, no special "
                       "tools needed.",
+    "idor_surface": "An attacker can enumerate object IDs in these "
+                    "endpoints and probe each one for missing "
+                    "object-level authorization.",
+    "error_response_disclosure": "An attacker who is refused an object "
+                                 "still receives its data inside the "
+                                 "error response - the denial itself "
+                                 "leaks the record.",
+    "idor_error_leak_path": "An attacker can walk sequential object IDs "
+                            "and harvest each denied object's data from "
+                            "its error response - a full read of the "
+                            "collection without ever passing the "
+                            "authorization check.",
     "bola_candidate": "An attacker with any low-privilege account can "
                       "aim this endpoint at other users' object IDs and "
                       "read or change data that is not theirs.",

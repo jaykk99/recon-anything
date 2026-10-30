@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 634  # 626 on master + 8 protocol plugins
+    assert len(reg) == 635  # 634 + 1 idor/error-leak plugin (feature/idor-error-leak)
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"
