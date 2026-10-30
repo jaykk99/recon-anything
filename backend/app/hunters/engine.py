@@ -447,6 +447,20 @@ def hunter_expand(session, run: Run, accum: Dict,
             known_rows.setdefault((a["type"], a["value"]), a)
 
     depth = accum["depth"]
+    # Per-run depth cap (scan presets, app/presets.py): queue_meta
+    # max_depth narrows the global cap for THIS run only - Quick
+    # Triage runs at 0 (seed sweep only, nothing expands past the
+    # seeds), Standard at 1, Deep leaves it
+    # unset and gets the global MAX_DEPTH. It can only narrow, never
+    # widen past the operator's env cap.
+    run_cap = MAX_DEPTH
+    try:
+        _md = ((run.summary or {}).get("queue_meta", {}) or {}).get(
+            "max_depth")
+        if _md is not None:
+            run_cap = max(0, min(MAX_DEPTH, int(_md)))
+    except Exception:
+        run_cap = MAX_DEPTH
     # Lineage maps: how deep each of the run's targets sits from a
     # seed, and whether its discovery chain already consumed a
     # reverse-IP hop. Targets the hunters did not create are seeds
@@ -562,10 +576,10 @@ def hunter_expand(session, run: Run, accum: Dict,
                 {"type": ktype, "value": kval,
                  "found_by": row.get("found_by") or "known_set",
                  "via": "known_set",
-                 "_depth": min(row.get("depth") or 0, MAX_DEPTH),
+                 "_depth": min(row.get("depth") or 0, run_cap),
                  "_reverse": (row.get("meta") or {}).get("via")
                  == "cohosted_domain"},
-                min(row.get("depth") or 0, MAX_DEPTH), True))
+                min(row.get("depth") or 0, run_cap), True))
             reseeds += 1
     # Claim order: nodes behind high-value findings first, then new
     # surface before identity nodes, shallower before deeper, and
@@ -606,7 +620,7 @@ def hunter_expand(session, run: Run, accum: Dict,
             break
         # Depth gate on lineage: reverse-IP chains cap stricter.
         if a_depth > (REVERSE_IP_MAX_DEPTH if a.get("_reverse")
-                      else MAX_DEPTH):
+                      else run_cap):
             continue
         if is_known and accum["tasks_reexpand"] >= reexpand_cap:
             # Re-seed budget spent; leave the marker unset so a

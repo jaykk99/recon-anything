@@ -79,6 +79,19 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
         annotate_commands(out, host_hint=(_t.normalized if _t else None))
     except Exception:
         pass
+    # Confidence scoring + duplicate merge (app/confidence.py):
+    # exact duplicates collapse into one row (also_from records the
+    # other reporters), and every row gets a 0-100 score, a tier
+    # (confirmed / likely / weak) and a plain reason. This is the
+    # noise filter: the UI shows confirmed+likely by default and
+    # folds weak signals behind a toggle. Runs AFTER commands so a
+    # merged-away duplicate's commands survive on the keeper when the
+    # keeper had none (merge keeps the richest evidence).
+    try:
+        from .confidence import annotate_confidence
+        out = annotate_confidence(out)
+    except Exception:
+        pass
     # Crypto-class runs (Jay's order, 2026-10-23): exposed private
     # keys, seed phrases and keystores are THE findings - they sort
     # to the top of the run, flagged critical, ahead of generic
@@ -439,8 +452,16 @@ def executive_summary(rows: List[Dict]) -> Dict:
     interesting = [r for r in rows if r["key"] in (
         "artifact_exposed", "graphql_introspection", "cors_misconfig",
         "jwt_weak", "spf_weak", "dmarc_weak")]
+    # Confidence tiers (app/confidence.py): how much of this run is
+    # confirmed signal vs weak noise the UI folds away by default.
+    tiers = {"confirmed": 0, "likely": 0, "weak": 0}
+    for r in rows:
+        t = r.get("confidence_tier")
+        if t in tiers:
+            tiers[t] += 1
     return {
         "total_findings": len(rows),
+        "confidence_tiers": tiers,
         "tech_stack": techs[:20],
         "leak_count": len(leaks),
         "interesting_count": len(interesting),

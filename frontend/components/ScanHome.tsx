@@ -22,6 +22,13 @@ export default function ScanHome() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginsState, setPluginsState] = useState<"loading" | "ok" | "error">("loading");
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+  // One-click scan presets (backend app/presets.py): presetId null =
+  // Custom (manual plugin selection below). Picking a preset sets
+  // mode + plugin selection in one click; touching any advanced
+  // option afterwards drops back to Custom.
+  const [presets, setPresets] = useState<any[]>([]);
+  const [presetId, setPresetId] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [code, setCodeState] = useState("");
   const [codeSaved, setCodeSaved] = useState(false);
   const [showCode, setShowCode] = useState(false);
@@ -43,7 +50,22 @@ export default function ScanHome() {
     setCodeState(saved);
     setCodeSaved(!!saved);
     loadPlugins();
+    api<{ presets: any[] }>("/api/presets").then((d) => setPresets(d.presets || [])).catch(() => {});
   }, []);
+
+  function applyPreset(p: any) {
+    setPresetId(p.id);
+    setMode(p.mode);
+    if (Array.isArray(p.plugins)) {
+      const e: Record<string, boolean> = {};
+      plugins.forEach((pl) => (e[pl.id] = p.plugins.includes(pl.id)));
+      setEnabled(e);
+    } else {
+      const e: Record<string, boolean> = {};
+      plugins.forEach((pl) => (e[pl.id] = true));
+      setEnabled(e);
+    }
+  }
 
   // Loads the plugin catalog. A previous silent failure here (API down,
   // backend cold-starting) left the Plugins card showing "(0/0 enabled)"
@@ -106,7 +128,11 @@ export default function ScanHome() {
           // Bank/ATM mode: one input, no options. The server runs the
           // full financial set; no plugin selection is sent at all.
           ? { targets: text, mode: "active", plugins: null, source_type: "bankatm", bounty: false }
-          : { targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
+          : presetId
+            // Preset: the server resolves mode + plugins + depth from
+            // the preset name, so the scan matches the button exactly.
+            ? { targets: text, preset: presetId, source_type: sourceType, bounty }
+            : { targets: text, mode, plugins: ids, source_type: sourceType, bounty }),
       });
       if (!d.run_id) throw new Error("no run id returned");
       if (code.trim()) { setCode(code.trim()); setCodeSaved(true); }
@@ -126,12 +152,14 @@ export default function ScanHome() {
     && enabledCount === cryptoIds.length;
 
   function selectOnly(ids: string[]) {
+    setPresetId(null);
     const e: Record<string, boolean> = {};
     plugins.forEach((p) => (e[p.id] = ids.includes(p.id)));
     setEnabled(e);
   }
 
   function addToSelection(ids: string[]) {
+    setPresetId(null);
     const e = { ...enabled };
     ids.forEach((id) => (e[id] = true));
     setEnabled(e);
@@ -213,6 +241,31 @@ export default function ScanHome() {
             </select>
           </div>
         )}
+        {sourceType !== "bankatm" && presets.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm text-slate-400">Preset:</span>
+              {presets.map((p) => (
+                <button key={p.id} type="button" onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className={`chip px-4 py-2.5 min-h-[44px] text-xs ${presetId === p.id ? "bg-sky-900 text-sky-200 border border-sky-700" : "text-slate-300 hover:bg-slate-800"}`}>
+                  {p.label.toUpperCase()}
+                  {p.plugin_count != null && <span className="text-slate-500"> · {p.plugin_count} plugins</span>}
+                  {p.max_depth != null && <span className="text-slate-500"> · depth {p.max_depth}</span>}
+                </button>
+              ))}
+              <button type="button" onClick={() => setPresetId(null)}
+                className={`chip px-4 py-2.5 min-h-[44px] text-xs ${presetId === null ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800"}`}>
+                CUSTOM
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              {presetId
+                ? presets.find((p) => p.id === presetId)?.description
+                : "One click sets the mode, plugin set, and hunter depth. Pick a preset, or tune everything yourself under Advanced options."}
+            </p>
+          </div>
+        )}
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Scan:</span>
@@ -235,11 +288,11 @@ export default function ScanHome() {
           {sourceType !== "bankatm" && (<>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-400">Mode:</span>
-            <button onClick={() => setMode("active")}
+            <button onClick={() => { setPresetId(null); setMode("active"); }}
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "active" ? "bg-amber-900 text-amber-200" : "text-slate-400"}`}>
               ACTIVE (default)
             </button>
-            <button onClick={() => setMode("passive")}
+            <button onClick={() => { setPresetId(null); setMode("passive"); }}
               className={`chip px-4 py-2.5 min-h-[44px] text-xs ${mode === "passive" ? "bg-sky-900 text-sky-200" : "text-slate-400"}`}>
               PASSIVE
             </button>
@@ -345,7 +398,15 @@ export default function ScanHome() {
           {pluginsState === "loading" && (
             <span className="text-xs text-slate-500 animate-pulse">loading plugin catalog...</span>
           )}
+          {presetId && (
+            <span className="text-xs text-sky-300">set by the {presets.find((p) => p.id === presetId)?.label} preset; editing any plugin switches to Custom</span>
+          )}
+          <button type="button" onClick={() => setShowAdvanced((v) => !v)}
+            className="chip px-4 py-2.5 min-h-[44px] text-xs text-slate-300 hover:bg-slate-800 ml-auto">
+            {showAdvanced ? "▲ Hide advanced options" : "▼ Advanced options"}
+          </button>
         </div>
+        {showAdvanced && (<>
         {pluginsState === "error" && (
           <div className="rounded-lg border border-red-700/50 bg-red-950/30 p-3 mb-3 flex items-center gap-3 flex-wrap">
             <p className="text-sm text-red-300">Could not load the plugin list{error ? `: ${error}` : "."}</p>
@@ -360,7 +421,7 @@ export default function ScanHome() {
               {(byGroup[g] || []).map((p) => (
                 <label key={p.id} className="flex items-start gap-2 text-sm p-2 rounded hover:bg-slate-800/50 cursor-pointer">
                   <input type="checkbox" className="mt-1" checked={!!enabled[p.id]}
-                    onChange={() => setEnabled({ ...enabled, [p.id]: !enabled[p.id] })} />
+                    onChange={() => { setPresetId(null); setEnabled({ ...enabled, [p.id]: !enabled[p.id] }); }} />
                   <span>
                     <span className="font-medium">{p.label}</span>{" "}
                     <span className="text-xs text-slate-500">[{p.cost}]</span>
@@ -376,6 +437,7 @@ export default function ScanHome() {
             </div>
           </div>
         ))}
+        </>)}
       </div>
       </>)}
     </div>

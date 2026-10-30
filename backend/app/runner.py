@@ -2377,7 +2377,8 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                       keys: Optional[Dict[str, str]] = None,
                       source_type: str = "website",
                       bounty: bool = False,
-                      excluded_plugin_ids: Optional[List[str]] = None):
+                      excluded_plugin_ids: Optional[List[str]] = None,
+                      max_depth: Optional[int] = None):
     """Enqueue-only: insert every (plugin x target) job into Postgres and
     return immediately. The queue worker (in-process and/or standalone on
     Railway) claims and runs them; a restart resumes from the queue
@@ -2391,6 +2392,14 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         run = session.query(Run).filter_by(id=run_id).first()
         if not run:
             return
+        if max_depth is None:
+            # Preset depth travels in the durable enqueue intent (the
+            # same commit as the Run row), so every launch path -
+            # direct, service, boot recovery - honors it without
+            # widening launch_run's long-standing signature.
+            _intent = (run.summary or {}).get("pending_enqueue") or {}
+            if _intent.get("max_depth") is not None:
+                max_depth = _intent["max_depth"]
         if source_type in ("bank", "atm"):
             session.close()
             await _enqueue_poi_run(run_id, targets_raw, mode, plugin_ids,
@@ -2447,6 +2456,7 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
 
         meta = {"mode": mode, "plugin_ids": plugin_ids,
                 "excluded_plugin_ids": excluded_plugin_ids or [],
+                "max_depth": max_depth,
                 "module_overrides": module_overrides or {},
                 "source_type": source_type,
                 "seed_target_ids": [t.id for t in trobj],
@@ -2523,9 +2533,11 @@ async def launch_run(run_id: str, targets_raw: str, mode: str,
                    keys: Optional[Dict[str, str]] = None,
                    source_type: str = "website",
                    bounty: bool = False,
-                   excluded_plugin_ids: Optional[List[str]] = None
+                   excluded_plugin_ids: Optional[List[str]] = None,
+                   max_depth: Optional[int] = None
                    ) -> asyncio.Task:
     """Fire-and-forget: start execute_run as a background task."""
     return asyncio.create_task(
         execute_run(run_id, targets_raw, mode, plugin_ids, module_overrides,
-                    keys, source_type, bounty, excluded_plugin_ids))
+                    keys, source_type, bounty, excluded_plugin_ids,
+                    max_depth=max_depth))
