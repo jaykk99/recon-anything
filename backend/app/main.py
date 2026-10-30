@@ -26,6 +26,10 @@ Routes:
   GET  /api/hunters/resources   resource library catalog + cache status
   GET/POST /api/agentdata/...   agent data service (packs, known set,
                                 memory, dead ends, recent finds, library)
+  POST /mcp                     MCP server (streamable HTTP); own auth
+                                via RECON_SERVICE_KEY - see
+                                app/mcp_server.py. Also runnable
+                                standalone: python -m app.mcp_server
 
 The agents do not chat, they hunt: there is no assistant or chat route.
 Hunters work through the agent data service (app/agentdata).
@@ -287,6 +291,16 @@ async def _startup():
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "recon-anything"}
+
+
+# -- MCP server ------------------------------------------------------------
+# ReconAnything is also an MCP server (Model Context Protocol, streamable
+# HTTP) at /mcp for MCP clients (Claude, Error Inbox's black team). It has
+# its OWN auth - the RECON_SERVICE_KEY, not the web gate above - and wraps
+# the same engine internals as the REST routes. See app/mcp_server.py.
+from .mcp_server import mcp_router as _mcp_router  # noqa: E402
+
+app.include_router(_mcp_router, prefix="/mcp")
 
 
 # -- classify ------------------------------------------------------------
