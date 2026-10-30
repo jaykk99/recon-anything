@@ -18,6 +18,27 @@ interface Finding {
   // Present on findings served by the run-detail API; id powers the
   // findings playground (re-test endpoint is addressed by run + id).
   id?: number; target_id?: string;
+  // Confidence scoring (backend app/confidence.py): score 0-100,
+  // tier confirmed|likely|weak, plain reason, duplicate-merge info.
+  confidence_score?: number; confidence_tier?: string;
+  confidence_label?: string; confidence_reason?: string;
+  merged_count?: number; also_from?: string[];
+}
+
+// Confidence tier of a finding; falls back to the plugin-stated
+// confidence for rows served without scoring (older payloads).
+function tierOfFinding(f: Finding): string {
+  if (f.confidence_tier) return f.confidence_tier;
+  const s = f.confidence_score ?? f.confidence ?? 0;
+  return s >= 75 ? "confirmed" : s >= 45 ? "likely" : "weak";
+}
+function tierBadge(tier: string): string {
+  return tier === "confirmed" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
+    : tier === "likely" ? "text-sky-300 border-sky-500/40 bg-sky-500/10"
+    : "text-slate-400 border-slate-600/60 bg-slate-700/30";
+}
+function tierLabel(tier: string): string {
+  return tier === "confirmed" ? "CONFIRMED" : tier === "likely" ? "LIKELY" : "WEAK SIGNAL";
 }
 
 interface RetestResult {
@@ -302,7 +323,12 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
               title="bounty impact score, 1-10">impact {impactOf(f)}/10</span>
           )}
           <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
-          <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{f.confidence}%</span>
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${tierBadge(tierOfFinding(f))}`}
+            title={f.confidence_reason || "confidence tier"}>
+            {tierLabel(tierOfFinding(f))}
+          </span>
+          <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap"
+            title={f.confidence_reason || ""}>{f.confidence_score ?? f.confidence}%</span>
           <span className="text-slate-500 text-xs">{open ? "▲" : "▼"}</span>
         </div>
         <p className="text-sm break-words whitespace-pre-wrap mt-1">{f.value}</p>
@@ -317,6 +343,12 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
           </div>
           {attackerImpactOf(f) && (
             <p className="text-red-300/90 break-words"><span className="font-semibold">What an attacker can do: </span>{attackerImpactOf(f)}</p>
+          )}
+          {f.confidence_reason && (
+            <p className="text-slate-400 break-words"><span className="font-semibold">Confidence {f.confidence_score ?? f.confidence}/100: </span>{f.confidence_reason}</p>
+          )}
+          {(f.merged_count ?? 1) > 1 && (
+            <p className="text-slate-500 break-words">Reported {f.merged_count} times{(f.also_from && f.also_from.length > 0) ? ` (also by ${f.also_from.join(", ")})` : ""}; duplicates merged into this one finding.</p>
           )}
           {ev.hash_type && (
             <p className="text-amber-300/90 break-words"><span className="font-semibold">Hash: </span>{ev.hash_type}{ev.hash_purpose ? ` — what it is for: ${ev.hash_purpose}` : ""}</p>
@@ -629,6 +661,9 @@ function RunPageInner({ params }: { params: { id: string } }) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [groupShown, setGroupShown] = useState<Record<string, number>>({});
   const [noiseOpen, setNoiseOpen] = useState(false);
+  // Confidence noise filter: weak signals (score < 45) are hidden by
+  // default behind a toggle with the hidden count always visible.
+  const [showWeak, setShowWeak] = useState(false);
   // reset paging when filters change
   useEffect(() => {
     setShownTop(50); setGroupShown({}); setOpenGroups({}); setExpanded({});
@@ -987,11 +1022,14 @@ function RunPageInner({ params }: { params: { id: string } }) {
     return "txt";
   }
 
-  const filtered = findings.filter((f) =>
+  const matchesFilters = (f: Finding) =>
     (cat === "all" || f.category === cat) &&
     (sev === "all" || normSev(f) === sev || (sev === "critical" && sevOf(f) === "critical")) &&
     (!bigOnly || impactOf(f) >= 7) &&
-    (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "") + (f.evidence?.exploitability || "")).toLowerCase().includes(q.toLowerCase())));
+    (!q || (f.key + f.value + f.plugin + (f.evidence?.severity || "") + (f.evidence?.exploitability || "")).toLowerCase().includes(q.toLowerCase()));
+  const weakHidden = findings.filter((f) => matchesFilters(f) && tierOfFinding(f) === "weak").length;
+  const filtered = findings.filter((f) =>
+    matchesFilters(f) && (showWeak || tierOfFinding(f) !== "weak"));
 
   // sort: value (default rank), severity, plugin, confidence, impact
   const sortFindings = (list: Finding[]) => {
@@ -999,7 +1037,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
     const arr = [...list];
     if (sortBy === "severity") arr.sort((a, b) => (sevRank[sevOf(a)] ?? 4) - (sevRank[sevOf(b)] ?? 4));
     else if (sortBy === "plugin") arr.sort((a, b) => (a.plugin || "").localeCompare(b.plugin || ""));
-    else if (sortBy === "confidence") arr.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    else if (sortBy === "confidence") arr.sort((a, b) => ((b.confidence_score ?? b.confidence) || 0) - ((a.confidence_score ?? a.confidence) || 0));
     else if (sortBy === "impact") arr.sort((a, b) => (impactOf(b) * (b.confidence || 0)) - (impactOf(a) * (a.confidence || 0)));
     return arr;
   };
@@ -1273,6 +1311,12 @@ function RunPageInner({ params }: { params: { id: string } }) {
           className={`chip px-4 py-2.5 min-h-[44px] text-sm whitespace-nowrap ${bigOnly ? "bg-amber-900 text-amber-200 border border-amber-700" : "text-slate-300"}`}>
           {bigOnly ? "✓ Big stuff only" : "Big stuff only"}
         </button>
+        <button
+          onClick={() => setShowWeak((v) => !v)}
+          title="weak signals are low-confidence findings (score under 45): heuristic guesses and single unverified reports"
+          className={`chip px-4 py-2.5 min-h-[44px] text-sm whitespace-nowrap ${showWeak ? "bg-slate-700 text-slate-100 border border-slate-500" : "text-slate-300"}`}>
+          {showWeak ? "✓ Weak signals shown" : `Weak signals hidden (${weakHidden})`}
+        </button>
         <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
           <option value="value">sort: value</option>
           <option value="severity">sort: severity</option>
@@ -1421,7 +1465,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
       {tab === "files" && <FilesView findings={findings} onView={viewFile} />}
       {tab === "secrets" && <SecretsView findings={findings} onView={viewFile} />}
       {tab === "creds" && <CredsView findings={findings} />}
-      {tab === "graph" && <GraphView graph={graph} />}
+      {tab === "graph" && <GraphView runId={id} />}
       {tab === "agents" && <AgentsView runId={id} live={status !== "done"} onCount={setAgentActions} />}
       {tab === "apimap" && <ApiMapView data={apiMap} />}
       {tab === "raw" && (
@@ -2664,55 +2708,258 @@ function ConnectionsView({ findings, graph }: { findings: Finding[]; graph: any 
   );
 }
 
-function GraphView({ graph }: { graph: any }) {
-  const [filter, setFilter] = useState("all");
-  if (!graph) return <div className="card p-4 text-sm text-slate-500">graph builds when the run finishes...</div>;
-  const nodes = (graph.nodes || []).filter((n: any) => filter === "all" || n.kind === filter);
+// ---------- interactive attack-surface graph ----------
+// Fed by GET /api/runs/{id}/surface-graph (backend app/surface_graph.py):
+// the correlation graph + asset map + attack paths fused into one
+// payload. Pan/zoom, drag nodes, click a node for its findings and
+// verification commands, and light up a full attack path. HUMINT
+// nodes (public WHOIS orgs, published emails, public accounts) are
+// flagged and can be isolated with one toggle.
+const GRAPH_KIND_COLORS: Record<string, string> = {
+  target: "#7dd3fc", domain: "#7dd3fc", subdomain: "#6ee7b7",
+  ip: "#a5b4fc", port: "#fb923c", tech: "#c4b5fd",
+  endpoint: "#fbbf24", cert: "#fde047", org: "#f472b6",
+  email: "#fb7185", username: "#e879f9", account: "#f472b6",
+  tracking_id: "#94a3b8", favicon_hash: "#94a3b8", app: "#5eead4",
+  financial: "#facc15", device: "#94a3b8", service: "#5eead4",
+  tool: "#94a3b8",
+};
+const graphColor = (k: string) => GRAPH_KIND_COLORS[k] || "#f472b6";
+// Ring order for the initial layout: targets center, infra close,
+// endpoints/tech mid, HUMINT on the outer ring where analysts look
+// for the people behind the assets.
+const GRAPH_KIND_RING: Record<string, number> = {
+  target: 0, domain: 0, ip: 1, subdomain: 1, port: 2, cert: 2,
+  endpoint: 3, tech: 3, app: 3, service: 3, financial: 3,
+  org: 4, email: 4, username: 4, account: 4, tracking_id: 4,
+  favicon_hash: 4, device: 4, tool: 4,
+};
+
+function GraphView({ runId }: { runId: string }) {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [kindFilter, setKindFilter] = useState("all");
+  const [humintOnly, setHumintOnly] = useState(false);
+  const [selected, setSelected] = useState<any>(null);
+  const [activePath, setActivePath] = useState<any>(null);
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  const [pos, setPos] = useState<Record<string, { x: number; y: number }>>({});
+  const dragRef = useRef<any>(null);
+  const svgRef = useRef<any>(null);
+
+  const W = 960, H = 600;
+  function load() {
+    api<any>(`/api/runs/${runId}/surface-graph`)
+      .then((d) => { setData(d); setError(""); })
+      .catch((e) => setError(e.message || "graph failed to load"));
+  }
+  useEffect(load, [runId]);
+
+  // Initial layout whenever a fresh payload lands: rings by kind.
+  useEffect(() => {
+    if (!data?.nodes) return;
+    const byRing: Record<number, any[]> = {};
+    data.nodes.forEach((n: any) => {
+      const r = GRAPH_KIND_RING[n.kind] ?? 3;
+      (byRing[r] = byRing[r] || []).push(n);
+    });
+    const next: Record<string, { x: number; y: number }> = {};
+    Object.entries(byRing).forEach(([ring, ns]) => {
+      const rad = Number(ring) * 105;
+      (ns as any[]).forEach((n: any, i: number) => {
+        if (Number(ring) === 0) {
+          next[n.id] = { x: W / 2 + (i - ((ns as any[]).length - 1) / 2) * 130, y: H / 2 };
+        } else {
+          const a = (2 * Math.PI * i) / Math.max((ns as any[]).length, 1) - Math.PI / 2;
+          next[n.id] = { x: W / 2 + rad * Math.cos(a), y: H / 2 + rad * Math.sin(a) };
+        }
+      });
+    });
+    setPos(next);
+  }, [data]);
+
+  if (error) return <div className="card p-4 text-sm text-red-400">Surface graph failed to load: {error}</div>;
+  if (!data) return <div className="card p-4 text-sm text-slate-500">building surface graph...</div>;
+
+  const allNodes: any[] = data.nodes || [];
+  const nodes = allNodes.filter((n: any) =>
+    (kindFilter === "all" || n.kind === kindFilter) && (!humintOnly || n.humint));
   const ids = new Set(nodes.map((n: any) => n.id));
-  const edges = (graph.edges || []).filter((e: any) => ids.has(e.src) && ids.has(e.dst));
-  const kinds: string[] = Array.from(new Set((graph.nodes || []).map((n: any) => String(n.kind))));
-  const W = 900, H = 520, cx = W / 2, cy = H / 2, R = 200;
-  const pos: Record<string, { x: number; y: number }> = {};
-  nodes.forEach((n: any, i: number) => {
-    const a = (2 * Math.PI * i) / Math.max(nodes.length, 1);
-    const rad = n.kind === "target" ? 0 : R;
-    pos[n.id] = { x: cx + rad * Math.cos(a), y: cy + rad * Math.sin(a) };
-  });
-  const color = (k: string) => k === "target" ? "#7dd3fc" : k === "ip" ? "#a5b4fc" : k === "subdomain" ? "#6ee7b7" : k === "endpoint" ? "#fbbf24" : k === "tech" ? "#c4b5fd" : "#f472b6";
+  const edges = (data.edges || []).filter((e: any) => ids.has(e.src) && ids.has(e.dst));
+  const kinds: string[] = Array.from(new Set(allNodes.map((n: any) => String(n.kind))));
+  const pathIds: string[] = activePath?.node_ids || [];
+  const pathSet = new Set(pathIds);
+  const pathEdges = new Set<string>();
+  for (let i = 0; i + 1 < pathIds.length; i++) {
+    pathEdges.add(`${pathIds[i]}|${pathIds[i + 1]}`);
+    pathEdges.add(`${pathIds[i + 1]}|${pathIds[i]}`);
+  }
+  const dimmed = (id: string) => activePath && !pathSet.has(id);
+
+  function toSvg(evt: any) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (evt.clientX - rect.left) * (W / rect.width),
+      y: (evt.clientY - rect.top) * (H / rect.height),
+    };
+  }
+  function onNodeDown(evt: any, n: any) {
+    evt.stopPropagation();
+    const p = toSvg(evt);
+    dragRef.current = { node: n.id, dx: p.x - (pos[n.id]?.x || 0), dy: p.y - (pos[n.id]?.y || 0), moved: false };
+  }
+  function onSvgDown(evt: any) {
+    dragRef.current = { pan: true, sx: evt.clientX, sy: evt.clientY, vx: view.x, vy: view.y, moved: false };
+  }
+  function onMove(evt: any) {
+    const d = dragRef.current;
+    if (!d) return;
+    if (d.node) {
+      const p = toSvg(evt);
+      const nx = p.x - d.dx, ny = p.y - d.dy;
+      if (Math.abs(nx - (pos[d.node]?.x || 0)) + Math.abs(ny - (pos[d.node]?.y || 0)) > 2) d.moved = true;
+      setPos((prev) => ({ ...prev, [d.node]: { x: nx, y: ny } }));
+    } else if (d.pan) {
+      const rect = svgRef.current?.getBoundingClientRect();
+      const scale = rect ? W / rect.width : 1;
+      const dx = (evt.clientX - d.sx) * scale, dy = (evt.clientY - d.sy) * scale;
+      if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
+      setView((v) => ({ ...v, x: d.vx + dx / v.k, y: d.vy + dy / v.k }));
+    }
+  }
+  function onUp(evt: any, n?: any) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (d && !d.moved && n) setSelected(n);
+    if (d && !d.moved && !n && d.pan) setSelected(null);
+  }
+  function onWheel(evt: any) {
+    const delta = evt.deltaY < 0 ? 1.12 : 0.89;
+    setView((v) => ({ ...v, k: Math.min(4, Math.max(0.25, v.k * delta)) }));
+  }
+
   return (
-    <div className="card p-4 overflow-x-auto">
+    <div className="card p-4">
       <div className="flex gap-2 mb-2 items-center flex-wrap">
-        <span className="text-xs text-slate-500">{nodes.length} nodes, {edges.length} edges</span>
-        <select className="input text-sm px-3 py-2.5 min-h-[44px] ml-auto" value={filter} onChange={(e) => setFilter(e.target.value)}>
+        <span className="text-xs text-slate-500">
+          {nodes.length} nodes, {edges.length} edges
+          {data.counts?.humint ? `, ${data.counts.humint} HUMINT` : ""}
+          {data.truncated ? " (largest 400 nodes shown)" : ""}
+        </span>
+        <button className="chip px-3 py-2 min-h-[40px] text-xs text-slate-300" onClick={load}>refresh</button>
+        <button className={`chip px-3 py-2 min-h-[40px] text-xs ${humintOnly ? "bg-pink-900 text-pink-200" : "text-slate-300"}`}
+          onClick={() => setHumintOnly((v) => !v)} title="public identity data only: WHOIS orgs, published emails, public accounts">
+          HUMINT only
+        </button>
+        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
           <option value="all">all kinds</option>
           {kinds.map((k: string) => <option key={k} value={k}>{k}</option>)}
         </select>
+        <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={activePath?.id || ""}
+          onChange={(e) => {
+            const p = (data.attack_paths || []).find((x: any) => x.id === e.target.value);
+            setActivePath(p || null);
+          }}>
+          <option value="">attack path: none</option>
+          {(data.attack_paths || []).map((p: any) => (
+            <option key={p.id} value={p.id}>⚡ {p.name}</option>
+          ))}
+        </select>
+        <div className="flex gap-1 ml-auto">
+          <button className="chip px-3 py-2 min-h-[40px] text-sm" onClick={() => setView((v) => ({ ...v, k: Math.min(4, v.k * 1.25) }))}>+</button>
+          <button className="chip px-3 py-2 min-h-[40px] text-sm" onClick={() => setView((v) => ({ ...v, k: Math.max(0.25, v.k * 0.8) }))}>−</button>
+          <button className="chip px-3 py-2 min-h-[40px] text-xs" onClick={() => setView({ x: 0, y: 0, k: 1 })}>reset view</button>
+        </div>
       </div>
-      <div className="min-w-[600px]">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 560 }}>
-          {edges.map((e: any, i: number) => {
-            const a = pos[e.src], b = pos[e.dst];
-            if (!a || !b) return null;
-            return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#243044" strokeWidth={1}>
-              <title>{e.relation} ({e.confidence}%)</title></line>;
-          })}
-          {nodes.map((n: any) => {
-            const p = pos[n.id];
-            return (
-              <g key={n.id}>
-                <circle cx={p.x} cy={p.y} r={n.kind === "target" ? 12 : n.interesting ? 9 : 6}
-                  fill={n.interesting ? "#ef4444" : color(n.kind)} opacity={0.9}>
-                  <title>{n.kind}: {n.label}</title>
-                </circle>
-                {(n.kind === "target" || n.interesting) && (
-                  <text x={p.x} y={p.y - 14} textAnchor="middle" fill="#e6e6e6" fontSize={10}>
-                    {n.label.slice(0, 28)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
+      {activePath && (
+        <div className="mb-2 rounded-lg border border-rose-500/40 bg-rose-950/30 p-3">
+          <p className="text-sm text-rose-200 font-semibold">⚡ {activePath.name}
+            {activePath.severity && <span className="text-xs text-rose-300/70 ml-2">{activePath.severity}</span>}
+            <button className="text-xs text-slate-400 ml-3 underline" onClick={() => setActivePath(null)}>clear highlight</button>
+          </p>
+          <ol className="list-decimal ml-5 mt-1 space-y-0.5">
+            {(activePath.steps || []).map((s: string, i: number) => (
+              <li key={i} className="text-xs text-slate-300">{s}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+      <div className="flex gap-3 flex-wrap">
+        <div className="flex-1 min-w-[320px]">
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full touch-none select-none"
+            style={{ maxHeight: 620, cursor: "grab", background: "#0b1120" }}
+            onWheel={onWheel} onPointerDown={onSvgDown} onPointerMove={onMove} onPointerUp={(e) => onUp(e)}>
+            <g transform={`translate(${W / 2 + view.x * view.k} ${H / 2 + view.y * view.k}) scale(${view.k}) translate(${-W / 2} ${-H / 2})`}>
+              {edges.map((e: any, i: number) => {
+                const a = pos[e.src], b = pos[e.dst];
+                if (!a || !b) return null;
+                const onPath = pathEdges.has(`${e.src}|${e.dst}`);
+                return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                  stroke={onPath ? "#f43f5e" : "#243044"} strokeWidth={onPath ? 2.5 : 1}
+                  opacity={activePath && !onPath ? 0.25 : 1}>
+                  <title>{e.relation} ({e.confidence}%)</title></line>;
+              })}
+              {nodes.map((n: any) => {
+                const p = pos[n.id];
+                if (!p) return null;
+                const onPath = pathSet.has(n.id);
+                return (
+                  <g key={n.id} opacity={dimmed(n.id) ? 0.25 : 1}
+                    onPointerDown={(e) => onNodeDown(e, n)} onPointerUp={(e) => onUp(e, n)}
+                    style={{ cursor: "pointer" }}>
+                    <circle cx={p.x} cy={p.y}
+                      r={n.kind === "target" ? 13 : onPath ? 10 : n.interesting ? 9 : 6}
+                      fill={n.interesting ? "#ef4444" : graphColor(n.kind)}
+                      stroke={selected?.id === n.id ? "#fff" : onPath ? "#f43f5e" : n.humint ? "#f9a8d4" : "none"}
+                      strokeWidth={selected?.id === n.id || onPath ? 2.5 : n.humint ? 1.5 : 0} opacity={0.95}>
+                      <title>{n.kind}: {n.label}</title>
+                    </circle>
+                    {(n.kind === "target" || n.interesting || n.humint || onPath) && (
+                      <text x={p.x} y={p.y - 15} textAnchor="middle" fill="#e6e6e6" fontSize={10}>
+                        {n.label.slice(0, 30)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          </svg>
+          <p className="text-[11px] text-slate-600 mt-1">drag to pan, scroll to zoom, drag a node to move it, click a node for its findings. Pink ring = HUMINT (public identity data).</p>
+        </div>
+        {selected && (
+          <div className="w-full sm:w-80 rounded-lg border border-slate-700/60 bg-slate-800/40 p-3 space-y-2 max-h-[620px] overflow-y-auto">
+            <div className="flex items-start gap-2">
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border" style={{ color: graphColor(selected.kind), borderColor: graphColor(selected.kind) }}>
+                {selected.kind.toUpperCase()}
+              </span>
+              {selected.humint && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border text-pink-300 border-pink-500/40">HUMINT</span>}
+              <button className="ml-auto text-slate-500 text-xs px-2" onClick={() => setSelected(null)}>✕</button>
+            </div>
+            <p className="text-sm font-medium break-all">{selected.label}</p>
+            {selected.meta?.platform && <p className="text-xs text-slate-400">platform: {selected.meta.platform}</p>}
+            <p className="text-xs text-slate-500">{(selected.findings || []).length} finding(s) on this node</p>
+            {(selected.findings || []).map((fd: any, i: number) => (
+              <div key={i} className="rounded border border-slate-700/50 p-2 space-y-1">
+                <div className="flex gap-2 items-center flex-wrap">
+                  <code className="text-amber-300 text-[11px] font-mono break-all">{fd.key}</code>
+                  {fd.confidence_tier && (
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${tierBadge(fd.confidence_tier)}`}>
+                      {tierLabel(fd.confidence_tier)}
+                    </span>
+                  )}
+                  <span className="text-[10px] text-slate-500 ml-auto">{fd.confidence}%</span>
+                </div>
+                <p className="text-xs break-words">{fd.value}</p>
+                <p className="text-[10px] text-slate-500">{fd.plugin}</p>
+                <CommandBlock commands={fd.commands} />
+              </div>
+            ))}
+            {(selected.findings || []).length === 0 && (
+              <p className="text-xs text-slate-500">No findings attached directly; this node links assets together.</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

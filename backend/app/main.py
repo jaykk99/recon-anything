@@ -472,6 +472,25 @@ class RunIn(BaseModel):
     module_overrides: Optional[Dict[str, str]] = None
     source_type: str = "website"  # website | bank | atm | bankatm
     bounty: bool = False  # bounty mode: prioritize high-impact vuln classes
+    # One-click preset (app/presets.py): quick | standard | deep.
+    # When set it supplies mode + plugin selection + hunter depth;
+    # explicit mode/plugins in the same request are overridden.
+    preset: Optional[str] = None
+
+
+@app.get("/api/presets", dependencies=[Depends(gate)])
+def api_presets():
+    """One-click scan presets (app/presets.py) for the new-scan UI."""
+    from .presets import list_presets, resolve_preset
+    out = []
+    for p in list_presets():
+        resolved = resolve_preset(p["id"])
+        out.append({**p,
+                    "plugins": resolved["plugins"],
+                    "plugin_count": (len(resolved["plugins"])
+                                     if resolved["plugins"] is not None
+                                     else None)})
+    return {"presets": out}
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])
@@ -483,6 +502,19 @@ async def api_start_run(body: RunIn, request: Request):
     if body.source_type not in ("website", "bank", "atm", "bankatm"):
         raise HTTPException(400,
                             "source_type must be website|bank|atm|bankatm")
+    # --- one-click preset: supplies mode/plugins/depth ---------------
+    preset_name: Optional[str] = None
+    preset_max_depth: Optional[int] = None
+    if body.preset:
+        from .presets import resolve_preset
+        try:
+            resolved = resolve_preset(body.preset)
+        except KeyError:
+            raise HTTPException(400, f"unknown preset: {body.preset}")
+        preset_name = resolved["preset"]
+        preset_max_depth = resolved["max_depth"]
+        body.mode = resolved["mode"]
+        body.plugins = resolved["plugins"]
     # --- plan gating (customers only; owner/open mode unchanged) ------
     actor = getattr(request.state, "actor", {"kind": "open", "user": None})
     run_user_id = None
@@ -549,6 +581,7 @@ async def api_start_run(body: RunIn, request: Request):
                         user_id=run_user_id,
                         source_type=body.source_type,
                         summary={"bounty": bool(body.bounty),
+                                 "preset": preset_name,
                                  "pending_enqueue": {
                                      "targets": body.targets,
                                      "mode": body.mode,
@@ -556,6 +589,7 @@ async def api_start_run(body: RunIn, request: Request):
                                      "module_overrides": overrides,
                                      "source_type": body.source_type,
                                      "bounty": bool(body.bounty),
+                                     "max_depth": preset_max_depth,
                                      "excluded_plugin_ids":
                                          excluded_plugin_ids}}))
         session.commit()
@@ -583,6 +617,7 @@ class ServiceScanIn(BaseModel):
     plugins: Optional[List[str]] = None
     module_overrides: Optional[Dict[str, str]] = None
     bounty: bool = False
+    preset: Optional[str] = None  # quick | standard | deep (app/presets.py)
 
 
 @app.post("/api/service/scans", dependencies=[Depends(service_auth.service_gate)])
@@ -597,6 +632,16 @@ async def api_service_start_scan(body: ServiceScanIn):
         raise HTTPException(400, "target host could not be parsed")
     if service_auth.is_blocked_target(host):
         raise HTTPException(400, "crypto.com is never a scan target")
+    preset_max_depth: Optional[int] = None
+    if body.preset:
+        from .presets import resolve_preset
+        try:
+            resolved = resolve_preset(body.preset)
+        except KeyError:
+            raise HTTPException(400, f"unknown preset: {body.preset}")
+        preset_max_depth = resolved["max_depth"]
+        body.mode = resolved["mode"]
+        body.plugins = resolved["plugins"]
     # Full scan surface, same options the human run form offers.
     # Bank/ATM source types imply explicit authorization exactly as in
     # api_start_run — here that authorization is Jay's explicit ask
@@ -618,6 +663,7 @@ async def api_service_start_scan(body: ServiceScanIn):
                         source_type=body.source_type,
                         summary={"service": True,
                                  "service_host": host,
+                                 "preset": body.preset,
                                  "pending_enqueue": {
                                      "targets": body.target,
                                      "mode": body.mode,
@@ -625,6 +671,7 @@ async def api_service_start_scan(body: ServiceScanIn):
                                      "module_overrides": overrides,
                                      "source_type": body.source_type,
                                      "bounty": bool(body.bounty),
+                                     "max_depth": preset_max_depth,
                                      "excluded_plugin_ids": None}}))
         session.commit()
         keys = load_all(session)
@@ -658,9 +705,13 @@ def api_service_scan_detail(run_id: str,
             raise missing_run(run_id)
         rows = findings_dump(session, run_id, show_secrets=False)
         counts: Dict[str, int] = {}
+        tier_counts: Dict[str, int] = {}
         for r in rows:
             sev = r.get("bounty_value") or "low"
             counts[sev] = counts.get(sev, 0) + 1
+            tier = r.get("confidence_tier")
+            if tier:
+                tier_counts[tier] = tier_counts.get(tier, 0) + 1
         # 2026-10-26 (Jay: "everything should be shown"): the old code
         # hard-capped this payload at rows[:200], so the black-team path
         # silently never saw findings past 200. Default is now the FULL
@@ -676,6 +727,7 @@ def api_service_scan_detail(run_id: str,
             "findings_count": len(rows),
             "findings_returned": len(page),
             "severity_counts": counts,
+            "confidence_tiers": tier_counts,
             # Secrets are masked by findings_dump.
             "findings": page,
         }
@@ -839,6 +891,23 @@ def api_graph(run_id: str, request: Request):
     try:
         _owned_run(session, run_id, request)
         return graph_payload(session, run_id)
+    finally:
+        session.close()
+
+
+@app.get("/api/runs/{run_id}/surface-graph", dependencies=[Depends(gate)])
+def api_surface_graph(run_id: str, request: Request):
+    """Interactive attack-surface graph (app/surface_graph.py): the
+    stored correlation graph + the assetgraph plugin's bus map +
+    correlation attack paths, fused into one payload whose nodes
+    carry their findings and verification commands, with HUMINT
+    nodes (public WHOIS orgs, published emails, public accounts)
+    flagged for the interactive view."""
+    from .surface_graph import surface_graph_payload
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        return surface_graph_payload(session, run_id)
     finally:
         session.close()
 
