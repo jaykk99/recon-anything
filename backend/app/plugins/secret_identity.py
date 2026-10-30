@@ -1,27 +1,23 @@
-"""Exposed-secret identification, masked only.
+"""Exposed-secret identification, full value shown.
 
 Problem this solves: a finding that only says "a secret leaked" does not
-let the owner tell *which* secret leaked. The fix is not to print the
-secret - that would spread the leak into findings, logs, and reports.
-Instead every identification finding carries rich masked metadata:
+let the owner tell *which* secret leaked. Every identification finding
+therefore carries the found secret IN FULL (Jay's order, 2026-10-29,
+reversing the 2026-10-27 masked-only rule), plus rich metadata:
 
+- the full secret value, exactly as found (``full_value``)
 - source file/URL and the exact line and column of the match
 - secret type (the variable/field name that carried it)
-- length, a masked value, and a SHA-256 fingerprint
-- surrounding context with the secret blanked out, never included
+- length, a masked preview, and a SHA-256 fingerprint (kept as extra
+  metadata; the local fingerprint matcher in
+  backend/scripts/match_secret_fingerprint.py still works as an
+  additional identification tool)
+- surrounding context exactly as found, with the value visible in it
 - for wallet material, the derived public wallet and balance, but only
   when the caller already has them (this module never derives a wallet
   from private material and never looks a balance up on its own)
 
-The owner identifies the secret by matching the fingerprint against
-their own vault locally (see backend/scripts/match_secret_fingerprint.py),
-which hashes local labels and prints only labels and fingerprints - it
-never prints, stores, or transmits a secret value.
-
-Hard rule for this module, its plugin, its tests, and its matcher:
-a full private key or seed phrase is never output, stored, or placed
-in a finding, evidence dict, log line, or report. Tests and canaries
-use invented fake values only.
+Tests and canaries use invented fake values only.
 """
 from __future__ import annotations
 
@@ -33,8 +29,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..classifier import domain_from_target
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-
-REDACTED_TOKEN = "[REDACTED]"
 
 _PLACEHOLDERS = {
     "example", "sample", "test", "testing", "demo", "placeholder",
@@ -72,23 +66,19 @@ def locate(text: str, secret: str) -> Tuple[Optional[int], Optional[int]]:
     return line, column
 
 
-def blank_context(text: str, secret: str, window: int = 80) -> str:
-    """Surrounding context with every occurrence of the secret blanked.
+def context_snippet(text: str, secret: str, window: int = 80) -> str:
+    """Surrounding context exactly as found, secret visible in it.
 
     Returns a snippet of ``window`` chars on each side of the first
-    match, with the secret replaced by ``[REDACTED]``. The returned
-    string never contains the secret itself.
+    match, with the secret left in place so the owner sees the value
+    in its original context.
     """
     if not secret or secret not in (text or ""):
-        snippet = (text or "")[: window * 2]
-        return snippet
+        return (text or "")[: window * 2]
     idx = text.find(secret)
     start = max(0, idx - window)
     end = min(len(text), idx + len(secret) + window)
-    snippet = text[start:idx] + REDACTED_TOKEN + text[idx + len(secret):end]
-    # Defensive: blank any further occurrence too.
-    snippet = snippet.replace(secret, REDACTED_TOKEN)
-    return snippet
+    return text[start:end]
 
 
 def identify_finding(
@@ -101,17 +91,20 @@ def identify_finding(
     derived_public_wallet: Optional[str] = None,
     balance: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build masked identification evidence for one exposed secret.
+    """Build identification evidence for one exposed secret.
 
-    The returned dict deliberately has no key holding the full secret.
-    ``derived_public_wallet`` and ``balance`` are public data supplied
-    by the caller; they are passed through unchanged and are never
-    derived here from private material.
+    The returned dict carries the full secret in ``full_value`` (and in
+    the ``context`` snippet, exactly as found), plus the fingerprint
+    and masked preview as extra metadata. ``derived_public_wallet``
+    and ``balance`` are public data supplied by the caller; they are
+    passed through unchanged and are never derived here from private
+    material.
     """
     line, column = (locate(context_text, secret)
                     if context_text is not None else (None, None))
     evidence: Dict[str, Any] = {
         "secret_type": secret_type,
+        "full_value": secret,
         "length": len(secret or ""),
         "masked_value": mask_value(secret),
         "fingerprint": fingerprint(secret),
@@ -119,14 +112,14 @@ def identify_finding(
         "source_url": source_url,
         "line": line,
         "column": column,
-        "context_blanked": (blank_context(context_text, secret)
-                            if context_text is not None else None),
-        "full_value_included": False,
+        "context": (context_snippet(context_text, secret)
+                    if context_text is not None else None),
+        "full_value_included": True,
         "remediation": ("Rotate this credential immediately, remove it "
                         "from served code/config, and audit access logs "
-                        "for misuse. Match the fingerprint locally to "
-                        "identify which credential this is; never paste "
-                        "the value into a report."),
+                        "for misuse. The full value is shown above; "
+                        "the fingerprint can also be matched locally "
+                        "against your vault."),
         "scope_note": ("Authorized testing only: verify you own this "
                        "asset or it is in an approved bounty scope "
                        "before acting on this finding."),
@@ -141,7 +134,7 @@ def identify_finding(
 def contains_full_secret(obj: Any, secret: str) -> bool:
     """Recursively check whether ``secret`` appears anywhere in ``obj``.
 
-    Used by tests to prove a finding never carries the full value.
+    Used by tests to prove a finding carries the full value.
     Masked forms contain only a few chars of the value, so only the
     complete string counts as a hit.
     """
@@ -177,10 +170,9 @@ class SecretIdentityPlugin(Plugin):
     passive = True
     cost = Cost.FREE
     group = "identity"
-    description = ("Identify exactly which secret is exposed from "
-                   "masked metadata only: source, line, type, length, "
-                   "masked value, and fingerprint. Full values are "
-                   "never shown.")
+    description = ("Identify exactly which secret is exposed: the "
+                   "full value as found, plus source, line, type, "
+                   "length, and fingerprint.")
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
         t0 = time.monotonic()
@@ -243,12 +235,12 @@ class SecretIdentityPlugin(Plugin):
                 findings.append(self._f(
                     "leak", "exposed_secret_identified",
                     (f"Exposed secret identified: {var_name.lower()} "
-                     f"{mask_value(value)} at {url} "
+                     f"{value} at {url} "
                      f"line {evidence['line']} "
                      f"(fingerprint {fp[:19]}...)"),
                     where, source_url=url, confidence=75,
                     evidence=evidence, passive=True))
         res = self._ok(findings,
-                       f"{len(findings)} secret(s) identified (masked)")
+                       f"{len(findings)} secret(s) identified")
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res

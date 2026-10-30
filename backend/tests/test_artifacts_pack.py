@@ -185,7 +185,7 @@ def test_debug_symbols_fire_pdb_and_dsym():
     assert "PDB" in vals and "dSYM" in vals
 
 
-def test_archive_configs_names_keystore_and_masked_secret():
+def test_archive_configs_names_keystore_and_secret():
     canary = Canary(_full_routes())
     res = _run("da_archive_configs", canary)
     assert res.status == "ok"
@@ -201,12 +201,15 @@ def test_archive_configs_names_keystore_and_masked_secret():
     secret_f = next(f for f in res.findings
                     if f.key == "archive_configs_config_secret")
     blob = json.dumps(secret_f.value) + json.dumps(secret_f.evidence)
-    assert S.FAKE_SECRET not in blob
+    # Full value shown since 2026-10-29 (Jay's order), fingerprint and
+    # masked preview kept as metadata.
+    assert S.FAKE_SECRET in blob
+    assert secret_f.evidence["full_value"] == S.FAKE_SECRET
     digest = hashlib.sha256(S.FAKE_SECRET.encode()).hexdigest()
-    assert digest in blob  # fingerprint, not the value
+    assert digest in blob  # fingerprint alongside the value
     masked = secret_f.evidence["masked_value"]
     assert masked != S.FAKE_SECRET and S.FAKE_SECRET not in masked
-    assert "..." in masked or "*" in masked  # visibly redacted
+    assert "..." in masked or "*" in masked  # preview stays masked
 
 
 def test_wasm_surface_imports_exports_and_internal_url():
@@ -275,15 +278,21 @@ def test_build_listing_artifact_filenames():
     assert "notes.txt" not in names
 
 
-def test_no_full_secret_anywhere_in_any_finding():
+def test_full_secret_only_in_archive_config_finding():
+    # Since 2026-10-29 the archive-config secret finding shows the
+    # full value by design; no other da_* plugin's findings may
+    # carry it.
     canary = Canary(_full_routes())
-    blob = ""
     for pid in DA_IDS:
         res = _run(pid, canary)
         assert res.status == "ok", pid
+        blob = ""
         for f in res.findings:
             blob += f.value + json.dumps(f.evidence) + "\n"
-    assert S.FAKE_SECRET not in blob
+        if pid == "da_archive_configs":
+            assert S.FAKE_SECRET in blob
+        else:
+            assert S.FAKE_SECRET not in blob, pid
 
 
 def test_passive_mode_uses_wayback():

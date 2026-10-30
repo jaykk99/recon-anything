@@ -4,7 +4,7 @@ Every ai plugin runs through the REAL Ctx against a canary served
 via httpx MockTransport (tests/aipack_samples.py): each extraction
 class must fire on the canary, every plugin must stay silent on the
 clean site, and no full planted secret may appear in any finding
-(masked + fingerprint only).
+(full value shown + fingerprint).
 """
 import asyncio
 import hashlib
@@ -127,13 +127,15 @@ def test_llms_sensitive_and_external_links_flagged():
     assert ext and "example.org" in ext[0].value, r.reason
 
 
-def test_llms_secret_masked_with_fingerprint():
+def test_llms_secret_shown_in_full_with_fingerprint():
     r = _run("ai_llms_secrets", CANARY)
     hits = _by_key(r, "ai_llms_secret")
     assert hits, r.reason
     fps = {f.evidence.get("fingerprint_sha256") for f in hits}
     assert _fp(samples.STRIPE_KEY) in fps
-    assert samples.STRIPE_KEY not in _blob(r)
+    assert samples.STRIPE_KEY in _blob(r)
+    assert any(f.evidence.get("full_value") == samples.STRIPE_KEY
+               for f in hits)
 
 
 def test_robots_ai_inventory():

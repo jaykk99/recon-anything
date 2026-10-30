@@ -4,7 +4,7 @@ Every xml plugin runs through the REAL Ctx against a canary served
 via httpx MockTransport (tests/xmlpack_samples.py): each extraction
 class must fire on the canary, every plugin must stay silent on the
 clean site, and no full planted secret may appear in any finding
-(masked + fingerprint only).
+(full value shown + fingerprint; PII stays masked).
 """
 import asyncio
 import hashlib
@@ -112,27 +112,29 @@ def test_exactly_5_new_detectors_registered():
     assert len(discover()) == 634  # 626 on master + 8 crypto-protocol plugins
 
 
-def test_connstr_password_masked_with_fingerprint():
+def test_connstr_password_shown_in_full_with_fingerprint():
     r = _run("xml_secrets", CANARY)
     hits = _by_key(r, "xml_connection_string")
     assert hits, r.reason
     assert hits[0].evidence["fingerprint_sha256"] == _fp(samples.CONN_PWD)
-    assert samples.CONN_PWD not in _blob(r)
+    assert hits[0].evidence["full_value"] == samples.CONN_PWD
+    assert samples.CONN_PWD in _blob(r)
 
 
-def test_credential_attribute_masked():
+def test_credential_attribute_shown_in_full():
     r = _run("xml_secrets", CANARY)
     hits = _by_key(r, "xml_credential_attribute")
     assert hits, r.reason
     assert hits[0].evidence["fingerprint_sha256"] == _fp(samples.ATTR_PWD)
-    assert samples.ATTR_PWD not in _blob(r)
+    assert hits[0].evidence["full_value"] == samples.ATTR_PWD
+    assert samples.ATTR_PWD in _blob(r)
 
 
-def test_api_key_element_masked():
+def test_api_key_element_shown_in_full():
     r = _run("xml_secrets", CANARY)
     fps = {f.evidence.get("fingerprint_sha256") for f in r.findings}
     assert _fp(samples.STRIPE_KEY) in fps
-    assert samples.STRIPE_KEY not in _blob(r)
+    assert samples.STRIPE_KEY in _blob(r)
 
 
 def test_js_discovered_xml_is_mined():
@@ -140,7 +142,7 @@ def test_js_discovered_xml_is_mined():
     r = _run("xml_secrets", CANARY)
     fps = {f.evidence.get("fingerprint_sha256") for f in r.findings}
     assert _fp(samples.GH_TOKEN) in fps
-    assert samples.GH_TOKEN not in _blob(r)
+    assert samples.GH_TOKEN in _blob(r)
     hosts = {f.evidence.get("host")
              for f in _by_key(r, "xml_internal_reference")}
     assert "billing.internal" in hosts
@@ -251,9 +253,15 @@ def test_clean_site_silence(pid):
                            f"{[f.key for f in r.findings]}"
 
 
-def test_no_planted_secret_anywhere():
+def test_planted_secrets_only_in_xml_secrets_findings():
+    # Full values are shown by design since 2026-10-29, but ONLY the
+    # secret-mining plugin may carry them; no other xml plugin's
+    # findings may contain a planted secret.
     for pid in XML_IDS:
         r = _run(pid, CANARY)
         blob = _blob(r)
         for secret in samples.PLANTED_SECRETS:
-            assert secret not in blob, f"{pid} leaked {secret[:6]}..."
+            if pid == "xml_secrets":
+                assert secret in blob, f"{pid} did not show {secret[:6]}..."
+            else:
+                assert secret not in blob, f"{pid} leaked {secret[:6]}..."

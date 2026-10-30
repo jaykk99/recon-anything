@@ -7,11 +7,11 @@ source map, it is parsed locally and reconstructed:
   - original source paths (webpack://, sources[])
   - embedded sourcesContent, if present
   - internal URLs: localhost, staging/dev/internal hostnames
-  - hardcoded tokens/keys (redacted per the secretutils convention)
+  - hardcoded tokens/keys (full values per the secretutils convention)
   - internal API routes, debug flags, comments with credentials
 
 Secret handling follows the repo convention: findings never carry a
-full secret in `value` (redacted prefix...suffix); the full match goes
+full secret in `value` exactly as found; the full match also goes
 in evidence["match"] for owner verification/rotation.
 
 If a key/secret is found, a safe READ-ONLY verification call is made
@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from ..ratelimit import fetch, fetch_many
 from .base import Cost, Ctx, Plugin, PluginResult, Target
-from .secretutils import PLACEHOLDERS, evidence_block, is_placeholder, redact
+from .secretutils import PLACEHOLDERS, evidence_block, is_placeholder
 
 MAX_JS = 25
 MAP_BODY_LIMIT = 5_000_000
@@ -217,7 +217,7 @@ class SourcemapPlugin(Plugin):
                               "remediation": "Disable debug/verbose flags in "
                                              "production builds."}))
 
-            # 5) Secrets + credential comments (redacted; verified where possible).
+            # 5) Secrets + credential comments (full values; verified where possible).
             for kind, pat, sev in SECRET_PATTERNS:
                 for m in re.finditer(pat, corpus):
                     secret = m.group(1) if m.lastindex else m.group(0)
@@ -231,7 +231,7 @@ class SourcemapPlugin(Plugin):
                                    else "UNVERIFIED")
                     findings.append(self._f(
                         "leak", "sourcemap_secret",
-                        f"{status_word}: {kind} {redact(secret)} in source map "
+                        f"{status_word}: {kind} {secret} in source map "
                         f"for {urlparse(js).path or js}",
                         source="source map reconstructor", source_url=map_url,
                         confidence=95 if verified is True else 75,

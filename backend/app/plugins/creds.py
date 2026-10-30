@@ -2,8 +2,8 @@
 
 Hunts username/password pairs, database URLs with embedded creds,
 basic-auth headers, framework secret keys and weak default logins in
-public pages and JS. Read-only GETs. Findings are CRITICAL, redacted in
-the value, full match in evidence with rotation advice. Authorized
+public pages and JS. Read-only GETs. Findings are CRITICAL, full value shown
+in the finding and in evidence with rotation advice. Authorized
 testing only.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import evidence_block, finding_value, is_placeholder, redact
+from .secretutils import evidence_block, finding_value, is_placeholder
 
 PATTERNS = [
     # (name, regex, confidence, severity)
@@ -38,7 +38,7 @@ PATTERNS = [
     ("userpass_pair", r"(?i)(?:user(?:name)?|login|email)\s*[:=]\s*['\"]([^'\"]{2,80})['\"].{0,60}?(?:password|passwd|pwd)\s*[:=]\s*['\"]([^'\"]{4,120})['\"]", 75, "critical"),
 ]
 
-# user:pass embedded in the pair pattern above is redacted as a unit.
+# user:pass embedded in the pair pattern above is shown as a unit.
 WEAK_DEFAULTS = [
     (r"(?i)\badmin\b\s*[:=]\s*['\"]admin['\"]", "admin/admin"),
     (r"(?i)\badmin\b\s*[:=]\s*['\"]password['\"]", "admin/password"),
@@ -134,7 +134,7 @@ class CredsPlugin(Plugin):
             seen.add(key)
             findings.append(self._f(
                 "leak", f"cred_{name}",
-                finding_value(severity, name.replace("_", " "), redact(m), where),
+                finding_value(severity, name.replace("_", " "), m, where),
                 source=f"credential scan: {where}", source_url=url,
                 confidence=conf, passive=passive,
                 evidence=evidence_block(m, name, remed, severity)))

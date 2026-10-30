@@ -5,7 +5,7 @@ for high-entropy strings (likely secrets) using Shannon entropy scoring.
 Also probes for exposed .git metadata (/.git/HEAD, /.git/config) and flags
 the exposure so truffle-style git-history analysis can be done offline.
 
-Detection only: read-only GETs of public pages. Findings are redacted.
+Detection only: read-only GETs of public pages. Full values shown.
 Authorized testing only.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import evidence_block, finding_value, is_placeholder, redact
+from .secretutils import evidence_block, finding_value, is_placeholder
 
 REMED_KEY = "api_key"
 
@@ -95,7 +95,7 @@ class TruffleScanPlugin(Plugin):
             seen.add(key)
             findings.append(self._f(
                 "leak", "entropy_secret",
-                finding_value("high", "high-entropy string", redact(m), where),
+                finding_value("high", "high-entropy string", m, where),
                 source=f"entropy scan: {where}", source_url=url,
                 confidence=70, passive=passive,
                 evidence=evidence_block(
