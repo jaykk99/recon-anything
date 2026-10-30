@@ -245,4 +245,4 @@ def test_cves_plugin_badges_kev_and_not_non_kev():
 def test_registry_grew_by_passive_subdomains():
     reg = discover()
     assert "passive_subdomains" in reg
-    assert len(reg) == 634  # 626 on master + 8 crypto-protocol plugins
+    assert len(reg) == 635  # 634 + 1 idor/error-leak plugin (feature/idor-error-leak)
