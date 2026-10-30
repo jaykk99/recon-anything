@@ -413,6 +413,56 @@ this fix instead of a bare "run not found".
 | `RECON_CONCURRENCY` | `5` | Parallel plugins per run. |
 | `RECON_RPS` | `25` | Per-host request pacing (requests/sec). |
 | `RECON_EVIDENCE_DIR` | `./evidence` | On-disk evidence files (ephemeral on Render free tier). |
+| `RECON_SERVICE_KEY` | (generated) | Auth key for the MCP server (`/mcp`). When unset, a key is generated once and saved 0600 to the key file below; set the same value on the API and any standalone MCP service. |
+| `RECON_SERVICE_KEY_FILE` | `~/workspace/recon-mcp-service-key.txt` | Where the generated MCP service key is stored when `RECON_SERVICE_KEY` is unset. |
+| `MCP_PORT` | `8765` | Port for the standalone MCP server (`python -m app.mcp_server`); `$PORT` is honored when `MCP_PORT` is unset. |
+
+## MCP server
+
+ReconAnything is also an MCP server (Model Context Protocol, streamable
+HTTP transport), so MCP clients (Claude, Error Inbox's black team, any
+MCP host) can start scans and read results directly. It is mounted on
+the API at `/mcp`, and the moment the backend is deployed the MCP
+endpoint is live at `<backend-url>/mcp`. It can also run as its own
+service:
+
+```bash
+cd backend
+python -m app.mcp_server   # standalone MCP-only service
+```
+
+Tools (they wrap the same engine as the REST API; detection-only,
+exactly like the web app):
+
+| Tool | What it does |
+|------|--------------|
+| `recon_health` | Service + database health, plugin count |
+| `recon_start_scan` | Start a scan (`targets`, `preset` quick/standard/deep, optional `mode`/`plugins`/`source_type`/`bounty`); honors the SANDBOX/LIVE gate |
+| `recon_list_runs` | Recent runs with status + findings counts |
+| `recon_run_status` | One run's status, live progress, targets, summary |
+| `recon_get_findings` | A run's findings (secrets masked) with confidences; optional `min_confidence` filter |
+| `recon_get_graph` | A run's attack-surface correlation graph (nodes/edges) |
+| `recon_list_plugins` | The full plugin registry |
+
+Auth: every MCP request needs the service key, as the
+`X-Recon-Service-Key` header (or `Authorization: Bearer <key>`). No key
+or a wrong key gets HTTP 401. See the `RECON_SERVICE_KEY` env vars
+above.
+
+Client config (Claude / any MCP host):
+
+```json
+{
+  "mcpServers": {
+    "recon-anything": {
+      "url": "<backend-url>/mcp",
+      "headers": {
+        "X-Recon-Service-Key": "<RECON_SERVICE_KEY>"
+      }
+    }
+  }
+}
+```
 
 ## Demo
 
