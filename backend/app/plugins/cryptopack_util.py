@@ -602,7 +602,8 @@ class PackPlugin(Plugin):
                     if self.SECRET:
                         from .secretutils import redact
                         ev["match_redacted"] = redact(value, show=4)
-                        display = f"{label}: {redact(value, show=4)}"
+                        ev["full_value"] = value
+                        display = f"{label}: {value}"
                     else:
                         ev["match"] = value
                         display = self._display(label, value)
@@ -616,7 +617,7 @@ class PackPlugin(Plugin):
                     # multi-chain enrichment plugin can look up balance,
                     # activity and labels. Was missing: only ETH contracts
                     # reached the bus, so BTC/LTC/DOGE/XRP/... addresses were
-                    # detected but never enriched. Skip redacted secrets and
+                    # detected but never enriched. Skip secret matches and
                     # bad-checksum non-addresses.
                     if ("address" in key and "bad_checksum" not in key
                             and not self.SECRET):

@@ -8,7 +8,7 @@ RPC infrastructure providers, and the key formats themselves:
 a WIF string or an xprv in served content is a wallet compromise
 regardless of what variable name it sits next to. All checksum
 formats are verified (Base58Check, RIPEMD-160 where relevant).
-Secrets are redacted in findings.
+Secrets are shown in full in findings.
 """
 from __future__ import annotations
 

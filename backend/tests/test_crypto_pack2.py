@@ -696,8 +696,12 @@ def test_sourcemap_findings():
     result = asyncio.run(plugin.run(target, ctx))
     keys = [f.key for f in result.findings]
     assert "sourcemap_seed_phrase" in keys, keys
-    # the raw phrase must never appear in a finding value
-    assert phrase not in " ".join(f.value for f in result.findings)
+    # the raw phrase is shown IN FULL in the finding since 2026-10-29
+    # (Jay's order reversing the masked-only rule)
+    assert phrase in " ".join(f.value for f in result.findings)
+    seed_f = next(f for f in result.findings
+                  if f.key == "sourcemap_seed_phrase")
+    assert seed_f.evidence["full_value"] == phrase
 
 
 def test_fetch_plugins_clean():

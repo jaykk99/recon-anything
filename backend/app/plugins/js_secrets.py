@@ -6,7 +6,7 @@ patterns (cloud keys, provider tokens, private keys, JWTs, generic
 assignments), mines HTML comments for secrets, discovers source maps
 (sourceMappingURL + .map guessing) and scans sourcesContent too.
 
-GET only. Findings carry redacted values (never the full secret) plus
+GET only. Findings carry full values as found, plus
 rotation remediation. Authorized testing only.
 """
 from __future__ import annotations
@@ -22,9 +22,9 @@ from ..ratelimit import fetch
 from ..net import web_base
 from .injutil import same_domain
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import is_placeholder, redact
+from .secretutils import is_placeholder
 
-# (pattern, label, severity) - redacted in findings, never full values
+# (pattern, label, severity) - full values shown in findings
 SECRET_PATTERNS: List[Tuple[str, str, str]] = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key ID", "critical"),
     (r"aws_secret[^a-zA-Z0-9]{0,10}[\"']?([A-Za-z0-9/+=]{30,})[\"']?", "AWS secret key", "critical"),
@@ -210,21 +210,22 @@ class JsSecretsPlugin(Plugin):
                     findings.append(self._f(
                         "leak", "js_secret",
                         f"{sev.upper()}: {label} exposed in {kind} "
-                        f"({redact(raw)})",
+                        f"({raw})",
                         source=f"JS secret mining ({kind})",
                         source_url=src_url,
                         confidence=80 if sev in ("critical", "high") else 65,
                         passive=passive,
                         evidence={"severity": sev,
                                   "secret_type": label,
-                                  "redacted": redact(raw),
+                                  "full_value": raw,
                                   "where": kind,
                                   "remediation": ("Rotate this secret immediately "
                                                   "at the provider, then remove "
                                                   "it from client-side code. "
                                                   "Move it server-side."),
-                                  "scope_note": "Redacted. Rotate immediately; "
-                                                "never ship secrets client-side."}))
+                                  "scope_note": "Full value shown. Rotate "
+                                                "immediately; never ship "
+                                                "secrets client-side."}))
                     if len(findings) >= 40:
                         break
                 if len(findings) >= 40:

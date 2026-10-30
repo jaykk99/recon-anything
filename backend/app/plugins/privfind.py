@@ -4,11 +4,11 @@ connection strings, tokens, wallet material, and personal-data leaks in
 public pages, JS bundles, and served files.
 
 Detection only. Nothing here uses, validates, or transmits a found
-secret anywhere. Every secret-shaped match is stored MASKED (first/last
-few chars via secretutils.redact) plus a SHA-256 fingerprint of the
-full value; the full value never reaches a Finding, the DB, exports,
-or logs. Personal-data findings mask all but two characters and carry
-a distinct-value count.
+secret anywhere. Every secret-shaped match is shown IN FULL in the
+finding (Jay's order, 2026-10-29, reversing the masked-only rule),
+plus a SHA-256 fingerprint of the full value as extra metadata.
+Personal-data (identity) findings stay masked - all but two
+characters - and carry a distinct-value count.
 
 Surfaces:
 - PfContent plugins scan the homepage + same-domain JS bundles through
@@ -254,10 +254,18 @@ class PfContent(Plugin):
                 "remediation": _REMEDIATION,
             }
             if self.CATEGORY == "identity":
+                # Personal-data findings stay masked (Jay's 2026-10-29
+                # full-value order covers secrets/credentials, not PII).
                 ev["values_count"] = len(hits)
+                shown = redact(value, show=self.SHOW)
+            else:
+                # Secrets/credentials are shown IN FULL (Jay's order,
+                # 2026-10-29, reversing the masked-only rule).
+                ev["full_value"] = value
+                shown = value
             findings.append(self._f(
                 self.CATEGORY, self.KEY,
-                f"{self.LABEL}: {redact(value, show=self.SHOW)}",
+                f"{self.LABEL}: {shown}",
                 source=f"private findings: {self.LABEL}",
                 source_url=url, confidence=self.CONF, passive=True,
                 evidence=ev))
@@ -702,8 +710,9 @@ def _make_content(spec: dict):
     attrs = {
         "id": spec["id"], "label": spec["label"],
         "description": (f"Private findings: detects {spec['label']} publicly "
-                        "exposed in page/JS text. Masked + fingerprinted; "
-                        "detection only."),
+                        "exposed in page/JS text. Full value shown for "
+                        "secrets (identity/PII stays masked); detection "
+                        "only."),
         "group": spec["group"], "PATTERN": spec["pattern"],
         "KEY": spec["key"], "LABEL": spec["label"], "CONF": spec["conf"],
         "CATEGORY": spec["category"], "SEVERITY": spec["severity"],

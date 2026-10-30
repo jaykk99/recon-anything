@@ -382,11 +382,12 @@ def test_canary_crypto_site_key_hunters_find_planted_secrets():
     assert any("wif" in k for k in keys), keys
     # the keystore JSON at the wallet path
     assert "keystore_file_exposed" in keys, keys
-    # full secrets NEVER appear in any finding value
+    # full secrets ARE shown in finding values since 2026-10-29
+    # (Jay's order reversing the masked-only rule)
     blob = " ".join(f.value for f in findings)
-    assert phrase not in blob
-    assert CANARY_WIF not in blob
-    assert CANARY_HEX not in blob
+    assert phrase in blob
+    assert CANARY_WIF in blob
+    assert CANARY_HEX in blob
     # and the found key findings rank as exposed-key findings
     for f in findings:
         if f.key in ("bip39_seed_phrase", "env_private_key",

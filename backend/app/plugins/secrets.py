@@ -2,7 +2,7 @@
 
 Scans the homepage HTML and every first-party JS bundle for 90+ API key
 and token patterns. Read-only GETs of public pages. Findings are
-CRITICAL, redacted in the value, full match in evidence with rotation
+CRITICAL, full value shown in the finding and in evidence with rotation
 advice. Authorized testing only.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import evidence_block, finding_value, is_placeholder, redact
+from .secretutils import evidence_block, finding_value, is_placeholder
 
 # (name, regex, confidence, severity)
 PATTERNS = [
@@ -191,7 +191,7 @@ class SecretsPlugin(Plugin):
             seen.add(key)
             findings.append(self._f(
                 "leak", f"exposed_{name}",
-                finding_value(severity, name.replace("_", " "), redact(m), where),
+                finding_value(severity, name.replace("_", " "), m, where),
                 source=f"secret scan: {where}", source_url=url,
                 confidence=conf, passive=passive,
                 evidence=evidence_block(m, name, REMED_KEY, severity)))

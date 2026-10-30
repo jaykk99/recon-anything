@@ -36,8 +36,8 @@ was built (ids AND patterns read, not assumed):
   gx_istio_debug, gx_graphql_schema_exposure.
 
 Detection only, authorized targets only. Nothing here uses a found
-credential. Secrets are stored MASKED (secretutils.redact) plus a
-SHA-256 fingerprint; the full value never reaches a Finding. Bucket
+credential. Secrets are shown IN FULL in findings (Jay's order,
+2026-10-29), plus a SHA-256 fingerprint as extra metadata. Bucket
 proof = the listing itself + object count + up to 3 key names - object
 bodies are never downloaded (object-read proof is a HEAD). GraphQL
 proof = schema summary counts, never a data query.
@@ -531,7 +531,7 @@ class GxGitHistorySecrets(Plugin):
                         findings.append(self._f(
                             "leak", key,
                             f"{sev.upper()}: {name.replace('_', ' ')} "
-                            f"{redact(val)} in repo file '{path}' "
+                            f"{val} in repo file '{path}' "
                             f"({where}, commit {csha[:10]})",
                             source="git history scan",
                             source_url=f"{base}/.git/objects/"
@@ -541,6 +541,7 @@ class GxGitHistorySecrets(Plugin):
                                 "severity": sev, "detector": self.id,
                                 "rule": name,
                                 "match_redacted": redact(val),
+                                "full_value": val,
                                 "fingerprint_sha256": _fingerprint(val),
                                 "commit": csha, "path": path,
                                 "in_head": in_head,
@@ -1151,13 +1152,14 @@ class GxPineconeKey(Plugin):
         for value, (where, url) in list(hits.items())[:5]:
             findings.append(self._f(
                 "leak", "pinecone_api_key_exposed",
-                f"CRITICAL: Pinecone API key {redact(value)} in "
+                f"CRITICAL: Pinecone API key {value} in "
                 f"{where} - full access to the account's vector "
                 f"indexes",
                 source="completeness pack: Pinecone API key",
                 source_url=url, confidence=92, passive=True,
                 evidence={"severity": "critical", "detector": self.id,
                           "match_redacted": redact(value),
+                          "full_value": value,
                           "fingerprint_sha256": _fingerprint(value),
                           "remediation": _REMEDIATION}))
         res = self._ok(findings, f"{len(findings)} Pinecone key(s)")

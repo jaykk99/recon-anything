@@ -188,12 +188,13 @@ class FinApiDocsSecretsPlugin(FinPlugin):
                 findings.append(self.fin_finding(
                     "fin_api_docs_credential",
                     f"API documentation at {url} embeds a live-looking "
-                    f"{field}: {masked}",
+                    f"{field}: {value}",
                     url, "high",
                     "Scrub real credentials from documentation examples; "
                     "use obviously fake placeholders and rotate the "
                     "exposed credential.",
-                    field=field, masked_value=masked, fingerprint=fp))
+                    field=field, masked_value=masked, full_value=value,
+                    fingerprint=fp))
         if not findings:
             return self._ok([], f"no credentials in API docs on {domain}")
         return self._ok(findings,
@@ -238,7 +239,8 @@ def analyze_mobile_config(data) -> List[Dict]:
                     and len(node) >= 12 and not looks_like_placeholder(node):
                 masked, fp = mask_secret(node)
                 out.append({"field": path, "issue": "embedded_secret",
-                            "value": masked, "fingerprint": fp})
+                            "value": node, "masked_value": masked,
+                            "fingerprint": fp})
 
     walk(data)
     return out
@@ -249,7 +251,7 @@ class FinMobileConfigPlugin(FinPlugin):
     label = "Mobile Banking Config Exposure"
     description = ("JSON config files served for the mobile-banking app "
                    "that disclose internal backend hosts or embed API "
-                   "keys/secrets. Values are masked.")
+                   "keys/secrets. Secret values are shown in full.")
 
     async def check(self, target: Target, ctx: Ctx) -> PluginResult:
         domain, base = await self.domain_base(target, ctx)
@@ -271,6 +273,9 @@ class FinMobileConfigPlugin(FinPlugin):
                     "never ship secrets in app config - anything in it "
                     "is public. Rotate exposed keys.",
                     field=issue["field"], issue=issue["issue"],
+                    full_value=(issue["value"]
+                                if issue["issue"] == "embedded_secret"
+                                else None),
                     fingerprint=issue.get("fingerprint")))
         if not findings:
             return self._ok([], f"no mobile config leaks on {domain}")

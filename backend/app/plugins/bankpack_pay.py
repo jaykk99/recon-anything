@@ -5,7 +5,7 @@ keys in public code/configs, webhook signing secrets, BIN-lookup
 service configs, sandbox credentials sitting in production configs,
 card forms posting to unexpected hosts, merchant portals, POS
 terminal configs, and ACH/Nacha file-transfer configs. Read-only
-GETs only; every credential-shaped value is reported masked with a
+GETs only; every credential-shaped value is reported in full with a
 fingerprint, never in full, and never used.
 """
 from __future__ import annotations
@@ -70,13 +70,14 @@ class FinPaymentSecretsPlugin(FinPlugin):
                 masked, fp = mask_secret(raw)
                 findings.append(self.fin_finding(
                     "fin_payment_secret_key",
-                    f"{name} exposed in public content at {url}: {masked}",
+                    f"{name} exposed in public content at {url}: {raw}",
                     url, "high",
                     "Remove the secret from client-side code/config "
                     "immediately and rotate it in the processor "
                     "dashboard; server secrets must never ship to "
                     "browsers.",
-                    processor=name, masked_value=masked, fingerprint=fp))
+                    processor=name, masked_value=masked, full_value=raw,
+                    fingerprint=fp))
         if not findings:
             return self._ok([], f"no payment secret keys exposed on {domain}")
         return self._ok(findings,
@@ -133,12 +134,12 @@ class FinWebhookSecretsPlugin(FinPlugin):
                 masked, fp = mask_secret(raw)
                 findings.append(self.fin_finding(
                     "fin_webhook_secret",
-                    f"{name} exposed in public content at {url}: {masked}",
+                    f"{name} exposed in public content at {url}: {raw}",
                     url, "high",
                     "Rotate the webhook signing secret and keep it "
                     "server-side only; anyone holding it can forge "
                     "payment events.",
-                    masked_value=masked, fingerprint=fp))
+                    masked_value=masked, full_value=raw, fingerprint=fp))
         if not findings:
             return self._ok([], f"no webhook secrets exposed on {domain}")
         return self._ok(findings,
@@ -167,8 +168,8 @@ def analyze_bin_surface(text: str) -> List[Dict]:
     for m in _BIN_KEY_RE.finditer(text):
         if not looks_like_placeholder(m.group(2)):
             masked, fp = mask_secret(m.group(2))
-            out.append({"issue": "bin_api_key", "value": masked,
-                        "fingerprint": fp})
+            out.append({"issue": "bin_api_key", "value": m.group(2),
+                        "masked_value": masked, "fingerprint": fp})
             break
     for m in _BIN_DB_RE.finditer(text):
         out.append({"issue": "bin_database_file", "value": m.group(0)})
@@ -197,7 +198,7 @@ class FinBinConfigPlugin(FinPlugin):
                     "Keep BIN-service keys server-side and do not "
                     "publish the full BIN database; license terms and "
                     "issuer mappings are sensitive.",
-                    issue=issue["issue"],
+                    issue=issue["issue"], full_value=issue["value"],
                     fingerprint=issue.get("fingerprint")))
         if not findings:
             return self._ok([], f"no BIN config leaks on {domain}")

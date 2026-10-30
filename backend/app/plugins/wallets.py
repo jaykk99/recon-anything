@@ -2,8 +2,8 @@
 
 Looks for private keys, seed phrases, WIF keys, extended keys and
 wallet files on the target's public pages, JS bundles and well-known
-wallet file paths. Read-only GETs. Findings are CRITICAL, redacted in
-the value, full match in evidence with sweep advice. Authorized testing
+wallet file paths. Read-only GETs. Findings are CRITICAL, full value shown
+in the finding and in evidence with sweep advice. Authorized testing
 only: verify you own the asset or it is in an approved bounty scope.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import evidence_block, finding_value, is_placeholder, redact
+from .secretutils import evidence_block, finding_value, is_placeholder
 
 # Private keys only count when they appear near wallet-ish context, to
 # avoid flagging every 64-hex-char transaction hash.
@@ -125,7 +125,7 @@ class WalletsPlugin(Plugin):
             seen.add(key)
             findings.append(self._f(
                 "leak", f"wallet_{name}",
-                finding_value(severity, name.replace("_", " "), redact(m), where),
+                finding_value(severity, name.replace("_", " "), m, where),
                 source=f"wallet scan: {where}", source_url=url,
                 confidence=conf, passive=passive,
                 evidence=evidence_block(m, name, REMED_KEY, severity)))

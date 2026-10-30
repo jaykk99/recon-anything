@@ -7,7 +7,7 @@ keys that ship inside the JS bundles and config files a target
 serves. Plus the strongest mnemonic detector in the suite: full
 BIP-39 checksum verification of word sequences in page text - a
 12-word run of BIP-39 words with a valid checksum is a seed phrase,
-not a coincidence. All matches are redacted in findings.
+not a coincidence. Full matches are shown in findings.
 """
 from __future__ import annotations
 
@@ -321,16 +321,15 @@ class CpSecretBip39Sequence(Plugin):
                     digest = hashlib.sha256(ent).digest()
                     cs_bits = format(digest[0], "08b")[:len(cs)]
                     if cs == cs_bits:
-                        from .secretutils import redact
                         joined = " ".join(cand)
                         findings.append(self._f(
                             "leak", "bip39_seed_phrase",
                             f"BIP-39 seed phrase ({n} words, checksum "
-                            f"valid): {redact(joined, show=6)}",
+                            f"valid): {joined}",
                             source=self.label, source_url=url,
                             confidence=99, passive=True,
                             evidence={"words": n, "where": where,
-                                      "redacted": redact(joined, show=6)}))
+                                      "full_value": joined}))
                         break
             if findings:
                 break

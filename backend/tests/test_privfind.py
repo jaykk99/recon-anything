@@ -3,8 +3,10 @@
 Runs every pf plugin through the REAL Ctx against a canary site served
 via httpx MockTransport (tests/privfind_samples.py): every detector
 must fire on its planted fake secret, no detector may fire on the
-clean site, and no full planted value may appear in any finding value
-or evidence (masked + fingerprint only).
+clean site, and every planted SECRET value must appear IN FULL in its
+finding value and evidence full_value (Jay's 2026-10-29 full-value
+order), while planted PII values (identity category) never appear in
+full anywhere (masked + fingerprint only).
 """
 import asyncio
 import hashlib
@@ -152,11 +154,24 @@ def test_no_detector_fires_on_clean_site(pid):
         f"{[f.value for f in result.findings]}")
 
 
+PII_IDS = {s["id"] for s in privfind.CONTENT_SPECS
+           if s["category"] == "identity"}
+
+
 @pytest.mark.parametrize("pid", CONTENT_IDS)
-def test_full_secret_never_in_finding_output(pid):
+def test_full_value_shown_for_secrets_masked_for_pii(pid):
     result = _run(pid, CANARY)
     expected = EXPECTED_VALUE[pid]
     for f in result.findings:
         blob = f.value + " " + str(f.evidence)
-        assert expected not in blob, f"{pid} leaked its full value"
         assert f.evidence.get("match_redacted")
+        if pid in PII_IDS:
+            assert expected not in blob, \
+                f"{pid} leaked its full PII value"
+        else:
+            assert expected in blob, \
+                f"{pid} did not show its full secret value"
+    if pid not in PII_IDS:
+        assert any(f.evidence.get("full_value") == expected
+                   for f in result.findings), \
+            f"{pid}: no finding carried full_value"
