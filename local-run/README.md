@@ -92,3 +92,19 @@ Status: the Linux path is verified end to end (setup, start, sign-in,
 and a full real scan). The Termux scripts are syntax-checked and mirror
 the verified Linux steps, but have not yet been run on a physical phone;
 treat the first phone run as the device test and keep the setup output.
+
+## MCP server (use ReconAnything from Claude)
+
+`mcp_server.py` is a stdio [MCP](https://modelcontextprotocol.io) server that
+wraps a running backend, exposing `list_plugins`, `start_scan`,
+`get_scan_status`, `get_findings` and `list_scans`.
+
+```bash
+pip install mcp                      # v1 or v2 both work
+claude mcp add recon-anything -- python /path/to/recon-anything/mcp_server.py
+```
+
+It talks to `RECON_API_URL` (default `http://127.0.0.1:8000`) and
+authenticates with `RECON_ACCESS_CODE`, falling back to the
+`.local-access-code` file in the repo folder. Start the backend first
+(`bash local-run/linux-start.sh`). Only scan targets you are authorized to test.
