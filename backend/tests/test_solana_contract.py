@@ -24,6 +24,7 @@ import asyncio
 import base64
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -793,3 +794,489 @@ def test_plugin_curve_missing_no_api_claims(monkeypatch):
     assert "pump_graduated" not in keys  # not claimed without proof
     assert "pump_metadata_mutable" not in keys
     assert "pump_creator_holdings" not in keys
+
+
+# ---------------------------------------------------------------------------
+# 6. Deep token audit: REAL holder distribution (getProgramAccounts
+#    aggregated by owner), creator deep-dive, full Token-2022
+#    dangerous-extension audit, DexScreener sell-side, authority map.
+# ---------------------------------------------------------------------------
+
+POOL_WALLET = PD_ADDR  # stands in as the pool/curve owner wallet
+
+
+def _pa_entry(pubkey, owner, amount, decimals=0):
+    """One getProgramAccounts result entry (jsonParsed shape)."""
+    return {"pubkey": pubkey,
+            "account": {
+                "data": {"program": "spl-token",
+                         "parsed": {
+                             "info": {"mint": MINT, "owner": owner,
+                                      "tokenAmount": {
+                                          "amount": str(amount),
+                                          "decimals": decimals}},
+                             "type": "account"},
+                         "space": 165},
+                "executable": False, "lamports": 2039280,
+                "owner": sol.TOKEN_PROGRAM}}
+
+
+def _patch_program_accounts(monkeypatch, entries):
+    async def fake_pa(ctx, token_program, mint):
+        return entries
+    monkeypatch.setattr(sol, "get_program_accounts", fake_pa)
+
+
+def _patch_balance(monkeypatch, lamports):
+    async def fake_bal(ctx, address):
+        return lamports
+    monkeypatch.setattr(sol, "get_balance", fake_bal)
+
+
+def _dist_accounts():
+    # Pool account holds 50%; the creator holds 25% SPLIT ACROSS
+    # TWO token accounts (150k + 100k) - aggregation by owner must
+    # still catch it as one wallet; a third wallet holds 5%.
+    return [
+        {"address": ACCT_B, "owner": POOL_WALLET, "amount": 500_000},
+        {"address": ACCT_A, "owner": CREATOR, "amount": 150_000},
+        {"address": AUTHORITY, "owner": CREATOR, "amount": 100_000},
+        {"address": MINT, "owner": AUTHORITY, "amount": 50_000},
+        {"address": PROGRAM, "owner": AUTHORITY, "amount": 0},
+    ]
+
+
+def test_aggregate_holders_by_owner_and_pool():
+    dist = sol.aggregate_holders(
+        _dist_accounts(), 1_000_000,
+        pool_labels={ACCT_B: "pump.fun bonding curve"})
+    assert dist["holder_count"] == 3  # zero-balance owner excluded
+    assert dist["account_count"] == 4
+    assert dist["top1_share"] == 0.5          # the pool owner
+    assert dist["ex_pool_top1_share"] == 0.25  # the creator
+    assert dist["has_pool"] is True
+    top = dist["top_accounts"][0]
+    assert top["address"] == ACCT_B
+    assert top["pool"] == "pump.fun bonding curve"
+    # Creator split across two accounts still sums to one wallet.
+    raw, share = sol.owner_share(dist, CREATOR, 1_000_000)
+    assert raw == 250_000
+    assert share == 0.25
+    assert sol.owner_rank(dist, CREATOR) == 2
+    assert sol.owner_rank(dist, AUTHORITY) == 3
+    assert sol.owner_rank(dist, sol.SYSTEM_PROGRAM) is None
+
+
+def test_analyze_holder_distribution_pool_scoring():
+    dist = sol.aggregate_holders(
+        _dist_accounts(), 1_000_000,
+        pool_labels={ACCT_B: "pump.fun bonding curve"})
+    findings = sol.analyze_holder_distribution(MINT, dist,
+                                               1_000_000, 0)
+    f0 = _by_key(findings, "solana_holder_distribution")[0]
+    # Scored on ex-pool shares: ex-top1 25% -> medium (raw top1 of
+    # 50% would be high - the pool must not inflate the score).
+    assert f0["severity"] == "medium"
+    assert f0["evidence"]["scored_on"] == "pool-excluded"
+    assert f0["evidence"]["ex_pool_top1_share"] == 0.25
+    assert f0["evidence"]["holder_count"] == 3
+    assert "POOL" in f0["value"]
+    assert CREATOR in f0["value"]  # owners shown in full
+    # No pool anywhere: a single 60% whale scores high on raw.
+    whale = sol.aggregate_holders(
+        [{"address": ACCT_A, "owner": CREATOR, "amount": 600_000},
+         {"address": ACCT_B, "owner": AUTHORITY, "amount": 10_000}],
+        1_000_000)
+    f1 = sol.analyze_holder_distribution(MINT, whale, 1_000_000,
+                                         0)[0]
+    assert f1["severity"] == "high"
+    assert f1["evidence"]["scored_on"] == "raw"
+
+
+def test_fetch_holder_distribution_cap(monkeypatch):
+    entries = [_pa_entry(ACCT_A, CREATOR, 1) for _ in range(6000)]
+    _patch_program_accounts(monkeypatch, entries)
+    dist = asyncio.run(sol.fetch_holder_distribution(
+        FakeCtx(), MINT, sol.TOKEN_PROGRAM, 1_000_000))
+    assert dist["capped"] is True
+    assert dist["total_returned"] == 6000
+    assert dist["processed"] == sol.MAX_HOLDER_ACCOUNTS
+    f0 = sol.analyze_holder_distribution(MINT, dist, 1_000_000,
+                                         0)[0]
+    assert "capped" in f0["value"]  # the cap is disclosed
+    # RPC failure -> None (callers fall back / report unavailable).
+    _patch_program_accounts(monkeypatch, None)
+    assert asyncio.run(sol.fetch_holder_distribution(
+        FakeCtx(), MINT, sol.TOKEN_PROGRAM, 1_000_000)) is None
+
+
+def test_fetch_holder_distribution_raw_fallback(monkeypatch):
+    raw = bytearray(165)
+    raw[0:32] = sol.b58decode(MINT)
+    raw[32:64] = sol.b58decode(CREATOR)
+    raw[64:72] = (700_000).to_bytes(8, "little")
+    entry = {"pubkey": ACCT_A,
+             "account": {"data": [base64.b64encode(
+                 bytes(raw)).decode(), "base64"],
+                         "executable": False, "lamports": 2039280,
+                         "owner": sol.TOKEN_PROGRAM}}
+    _patch_program_accounts(monkeypatch, [entry])
+    dist = asyncio.run(sol.fetch_holder_distribution(
+        FakeCtx(), MINT, sol.TOKEN_PROGRAM, 1_000_000))
+    assert dist["holder_count"] == 1
+    assert dist["top1_share"] == 0.7
+    parsed = sol.parse_token_account_raw(bytes(raw))
+    assert parsed["owner"] == CREATOR
+    assert parsed["amount"] == "700000"
+
+
+def test_token2022_transfer_hook_and_frozen_default():
+    exts = [
+        {"extension": "transferHook",
+         "state": {"authority": AUTHORITY, "programId": PROGRAM}},
+        {"extension": "defaultAccountState",
+         "state": {"accountState": "frozen"}},
+    ]
+    findings = sol.analyze_token2022_extensions(
+        MINT, _mint_info(extensions=exts),
+        {"address": MINT, "chain": "solana"})
+    keys = {f["key"] for f in findings}
+    assert "solana_token2022_transfer_hook" in keys
+    assert "solana_token2022_default_account_state" in keys
+    hook = _by_key(findings, "solana_token2022_transfer_hook")[0]
+    assert hook["severity"] == "high"
+    assert PROGRAM in hook["value"]    # hook program in full
+    assert AUTHORITY in hook["value"]  # hook authority in full
+    frozen = _by_key(findings,
+                     "solana_token2022_default_account_state")[0]
+    assert frozen["severity"] == "high"
+    audit = _by_key(findings, "solana_token2022_extension_audit")[0]
+    assert "transferHook" in audit["evidence"]["dangerous_present"]
+    assert "defaultAccountState" in \
+        audit["evidence"]["dangerous_present"]
+
+
+def test_token2022_default_initialized_is_clean():
+    exts = [{"extension": "defaultAccountState",
+             "state": {"accountState": "initialized"}}]
+    findings = sol.analyze_token2022_extensions(
+        MINT, _mint_info(extensions=exts),
+        {"address": MINT, "chain": "solana"})
+    keys = {f["key"] for f in findings}
+    assert "solana_token2022_default_account_state" not in keys
+    audit = _by_key(findings, "solana_token2022_extension_audit")[0]
+    assert "not frozen" in \
+        audit["evidence"]["audit"]["defaultAccountState"]
+    assert audit["evidence"]["dangerous_present"] == []
+
+
+def test_token2022_fee_nested_shape_and_info_extensions():
+    exts = [
+        {"extension": "transferFeeConfig",
+         "state": {"transferFeeConfigAuthority": AUTHORITY,
+                   "withdrawWithheldAuthority": AUTHORITY,
+                   "withheldAmount": "0",
+                   "newerTransferFee": {
+                       "epoch": 500, "maximumFee": "1000",
+                       "transferFeeBasisPoints": 100}}},
+        {"extension": "memoTransfer",
+         "state": {"requireIncomingTransferMemos": True}},
+        {"extension": "confidentialTransferMint",
+         "state": {"authority": AUTHORITY,
+                   "autoApproveNewAccounts": False}},
+    ]
+    findings = sol.analyze_token2022_extensions(
+        MINT, _mint_info(extensions=exts),
+        {"address": MINT, "chain": "solana"})
+    fee = _by_key(findings, "solana_token2022_transfer_fee_config")[0]
+    assert fee["severity"] == "medium"
+    assert "100" in fee["value"]       # basis points in full
+    assert "1.00%" in fee["value"]     # rendered as a percentage
+    assert AUTHORITY in fee["value"]   # fee authorities in full
+    memo = _by_key(findings, "solana_token2022_memo_transfer")[0]
+    assert memo["severity"] == "low"
+    conf = _by_key(findings,
+                   "solana_token2022_confidential_transfer_mint")[0]
+    assert conf["severity"] == "low"   # info-level, per the audit
+    audit = _by_key(findings, "solana_token2022_extension_audit")[0]
+    assert audit["evidence"]["audit"]["permanentDelegate"] == \
+        "absent - clean"
+
+
+def test_token2022_audit_all_clean_and_nontransferable_high():
+    findings = sol.analyze_token2022_extensions(
+        MINT, _mint_info(extensions=[]),
+        {"address": MINT, "chain": "solana"})
+    t22 = [f for f in findings
+           if f["key"].startswith("solana_token2022_")]
+    assert [f["key"] for f in t22] == \
+        ["solana_token2022_extension_audit"]
+    assert "absent or benign" in t22[0]["value"]
+    exts = [{"extension": "nonTransferable", "state": {}}]
+    findings = sol.analyze_token2022_extensions(
+        MINT, _mint_info(extensions=exts),
+        {"address": MINT, "chain": "solana"})
+    nt = _by_key(findings, "solana_token2022_non_transferable")[0]
+    assert nt["severity"] == "high"  # soulbound trap, per the audit
+
+
+def test_creator_wallet_dev_out_and_drained():
+    dist = sol.aggregate_holders(
+        [{"address": ACCT_A, "owner": AUTHORITY, "amount": 400_000},
+         {"address": ACCT_B, "owner": POOL_WALLET,
+          "amount": 100_000}], 1_000_000)
+    findings = sol.analyze_creator_wallet(MINT, CREATOR, dist,
+                                          1_000_000, 10_000)
+    f0 = _by_key(findings, "solana_creator_wallet")[0]
+    assert f0["severity"] == "low"
+    assert "FULLY OUT" in f0["value"]  # said plainly
+    assert "near zero" in f0["value"]  # drained-wallet note
+    assert f0["evidence"]["creator_share"] == 0.0
+    assert f0["evidence"]["creator_sol_note"] == "near-zero/drained"
+    assert CREATOR in f0["value"]
+
+
+def test_creator_wallet_dev_heavy_top_holder():
+    accounts = [
+        {"address": ACCT_A, "owner": CREATOR, "amount": 150_000},
+        {"address": AUTHORITY, "owner": CREATOR, "amount": 100_000},
+        {"address": ACCT_B, "owner": AUTHORITY, "amount": 50_000},
+    ]
+    dist = sol.aggregate_holders(accounts, 1_000_000)
+    findings = sol.analyze_creator_wallet(
+        MINT, CREATOR, dist, 1_000_000, 5_000_000_000)
+    f0 = _by_key(findings, "solana_creator_wallet")[0]
+    assert f0["severity"] == "high"  # 25% > 10% creator threshold
+    assert f0["evidence"]["creator_share"] == 0.25
+    assert f0["evidence"]["creator_rank"] == 1
+    assert "#1 largest holder" in f0["value"]
+    assert f0["evidence"]["creator_sol_balance"] == 5.0
+    assert f0["evidence"]["creator_sol_note"] is None
+
+
+def test_creator_wallet_unmeasured_inputs():
+    findings = sol.analyze_creator_wallet(MINT, CREATOR, None,
+                                          1_000_000, None)
+    f0 = _by_key(findings, "solana_creator_wallet")[0]
+    assert f0["severity"] == "low"
+    assert "could not be measured" in f0["value"]
+    assert "could not be read" in f0["value"]
+    assert f0["evidence"]["creator_share"] is None
+
+
+_NOW_S = 1_762_000_000.0  # fixed clock for pair-age tests
+
+
+def _pair(**over):
+    pair = {"pairAddress": ACCT_A, "dexId": "pumpswap",
+            "liquidity": {"usd": 5000},
+            "txns": {"h24": {"buys": 40, "sells": 12},
+                     "h6": {"buys": 10, "sells": 3},
+                     "h1": {"buys": 2, "sells": 1}},
+            "priceChange": {"h24": 5.0, "h6": 2.0, "h1": 0.5},
+            "pairCreatedAt": int((_NOW_S - 30 * 24 * 3600) * 1000)}
+    pair.update(over)
+    return pair
+
+
+def test_dex_no_sells_flag():
+    pair = _pair(txns={"h24": {"buys": 40, "sells": 0},
+                       "h1": {"buys": 3, "sells": 0}})
+    findings = sol.analyze_dex_pairs(MINT, [pair], now_s=_NOW_S)
+    f0 = _by_key(findings, "solana_no_sells_recorded")[0]
+    assert f0["severity"] == "high"
+    assert f0["evidence"]["window"] == "h24"
+    assert f0["evidence"]["buys"] == 40
+    assert "40 buys" in f0["value"]
+    # Sells happening -> no flag at all.
+    findings = sol.analyze_dex_pairs(MINT, [_pair()], now_s=_NOW_S)
+    assert "solana_no_sells_recorded" not in \
+        {f["key"] for f in findings}
+    # No txn data at all -> no conclusion drawn.
+    bare = _pair()
+    del bare["txns"]
+    assert sol.analyze_dex_pairs(MINT, [bare], now_s=_NOW_S) == []
+
+
+def test_dex_pair_freshness():
+    fresh = _pair(pairCreatedAt=int((_NOW_S - 2 * 3600) * 1000))
+    findings = sol.analyze_dex_pairs(MINT, [fresh], now_s=_NOW_S)
+    f0 = _by_key(findings, "solana_pair_freshness")[0]
+    assert f0["severity"] == "medium"  # under 24h old
+    assert f0["evidence"]["pair_created_iso"].endswith("UTC")
+    assert "2.0 hours" in f0["value"]
+    aging = _pair(pairCreatedAt=int((_NOW_S - 3 * 24 * 3600) * 1000))
+    f1 = sol.analyze_dex_pairs(MINT, [aging], now_s=_NOW_S)
+    assert _by_key(f1, "solana_pair_freshness")[0]["severity"] == \
+        "low"
+    old = _pair()  # 30 days old in the fixture
+    assert "solana_pair_freshness" not in \
+        {f["key"] for f in sol.analyze_dex_pairs(MINT, [old],
+                                                 now_s=_NOW_S)}
+
+
+def test_dex_price_dump_and_pump():
+    dump = _pair(priceChange={"h24": -95.0, "h6": -50.0})
+    findings = sol.analyze_dex_pairs(MINT, [dump], now_s=_NOW_S)
+    f0 = _by_key(findings, "solana_price_volatility")[0]
+    assert f0["severity"] == "high"
+    assert "-95" in f0["value"]
+    assert f0["evidence"]["price_change_h24"] == -95.0
+    moon = _pair(priceChange={"h24": 1500.0})
+    f1 = sol.analyze_dex_pairs(MINT, [moon], now_s=_NOW_S)
+    assert _by_key(f1, "solana_price_volatility")[0]["severity"] \
+        == "medium"
+    calm = _pair()
+    assert "solana_price_volatility" not in \
+        {f["key"] for f in sol.analyze_dex_pairs(MINT, [calm],
+                                                 now_s=_NOW_S)}
+
+
+def test_authority_map_single_wallet_concentration():
+    info = _mint_info(extensions=[
+        {"extension": "tokenMetadata",
+         "state": {"updateAuthority": AUTHORITY, "name": "T",
+                   "symbol": "T", "uri": "https://x",
+                   "additionalMetadata": []}}])
+    findings = sol.analyze_authority_map(MINT, info, None)
+    f0 = _by_key(findings, "solana_authority_map")[0]
+    # AUTHORITY holds mint + freeze + metadata = 3 powers.
+    assert f0["severity"] == "medium"
+    assert "CONCENTRATION" in f0["value"]
+    assert f0["evidence"]["powers_by_wallet"][AUTHORITY] == [
+        "mint authority", "freeze authority",
+        "metadata update authority"]
+    assert f0["evidence"]["metadata_authority_source"] == \
+        "Token-2022 in-mint metadata"
+    assert AUTHORITY in f0["value"]
+
+
+def test_authority_map_revoked_and_metaplex_source():
+    findings = sol.analyze_authority_map(MINT, _mint_info(None, None),
+                                         None)
+    f0 = _by_key(findings, "solana_authority_map")[0]
+    assert f0["severity"] == "low"
+    assert f0["value"].count("revoked / none") >= 4
+    assert f0["evidence"]["mint_authority"] is None
+    # Delegate + hook surface, and the Metaplex update authority is
+    # used when the mint has no in-mint tokenMetadata extension.
+    info = _mint_info(None, None, extensions=[
+        {"extension": "permanentDelegate",
+         "state": {"delegate": CREATOR}},
+        {"extension": "transferHook",
+         "state": {"authority": AUTHORITY, "programId": PROGRAM}}])
+    metadata = {"update_authority": CREATOR, "address": ACCT_B}
+    f1 = sol.analyze_authority_map(MINT, info, metadata)[0]
+    assert f1["evidence"]["permanent_delegate"] == CREATOR
+    assert f1["evidence"]["transfer_hook_program"] == PROGRAM
+    assert f1["evidence"]["metadata_update_authority"] == CREATOR
+    assert f1["evidence"]["metadata_authority_source"] == \
+        "Metaplex metadata account"
+
+
+def test_plugin_holder_distribution_replaces_largest(monkeypatch):
+    entries = [
+        _pa_entry(ACCT_B, POOL_WALLET, 400_000),
+        _pa_entry(ACCT_A, CREATOR, 300_000),
+        _pa_entry(AUTHORITY, AUTHORITY, 100_000),
+    ]
+    _patch_program_accounts(monkeypatch, entries)
+    pair = {"pairAddress": ACCT_B, "dexId": "pumpswap",
+            "liquidity": {"usd": 9000},
+            "baseToken": {"symbol": "TEST"},
+            "quoteToken": {"symbol": "SOL"}, "marketCap": 10000}
+    _patch(monkeypatch,
+           {MINT: _mint_value(None, None, supply="1000000",
+                              decimals=0)},
+           largest=None, pump=None, dex=[pair])
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=MINT, type="solana_contract", normalized=MINT)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    assert "solana_holder_distribution" in keys
+    # The distribution REPLACES the largest-accounts concentration.
+    assert "solana_holder_concentration" not in keys
+    assert "solana_holder_distribution_unavailable" not in keys
+    assert "solana_authority_map" in keys
+    dist_f = [f for f in res.findings
+              if f.key == "solana_holder_distribution"][0]
+    assert dist_f.evidence["holder_count"] == 3
+    # ACCT_B is labeled pool via the DexScreener pair address.
+    assert dist_f.evidence["scored_on"] == "pool-excluded"
+    assert dist_f.evidence["ex_pool_top1_share"] == 0.3
+
+
+def test_plugin_distribution_unavailable_finding(monkeypatch):
+    # Neither read answers: program accounts unstubbed (RPC seam
+    # fails on the fake ctx) and largest-accounts returns None.
+    _patch(monkeypatch, {MINT: _mint_value(None, None)}, largest=None,
+           pump=None)
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=MINT, type="solana_contract", normalized=MINT)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    assert "solana_holder_distribution_unavailable" in keys
+    assert "solana_holder_concentration" not in keys
+    assert "solana_holder_distribution" not in keys
+
+
+def test_plugin_creator_deep_dive_onchain(monkeypatch):
+    curve_addr = sol.bonding_curve_address(MINT)
+    _patch_base64(monkeypatch, {
+        curve_addr: _b64_value(_curve_bytes(complete=False),
+                               sol.PUMP_PROGRAM),
+    })
+    entries = [_pa_entry(ACCT_A, CREATOR, 200_000),
+               _pa_entry(ACCT_B, AUTHORITY, 50_000)]
+    _patch_program_accounts(monkeypatch, entries)
+    _patch_balance(monkeypatch, 2_000_000)  # 0.002 SOL: drained
+    _patch(monkeypatch,
+           {MINT: _mint_value(None, None, supply="1000000",
+                              decimals=0)},
+           largest=None, pump=None)
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=f"https://pump.fun/coin/{MINT}",
+                    type="solana_contract",
+                    normalized=f"https://pump.fun/coin/{MINT}")
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    assert "pump_bonding_curve_active" in keys
+    # Creator share came from the FULL aggregation, not the
+    # largest-accounts estimate.
+    dev = [f for f in res.findings
+           if f.key == "pump_creator_holdings"][0]
+    assert dev.evidence["creator_share"] == 0.2
+    assert dev.evidence["share_source"] == "holder_aggregation"
+    dive = [f for f in res.findings
+            if f.key == "solana_creator_wallet"][0]
+    assert dive.evidence["creator_rank"] == 1
+    assert dive.evidence["creator_sol_lamports"] == 2_000_000
+    assert dive.evidence["creator_sol_note"] == "near-zero/drained"
+    assert CREATOR in dive.value
+
+
+def test_plugin_deep_extensions_and_dex_sellside(monkeypatch):
+    exts = [{"extension": "permanentDelegate",
+             "state": {"delegate": CREATOR}}]
+    pair = {"pairAddress": ACCT_A, "dexId": "pumpswap",
+            "liquidity": {"usd": 5000},
+            "baseToken": {"symbol": "TEST"},
+            "quoteToken": {"symbol": "SOL"}, "marketCap": 8000,
+            "txns": {"h24": {"buys": 25, "sells": 0}},
+            "pairCreatedAt": int(time.time() * 1000) - 3600_000,
+            "priceChange": {"h24": 3.0}}
+    _patch(monkeypatch,
+           {MINT: _mint_value(extensions=exts)}, largest=[],
+           pump=None, dex=[pair])
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=MINT, type="solana_contract", normalized=MINT)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    assert "solana_token2022_permanent_delegate" in keys
+    assert "solana_token2022_extension_audit" in keys
+    assert "solana_authority_map" in keys
+    assert "solana_no_sells_recorded" in keys
+    assert "solana_pair_freshness" in keys
+    amap = [f for f in res.findings
+            if f.key == "solana_authority_map"][0]
+    assert amap.evidence["permanent_delegate"] == CREATOR

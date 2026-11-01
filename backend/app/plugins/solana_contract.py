@@ -7,9 +7,19 @@ finds into vulnerability / risk findings:
 
 - SPL token mints (Token + Token-2022): mint authority still set
   (unlimited minting), freeze authority still set (balances can be
-  frozen), holder concentration from the largest token accounts,
-  supply/decimals, and Token-2022 extensions (permanent delegate,
-  transfer fees, non-transferable, ...).
+  frozen), REAL holder distribution (every token account pulled
+  via getProgramAccounts and aggregated by owner wallet - pool /
+  curve accounts labeled, ex-pool top holder computed; the largest
+  -accounts read is only a fallback, and it returns empty for
+  Token-2022 mints on the public RPC), supply/decimals, a full
+  Token-2022 dangerous-extension audit (permanent delegate,
+  transfer hook, default-frozen accounts, non-transferable,
+  transfer fees, memo / confidential transfers, plus one audit
+  summary of everything checked and clean), a creator deep-dive
+  (exact creator share from the aggregation, creator SOL balance),
+  a DexScreener sell-side read (no-sells honeypot proxy, pair age,
+  dump / volatility moves), and an authority map: one finding
+  listing who holds every power over the mint.
 - pump.fun coins: still on the bonding curve vs graduated, mutable
   metadata / creator-held update authority, and the creator's share
   of supply. All of this is derived ON-CHAIN (the bonding curve PDA
@@ -34,12 +44,25 @@ masked.
 
 Thresholds (documented, chosen 2026-11-01):
 - top-1 holder:  >20% of supply = medium, >=50% = high
+- top-5 holders: >40% of supply = medium, >=75% = high
 - top-10 holders: >60% of supply = medium, >=90% = high
 - creator/dev share of a pump.fun coin: >1% = medium, >10% = high
+- creator SOL balance below 0.05 SOL = near-zero / drained note
+- DexScreener pair younger than 24h = medium freshness note,
+  younger than 7 days = low note (exact creation time reported)
+- 24h price change at or beyond -90% = dump note (high),
+  at or beyond +1000% = volatility note (medium)
+- buys > 0 with sells == 0 on the widest reported DexScreener
+  window (h24, then h6, then h1) = high "no sells recorded" flag
+Distribution severities are scored on the pool-excluded owner
+shares whenever a pool / curve account is among the holders (a
+liquidity pool holding most of the supply is normal; an insider
+wallet holding it is not), and on the raw owner shares otherwise.
 """
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import json
 import re
@@ -67,14 +90,22 @@ SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 MAX_ADDRESSES = 3
 ENRICH_OWNERS = 5      # token accounts whose owner wallet we resolve
+MAX_HOLDER_ACCOUNTS = 5000   # getProgramAccounts processing cap
 
 # Documented concentration thresholds (share of total supply).
 TOP1_MEDIUM = 0.20
 TOP1_HIGH = 0.50
+TOP5_MEDIUM = 0.40
+TOP5_HIGH = 0.75
 TOP10_MEDIUM = 0.60
 TOP10_HIGH = 0.90
 CREATOR_MEDIUM = 0.01
 CREATOR_HIGH = 0.10
+CREATOR_DRAINED_LAMPORTS = 50_000_000   # 0.05 SOL: near-zero wallet
+PAIR_FRESH_MEDIUM_HOURS = 24
+PAIR_FRESH_LOW_HOURS = 24 * 7
+PRICE_DUMP_PCT = -90.0        # 24h change at/beyond this = dump note
+PRICE_PUMP_PCT = 1000.0       # 24h change at/beyond this = vol note
 
 _B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
@@ -294,12 +325,41 @@ async def get_account_info_base64(ctx: Any,
 
 
 async def get_largest_accounts(ctx: Any, mint: str) -> Optional[List]:
-    """getTokenLargestAccounts: the 20 biggest token accounts."""
+    """getTokenLargestAccounts: the 20 biggest token accounts.
+
+    NOTE: on the public RPC this returns an EMPTY list for
+    Token-2022 mints, so it is only a fallback - the real holder
+    distribution comes from getProgramAccounts below."""
     result = await sol_rpc(ctx, "getTokenLargestAccounts", [mint])
     if not isinstance(result, dict):
         return None
     value = result.get("value")
     return value if isinstance(value, list) else None
+
+
+async def get_program_accounts(ctx: Any, token_program: str,
+                               mint: str) -> Optional[List]:
+    """getProgramAccounts on the token program that owns the mint,
+    memcmp filter offset 0 = mint (the first 32 bytes of every SPL
+    token account are its mint). Returns the raw result list of
+    {pubkey, account} entries, or None when the RPC failed. This is
+    the heavy read the largest-accounts endpoint cannot do for
+    Token-2022 mints; callers cap how much of it they process."""
+    result = await sol_rpc(ctx, "getProgramAccounts", [
+        token_program,
+        {"encoding": "jsonParsed",
+         "filters": [{"memcmp": {"offset": 0, "bytes": mint}}]}])
+    return result if isinstance(result, list) else None
+
+
+async def get_balance(ctx: Any, address: str) -> Optional[int]:
+    """getBalance: the account's SOL balance in lamports, or None
+    when the RPC failed."""
+    result = await sol_rpc(ctx, "getBalance", [address])
+    if isinstance(result, dict):
+        value = result.get("value")
+        return value if isinstance(value, int) else None
+    return result if isinstance(result, int) else None
 
 
 async def fetch_pump_coin(ctx: Any, mint: str) -> Optional[Dict]:
@@ -399,6 +459,20 @@ def parse_mint_raw(raw: bytes) -> Optional[Dict[str, Any]]:
         "decimals": raw[44],
         "isInitialized": bool(raw[45]),
         "freezeAuthority": _coption(46),
+    }
+
+
+def parse_token_account_raw(raw: bytes) -> Optional[Dict[str, Any]]:
+    """SPL token account layout fallback (jsonParsed normally
+    decodes these): mint pubkey @0 (32 bytes), owner pubkey @32
+    (32 bytes), amount u64 @64. Returns {mint, owner, amount} with
+    amount as a string, mirroring the jsonParsed shape."""
+    if not raw or len(raw) < 72:
+        return None
+    return {
+        "mint": b58encode(raw[0:32]),
+        "owner": b58encode(raw[32:64]),
+        "amount": str(int.from_bytes(raw[64:72], "little")),
     }
 
 
@@ -679,6 +753,55 @@ _REMEDIATION = {
     "solana_token2022_default_frozen": (
         "New token accounts start frozen under this mint; holders "
         "depend on the freeze authority to ever move their tokens."),
+    "solana_token2022_default_account_state": (
+        "New token accounts start frozen under this mint; holders "
+        "depend on the freeze authority to ever move their tokens."),
+    "solana_holder_distribution": (
+        "Concentrated supply outside the liquidity pool can be "
+        "dumped by a few wallets. Look for vesting/lock evidence "
+        "for the top non-pool wallets before trusting the token."),
+    "solana_holder_distribution_unavailable": (
+        "Holder concentration is UNKNOWN for this mint, not low. "
+        "Re-run the scan when the RPC is healthy, or check the "
+        "holder list on Solscan before sizing anything."),
+    "solana_creator_wallet": (
+        "A creator wallet that still holds a large unlocked share "
+        "is the classic dump setup. Look for lock/vesting proof; a "
+        "dev who is fully out and whose wallet is drained has no "
+        "tokens left to dump, which is the safer shape."),
+    "solana_token2022_transfer_hook": (
+        "Every transfer runs an external hook program that can "
+        "approve, tax or block the transfer - including blocking "
+        "sells. Read the hook program before holding this token."),
+    "solana_token2022_non_transferable": (
+        "Non-transferable tokens can never be sold or moved once "
+        "received. Confirm that is the intent before accepting any."),
+    "solana_no_sells_recorded": (
+        "Buys are happening but no sells are recorded - treat as a "
+        "honeypot until a small test sell proves otherwise. Never "
+        "size a position you cannot exit."),
+    "solana_pair_freshness": (
+        "A brand-new pair has no trading history to judge. Let it "
+        "age and re-scan before sizing anything real."),
+    "solana_price_volatility": (
+        "A move this size in 24h means the book is thin or being "
+        "manipulated. Do not chase it; re-check liquidity and "
+        "holder concentration first."),
+    "solana_authority_map": (
+        "This is the control map for the mint: every power and who "
+        "holds it. Powers held by one wallet should be revoked or "
+        "moved behind a multisig before the token is trusted."),
+    "solana_token2022_memo_transfer": (
+        "Transfers into accounts under this mint must carry a memo. "
+        "Mostly a compliance feature; it can break naive integrations "
+        "and some exchange deposits."),
+    "solana_token2022_confidential_transfer_mint": (
+        "Confidential transfers let holders move tokens with "
+        "encrypted balances, so flows cannot be fully audited from "
+        "public chain data while the extension is in play."),
+    "solana_token2022_extension_audit": (
+        "Summary of the Token-2022 extension audit. Any extension "
+        "listed as PRESENT has its own finding with the details."),
 }
 
 
@@ -723,6 +846,253 @@ def holder_shares(largest: List[Dict], supply_raw: int) -> Dict[str, Any]:
         if supply_raw else 0.0
     return {"top1_share": top1, "top10_share": top10,
             "holders": amounts, "count": len(amounts)}
+
+
+def aggregate_holders(accounts: List[Dict[str, Any]], supply_raw: int,
+                      pool_labels: Optional[Dict[str, str]] = None
+                      ) -> Dict[str, Any]:
+    """Aggregate token accounts BY OWNER WALLET (pure).
+
+    ``accounts`` entries: {address, owner, amount(int raw)} - one
+    per token account. ``pool_labels`` maps known pool / curve
+    TOKEN ACCOUNT addresses to a label ("DEX pool (pumpswap)",
+    "pump.fun bonding curve"): a top account matching one is
+    labeled pool, and an ex-pool owner ranking (pool accounts
+    excluded) is computed alongside the raw one.
+
+    Returns holder_count (distinct owners holding > 0),
+    account_count (non-zero token accounts), owner-aggregated
+    top1/top5/top10 supply shares, the same shares ex-pool, the
+    top token accounts and top owners (with pool labels), and the
+    full per-owner totals map for creator lookups."""
+    pool_labels = pool_labels or {}
+
+    def _share(amount: int) -> float:
+        return amount / supply_raw if supply_raw else 0.0
+
+    nonzero = [a for a in accounts
+               if a.get("owner") and (a.get("amount") or 0) > 0]
+    by_owner: Dict[str, int] = {}
+    for a in nonzero:
+        by_owner[a["owner"]] = by_owner.get(a["owner"], 0) \
+            + int(a["amount"])
+    owners_sorted = sorted(by_owner.items(), key=lambda kv: kv[1],
+                           reverse=True)
+    accounts_sorted = sorted(nonzero, key=lambda a: a["amount"],
+                             reverse=True)
+
+    def _top_share(pairs: List[Tuple[str, int]], n: int) -> float:
+        return _share(sum(amt for _, amt in pairs[:n]))
+
+    # Ex-pool owner totals: pool-labeled token accounts removed.
+    by_owner_ex: Dict[str, int] = {}
+    for a in nonzero:
+        if a["address"] in pool_labels:
+            continue
+        by_owner_ex[a["owner"]] = by_owner_ex.get(a["owner"], 0) \
+            + int(a["amount"])
+    owners_ex_sorted = sorted(by_owner_ex.items(),
+                              key=lambda kv: kv[1], reverse=True)
+    has_pool = any(a["address"] in pool_labels for a in nonzero)
+
+    top_accounts = []
+    for a in accounts_sorted[:20]:
+        top_accounts.append({
+            "address": a["address"], "owner": a["owner"],
+            "amount": a["amount"], "share": round(_share(a["amount"]), 6),
+            "pool": pool_labels.get(a["address"])})
+    top_owners = [{"owner": o, "amount": amt,
+                   "share": round(_share(amt), 6)}
+                  for o, amt in owners_sorted[:20]]
+    ex_top_owner = None
+    if owners_ex_sorted:
+        o, amt = owners_ex_sorted[0]
+        ex_top_owner = {"owner": o, "amount": amt,
+                        "share": round(_share(amt), 6)}
+    return {
+        "holder_count": len(by_owner),
+        "account_count": len(nonzero),
+        "top1_share": _top_share(owners_sorted, 1),
+        "top5_share": _top_share(owners_sorted, 5),
+        "top10_share": _top_share(owners_sorted, 10),
+        "ex_pool_top1_share": _top_share(owners_ex_sorted, 1),
+        "ex_pool_top5_share": _top_share(owners_ex_sorted, 5),
+        "ex_pool_top10_share": _top_share(owners_ex_sorted, 10),
+        "has_pool": has_pool,
+        "top_accounts": top_accounts,
+        "top_owners": top_owners,
+        "ex_pool_top_owner": ex_top_owner,
+        "owner_totals": by_owner,
+    }
+
+
+def owner_share(dist: Dict[str, Any], wallet: str,
+                supply_raw: int) -> Tuple[int, float]:
+    """(raw amount, supply share) one wallet holds across ALL its
+    token accounts in an aggregated distribution."""
+    raw = int((dist.get("owner_totals") or {}).get(wallet, 0))
+    return raw, (raw / supply_raw if supply_raw else 0.0)
+
+
+def owner_rank(dist: Dict[str, Any], wallet: str) -> Optional[int]:
+    """1-based rank of a wallet among owners by balance, or None
+    when the wallet holds nothing."""
+    for i, entry in enumerate(dist.get("top_owners") or []):
+        if entry.get("owner") == wallet:
+            return i + 1
+    totals = dist.get("owner_totals") or {}
+    if not totals.get(wallet):
+        return None
+    ranked = sorted(totals.items(), key=lambda kv: kv[1],
+                    reverse=True)
+    for i, (owner, _amt) in enumerate(ranked):
+        if owner == wallet:
+            return i + 1
+    return None
+
+
+async def fetch_holder_distribution(
+        ctx: Any, mint: str, token_program: str, supply_raw: int,
+        pool_labels: Optional[Dict[str, str]] = None
+        ) -> Optional[Dict[str, Any]]:
+    """REAL holder distribution for a mint via getProgramAccounts
+    on the token program that owns it. Returns the aggregate_holders
+    dict (plus capped / total_returned bookkeeping), or None when
+    the RPC failed - callers then fall back to the largest-accounts
+    read and, failing that, say concentration could not be
+    measured. Processing is capped at MAX_HOLDER_ACCOUNTS accounts
+    and the cap is disclosed in the result, never silent."""
+    entries = await get_program_accounts(ctx, token_program, mint)
+    if entries is None:
+        return None
+    total_returned = len(entries)
+    capped = total_returned > MAX_HOLDER_ACCOUNTS
+    accounts: List[Dict[str, Any]] = []
+    for entry in entries[:MAX_HOLDER_ACCOUNTS]:
+        if not isinstance(entry, dict):
+            continue
+        pubkey = entry.get("pubkey")
+        acct_value = entry.get("account")
+        if not isinstance(pubkey, str) or not isinstance(acct_value, dict):
+            continue
+        acct = normalize_account(acct_value)
+        owner = None
+        amount = 0
+        if acct["parsed_type"] == "account":
+            info = acct["info"]
+            owner = info.get("owner")
+            token_amount = info.get("tokenAmount") or {}
+            try:
+                amount = int(token_amount.get("amount") or 0)
+            except (TypeError, ValueError):
+                amount = 0
+        elif acct["raw_bytes"]:
+            parsed = parse_token_account_raw(acct["raw_bytes"])
+            if parsed is not None:
+                owner = parsed["owner"]
+                amount = int(parsed["amount"])
+        if isinstance(owner, str) and owner:
+            accounts.append({"address": pubkey, "owner": owner,
+                             "amount": amount})
+    dist = aggregate_holders(accounts, supply_raw, pool_labels)
+    dist["capped"] = capped
+    dist["total_returned"] = total_returned
+    dist["processed"] = min(total_returned, MAX_HOLDER_ACCOUNTS)
+    return dist
+
+
+def _distribution_severity(dist: Dict[str, Any]) -> str:
+    """Score the distribution on the ex-pool owner shares when a
+    pool / curve account is among the holders, else the raw owner
+    shares (documented in the module docstring)."""
+    if dist.get("has_pool"):
+        top1 = dist["ex_pool_top1_share"]
+        top5 = dist["ex_pool_top5_share"]
+        top10 = dist["ex_pool_top10_share"]
+    else:
+        top1 = dist["top1_share"]
+        top5 = dist["top5_share"]
+        top10 = dist["top10_share"]
+    if top1 >= TOP1_HIGH or top5 >= TOP5_HIGH or top10 >= TOP10_HIGH:
+        return "high"
+    if top1 > TOP1_MEDIUM or top5 > TOP5_MEDIUM \
+            or top10 > TOP10_MEDIUM:
+        return "medium"
+    return "low"
+
+
+def analyze_holder_distribution(address: str, dist: Dict[str, Any],
+                                supply_raw: int, decimals: int
+                                ) -> List[Dict[str, Any]]:
+    """The real holder-distribution finding: holder count, owner
+    shares, pool labeling, ex-pool top holder, top accounts in
+    full."""
+    base = {"address": address, "chain": "solana"}
+    sev = _distribution_severity(dist)
+    scored = "pool-excluded" if dist.get("has_pool") else "raw"
+    lines = []
+    for a in dist["top_accounts"][:10]:
+        line = (f"  {a['address']}: "
+                f"{_ui_amount(a['amount'], decimals)} "
+                f"({_pct(a['share'])} of supply) owned by wallet "
+                f"{a['owner']}")
+        if a.get("pool"):
+            line += f" [POOL: {a['pool']}]"
+        lines.append(line)
+    cap_note = ""
+    if dist.get("capped"):
+        cap_note = (f" NOTE: the RPC returned "
+                    f"{dist.get('total_returned')} token accounts; "
+                    f"processing was capped at "
+                    f"{dist.get('processed')} (cap "
+                    f"{MAX_HOLDER_ACCOUNTS}), so the shares below "
+                    f"cover the processed accounts only.")
+    ex_note = ""
+    if dist.get("has_pool") and dist.get("ex_pool_top_owner"):
+        top = dist["ex_pool_top_owner"]
+        ex_note = (f" Excluding pool/curve accounts, the top holder "
+                   f"is wallet {top['owner']} with "
+                   f"{_pct(top['share'])} of supply.")
+    value = (
+        f"{sev.upper()}: {address}: REAL holder distribution from "
+        f"every token account on-chain (aggregated by owner "
+        f"wallet): {dist['holder_count']} holder wallet(s) across "
+        f"{dist['account_count']} funded token account(s). Top "
+        f"owner holds {_pct(dist['top1_share'])}, top 5 hold "
+        f"{_pct(dist['top5_share'])}, top 10 hold "
+        f"{_pct(dist['top10_share'])} of supply (severity scored on "
+        f"{scored} shares; thresholds: top-1 >20% medium / >=50% "
+        f"high, top-5 >40% / >=75%, top-10 >60% / >=90%).{ex_note}"
+        f"{cap_note} Largest token accounts, in full:\n"
+        + "\n".join(lines))
+    ev = {**base, "holder_count": dist["holder_count"],
+          "account_count": dist["account_count"],
+          "capped": bool(dist.get("capped")),
+          "total_returned": dist.get("total_returned"),
+          "top1_share": round(dist["top1_share"], 6),
+          "top5_share": round(dist["top5_share"], 6),
+          "top10_share": round(dist["top10_share"], 6),
+          "ex_pool_top1_share": round(dist["ex_pool_top1_share"], 6),
+          "ex_pool_top5_share": round(dist["ex_pool_top5_share"], 6),
+          "ex_pool_top10_share": round(dist["ex_pool_top10_share"], 6),
+          "scored_on": scored,
+          "top_accounts": dist["top_accounts"][:10],
+          "top_owners": dist["top_owners"][:10]}
+    return [_fd("solana_holder_distribution", sev, value, ev)]
+
+
+def analyze_holder_unavailable(address: str) -> List[Dict[str, Any]]:
+    """Emitted when BOTH the program-accounts read and the
+    largest-accounts fallback failed: concentration is unknown,
+    and the finding says exactly that instead of staying silent."""
+    return [_fd(
+        "solana_holder_distribution_unavailable", "low",
+        f"LOW: {address}: holder distribution could NOT be "
+        f"measured this run - the public RPC returned neither the "
+        f"mint's token accounts (getProgramAccounts) nor its "
+        f"largest accounts. Holder concentration for this mint is "
+        f"UNKNOWN, not low.",
+        {"address": address, "chain": "solana"})]
 
 
 def analyze_mint(address: str, info: Dict[str, Any], owner_program: str,
@@ -816,49 +1186,247 @@ def analyze_mint(address: str, info: Dict[str, Any], owner_program: str,
     return out
 
 
-_EXT_SEVERITY = {
-    "permanentDelegate": "critical",
-    "transferFeeConfig": "medium",
-    "nonTransferable": "medium",
-    "defaultAccountState": "high",
-    "transferHook": "medium",
-    "confidentialTransferMint": "medium",
-    "metadataPointer": "low",
-    "tokenMetadata": "low",
-}
+def _ext_key(name: str) -> str:
+    return "solana_token2022_" + re.sub(
+        r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+# The dangerous / relevant Token-2022 extensions the audit checks
+# explicitly, every mint. metadataPointer and tokenMetadata are
+# deliberately NOT in this set: they already get their own
+# findings from the generic pass below and must not duplicate.
+_AUDITED_EXTENSIONS = (
+    "permanentDelegate", "transferHook", "defaultAccountState",
+    "transferFeeConfig", "nonTransferable", "memoTransfer",
+    "confidentialTransferMint", "confidentialTransferAccount",
+)
+
+
+def _fee_parts(state: Any) -> Dict[str, Any]:
+    """Transfer-fee numbers from a transferFeeConfig state, in
+    either the flat shape or the real nested shape (current fee
+    under newerTransferFee)."""
+    if not isinstance(state, dict):
+        return {}
+    newer = state.get("newerTransferFee")
+    newer = newer if isinstance(newer, dict) else {}
+    return {
+        "bps": state.get("transferFeeBasisPoints",
+                         newer.get("transferFeeBasisPoints")),
+        "maximum_fee": state.get("maximumFee",
+                                 newer.get("maximumFee")),
+        "config_authority": state.get("transferFeeConfigAuthority"),
+        "withdraw_authority": state.get("withdrawWithheldAuthority"),
+        "withheld_amount": state.get("withheldAmount"),
+    }
 
 
 def analyze_token2022_extensions(address: str, info: Dict[str, Any],
                                  base: Dict[str, Any]
                                  ) -> List[Dict[str, Any]]:
-    """Token-2022 extension findings from jsonParsed mint info
-    (info.extensions: [{extension, state}]). State shown in full."""
+    """Full Token-2022 extension audit from jsonParsed mint info
+    (info.extensions: [{extension, state}]).
+
+    Every dangerous extension gets its OWN explicit finding with
+    its authority shown in full; the ones checked and absent (or
+    present-but-benign) roll into ONE summary finding,
+    solana_token2022_extension_audit. State is always shown in
+    full."""
     out: List[Dict[str, Any]] = []
     extensions = info.get("extensions")
     if not isinstance(extensions, list):
         return out
+    present: Dict[str, Any] = {}
     for ext in extensions:
-        if not isinstance(ext, dict):
-            continue
-        name = str(ext.get("extension") or "")
-        state = ext.get("state")
-        if not name:
-            continue
-        # defaultAccountState only matters when accounts start frozen.
-        if name == "defaultAccountState" and isinstance(state, dict) \
-                and str(state.get("accountState", "")).lower() \
-                != "frozen":
-            continue
-        sev = _EXT_SEVERITY.get(name, "low")
-        key = "solana_token2022_" + re.sub(
-            r"(?<!^)(?=[A-Z])", "_", name).lower()
-        state_json = json.dumps(state, sort_keys=True, default=str)
+        if isinstance(ext, dict) and ext.get("extension"):
+            present[str(ext["extension"])] = ext.get("state")
+
+    def _state_json(state: Any) -> str:
+        return json.dumps(state, sort_keys=True, default=str)
+
+    audit_status: Dict[str, str] = {}
+
+    # -- permanent delegate: one wallet can move/burn ANY holder's
+    # tokens. The single worst extension a mint can carry.
+    if "permanentDelegate" in present:
+        state = present["permanentDelegate"]
+        delegate = state.get("delegate") \
+            if isinstance(state, dict) else None
         out.append(_fd(
-            key, sev,
+            "solana_token2022_permanent_delegate", "critical",
+            f"CRITICAL: {address}: Token-2022 PERMANENT DELEGATE "
+            f"is set to {delegate} - that wallet can transfer or "
+            f"BURN tokens from ANY holder's account at any time, "
+            f"without the holder's approval. Extension state, in "
+            f"full: {_state_json(state)}",
+            {**base, "extension": "permanentDelegate",
+             "extension_state": state, "delegate": delegate}))
+        audit_status["permanentDelegate"] = \
+            f"PRESENT - delegate {delegate} (see finding)"
+    else:
+        audit_status["permanentDelegate"] = "absent - clean"
+
+    # -- transfer hook: every transfer calls an external program.
+    if "transferHook" in present:
+        state = present["transferHook"]
+        program_id = state.get("programId") \
+            if isinstance(state, dict) else None
+        hook_auth = state.get("authority") \
+            if isinstance(state, dict) else None
+        out.append(_fd(
+            "solana_token2022_transfer_hook", "high",
+            f"HIGH: {address}: Token-2022 TRANSFER HOOK is set - "
+            f"every transfer of this token calls the external "
+            f"program {program_id}, which can approve, tax or "
+            f"BLOCK any transfer, including blocking sells. Hook "
+            f"authority: {hook_auth}. Extension state, in full: "
+            f"{_state_json(state)}",
+            {**base, "extension": "transferHook",
+             "extension_state": state, "program_id": program_id,
+             "authority": hook_auth}))
+        audit_status["transferHook"] = \
+            f"PRESENT - program {program_id} (see finding)"
+    else:
+        audit_status["transferHook"] = "absent - clean"
+
+    # -- default account state: only dangerous when frozen.
+    if "defaultAccountState" in present:
+        state = present["defaultAccountState"]
+        acct_state = str((state or {}).get("accountState", "")) \
+            if isinstance(state, dict) else ""
+        if acct_state.lower() == "frozen":
+            out.append(_fd(
+                "solana_token2022_default_account_state", "high",
+                f"HIGH: {address}: Token-2022 DEFAULT ACCOUNT "
+                f"STATE is FROZEN - every new token account for "
+                f"this mint starts frozen and its owner cannot "
+                f"move the tokens until the mint's freeze "
+                f"authority thaws the account. Extension state, "
+                f"in full: {_state_json(state)}",
+                {**base, "extension": "defaultAccountState",
+                 "extension_state": state}))
+            audit_status["defaultAccountState"] = \
+                "PRESENT - accounts start FROZEN (see finding)"
+        else:
+            audit_status["defaultAccountState"] = (
+                f"present - accounts start {acct_state or 'initialized'}"
+                f" (not frozen) - clean")
+    else:
+        audit_status["defaultAccountState"] = "absent - clean"
+
+    # -- transfer fee config: a skim on every transfer.
+    if "transferFeeConfig" in present:
+        state = present["transferFeeConfig"]
+        fee = _fee_parts(state)
+        bps = fee.get("bps")
+        pct = None
+        if isinstance(bps, (int, float)):
+            pct = f"{bps / 100:.2f}%"
+        out.append(_fd(
+            "solana_token2022_transfer_fee_config", "medium",
+            f"MEDIUM: {address}: Token-2022 TRANSFER FEE is "
+            f"active - every transfer is skimmed {bps} basis "
+            f"points ({pct}), up to a maximum fee of "
+            f"{fee.get('maximum_fee')} raw units per transfer. "
+            f"Fee config authority: {fee.get('config_authority')}; "
+            f"withdraw-withheld authority: "
+            f"{fee.get('withdraw_authority')}; currently withheld: "
+            f"{fee.get('withheld_amount')}. Extension state, in "
+            f"full: {_state_json(state)}",
+            {**base, "extension": "transferFeeConfig",
+             "extension_state": state, **fee}))
+        audit_status["transferFeeConfig"] = \
+            f"PRESENT - {bps} bps (see finding)"
+    else:
+        audit_status["transferFeeConfig"] = "absent - clean"
+
+    # -- non-transferable: soulbound, can never be sold or moved.
+    if "nonTransferable" in present:
+        state = present["nonTransferable"]
+        out.append(_fd(
+            "solana_token2022_non_transferable", "high",
+            f"HIGH: {address}: Token-2022 NON-TRANSFERABLE is set "
+            f"- tokens under this mint can NEVER be transferred, "
+            f"sold or moved once received (soulbound). Anyone "
+            f"buying this expecting to trade it is trapped. "
+            f"Extension state, in full: {_state_json(state)}",
+            {**base, "extension": "nonTransferable",
+             "extension_state": state}))
+        audit_status["nonTransferable"] = "PRESENT (see finding)"
+    else:
+        audit_status["nonTransferable"] = "absent - clean"
+
+    # -- memo transfer: friction / compliance, low.
+    if "memoTransfer" in present:
+        state = present["memoTransfer"]
+        out.append(_fd(
+            "solana_token2022_memo_transfer", "low",
+            f"LOW: {address}: Token-2022 MEMO TRANSFER is active "
+            f"on this mint - transfers into enabled accounts must "
+            f"carry a memo. Extension state, in full: "
+            f"{_state_json(state)}",
+            {**base, "extension": "memoTransfer",
+             "extension_state": state}))
+        audit_status["memoTransfer"] = "PRESENT (see finding)"
+    else:
+        audit_status["memoTransfer"] = "absent - clean"
+
+    # -- confidential transfers: balances can be hidden, info-level.
+    for name in ("confidentialTransferMint",
+                 "confidentialTransferAccount"):
+        if name in present:
+            state = present[name]
+            out.append(_fd(
+                _ext_key(name), "low",
+                f"LOW: {address}: Token-2022 extension '{name}' "
+                f"is active on this mint - confidential transfers "
+                f"are supported, so holder balances/flows can be "
+                f"encrypted and are not fully auditable from "
+                f"public chain data. Extension state, in full: "
+                f"{_state_json(state)}",
+                {**base, "extension": name,
+                 "extension_state": state}))
+            audit_status[name] = "PRESENT (see finding)"
+        else:
+            audit_status[name] = "absent - clean"
+
+    # -- everything else present (metadataPointer, tokenMetadata,
+    # group pointers, pausable, ...): one generic finding each,
+    # state in full, exactly as before.
+    _GENERIC_SEVERITY = {"metadataPointer": "low",
+                         "tokenMetadata": "low"}
+    for name, state in present.items():
+        if name in _AUDITED_EXTENSIONS:
+            continue
+        sev = _GENERIC_SEVERITY.get(name, "low")
+        out.append(_fd(
+            _ext_key(name), sev,
             f"{sev.upper()}: {address}: Token-2022 extension "
             f"'{name}' is active on this mint. Extension state, in "
-            f"full: {state_json}",
+            f"full: {_state_json(state)}",
             {**base, "extension": name, "extension_state": state}))
+
+    # -- the one audit summary: what was checked, what was clean.
+    checked = "; ".join(f"{name}: {audit_status[name]}"
+                        for name in _AUDITED_EXTENSIONS)
+    dangerous_present = [
+        n for n in ("permanentDelegate", "transferHook",
+                    "transferFeeConfig", "nonTransferable")
+        if n in present] + (
+            ["defaultAccountState"]
+            if audit_status["defaultAccountState"].startswith(
+                "PRESENT") else [])
+    verdict = ("all checked extensions are absent or benign"
+               if not dangerous_present else
+               "dangerous extension(s) present: "
+               + ", ".join(dangerous_present)
+               + " (each has its own finding above)")
+    out.append(_fd(
+        "solana_token2022_extension_audit", "low",
+        f"LOW: {address}: Token-2022 extension audit - {verdict}. "
+        f"Checked, in full: {checked}.",
+        {**base, "audit": audit_status,
+         "dangerous_present": dangerous_present}))
     return out
 
 
@@ -991,7 +1559,9 @@ def creator_holdings(largest: Optional[List[Dict]], creator: str,
 def analyze_bonding_curve(address: str, curve: Dict[str, Any],
                           largest: Optional[List[Dict]],
                           supply_raw: int,
-                          curve_token_account: Optional[str] = None
+                          curve_token_account: Optional[str] = None,
+                          creator_override: Optional[Tuple[int, float]]
+                          = None
                           ) -> List[Dict[str, Any]]:
     """pump.fun findings from the ON-CHAIN bonding curve account
     (the primary source - the pump API is enrichment only).
@@ -1060,7 +1630,27 @@ def analyze_bonding_curve(address: str, curve: Dict[str, Any],
             ev))
 
     if creator:
-        if largest is None:
+        if creator_override is not None:
+            # Exact share from the full holder aggregation (every
+            # token account, summed by owner) - strictly better
+            # than the largest-accounts estimate below.
+            dev_raw, share = creator_override
+            sev = "high" if share > CREATOR_HIGH else \
+                "medium" if share > CREATOR_MEDIUM else "low"
+            out.append(_fd(
+                "pump_creator_holdings", sev,
+                f"{sev.upper()}: {address}: pump.fun creator "
+                f"wallet {creator} (read from the on-chain "
+                f"bonding curve account) holds {dev_raw} raw "
+                f"units = {_pct(share)} of this coin's supply "
+                f"across EVERY token account it owns (full holder "
+                f"aggregation, not just the largest accounts). "
+                f"Creator wallet shown in full: {creator}",
+                {**base, "creator": creator,
+                 "creator_raw_amount": dev_raw,
+                 "creator_share": round(share, 6),
+                 "share_source": "holder_aggregation"}))
+        elif largest is None:
             out.append(_fd(
                 "pump_creator_holdings", "low",
                 f"LOW: {address}: pump.fun creator wallet (read "
@@ -1154,6 +1744,285 @@ def analyze_metaplex_metadata(address: str, metadata: Dict[str, Any]
     return out
 
 
+def analyze_creator_wallet(address: str, creator: str,
+                           dist: Optional[Dict[str, Any]],
+                           supply_raw: int,
+                           sol_lamports: Optional[int]
+                           ) -> List[Dict[str, Any]]:
+    """Creator deep-dive: the creator's exact token share from the
+    full holder aggregation (0% = the dev is fully out, said
+    plainly), its rank among holders (aggregation is BY OWNER, so a
+    creator holding through several token accounts is still caught
+    as one wallet), and the creator wallet's SOL balance (near-zero
+    = drained / throwaway wallet note)."""
+    base = {"address": address, "chain": "solana",
+            "creator": creator}
+    parts: List[str] = []
+    share: Optional[float] = None
+    rank: Optional[int] = None
+    dev_raw: Optional[int] = None
+    if dist is not None:
+        dev_raw, share = owner_share(dist, creator, supply_raw)
+        rank = owner_rank(dist, creator)
+        if dev_raw == 0:
+            parts.append(
+                f"the creator holds 0 of this token across every "
+                f"token account on-chain - the dev is FULLY OUT of "
+                f"this token and has no tokens left to dump")
+        else:
+            text = (f"the creator holds {dev_raw} raw units = "
+                    f"{_pct(share)} of supply across all its token "
+                    f"accounts")
+            if rank is not None and rank <= 10:
+                text += (f", making it the #{rank} largest holder "
+                         f"wallet overall (aggregation is by owner, "
+                         f"so split accounts do not hide it)")
+            parts.append(text)
+    else:
+        parts.append(
+            "the creator's token share could not be measured this "
+            "run (holder distribution unavailable)")
+    sol_note = None
+    sol_value: Optional[float] = None
+    if sol_lamports is None:
+        parts.append("the creator wallet's SOL balance could not "
+                     "be read this run")
+    else:
+        sol_value = sol_lamports / 1_000_000_000
+        if sol_lamports < CREATOR_DRAINED_LAMPORTS:
+            sol_note = "near-zero/drained"
+            parts.append(
+                f"its SOL balance is {sol_value:.9f} SOL "
+                f"({sol_lamports} lamports) - near zero, consistent "
+                f"with a drained or throwaway dev wallet")
+        else:
+            parts.append(
+                f"its SOL balance is {sol_value:.9f} SOL "
+                f"({sol_lamports} lamports)")
+    if share is not None and share > CREATOR_HIGH:
+        sev = "high"
+    elif share is not None and share > CREATOR_MEDIUM:
+        sev = "medium"
+    else:
+        sev = "low"
+    value = (f"{sev.upper()}: {address}: creator deep-dive on "
+             f"wallet {creator}: " + "; ".join(parts)
+             + f". Creator wallet shown in full: {creator}")
+    ev = {**base, "creator_raw_amount": dev_raw,
+          "creator_share": (round(share, 6)
+                            if share is not None else None),
+          "creator_rank": rank,
+          "creator_sol_lamports": sol_lamports,
+          "creator_sol_balance": sol_value,
+          "creator_sol_note": sol_note}
+    return [_fd("solana_creator_wallet", sev, value, ev)]
+
+
+def analyze_authority_map(address: str, info: Dict[str, Any],
+                          metadata: Optional[Dict[str, Any]]
+                          ) -> List[Dict[str, Any]]:
+    """The authority map: ONE at-a-glance finding listing who
+    holds every power over this mint - mint authority, freeze
+    authority, metadata update authority, permanent delegate,
+    transfer hook (upgrade authority is a program power, marked
+    not-applicable for a mint). Holders shown IN FULL, or
+    "revoked / none". A single wallet holding 3+ active powers
+    bumps the finding to medium."""
+    base = {"address": address, "chain": "solana"}
+    ext: Dict[str, Any] = {}
+    extensions = info.get("extensions")
+    if isinstance(extensions, list):
+        for e in extensions:
+            if isinstance(e, dict) and e.get("extension"):
+                ext[str(e["extension"])] = e.get("state")
+
+    def _holder(v: Any) -> Optional[str]:
+        return v if isinstance(v, str) and v else None
+
+    mint_auth = _holder(info.get("mintAuthority"))
+    freeze_auth = _holder(info.get("freezeAuthority"))
+    delegate = None
+    if isinstance(ext.get("permanentDelegate"), dict):
+        delegate = _holder(ext["permanentDelegate"].get("delegate"))
+    hook_program = None
+    hook_authority = None
+    if isinstance(ext.get("transferHook"), dict):
+        hook_program = _holder(ext["transferHook"].get("programId"))
+        hook_authority = _holder(ext["transferHook"].get("authority"))
+    meta_auth = None
+    meta_source = None
+    if isinstance(ext.get("tokenMetadata"), dict):
+        meta_auth = _holder(ext["tokenMetadata"].get(
+            "updateAuthority"))
+        if meta_auth:
+            meta_source = "Token-2022 in-mint metadata"
+    if meta_auth is None and metadata is not None:
+        meta_auth = _holder(metadata.get("update_authority"))
+        if meta_auth:
+            meta_source = "Metaplex metadata account"
+
+    def _line(label: str, holder: Optional[str],
+              extra: str = "") -> str:
+        shown = holder if holder else "revoked / none"
+        return f"  {label}: {shown}{extra}"
+
+    lines = [
+        _line("mint authority (can mint new supply)", mint_auth),
+        _line("freeze authority (can freeze holder accounts)",
+              freeze_auth),
+        _line("metadata update authority (can change name/symbol/"
+              "image)", meta_auth,
+              f" [{meta_source}]" if meta_source else
+              " [not read this run]" if meta_auth is None else ""),
+        _line("permanent delegate (can move/burn ANY holder's "
+              "tokens)", delegate),
+        _line("transfer hook (program every transfer must obey)",
+              hook_program,
+              f", hook authority {hook_authority}"
+              if hook_authority else ""),
+        "  program upgrade authority: not applicable - this is a "
+        "token mint, not a program",
+    ]
+    powers: Dict[str, List[str]] = {}
+    for label, holder in (("mint authority", mint_auth),
+                          ("freeze authority", freeze_auth),
+                          ("metadata update authority", meta_auth),
+                          ("permanent delegate", delegate),
+                          ("transfer hook authority", hook_authority)):
+        if holder:
+            powers.setdefault(holder, []).append(label)
+    concentrated = {w: ps for w, ps in powers.items()
+                    if len(ps) >= 3}
+    sev = "medium" if concentrated else "low"
+    conc_note = ""
+    if concentrated:
+        detail = "; ".join(
+            f"wallet {w} holds {len(ps)} powers "
+            f"({', '.join(ps)})"
+            for w, ps in concentrated.items())
+        conc_note = (f" CONCENTRATION: {detail} - one key controls "
+                     f"this token end to end.")
+    value = (f"{sev.upper()}: {address}: AUTHORITY MAP - who "
+             f"holds every power over this mint:\n"
+             + "\n".join(lines) + conc_note)
+    ev = {**base, "mint_authority": mint_auth,
+          "freeze_authority": freeze_auth,
+          "metadata_update_authority": meta_auth,
+          "metadata_authority_source": meta_source,
+          "permanent_delegate": delegate,
+          "transfer_hook_program": hook_program,
+          "transfer_hook_authority": hook_authority,
+          "powers_by_wallet": powers}
+    return [_fd("solana_authority_map", sev, value, ev)]
+
+
+def analyze_dex_pairs(address: str, pairs: List[Dict],
+                      now_s: Optional[float] = None
+                      ) -> List[Dict[str, Any]]:
+    """Sell-side / honeypot-proxy findings from DexScreener pair
+    data (the pairs the plugin already fetches): no-sells flag,
+    pair-age freshness, dump / volatility moves. Only fields
+    actually returned are read - a missing field draws NO
+    conclusion."""
+    out: List[Dict[str, Any]] = []
+    if not pairs:
+        return out
+    base = {"address": address, "chain": "solana"}
+
+    def _liq(p: Dict) -> float:
+        try:
+            return float((p.get("liquidity") or {}).get("usd") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    top = max(pairs, key=_liq)
+    pair_addr = top.get("pairAddress")
+    dex = top.get("dexId")
+    ev_top = {**base, "pair_address": pair_addr, "dex": dex}
+
+    # -- no sells recorded while buys happen (honeypot proxy).
+    txns = top.get("txns") or {}
+    for window in ("h24", "h6", "h1"):
+        w = txns.get(window)
+        if not isinstance(w, dict):
+            continue
+        buys, sells = w.get("buys"), w.get("sells")
+        if buys is None and sells is None:
+            continue
+        try:
+            buys_i, sells_i = int(buys or 0), int(sells or 0)
+        except (TypeError, ValueError):
+            continue
+        if buys_i > 0 and sells_i == 0:
+            out.append(_fd(
+                "solana_no_sells_recorded", "high",
+                f"HIGH: {address}: NO SELLS RECORDED on the "
+                f"deepest DexScreener pair {pair_addr} ({dex}) in "
+                f"the {window} window, against {buys_i} buys. "
+                f"Either nobody has tried to exit, or sells are "
+                f"being blocked (honeypot shape). Do not buy what "
+                f"you cannot sell; prove the exit with a small "
+                f"test sell first.",
+                {**ev_top, "window": window, "buys": buys_i,
+                 "sells": sells_i}))
+        break  # only the widest window with data decides
+
+    # -- pair age / freshness.
+    created_ms = top.get("pairCreatedAt")
+    if isinstance(created_ms, (int, float)) and created_ms > 0:
+        created_s = created_ms / 1000.0
+        now = now_s if now_s is not None else time.time()
+        age_h = (now - created_s) / 3600.0
+        if 0 <= age_h < PAIR_FRESH_LOW_HOURS:
+            created_iso = datetime.datetime.fromtimestamp(
+                created_s, tz=datetime.timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC")
+            sev = "medium" if age_h < PAIR_FRESH_MEDIUM_HOURS \
+                else "low"
+            age_txt = (f"{age_h:.1f} hours" if age_h < 48
+                       else f"{age_h / 24:.1f} days")
+            out.append(_fd(
+                "solana_pair_freshness", sev,
+                f"{sev.upper()}: {address}: the deepest "
+                f"DexScreener pair {pair_addr} ({dex}) is "
+                f"BRAND NEW - created {created_iso} "
+                f"({age_txt} ago). New pairs have no exit history "
+                f"and are where most rugs happen.",
+                {**ev_top, "pair_created_at_ms": created_ms,
+                 "pair_created_iso": created_iso,
+                 "pair_age_hours": round(age_h, 2)}))
+
+    # -- 24h dump / extreme volatility.
+    change = top.get("priceChange") or {}
+    h24 = change.get("h24")
+    if isinstance(h24, (int, float)):
+        extra = ", ".join(
+            f"{k} {change[k]}%" for k in ("h1", "h6")
+            if isinstance(change.get(k), (int, float)))
+        suffix = f" ({extra})" if extra else ""
+        if h24 <= PRICE_DUMP_PCT:
+            out.append(_fd(
+                "solana_price_volatility", "high",
+                f"HIGH: {address}: this token has DUMPED "
+                f"{h24}% in the last 24h on pair {pair_addr} "
+                f"({dex}){suffix}. A fall past -90% in a day is "
+                f"a collapse, not a dip - check whether liquidity "
+                f"is still there at all before touching it.",
+                {**ev_top, "price_change_h24": h24,
+                 "price_change": change}))
+        elif h24 >= PRICE_PUMP_PCT:
+            out.append(_fd(
+                "solana_price_volatility", "medium",
+                f"MEDIUM: {address}: this token is up {h24}% in "
+                f"the last 24h on pair {pair_addr} ({dex})"
+                f"{suffix}. A vertical move past +1000% in a day "
+                f"is manipulation or a blow-off top far more "
+                f"often than it is organic demand.",
+                {**ev_top, "price_change_h24": h24,
+                 "price_change": change}))
+    return out
+
+
 def analyze_program(address: str, account: Dict[str, Any],
                     program_data: Optional[Dict[str, Any]]
                     ) -> List[Dict[str, Any]]:
@@ -1230,11 +2099,15 @@ class SolanaContractPlugin(Plugin):
     group = "web3"
     requires_keys = []  # keyless: public RPC + pump.fun + DexScreener
     description = ("Reads Solana contracts from public chain data: "
-                   "SPL token mints (mint/freeze authority still set, "
-                   "holder concentration, Token-2022 extensions), "
-                   "pump.fun coins (bonding curve, mutable metadata, "
-                   "creator holdings), and programs (BPF upgrade "
-                   "authority). Read-only, never sends a transaction.")
+                   "SPL token mints (mint/freeze authority still "
+                   "set, REAL holder distribution by owner wallet, "
+                   "full Token-2022 dangerous-extension audit, "
+                   "creator deep-dive, authority map), pump.fun "
+                   "coins (bonding curve, mutable metadata, creator "
+                   "holdings), DexScreener sell-side checks "
+                   "(no-sells, pair age, dumps), and programs (BPF "
+                   "upgrade authority). Read-only, never sends a "
+                   "transaction.")
     phase = 2  # also consumes addresses discovered by phase-1 miners
     timeout_s = 120
 
@@ -1389,12 +2262,63 @@ class SolanaContractPlugin(Plugin):
                           account: Dict[str, Any],
                           info: Dict[str, Any], url: str,
                           findings: List[Finding]) -> None:
+        owner_program = account["owner"]
+        try:
+            supply_raw = int(info.get("supply") or 0)
+        except (TypeError, ValueError):
+            supply_raw = 0
+        try:
+            decimals = int(info.get("decimals") or 0)
+        except (TypeError, ValueError):
+            decimals = 0
+
+        # DexScreener pairs are fetched FIRST now: the deepest
+        # pair's address joins the pool-label set for the holder
+        # distribution, and the same pairs feed the sell-side
+        # analysis at the end.
+        pairs = await fetch_dex_pairs(ctx, address)
+
+        # Fallback holder read (empty for Token-2022 mints on the
+        # public RPC - the distribution below is the real one).
         largest = await get_largest_accounts(ctx, address)
         if largest:
             await self._enrich_owners(ctx, largest)
-        for fd in analyze_mint(address, info, account["owner"],
-                               largest):
+
+        # The bonding curve is read NOW (its full analysis happens
+        # further down): when it exists on-chain, its associated
+        # token account joins the pool-label set for the holder
+        # distribution, so curve-held supply is labeled pool
+        # instead of being scored as insider concentration.
+        curve_state, curve, curve_addr = await fetch_bonding_curve(
+            ctx, address)
+        curve_token_acct = None
+        if curve_state == "found" and curve_addr:
+            curve_token_acct = associated_token_address(
+                curve_addr, address, owner_program)
+        pool_labels: Dict[str, str] = {}
+        for p in pairs:
+            pa = p.get("pairAddress")
+            if isinstance(pa, str) and pa:
+                pool_labels[pa] = f"DEX pool ({p.get('dexId')})"
+        if curve_token_acct:
+            pool_labels[curve_token_acct] = "pump.fun bonding curve"
+        # REAL holder distribution: every token account, by owner.
+        dist = await fetch_holder_distribution(
+            ctx, address, owner_program, supply_raw, pool_labels)
+
+        # When the distribution exists it REPLACES the
+        # largest-accounts concentration inside analyze_mint (pass
+        # None there); the richer finding is emitted separately.
+        for fd in analyze_mint(address, info, owner_program,
+                               None if dist is not None else largest):
             findings.append(self._to_finding(fd, url))
+        if dist is not None:
+            for fd in analyze_holder_distribution(
+                    address, dist, supply_raw, decimals):
+                findings.append(self._to_finding(fd, url))
+        elif not largest:
+            for fd in analyze_holder_unavailable(address):
+                findings.append(self._to_finding(fd, url))
 
         # pump.fun layer, ON-CHAIN first: the bonding curve PDA and
         # the Metaplex metadata PDA are read via the Solana RPC and
@@ -1405,10 +2329,6 @@ class SolanaContractPlugin(Plugin):
         # depends on it (its record is attached as pump_coin_info
         # when it does answer, and it only carries the pump bundle
         # when the on-chain reads themselves failed).
-        try:
-            supply_raw = int(info.get("supply") or 0)
-        except (TypeError, ValueError):
-            supply_raw = 0
         pump = await fetch_pump_coin(ctx, address)
         pump_url = f"https://pump.fun/coin/{address}"
 
@@ -1426,15 +2346,18 @@ class SolanaContractPlugin(Plugin):
             for fd in analyze_metaplex_metadata(address, metadata):
                 findings.append(self._to_finding(fd, url))
 
-        curve_state, curve, curve_addr = await fetch_bonding_curve(
-            ctx, address)
         if curve_state == "found" and curve is not None:
-            curve_token_acct = associated_token_address(
-                curve_addr, address, account["owner"]) \
-                if curve_addr else None
+            # Exact creator share from the holder aggregation when
+            # it exists - strictly better than the largest-accounts
+            # estimate analyze_bonding_curve falls back to.
+            creator_override = None
+            if dist is not None and curve.get("creator"):
+                creator_override = owner_share(
+                    dist, curve["creator"], supply_raw)
             for fd in analyze_bonding_curve(address, curve, largest,
                                             supply_raw,
-                                            curve_token_acct):
+                                            curve_token_acct,
+                                            creator_override):
                 findings.append(self._to_finding(fd, pump_url))
             if pump:
                 # Enrichment only: the coin info record, nothing a
@@ -1467,8 +2390,33 @@ class SolanaContractPlugin(Plugin):
                 if fd["key"] not in skip:
                     findings.append(self._to_finding(fd, pump_url))
 
-        # DexScreener enrichment: live pairs / liquidity, in full.
-        pairs = await fetch_dex_pairs(ctx, address)
+        # Creator deep-dive: creator resolved from the on-chain
+        # curve first, then the pump API record, then the Metaplex
+        # metadata creators list. Exact share comes from the
+        # holder aggregation; the SOL balance is a separate read.
+        creator = None
+        if curve is not None and curve.get("creator"):
+            creator = curve["creator"]
+        elif pump and isinstance(pump.get("creator"), str):
+            creator = pump["creator"]
+        elif metadata is not None:
+            creators = metadata.get("creators") or []
+            if creators and isinstance(creators[0], dict):
+                creator = creators[0].get("address")
+        if isinstance(creator, str) and creator:
+            sol_lamports = await get_balance(ctx, creator)
+            for fd in analyze_creator_wallet(address, creator, dist,
+                                             supply_raw,
+                                             sol_lamports):
+                findings.append(self._to_finding(fd, url))
+
+        # Authority map: one at-a-glance finding over every power.
+        for fd in analyze_authority_map(address, info, metadata):
+            findings.append(self._to_finding(fd, url))
+
+        # DexScreener enrichment: live pairs / liquidity, in full,
+        # plus the sell-side read (no-sells, pair age, dumps) on
+        # the same pairs fetched at the top of this recon.
         if pairs:
             def _liq(p: Dict) -> float:
                 try:
@@ -1496,6 +2444,9 @@ class SolanaContractPlugin(Plugin):
                                          "sells move the price hard; "
                                          "check it again before "
                                          "sizing any position."}))
+            dex_url = f"https://dexscreener.com/solana/{address}"
+            for fd in analyze_dex_pairs(address, pairs):
+                findings.append(self._to_finding(fd, dex_url))
 
     async def _enrich_owners(self, ctx: Ctx,
                              largest: List[Dict]) -> None:
