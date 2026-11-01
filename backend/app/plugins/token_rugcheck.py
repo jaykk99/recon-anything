@@ -131,7 +131,7 @@ def _parse_solana_mint(raw: bytes) -> Dict[str, Optional[str]]:
 class TokenRugcheckPlugin(Plugin):
     id = "token_rugcheck"
     label = "Token Rug-Check"
-    accepts = ["crypto_wallet", "domain", "url"]
+    accepts = ["crypto_wallet", "solana_contract", "domain", "url"]
     passive = True  # read-only API lookups only; runs in both modes
     cost = Cost.FREE
     group = "web3"
