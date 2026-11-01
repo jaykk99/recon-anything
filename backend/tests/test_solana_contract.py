@@ -21,6 +21,7 @@ contract_chain. Evidence values are asserted IN FULL (Jay's
 2026-10-29 order: findings never mask values).
 """
 import asyncio
+import base64
 import os
 import sys
 
@@ -542,3 +543,253 @@ def test_plugin_skips_cleanly_without_solana_target():
     res = asyncio.run(p.run(target, FakeCtx()))
     assert res.status == PluginStatus.OK
     assert res.findings == []
+
+
+# ---------------------------------------------------------------------------
+# 5. On-chain pump.fun coverage (PDA derivation, bonding curve parse,
+#    creator holdings, Metaplex metadata) - the pump single-coin API
+#    returned 404 for every mint tested on 2026-11-01, so these paths
+#    are the primary source and are tested with the API absent.
+# ---------------------------------------------------------------------------
+
+# Real vector taken from the live pump.fun LIST endpoint
+# (GET frontend-api-v3.pump.fun/coins?offset=0&limit=5&... on
+# 2026-11-01, which works): this mint's record names this exact
+# bonding_curve and associated_bonding_curve. The PDA derivation
+# must reproduce both addresses from the mint alone.
+VECTOR_MINT = "666bnUsjGEPEDPof9SDcDnQRda54CfUDbL5efekupump"
+VECTOR_CURVE = "Bdm5tsjycz8C5V2ifhWzFEfiTLqwvuUwLhHZSGRpNFmq"
+VECTOR_ASSOC = "FKzxXfKyBZTAVidQZHN8zQTQsVYcusSsrbVaVHEwGnLZ"
+
+
+def test_pda_derivation_matches_live_pump_vector():
+    assert sol.bonding_curve_address(VECTOR_MINT) == VECTOR_CURVE
+    # The associated curve token account (ATA of the curve PDA,
+    # Token-2022 program per the live record) derives exactly too.
+    assert sol.associated_token_address(
+        VECTOR_CURVE, VECTOR_MINT, sol.TOKEN2022_PROGRAM) == VECTOR_ASSOC
+    addr, bump = sol.find_program_address(
+        [b"bonding-curve", sol.b58decode(VECTOR_MINT)], sol.PUMP_PROGRAM)
+    assert addr == VECTOR_CURVE
+    assert isinstance(bump, int) and 0 <= bump <= 255
+    # Deterministic, valid addresses for the other PDAs.
+    meta = sol.metaplex_metadata_address(MINT)
+    assert sol.is_solana_address(meta)
+    assert sol.metaplex_metadata_address(MINT) == meta
+    # A normal pubkey IS on-curve (that is the whole point of PDAs
+    # being off-curve): the system program address is a real key.
+    assert sol._ed25519_on_curve(sol.b58decode(sol.SYSTEM_PROGRAM))
+
+
+def _curve_bytes(complete=False, with_creator=True, total_len=None):
+    raw = bytearray()
+    raw += b"\x1a\x2b\x3c\x4d\x5e\x6f\x70\x81"  # Anchor discriminator
+    for v in (800_000_000_000_000, 30_000_000_000, 200_000_000_000_000,
+              5_000_000_000, 1_000_000_000_000_000):
+        raw += v.to_bytes(8, "little")
+    raw.append(1 if complete else 0)            # complete @ offset 48
+    if with_creator:
+        raw += sol.b58decode(CREATOR)           # creator @ offset 49
+    if total_len is not None:
+        raw = raw[:total_len]
+        raw += b"\x00" * max(0, total_len - len(raw))
+    return bytes(raw)
+
+
+def test_parse_bonding_curve_active_and_complete():
+    parsed = sol.parse_bonding_curve(_curve_bytes(complete=False))
+    assert parsed["complete"] is False
+    assert parsed["creator"] == CREATOR
+    assert parsed["virtual_sol_reserves"] == 30_000_000_000
+    assert parsed["virtual_token_reserves"] == 800_000_000_000_000
+    assert parsed["real_sol_reserves"] == 5_000_000_000
+    assert parsed["token_total_supply"] == 1_000_000_000_000_000
+    done = sol.parse_bonding_curve(_curve_bytes(complete=True))
+    assert done["complete"] is True
+    assert done["creator"] == CREATOR
+
+
+def test_parse_bonding_curve_truncated_lengths():
+    # Exactly 49 bytes: complete flag readable, no creator yet.
+    parsed = sol.parse_bonding_curve(_curve_bytes(total_len=49))
+    assert parsed["complete"] is False
+    assert parsed["creator"] is None
+    # Partial creator bytes (60 total): still no creator claimed.
+    parsed = sol.parse_bonding_curve(_curve_bytes(total_len=60))
+    assert parsed["creator"] is None
+    # Too short to hold the complete flag: does not parse at all.
+    assert sol.parse_bonding_curve(_curve_bytes(total_len=48)) is None
+    assert sol.parse_bonding_curve(_curve_bytes(total_len=20)) is None
+    assert sol.parse_bonding_curve(b"") is None
+    assert sol.parse_bonding_curve(None) is None
+
+
+def test_analyze_bonding_curve_creator_and_curve_share():
+    curve = sol.parse_bonding_curve(_curve_bytes(complete=False))
+    curve["address"] = VECTOR_CURVE
+    largest = [{"address": ACCT_B, "amount": "500000"},   # curve ATA
+               {"address": ACCT_A, "amount": "150000",
+                "owner": CREATOR}]
+    findings = sol.analyze_bonding_curve(MINT, curve, largest,
+                                         1_000_000,
+                                         curve_token_account=ACCT_B)
+    keys = {f["key"] for f in findings}
+    assert "pump_bonding_curve_active" in keys
+    assert "pump_creator_holdings" in keys
+    active = _by_key(findings, "pump_bonding_curve_active")[0]
+    assert VECTOR_CURVE in active["value"]
+    assert "30000000000" in active["value"]  # virtual SOL reserves
+    assert active["evidence"]["curve_token_share"] == 0.5
+    assert ACCT_B in active["value"]  # curve token account in full
+    dev = _by_key(findings, "pump_creator_holdings")[0]
+    assert dev["severity"] == "high"  # 15% > 10%
+    assert dev["evidence"]["creator"] == CREATOR
+    assert dev["evidence"]["creator_share"] == 0.15
+    assert CREATOR in dev["value"]
+
+
+def test_analyze_bonding_curve_graduated_creator_zero():
+    curve = sol.parse_bonding_curve(_curve_bytes(complete=True))
+    curve["address"] = VECTOR_CURVE
+    findings = sol.analyze_bonding_curve(
+        MINT, curve, [{"address": ACCT_A, "amount": "10",
+                       "owner": AUTHORITY}], 1_000_000)
+    keys = {f["key"] for f in findings}
+    assert "pump_graduated" in keys
+    assert "pump_bonding_curve_active" not in keys
+    # Creator is ALWAYS reported when a curve exists, even at 0%.
+    dev = _by_key(findings, "pump_creator_holdings")[0]
+    assert dev["severity"] == "low"
+    assert dev["evidence"]["creator_share"] == 0.0
+    assert CREATOR in dev["value"]
+    # No largest accounts at all: creator still reported, share None.
+    findings = sol.analyze_bonding_curve(MINT, curve, None, 1_000_000)
+    dev = _by_key(findings, "pump_creator_holdings")[0]
+    assert dev["evidence"]["creator_share"] is None
+    assert CREATOR in dev["value"]
+
+
+def _metadata_bytes(is_mutable=True, with_creators=True):
+    out = bytearray()
+    out.append(4)                                # MetadataV1 key
+    out += sol.b58decode(CREATOR)                # update authority
+    out += sol.b58decode(MINT)                   # mint
+
+    def _s(s):
+        b = s.encode()
+        return len(b).to_bytes(4, "little") + b
+    out += _s("Test Coin")
+    out += _s("TEST")
+    out += _s("https://ipfs.io/ipfs/testcoin")
+    out += (500).to_bytes(2, "little")           # seller fee bps
+    if with_creators:
+        out.append(1)
+        out += (1).to_bytes(4, "little")
+        out += sol.b58decode(CREATOR)            # creator address
+        out.append(1)                            # verified
+        out.append(100)                          # share
+    else:
+        out.append(0)
+    out.append(0)                                # primarySaleHappened
+    out.append(1 if is_mutable else 0)           # isMutable
+    return bytes(out)
+
+
+def test_parse_metaplex_metadata_mutable():
+    parsed = sol.parse_metaplex_metadata(_metadata_bytes(True))
+    assert parsed["update_authority"] == CREATOR
+    assert parsed["mint"] == MINT
+    assert parsed["name"] == "Test Coin"
+    assert parsed["symbol"] == "TEST"
+    assert parsed["uri"] == "https://ipfs.io/ipfs/testcoin"
+    assert parsed["seller_fee_basis_points"] == 500
+    assert parsed["creators"][0]["address"] == CREATOR
+    assert parsed["creators"][0]["verified"] is True
+    assert parsed["creators"][0]["share"] == 100
+    assert parsed["primary_sale_happened"] is False
+    assert parsed["is_mutable"] is True
+    findings = sol.analyze_metaplex_metadata(MINT, parsed)
+    f0 = _by_key(findings, "solana_metadata_mutable")[0]
+    assert f0["severity"] == "high"
+    assert CREATOR in f0["value"]  # update authority in full
+
+
+def test_parse_metaplex_metadata_immutable_no_creators():
+    parsed = sol.parse_metaplex_metadata(
+        _metadata_bytes(False, with_creators=False))
+    assert parsed["is_mutable"] is False
+    assert parsed["creators"] is None
+    findings = sol.analyze_metaplex_metadata(MINT, parsed)
+    keys = {f["key"] for f in findings}
+    assert "solana_metadata_immutable" in keys
+    assert "solana_metadata_mutable" not in keys
+    # Truncations / garbage never parse into a false finding.
+    assert sol.parse_metaplex_metadata(
+        _metadata_bytes(True)[:70]) is None
+    assert sol.parse_metaplex_metadata(b"\x04" + b"\x00" * 10) is None
+    assert sol.parse_metaplex_metadata(None) is None
+
+
+def _b64_value(raw, owner):
+    return {"data": [base64.b64encode(raw).decode(), "base64"],
+            "executable": False, "lamports": 2000000, "owner": owner}
+
+
+def _patch_base64(monkeypatch, by_addr):
+    async def fake_b64(ctx, address):
+        value = by_addr.get(address, "__missing__")
+        if value == "__missing__":
+            return {"context": {}, "value": None}
+        return {"context": {}, "value": value}
+    monkeypatch.setattr(sol, "get_account_info_base64", fake_b64)
+
+
+def test_plugin_pump_onchain_without_api(monkeypatch):
+    # The dead-API case: fetch_pump_coin returns None, yet the
+    # on-chain curve + metadata reads must produce the pump
+    # findings on their own.
+    curve_addr = sol.bonding_curve_address(MINT)
+    meta_addr = sol.metaplex_metadata_address(MINT)
+    _patch_base64(monkeypatch, {
+        curve_addr: _b64_value(_curve_bytes(complete=False),
+                               sol.PUMP_PROGRAM),
+        meta_addr: _b64_value(_metadata_bytes(True),
+                              sol.MPL_TOKEN_METADATA_PROGRAM),
+    })
+    accounts = {MINT: _mint_value(),
+                ACCT_A: _token_account_value(CREATOR)}
+    largest = [{"address": ACCT_A, "amount": "150000000000",
+                "decimals": 6, "uiAmount": 150000.0}]
+    _patch(monkeypatch, accounts, largest=largest, pump=None)
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=f"https://pump.fun/coin/{MINT}",
+                    type="solana_contract",
+                    normalized=f"https://pump.fun/coin/{MINT}")
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    for want in ("pump_bonding_curve_active", "pump_creator_holdings",
+                 "solana_metadata_mutable"):
+        assert want in keys, f"missed {want}: {sorted(keys)}"
+    assert "pump_coin_info" not in keys  # API was absent, not needed
+    dev = [f for f in res.findings
+           if f.key == "pump_creator_holdings"][0]
+    assert CREATOR in dev.value
+    assert dev.evidence["severity"] == "high"
+
+
+def test_plugin_curve_missing_no_api_claims(monkeypatch):
+    # RPC answers and there is NO curve account: not on the pump
+    # curve now, and the (stale) API record must not be turned into
+    # curve / graduated / metadata claims.
+    _patch_base64(monkeypatch, {})
+    _patch(monkeypatch, {MINT: _mint_value()}, largest=[],
+           pump=dict(PUMP_COIN))
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=MINT, type="solana_contract", normalized=MINT)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = _keys(res)
+    assert "pump_bonding_curve_not_found" in keys
+    assert "pump_bonding_curve_active" not in keys
+    assert "pump_graduated" not in keys  # not claimed without proof
+    assert "pump_metadata_mutable" not in keys
+    assert "pump_creator_holdings" not in keys
