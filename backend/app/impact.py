@@ -1065,6 +1065,30 @@ IMPACT_BY_KEY.update({
     "contract_audit_clean": "No known bad pattern matched; an attacker "
                             "gains nothing specific here beyond knowing "
                             "the contract passed these checks.",
+    "contract_ownership_takeover_path": "An attacker needs no exploit "
+                            "code: ordinary transfers and calls flip "
+                            "ownership to them, then the full-balance "
+                            "withdraw hands them every wei the "
+                            "contract holds.",
+    "contract_ownership_takeover_fallback": "Anyone who sends ETH to "
+                            "the contract becomes its owner, inheriting "
+                            "every owner-only power, including "
+                            "withdrawals.",
+    "contract_deposit_to_own": "An attacker out-deposits the owner's "
+                            "recorded contribution and the contract "
+                            "itself hands them ownership.",
+    "contract_secret_string": "The secret is published on-chain for "
+                            "anyone to copy - an attacker can use it "
+                            "exactly as the owner could, including "
+                            "draining any wallet it controls.",
+    "contract_privileged_function": "Whoever holds this function's "
+                            "access key controls that power over user "
+                            "funds; a leaked or phished key is a "
+                            "direct drain or freeze.",
+    "contract_fallback_state_write": "Anyone can trigger the state "
+                            "change with a bare transfer, including by "
+                            "accident - attackers probe these entry "
+                            "points first.",
     "rugpull_indicator": "Rug indicators tell an attacker the token is "
                          "already suspect - but for victims the impact "
                          "is funds that can be drained or frozen by the "

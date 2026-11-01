@@ -69,6 +69,67 @@ def _looks_like_eth(s: str) -> bool:
     return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", s.strip()))
 
 
+# --- Solana -------------------------------------------------------------
+# Base58 alphabet (no 0, O, I, l). A Solana public key is 32 bytes,
+# which base58-encodes to 32-44 chars. Decoding and checking the byte
+# length is the real validator: it keeps BTC legacy addresses (25-byte
+# payload), hex hashes, and random base58-ish usernames out.
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
+
+
+def _b58decode(s: str) -> Optional[bytes]:
+    try:
+        n = 0
+        for ch in s:
+            n = n * 58 + _B58_INDEX[ch]
+        body = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+        pad = len(s) - len(s.lstrip("1"))
+        return b"\x00" * pad + body
+    except (KeyError, OverflowError):
+        return None
+
+
+def _looks_like_solana(s: str) -> bool:
+    s = s.strip()
+    # Explicit chain prefixes: solana:<addr> / sol:<addr>.
+    low = s.lower()
+    for prefix in ("solana:", "sol:"):
+        if low.startswith(prefix):
+            return _looks_like_solana(s[len(prefix):])
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", s):
+        return False
+    # BTC keeps priority in its own shapes: bech32, and the short
+    # legacy forms (<=35 chars starting 1/3). A longer base58 string
+    # that decodes to exactly 32 bytes is a Solana key, never a BTC
+    # address (legacy BTC payloads are 25 bytes).
+    if s.startswith("bc1"):
+        return False
+    if len(s) <= 35 and _looks_like_btc(s):
+        return False
+    decoded = _b58decode(s)
+    return decoded is not None and len(decoded) == 32
+
+
+def _is_pump_url(s: str) -> bool:
+    """pump.fun coin page: pump.fun/coin/<mint> or pump.fun/<mint>."""
+    s = s.strip()
+    if not re.match(r"(?i)^https?://", s):
+        return False
+    try:
+        p = urlparse(s)
+    except Exception:
+        return False
+    if (p.netloc or "").lower() not in ("pump.fun", "www.pump.fun"):
+        return False
+    parts = [seg for seg in (p.path or "").split("/") if seg]
+    if len(parts) == 2 and parts[0] == "coin":
+        return _looks_like_solana(parts[1])
+    if len(parts) == 1:
+        return _looks_like_solana(parts[0])
+    return False
+
+
 def _is_asn(s: str) -> bool:
     return bool(re.fullmatch(r"(?i)as\d{1,10}", s.strip()))
 
@@ -201,12 +262,20 @@ def classify(raw: str) -> Dict:
         # leaving the mobile plugin permanently unreachable.
         ("play_store", _is_play_store, 88),
         ("app_store", _is_app_store, 85),
+        # pump.fun coin pages must beat the generic url check, or the
+        # Solana contract plugin never sees them.
+        ("solana_contract", _is_pump_url, 97),
         ("url", _is_url, 97),
         ("email", _is_email, 96),
         ("cidr", _is_cidr, 96),
         ("ip", _is_ip, 96),
         ("asn", _is_asn, 95),
         ("file_hash", lambda x: _hash_type(x) is not None, 95),
+        # Solana keys before the generic fallbacks (username, npm,
+        # github): a 43-44 char base58 string is a chain address, not
+        # a person or a package. BTC/ETH are checked inside
+        # _looks_like_solana so their shapes keep priority.
+        ("solana_contract", _looks_like_solana, 92),
         ("crypto_wallet", lambda x: _looks_like_btc(x) or _looks_like_eth(x), 90),
         ("phone", _is_phone, 80),
         ("github", _is_github, 80),
