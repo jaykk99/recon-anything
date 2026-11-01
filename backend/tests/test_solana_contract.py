@@ -803,6 +803,9 @@ def test_plugin_curve_missing_no_api_claims(monkeypatch):
 # ---------------------------------------------------------------------------
 
 POOL_WALLET = PD_ADDR  # stands in as the pool/curve owner wallet
+# A DexScreener pair address: the pool account itself. Its token
+# vault is a separate token account OWNED BY this address.
+PAIR_ADDR = "FXEJnnWtZqkeWE5zuBb9mUitoNvpqSoKhPK5Ztuj3LTv"
 
 
 def _pa_entry(pubkey, owner, amount, decimals=0):
@@ -889,6 +892,47 @@ def test_analyze_holder_distribution_pool_scoring():
         1_000_000)
     f1 = sol.analyze_holder_distribution(MINT, whale, 1_000_000,
                                          0)[0]
+    assert f1["severity"] == "high"
+    assert f1["evidence"]["scored_on"] == "raw"
+
+
+def test_aggregate_holders_pool_matched_by_owner():
+    # The live PumpSwap shape (mint DvFi...pump, 2026-11-01): the
+    # pool's token vault is a token account whose ADDRESS is not
+    # the pair address - the pair address is its OWNER. Matching
+    # pool_labels by token account address alone misses the pool
+    # and its 98.8% gets scored as whale concentration (HIGH).
+    accounts = [
+        {"address": ACCT_A, "owner": PAIR_ADDR, "amount": 988_000},
+        {"address": ACCT_B, "owner": CREATOR, "amount": 8_300},
+        {"address": AUTHORITY, "owner": AUTHORITY, "amount": 3_700},
+    ]
+    dist = sol.aggregate_holders(
+        accounts, 1_000_000,
+        pool_owners={PAIR_ADDR: "DEX pool (pumpswap)"})
+    assert dist["has_pool"] is True
+    assert dist["top1_share"] == 0.988           # raw: the pool
+    assert dist["ex_pool_top1_share"] == 0.0083  # next wallet
+    top = dist["top_accounts"][0]
+    assert top["address"] == ACCT_A
+    assert top["pool"] == "DEX pool (pumpswap)"
+    assert dist["top_owners"][0]["pool"] == "DEX pool (pumpswap)"
+    assert dist["ex_pool_top_owner"]["owner"] == CREATOR
+    findings = sol.analyze_holder_distribution(MINT, dist,
+                                               1_000_000, 0)
+    f0 = _by_key(findings, "solana_holder_distribution")[0]
+    # Scored on ex-pool shares: a 0.83% top holder is low, and the
+    # finding says so and names the ex-pool top holder.
+    assert f0["severity"] == "low"
+    assert f0["evidence"]["scored_on"] == "pool-excluded"
+    assert f0["evidence"]["ex_pool_top1_share"] == 0.0083
+    assert "POOL" in f0["value"]
+    assert CREATOR in f0["value"]
+    # Same accounts WITHOUT the owner map: no pool is detected and
+    # the pool share scores as concentration (the old bug).
+    raw = sol.aggregate_holders(accounts, 1_000_000)
+    assert raw["has_pool"] is False
+    f1 = sol.analyze_holder_distribution(MINT, raw, 1_000_000, 0)[0]
     assert f1["severity"] == "high"
     assert f1["evidence"]["scored_on"] == "raw"
 
@@ -1204,6 +1248,40 @@ def test_plugin_holder_distribution_replaces_largest(monkeypatch):
     # ACCT_B is labeled pool via the DexScreener pair address.
     assert dist_f.evidence["scored_on"] == "pool-excluded"
     assert dist_f.evidence["ex_pool_top1_share"] == 0.3
+
+
+def test_plugin_pool_vault_owned_by_pair_address(monkeypatch):
+    # The live PumpSwap shape end to end: DexScreener's
+    # pairAddress is the pool account, and the token vault
+    # holding 98.8% is a SEPARATE token account (ACCT_A) owned by
+    # the pair address. The distribution must still label it pool
+    # and score on ex-pool shares (0.83% top wallet -> low).
+    entries = [
+        _pa_entry(ACCT_A, PAIR_ADDR, 988_000),
+        _pa_entry(ACCT_B, CREATOR, 8_300),
+        _pa_entry(AUTHORITY, AUTHORITY, 3_700),
+    ]
+    _patch_program_accounts(monkeypatch, entries)
+    pair = {"pairAddress": PAIR_ADDR, "dexId": "pumpswap",
+            "liquidity": {"usd": 1990},
+            "baseToken": {"symbol": "TEST"},
+            "quoteToken": {"symbol": "SOL"}, "marketCap": 1838}
+    _patch(monkeypatch,
+           {MINT: _mint_value(None, None, supply="1000000",
+                              decimals=0)},
+           largest=None, pump=None, dex=[pair])
+    p = sol.SolanaContractPlugin()
+    target = Target(raw=MINT, type="solana_contract", normalized=MINT)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    dist_f = [f for f in res.findings
+              if f.key == "solana_holder_distribution"][0]
+    assert dist_f.evidence["scored_on"] == "pool-excluded"
+    assert dist_f.evidence["top1_share"] == 0.988
+    assert dist_f.evidence["ex_pool_top1_share"] == 0.0083
+    assert dist_f.evidence["severity"] == "low"
+    assert dist_f.evidence["top_accounts"][0]["pool"] == \
+        "DEX pool (pumpswap)"
+    assert CREATOR in dist_f.value  # ex-pool top holder shown
 
 
 def test_plugin_distribution_unavailable_finding(monkeypatch):

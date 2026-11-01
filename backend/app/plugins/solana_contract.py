@@ -58,6 +58,10 @@ Distribution severities are scored on the pool-excluded owner
 shares whenever a pool / curve account is among the holders (a
 liquidity pool holding most of the supply is normal; an insider
 wallet holding it is not), and on the raw owner shares otherwise.
+Pools are matched by token account address OR by owner wallet:
+an AMM pair address (DexScreener) is not its vault's token
+account address - it OWNS that account - and the pump.fun
+bonding curve PDA likewise owns its associated token account.
 """
 from __future__ import annotations
 
@@ -849,7 +853,8 @@ def holder_shares(largest: List[Dict], supply_raw: int) -> Dict[str, Any]:
 
 
 def aggregate_holders(accounts: List[Dict[str, Any]], supply_raw: int,
-                      pool_labels: Optional[Dict[str, str]] = None
+                      pool_labels: Optional[Dict[str, str]] = None,
+                      pool_owners: Optional[Dict[str, str]] = None
                       ) -> Dict[str, Any]:
     """Aggregate token accounts BY OWNER WALLET (pure).
 
@@ -860,12 +865,27 @@ def aggregate_holders(accounts: List[Dict[str, Any]], supply_raw: int,
     labeled pool, and an ex-pool owner ranking (pool accounts
     excluded) is computed alongside the raw one.
 
+    ``pool_owners`` maps known pool OWNER WALLET addresses to a
+    label, matched against each account's owner. This is the
+    common AMM case: a DexScreener pair address is the pool
+    account, and the pool's token vault is a separate token
+    account OWNED BY the pair address - so matching by token
+    account address alone misses the pool entirely and its share
+    gets scored as whale concentration. An account is pool when
+    EITHER its own address is in ``pool_labels`` OR its owner is
+    in ``pool_owners``.
+
     Returns holder_count (distinct owners holding > 0),
     account_count (non-zero token accounts), owner-aggregated
     top1/top5/top10 supply shares, the same shares ex-pool, the
     top token accounts and top owners (with pool labels), and the
     full per-owner totals map for creator lookups."""
     pool_labels = pool_labels or {}
+    pool_owners = pool_owners or {}
+
+    def _pool_label(a: Dict[str, Any]) -> Optional[str]:
+        return pool_labels.get(a["address"]) \
+            or pool_owners.get(a["owner"])
 
     def _share(amount: int) -> float:
         return amount / supply_raw if supply_raw else 0.0
@@ -884,25 +904,27 @@ def aggregate_holders(accounts: List[Dict[str, Any]], supply_raw: int,
     def _top_share(pairs: List[Tuple[str, int]], n: int) -> float:
         return _share(sum(amt for _, amt in pairs[:n]))
 
-    # Ex-pool owner totals: pool-labeled token accounts removed.
+    # Ex-pool owner totals: pool token accounts removed (matched
+    # by token account address OR by owner wallet).
     by_owner_ex: Dict[str, int] = {}
     for a in nonzero:
-        if a["address"] in pool_labels:
+        if _pool_label(a):
             continue
         by_owner_ex[a["owner"]] = by_owner_ex.get(a["owner"], 0) \
             + int(a["amount"])
     owners_ex_sorted = sorted(by_owner_ex.items(),
                               key=lambda kv: kv[1], reverse=True)
-    has_pool = any(a["address"] in pool_labels for a in nonzero)
+    has_pool = any(_pool_label(a) for a in nonzero)
 
     top_accounts = []
     for a in accounts_sorted[:20]:
         top_accounts.append({
             "address": a["address"], "owner": a["owner"],
             "amount": a["amount"], "share": round(_share(a["amount"]), 6),
-            "pool": pool_labels.get(a["address"])})
+            "pool": _pool_label(a)})
     top_owners = [{"owner": o, "amount": amt,
-                   "share": round(_share(amt), 6)}
+                   "share": round(_share(amt), 6),
+                   "pool": pool_owners.get(o)}
                   for o, amt in owners_sorted[:20]]
     ex_top_owner = None
     if owners_ex_sorted:
@@ -953,7 +975,8 @@ def owner_rank(dist: Dict[str, Any], wallet: str) -> Optional[int]:
 
 async def fetch_holder_distribution(
         ctx: Any, mint: str, token_program: str, supply_raw: int,
-        pool_labels: Optional[Dict[str, str]] = None
+        pool_labels: Optional[Dict[str, str]] = None,
+        pool_owners: Optional[Dict[str, str]] = None
         ) -> Optional[Dict[str, Any]]:
     """REAL holder distribution for a mint via getProgramAccounts
     on the token program that owns it. Returns the aggregate_holders
@@ -994,7 +1017,8 @@ async def fetch_holder_distribution(
         if isinstance(owner, str) and owner:
             accounts.append({"address": pubkey, "owner": owner,
                              "amount": amount})
-    dist = aggregate_holders(accounts, supply_raw, pool_labels)
+    dist = aggregate_holders(accounts, supply_raw, pool_labels,
+                             pool_owners)
     dist["capped"] = capped
     dist["total_returned"] = total_returned
     dist["processed"] = min(total_returned, MAX_HOLDER_ACCOUNTS)
@@ -2296,15 +2320,26 @@ class SolanaContractPlugin(Plugin):
             curve_token_acct = associated_token_address(
                 curve_addr, address, owner_program)
         pool_labels: Dict[str, str] = {}
+        pool_owners: Dict[str, str] = {}
         for p in pairs:
             pa = p.get("pairAddress")
             if isinstance(pa, str) and pa:
-                pool_labels[pa] = f"DEX pool ({p.get('dexId')})"
+                label = f"DEX pool ({p.get('dexId')})"
+                pool_labels[pa] = label
+                # A pair address is the pool account; the pool's
+                # token vault is a DIFFERENT token account owned
+                # BY the pair address. Register the pair as a pool
+                # owner too, or owner-aggregated scoring reads the
+                # pool's share as whale concentration.
+                pool_owners[pa] = label
         if curve_token_acct:
             pool_labels[curve_token_acct] = "pump.fun bonding curve"
+            # The curve PDA owns its associated token account.
+            pool_owners[curve_addr] = "pump.fun bonding curve"
         # REAL holder distribution: every token account, by owner.
         dist = await fetch_holder_distribution(
-            ctx, address, owner_program, supply_raw, pool_labels)
+            ctx, address, owner_program, supply_raw, pool_labels,
+            pool_owners)
 
         # When the distribution exists it REPLACES the
         # largest-accounts concentration inside analyze_mint (pass
