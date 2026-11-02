@@ -262,6 +262,43 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
 # Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
 DEFAULT_PLUGIN_TIMEOUT_S = 60
 MAX_PLUGIN_TIMEOUT_S = 120
+HEAVY_TIMEOUT_HARD_CAP_S = 300
+
+
+def _heavy_lane_context(plugin, ctx: Ctx) -> bool:
+    """Whether a heavy-declaring plugin is running in the heavy lane.
+
+    A context is heavy only when it was explicitly marked that way:
+    a dedicated/heavy worker may set ``execution_lane``/``heavy_lane``
+    on the context or shared bus, and an API caller may opt one
+    plugin in with ``module_overrides={<plugin_id>: "heavy"}``.
+    The ordinary request path (bounded by config.DEFAULT_TIMEOUT,
+    RECON_TIMEOUT=20s by default) sets none of these markers, so a
+    heavy plugin invoked there can refuse immediately instead of
+    trying to squeeze expensive work into the fast path.
+    """
+    if not getattr(plugin, "heavy_lane", False):
+        return False
+    if getattr(ctx, "execution_lane", "") == "heavy":
+        return True
+    shared = getattr(ctx, "shared", {}) or {}
+    if shared.get("heavy_lane") is True \
+            or shared.get("execution_lane") == "heavy" \
+            or shared.get("lane") == "heavy":
+        return True
+    overrides = getattr(ctx, "module_overrides", {}) or {}
+    return overrides.get(getattr(plugin, "id", "")) == "heavy"
+
+
+def _heavy_timeout_s() -> float:
+    """The configured heavy-lane budget, clamped to the hard cap."""
+    raw = os.environ.get("RECON_HEAVY_TIMEOUT")
+    try:
+        value = float(raw) if raw not in (None, "") \
+            else float(config.HEAVY_TIMEOUT)
+    except (TypeError, ValueError):
+        value = 120.0
+    return min(max(value, 1.0), float(HEAVY_TIMEOUT_HARD_CAP_S))
 
 # Global scan time budget (seconds). Was a HARD 80s ceiling (2026-10-18
 # speed-first order) - with 170+ plugins at 16-way concurrency that was
@@ -335,8 +372,15 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     t0 = time.monotonic()
     # Per-plugin timeout ceiling from the plugin itself,
     # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
-    timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
-                  or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+    # The one exception is an explicitly marked heavy-lane context: a
+    # plugin that declares heavy_lane gets the separate
+    # RECON_HEAVY_TIMEOUT budget there (default 120s, hard cap 300s),
+    # never the default RECON_TIMEOUT request-path budget.
+    if _heavy_lane_context(plugin, ctx):
+        timeout = _heavy_timeout_s()
+    else:
+        timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
+                      or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
     if deadline is not None:
         # Never let an in-flight plugin push the scan past its budget.
         timeout = min(timeout, max(deadline - time.monotonic(), 2))

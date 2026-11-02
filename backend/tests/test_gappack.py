@@ -173,7 +173,7 @@ def test_exactly_23_new_detectors_registered():
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
     # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(discover()) == 652  # 651 on master (Nov 1-2 merges outran this count; it was stale at 639) + 1 contract simulation lane
 
 
 def test_trello_board_verified_public():

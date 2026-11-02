@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(reg) == 652  # 651 on master (Nov 1-2 merges outran this count; it was stale at 639) + 1 contract simulation lane
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"

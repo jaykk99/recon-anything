@@ -19,6 +19,11 @@ ACCESS_CODE = env("RECON_ACCESS_CODE", "")  # single-user gate; empty = no gate
 MASTER_KEY = env("RECON_MASTER_KEY", "")  # Fernet key for API key encryption
 USER_AGENT = "ReconAnything/1.0 (+https://github.com/jaykk99/recon-anything)"
 DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
+# Heavy-lane budget. This is deliberately separate from DEFAULT_TIMEOUT:
+# the default request path stays at RECON_TIMEOUT (20s by default), while
+# explicitly heavy-lane work (currently contract simulation / symbolic
+# execution) may use this budget. Consumers clamp it to a 300s hard cap.
+HEAVY_TIMEOUT = float(env("RECON_HEAVY_TIMEOUT", "120"))
 # Parallel plugins: plugins are I/O-bound (waiting on DNS/HTTP), so
 # more slots keep the pipe full without hammering the target - the
 # per-host rate limiter (DEFAULT_RPS) still paces actual requests, and
