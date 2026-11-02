@@ -131,7 +131,7 @@ def test_new_plugins_registered():
                 "cp_web3_rpc_misconfig", "cp_web3_rpc_method_refs",
                 "cp_web3_proxy_slots", "chain_followups"):
         assert pid in REG, f"{pid} missing from registry"
-    assert len(REG) == 640, f"registry size {len(REG)}, expected 640"  # 639 + 1 audit toolbox
+    assert len(REG) == 653, f"registry size {len(REG)}, expected 653"  # 653 = master 652 (incl. contract logic PR #74) + 1 audit toolbox (PR #75)
 
 
 # --- Task 2: chaining layer ----------------------------------------------
