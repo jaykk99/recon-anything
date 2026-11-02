@@ -516,6 +516,15 @@ class Plugin(abc.ABC):
     # run after, consuming the discovery bus (ctx.shared) populated by
     # phase 1. Lets findings lead to more findings.
     phase: int = 1
+    # Execution lane: "fast" (default) plugins are capped at
+    # MAX_PLUGIN_TIMEOUT_S by the runner. A plugin declaring
+    # lane="heavy" (external-tool adapters whose runtimes are
+    # minutes: static analyzers, fuzzers, symbolic engines) is
+    # capped at config.HEAVY_TIMEOUT_S (RECON_HEAVY_TIMEOUT,
+    # default 1800s) instead. Heavy plugins must self-gate their
+    # expensive work behind an explicit worker/offline opt-in so
+    # the web request path never pays for it.
+    lane: str = "fast"
     # Aggressive: sends attack payloads or brute-forces paths/endpoints.
     # When the rate limiter has a host in WAF graceful mode, aggressive
     # plugins are suppressed for that host (ok with a note) so the scan

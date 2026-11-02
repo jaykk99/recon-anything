@@ -1,0 +1,61 @@
+[2026-11-02 22:45:39.23] Compiling `EchidnaTest.sol`... Done! (1.12409096s)
+Analyzing contract: /tmp/tooltest/EchidnaTest.sol:EchidnaHarness
+[2026-11-02 22:45:40.37] Running slither on `EchidnaTest.sol`... Done! (1.447001042s)
+[2026-11-02 22:45:41.84] [Worker 1] Test attack() falsified!
+  Call sequence:
+EchidnaHarness.attack() from: 0x0000000000000000000000000000000000030000 Time delay: 172101 seconds Block delay: 800
+EchidnaHarness.fundReenterer() from: 0x0000000000000000000000000000000000030000 Value: 0x7494f93b98db5ce2 Time delay: 407328 seconds Block delay: 3
+EchidnaHarness.fundReenterer() from: 0x0000000000000000000000000000000000030000 Value: 0x4eb3b1998a83f4021 Time delay: 127 seconds Block delay: 1362
+EchidnaHarness.fundReenterer() from: 0x0000000000000000000000000000000000020000 Value: 0x202be8cc22d1f3078 Time delay: 135921 seconds Block delay: 34272
+EchidnaHarness.fundReenterer() from: 0x0000000000000000000000000000000000030000 Value: 0x2e9432cc85b13cd3a Time delay: 463588 seconds Block delay: 5054
+EchidnaHarness.attack() from: 0x0000000000000000000000000000000000020000
+
+[2026-11-02 22:45:42.05] [Worker 1] New coverage: 1803 instr, 3 contracts, 1 seqs in corpus
+[2026-11-02 22:45:42.07] [Worker 0] New coverage: 1803 instr, 3 contracts, 2 seqs in corpus
+[2026-11-02 22:45:42.16] [Worker 3] New coverage: 1803 instr, 3 contracts, 3 seqs in corpus
+[2026-11-02 22:45:42.18] [Worker 2] New coverage: 1803 instr, 3 contracts, 4 seqs in corpus
+[2026-11-02 22:45:42.84] [Worker 2] New coverage: 1806 instr, 3 contracts, 5 seqs in corpus
+[2026-11-02 22:45:43.79] [Worker 3] New coverage: 1809 instr, 3 contracts, 6 seqs in corpus
+[2026-11-02 22:45:44.86] [status] tests: 1/6, fuzzing: 6770/50000, values: [], cov: 1809, corpus: 6, shrinking: W1:945/5000(3), gas/s: 236649041
+[2026-11-02 22:45:46.34] [Worker 0] New coverage: 1894 instr, 3 contracts, 7 seqs in corpus
+[2026-11-02 22:45:47.88] [status] tests: 1/6, fuzzing: 13902/50000, values: [], cov: 1894, corpus: 7, shrinking: W1:1810/5000(3), gas/s: 243969601
+[2026-11-02 22:45:50.89] [status] tests: 1/6, fuzzing: 20436/50000, values: [], cov: 1894, corpus: 7, shrinking: W1:2527/5000(3), gas/s: 224465851
+[2026-11-02 22:45:53.96] [status] tests: 1/6, fuzzing: 26703/50000, values: [], cov: 1894, corpus: 7, shrinking: W1:3223/5000(3), gas/s: 214111727
+[2026-11-02 22:45:57.04] [status] tests: 1/6, fuzzing: 31865/50000, values: [], cov: 1894, corpus: 7, shrinking: W1:3915/5000(3), gas/s: 179253280
+[2026-11-02 22:45:59.06] [Worker 0] Test limit reached. Stopping.
+[2026-11-02 22:46:00.09] [status] tests: 1/6, fuzzing: 37312/50000, values: [], cov: 1894, corpus: 7, shrinking: W1:4692/5000(3), gas/s: 185948286
+[2026-11-02 22:46:00.29] [Worker 2] Test limit reached. Stopping.
+[2026-11-02 22:46:00.54] [Worker 3] Test limit reached. Stopping.
+[2026-11-02 22:46:03.10] [status] tests: 1/6, fuzzing: 42307/50000, values: [], cov: 1894, corpus: 7, gas/s: 171258346
+[2026-11-02 22:46:06.10] [status] tests: 1/6, fuzzing: 49653/50000, values: [], cov: 1894, corpus: 7, gas/s: 253197505
+[2026-11-02 22:46:06.30] [Worker 1] Test limit reached. Stopping.
+[2026-11-02 22:46:06.32] [status] tests: 1/6, fuzzing: 50250/50000, values: [], cov: 1894, corpus: 7, gas/s: 0
+seedVault(): passing
+reenterer(): passing
+attack(): failed!💥  
+  Reason: ErrorRevert
+  Call sequence:
+    EchidnaHarness.fundReenterer() Value: 0x1
+    EchidnaHarness.fundReenterer() Value: 0x1
+    EchidnaHarness.attack()
+
+Traces: 
+call Reenterer::amount()() (/tmp/tooltest/EchidnaTest.sol:46)
+ └╴← (1)
+call Reenterer::attack()() (/tmp/tooltest/EchidnaTest.sol:50)
+ ├╴call VulnerableVault::withdrawCredit()() (/tmp/tooltest/EchidnaTest.sol:18)
+ │  ├╴call Reenterer::[unknown method](0x) (/tmp/tooltest/Vulnerable.sol:29)
+ │  │  └╴← 0x
+ │  └╴← 0x
+ └╴← 0x
+
+fundReenterer(): passing
+vault(): passing
+AssertionFailed(..): passing
+
+Unique instructions: 1894
+Unique codehashes: 3
+Corpus size: 7
+Seed: 42
+Total calls: 50250
+

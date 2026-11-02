@@ -335,8 +335,16 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     t0 = time.monotonic()
     # Per-plugin timeout ceiling from the plugin itself,
     # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
+    # Sole exception: plugins declaring lane="heavy" (external audit
+    # tools - analyzers/fuzzers that run for minutes) are clamped to
+    # config.HEAVY_TIMEOUT_S (RECON_HEAVY_TIMEOUT, default 1800s).
+    # They self-gate behind a worker/offline opt-in, so this larger
+    # cap never applies to work on the web request path.
+    _cap = MAX_PLUGIN_TIMEOUT_S
+    if getattr(plugin, "lane", "fast") == "heavy":
+        _cap = max(_cap, int(config.HEAVY_TIMEOUT_S))
     timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
-                  or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+                  or DEFAULT_PLUGIN_TIMEOUT_S, _cap)
     if deadline is not None:
         # Never let an in-flight plugin push the scan past its budget.
         timeout = min(timeout, max(deadline - time.monotonic(), 2))

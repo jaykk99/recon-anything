@@ -1,0 +1,18 @@
+{
+  "results": [
+    {
+      "check_id": "home.hatch.workspace.tools.audit.cache.semgrep-solidity.performance.non-payable-constructor",
+      "start": {
+        "line": 8,
+        "col": 5,
+        "offset": 170
+      },
+      "extra": {
+        "severity": "INFO",
+        "message": "Consider making costructor payable to save gas.",
+        "lines": "requires login"
+      }
+    }
+  ],
+  "errors": []
+}

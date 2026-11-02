@@ -245,4 +245,4 @@ def test_cves_plugin_badges_kev_and_not_non_kev():
 def test_registry_grew_by_passive_subdomains():
     reg = discover()
     assert "passive_subdomains" in reg
-    assert len(reg) == 652  # re-baselined 2026-11-02: true discovery is 651 on master + 1 contract logic analyzer; the 639/640 count had drifted since the Nov 1 merges
+    assert len(reg) == 653  # 653 = master 652 (incl. contract logic PR #74) + 1 audit toolbox (PR #75)
