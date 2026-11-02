@@ -163,7 +163,7 @@ def test_exactly_12_new_detectors_registered():
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
     # +10 da_* (deep-artifacts pack); +5 ai_* (AI-crawler pack)
-    assert len(discover()) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(discover()) == 652  # re-baselined 2026-11-02: true discovery is 651 on master + 1 contract logic analyzer; the 639/640 count had drifted since the Nov 1 merges
 
 
 # ---------------------------------------------------------------------------
