@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 640  # 639 after the crypto drain analyzer merge (PR #73) + 1 contract logic analyzer
+    assert len(reg) == 652  # re-baselined 2026-11-02: true discovery is 651 on master + 1 contract logic analyzer; the 639/640 count had drifted since the Nov 1 merges
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"

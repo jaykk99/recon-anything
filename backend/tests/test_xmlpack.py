@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 640  # 639 after the crypto drain analyzer merge (PR #73) + 1 contract logic analyzer
+    assert len(discover()) == 652  # re-baselined 2026-11-02: true discovery is 651 on master + 1 contract logic analyzer; the 639/640 count had drifted since the Nov 1 merges
 
 
 def test_connstr_password_masked_with_fingerprint():
