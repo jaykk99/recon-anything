@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(discover()) == 640  # 639 after the crypto drain analyzer merge (PR #73) + 1 contract logic analyzer
 
 
 def test_connstr_password_masked_with_fingerprint():

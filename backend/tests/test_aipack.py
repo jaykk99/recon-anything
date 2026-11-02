@@ -104,7 +104,7 @@ def test_exactly_5_new_detectors_registered():
     assert ai == sorted(AI_IDS)
     assert len(ai) == 5
     # 602 when the xml pack landed; +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(discover()) == 640  # 639 after the crypto drain analyzer merge (PR #73) + 1 contract logic analyzer
 
 
 def test_llms_index_present_and_links_fed_to_hunters():
