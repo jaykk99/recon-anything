@@ -130,6 +130,18 @@ def _is_pump_url(s: str) -> bool:
     return False
 
 
+def _looks_like_stacks_contract(s: str) -> bool:
+    """Stacks contract id: <principal>.<contract-name>.
+
+    Principal prefixes: SP (mainnet single-sig), SM (mainnet
+    multi-sig), ST (testnet). Must run before the generic dotted-name
+    fallbacks: the id is package/domain-shaped and would otherwise
+    classify as npm_package, leaving the Stacks plugin unreachable.
+    """
+    return bool(re.fullmatch(
+        r"(SP|SM|ST)[0-9A-Z]{20,}\.[A-Za-z0-9_-]+", s.strip()))
+
+
 def _is_asn(s: str) -> bool:
     return bool(re.fullmatch(r"(?i)as\d{1,10}", s.strip()))
 
@@ -276,6 +288,9 @@ def classify(raw: str) -> Dict:
         # a person or a package. BTC/ETH are checked inside
         # _looks_like_solana so their shapes keep priority.
         ("solana_contract", _looks_like_solana, 92),
+        # Stacks contract ids before the dotted-name fallbacks
+        # (domain / npm_package): SP....name is a chain address.
+        ("stacks_contract", _looks_like_stacks_contract, 93),
         ("crypto_wallet", lambda x: _looks_like_btc(x) or _looks_like_eth(x), 90),
         ("phone", _is_phone, 80),
         ("github", _is_github, 80),
