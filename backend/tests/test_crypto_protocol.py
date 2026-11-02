@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 653  # 653 = master 652 (incl. contract logic PR #74) + 1 audit toolbox (PR #75)
+    assert len(reg) == 654  # 654 = master 653 (incl. audit toolbox PR #75) + 1 contract simulation (PR #76)
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"
