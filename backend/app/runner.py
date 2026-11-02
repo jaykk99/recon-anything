@@ -372,15 +372,22 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     t0 = time.monotonic()
     # Per-plugin timeout ceiling from the plugin itself,
     # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
-    # The one exception is an explicitly marked heavy-lane context: a
-    # plugin that declares heavy_lane gets the separate
-    # RECON_HEAVY_TIMEOUT budget there (default 120s, hard cap 300s),
-    # never the default RECON_TIMEOUT request-path budget.
+    # Heavy-lane exceptions (two mechanisms, both opt-in, neither ever
+    # touches the default RECON_TIMEOUT request-path budget):
+    # - a plugin declaring heavy_lane (contract simulation) gets the
+    #   RECON_HEAVY_TIMEOUT budget (default 120s, hard cap 300s) only
+    #   inside an explicitly marked heavy context;
+    # - a plugin declaring lane="heavy" (external audit tools) is
+    #   clamped to config.HEAVY_TIMEOUT_S (default 1800s) and
+    #   self-gates behind a worker/offline opt-in.
     if _heavy_lane_context(plugin, ctx):
         timeout = _heavy_timeout_s()
     else:
+        _cap = MAX_PLUGIN_TIMEOUT_S
+        if getattr(plugin, "lane", "fast") == "heavy":
+            _cap = max(_cap, int(config.HEAVY_TIMEOUT_S))
         timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
-                      or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+                      or DEFAULT_PLUGIN_TIMEOUT_S, _cap)
     if deadline is not None:
         # Never let an in-flight plugin push the scan past its budget.
         timeout = min(timeout, max(deadline - time.monotonic(), 2))
