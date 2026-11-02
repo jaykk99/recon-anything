@@ -76,6 +76,20 @@ CHAINS: Dict[str, ChainConfig] = {
         blockscout_api="https://arbitrum.blockscout.com/api",
         explorer_address="https://arbiscan.io/address/{addr}",
         native="ETH"),
+    "base": ChainConfig(
+        id="base", name="Base", chain_id=8453,
+        rpc_urls=("https://mainnet.base.org",
+                  "https://base-rpc.publicnode.com"),
+        blockscout_api="https://base.blockscout.com/api",
+        explorer_address="https://basescan.org/address/{addr}",
+        native="ETH"),
+    "optimism": ChainConfig(
+        id="optimism", name="Optimism", chain_id=10,
+        rpc_urls=("https://mainnet.optimism.io",
+                  "https://optimism-rpc.publicnode.com"),
+        blockscout_api="https://optimism.blockscout.com/api",
+        explorer_address="https://optimistic.etherscan.io/address/{addr}",
+        native="ETH"),
 }
 
 # Target prefixes Jay can type: "bsc:0x...", "eth:0x...", ...
@@ -84,11 +98,14 @@ CHAIN_ALIASES = {
     "bsc": "bsc", "bnb": "bsc", "bnbchain": "bsc", "binance": "bsc",
     "polygon": "polygon", "matic": "polygon",
     "arbitrum": "arbitrum", "arb": "arbitrum",
+    "base": "base",
+    "optimism": "optimism", "op": "optimism", "optimistic": "optimism",
 }
 
 # Order used when a bare address target does not name a chain: probe
 # each chain's eth_getCode and recon the contract where code exists.
-DEFAULT_CHAIN_ORDER = ("ethereum", "bsc", "polygon", "arbitrum")
+DEFAULT_CHAIN_ORDER = ("ethereum", "bsc", "polygon", "arbitrum",
+                       "base", "optimism")
 
 
 def parse_target_address(raw: str) -> Tuple[Optional[str], Optional[str]]:
@@ -139,6 +156,125 @@ async def rpc_get_code(ctx: Any, chain: ChainConfig,
         if isinstance(d, dict) and isinstance(d.get("result"), str):
             return d["result"]
     return None
+
+
+async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
+                             address: str, slot: str) -> Optional[str]:
+    """eth_getStorageAt via public JSON-RPC. Read-only, same access
+    class as eth_getCode: it reads one public storage word and never
+    calls or transacts with the contract.
+
+    Returns the 32-byte word hex ("0x..." + 64 hex chars), or None
+    when every RPC endpoint failed.
+    """
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt",
+               "params": [address, slot, "latest"]}
+    for rpc in chain.rpc_urls:
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                            json=payload, timeout=12, max_retries=0)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except Exception:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            return d["result"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Proxy implementation resolution (read-only)
+# ---------------------------------------------------------------------------
+
+# EIP-1967 slots: keccak256("eip1967.proxy.implementation") - 1 and
+# keccak256("eip1967.proxy.beacon") - 1. Transparent and UUPS proxies
+# both store the implementation at the implementation slot.
+EIP1967_IMPLEMENTATION_SLOT = (
+    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+EIP1967_BEACON_SLOT = (
+    "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50")
+
+
+def address_from_storage_word(word: Optional[str]) -> str:
+    """Extract an address from a 32-byte storage word.
+
+    Returns the checksummed-as-stored lowercase address, or "" when
+    the word is empty, zero, malformed, or has non-zero high bytes
+    (i.e. it is not a packed address at all).
+    """
+    w = (word or "").strip().lower()
+    if w.startswith("0x"):
+        w = w[2:]
+    if len(w) != 64:
+        return ""
+    try:
+        int(w, 16)
+    except ValueError:
+        return ""
+    if w[:24] != "0" * 24:
+        return ""
+    addr = "0x" + w[24:]
+    if addr == ZERO_ADDRESS:
+        return ""
+    return addr
+
+
+def implementation_from_bytecode(code_hex: Optional[str]) -> str:
+    """Implementation address when the deployed bytecode is an
+    EIP-1167 minimal proxy (the whole runtime is the forwarder, so
+    the implementation is baked into the code itself)."""
+    if not code_hex:
+        return ""
+    return analyze_bytecode(code_hex).get("minimal_proxy_impl") or ""
+
+
+async def resolve_implementation(
+        ctx: Any, chain: ChainConfig, address: str,
+        code_hex: Optional[str] = None,
+        source_meta: Optional[Dict[str, Any]] = None
+        ) -> Dict[str, str]:
+    """Resolve a proxy's implementation address, read-only.
+
+    Tries, in order: the explorer-reported implementation (from the
+    verified-source metadata), the EIP-1167 minimal-proxy bytecode
+    pattern, the EIP-1967 implementation storage slot (covers
+    OpenZeppelin transparent and UUPS proxies), and the EIP-1967
+    beacon slot (beacon address, then the beacon's own slot 0, which
+    is where OpenZeppelin's UpgradeableBeacon stores its
+    implementation).
+
+    Returns {"implementation": addr or "", "via": how it was found
+    ("" when unresolved), "beacon": beacon addr or ""}. Detection
+    only: storage reads and bytecode inspection, never a call.
+    """
+    meta = source_meta or {}
+    impl = meta.get("implementation") or ""
+    if isinstance(impl, str) and ADDRESS_RE.match(impl) \
+            and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "explorer",
+                "beacon": ""}
+    impl = implementation_from_bytecode(code_hex)
+    if impl and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "eip1167_bytecode",
+                "beacon": ""}
+    word = await rpc_get_storage_at(ctx, chain, address,
+                                    EIP1967_IMPLEMENTATION_SLOT)
+    impl = address_from_storage_word(word)
+    if impl and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "eip1967_slot",
+                "beacon": ""}
+    word = await rpc_get_storage_at(ctx, chain, address,
+                                    EIP1967_BEACON_SLOT)
+    beacon = address_from_storage_word(word)
+    if beacon:
+        bword = await rpc_get_storage_at(ctx, chain, beacon, "0x0")
+        impl = address_from_storage_word(bword)
+        if impl and impl.lower() != address.lower():
+            return {"implementation": impl, "via": "eip1967_beacon",
+                    "beacon": beacon}
+        return {"implementation": "", "via": "", "beacon": beacon}
+    return {"implementation": "", "via": "", "beacon": ""}
 
 
 def _unwrap_source(raw: str) -> str:

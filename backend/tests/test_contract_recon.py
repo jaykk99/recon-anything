@@ -485,6 +485,250 @@ def test_plugin_bus_addresses(monkeypatch):
                for f in res.findings)
 
 
+# ---------------------------------------------------------------------------
+# 5. Base + Optimism chains
+# ---------------------------------------------------------------------------
+
+def test_new_chains_config():
+    assert cc.CHAINS["base"].chain_id == 8453
+    assert cc.CHAINS["optimism"].chain_id == 10
+    for cid in ("base", "optimism"):
+        chain = cc.CHAINS[cid]
+        assert chain.blockscout_api and "blockscout" in \
+            chain.blockscout_api
+        assert chain.rpc_urls
+    assert "base" in cc.DEFAULT_CHAIN_ORDER
+    assert "optimism" in cc.DEFAULT_CHAIN_ORDER
+
+
+def test_parse_new_chain_prefixes():
+    assert cc.parse_target_address("base:" + ADDR) == ("base", ADDR)
+    assert cc.parse_target_address("optimism:" + ADDR) == \
+        ("optimism", ADDR)
+    assert cc.parse_target_address("op:" + ADDR) == ("optimism", ADDR)
+    assert cc.parse_target_address("BASE:" + ADDR) == ("base", ADDR)
+
+
+def test_plugin_base_chain_prefix(monkeypatch):
+    src_meta = {"source": SAFE_SOURCE, "contract_name": "SafeVault",
+                "compiler": "v0.8.20", "proxy": False,
+                "implementation": "", "origin": "Blockscout"}
+    _patch(monkeypatch, {"base": _craft_bytecode()}, src_meta)
+    p = contract_recon.ContractReconPlugin()
+    target = Target(raw="base:" + ADDR, type="crypto_wallet",
+                    normalized="base:" + ADDR)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    ident = [f for f in res.findings
+             if f.key == "contract_code_identity"][0]
+    assert ident.evidence["chain"] == "base"
+    assert ident.evidence["chain_id"] == 8453
+
+
+# ---------------------------------------------------------------------------
+# 6. Proxy implementation resolution + following
+# ---------------------------------------------------------------------------
+
+PROXY_ADDR = "0x" + "11" * 20
+IMPL_ADDR = "0x" + "22" * 20
+NESTED_ADDR = "0x" + "33" * 20
+BEACON_ADDR = "0x" + "44" * 20
+
+
+def _word(addr):
+    return "0x" + "0" * 24 + addr[2:]
+
+
+def test_address_from_storage_word():
+    assert cc.address_from_storage_word(_word(IMPL_ADDR)) == \
+        IMPL_ADDR.lower()
+    assert cc.address_from_storage_word("0x" + "0" * 64) == ""
+    assert cc.address_from_storage_word(None) == ""
+    assert cc.address_from_storage_word("0x1234") == ""
+    # high bytes set: not a packed address
+    assert cc.address_from_storage_word("0x" + "ff" * 32) == ""
+
+
+def test_implementation_from_bytecode():
+    code = ("0x363d3d373d3d3d363d73" + IMPL_ADDR[2:] +
+            "5af43d82803e903d91602b57fd5bf3")
+    assert cc.implementation_from_bytecode(code) == IMPL_ADDR.lower()
+    assert cc.implementation_from_bytecode(_craft_bytecode()) == ""
+    assert cc.implementation_from_bytecode(None) == ""
+
+
+def test_resolve_via_eip1967_slot(monkeypatch):
+    async def fake_storage(ctx, chain, address, slot):
+        if address == PROXY_ADDR and \
+                slot == cc.EIP1967_IMPLEMENTATION_SLOT:
+            return _word(IMPL_ADDR)
+        return "0x" + "0" * 64
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+    res = asyncio.run(cc.resolve_implementation(
+        FakeCtx(), cc.CHAINS["base"], PROXY_ADDR, "0x6000", {}))
+    assert res["implementation"] == IMPL_ADDR.lower()
+    assert res["via"] == "eip1967_slot"
+
+
+def test_resolve_via_beacon(monkeypatch):
+    async def fake_storage(ctx, chain, address, slot):
+        if address == PROXY_ADDR and \
+                slot == cc.EIP1967_BEACON_SLOT:
+            return _word(BEACON_ADDR)
+        if address == BEACON_ADDR.lower() and slot == "0x0":
+            return _word(IMPL_ADDR)
+        return "0x" + "0" * 64
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+    res = asyncio.run(cc.resolve_implementation(
+        FakeCtx(), cc.CHAINS["optimism"], PROXY_ADDR, "0x6000", {}))
+    assert res["implementation"] == IMPL_ADDR.lower()
+    assert res["via"] == "eip1967_beacon"
+    assert res["beacon"] == BEACON_ADDR.lower()
+
+
+def test_resolve_not_a_proxy(monkeypatch):
+    async def fake_storage(ctx, chain, address, slot):
+        return "0x" + "0" * 64
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+    res = asyncio.run(cc.resolve_implementation(
+        FakeCtx(), cc.CHAINS["ethereum"], PROXY_ADDR,
+        _craft_bytecode(), {}))
+    assert res["implementation"] == ""
+
+
+PROXY_SOURCE = r"""
+pragma solidity ^0.8.20;
+
+contract MiniProxy {
+    bytes32 internal constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    fallback() external payable {
+        address impl;
+        assembly { impl := sload(IMPLEMENTATION_SLOT) }
+        assembly {
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), impl, 0, calldatasize(),
+                                   0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
+"""
+
+
+def _patch_by_address(monkeypatch, code_by_addr, source_by_addr,
+                      storage=None):
+    async def fake_get_code(ctx, chain, address):
+        return code_by_addr.get(address)
+    async def fake_source(ctx, chain, address, key=None):
+        return source_by_addr.get(address)
+    async def fake_storage(ctx, chain, address, slot):
+        return (storage or {}).get((address, slot), "0x" + "0" * 64)
+    monkeypatch.setattr(cc, "rpc_get_code", fake_get_code)
+    monkeypatch.setattr(cc, "fetch_verified_source", fake_source)
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+
+
+def test_plugin_follows_eip1967_proxy(monkeypatch):
+    proxy_src = {"source": PROXY_SOURCE, "contract_name": "MiniProxy",
+                 "compiler": "v0.8.20", "proxy": True,
+                 "implementation": IMPL_ADDR, "origin": "Blockscout"}
+    impl_src = {"source": FALLBACK_SOURCE,
+                "contract_name": "Fallback", "compiler": "v0.8.0",
+                "proxy": False, "implementation": NESTED_ADDR,
+                "origin": "Blockscout"}
+    _patch_by_address(
+        monkeypatch,
+        {PROXY_ADDR: _craft_bytecode(), IMPL_ADDR: _craft_bytecode()},
+        {PROXY_ADDR: proxy_src, IMPL_ADDR: impl_src})
+    p = contract_recon.ContractReconPlugin()
+    target = Target(raw="base:" + PROXY_ADDR, type="crypto_wallet",
+                    normalized="base:" + PROXY_ADDR)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    keys = {f.key for f in res.findings}
+    assert "contract_proxy_implementation" in keys
+    follow = [f for f in res.findings
+              if f.key == "contract_proxy_implementation"][0]
+    assert follow.evidence["proxy_address"] == PROXY_ADDR
+    assert follow.evidence["implementation_address"] == IMPL_ADDR
+    assert follow.evidence["implementation_source_verified"] is True
+
+    # Shell findings tagged proxy_shell, carrying both addresses.
+    shell = [f for f in res.findings
+             if f.evidence.get("contract_role") == "proxy_shell"]
+    assert shell, "no proxy_shell-tagged findings"
+    assert all(f.evidence["address"] == PROXY_ADDR for f in shell)
+    assert all(f.evidence["implementation_address"] == IMPL_ADDR
+               for f in shell)
+
+    # Implementation findings tagged, addressed at the implementation,
+    # and readable as implementation findings in the value text.
+    path = [f for f in res.findings
+            if f.key == "contract_ownership_takeover_path"][0]
+    assert path.evidence["contract_role"] == "implementation"
+    assert path.evidence["address"] == IMPL_ADDR
+    assert path.evidence["proxy_address"] == PROXY_ADDR
+    assert "[implementation behind proxy" in path.value
+
+    # The implementation is itself a proxy (explorer says so): noted,
+    # not followed.
+    assert "contract_implementation_is_proxy" in keys
+    nested = [f for f in res.findings
+              if f.key == "contract_implementation_is_proxy"][0]
+    assert nested.evidence["nested_implementation"] == NESTED_ADDR
+
+
+def test_plugin_follows_eip1167_minimal_proxy(monkeypatch):
+    impl_src = {"source": VULN_SOURCE, "contract_name": "DemoVault",
+                "compiler": "v0.8.20", "proxy": False,
+                "implementation": "", "origin": "Sourcify"}
+    proxy_code = ("0x363d3d373d3d3d363d73" + IMPL_ADDR[2:] +
+                  "5af43d82803e903d91602b57fd5bf3")
+    _patch_by_address(
+        monkeypatch,
+        {PROXY_ADDR: proxy_code, IMPL_ADDR: _craft_bytecode()},
+        {IMPL_ADDR: impl_src})  # proxy itself has NO verified source
+    p = contract_recon.ContractReconPlugin()
+    target = Target(raw="optimism:" + PROXY_ADDR,
+                    type="crypto_wallet",
+                    normalized="optimism:" + PROXY_ADDR)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    follow = [f for f in res.findings
+              if f.key == "contract_proxy_implementation"]
+    assert follow, "minimal proxy was not followed"
+    assert follow[0].evidence["resolved_via"] == "eip1167_bytecode" or \
+        follow[0].evidence["implementation_address"] == IMPL_ADDR
+    secret = [f for f in res.findings
+              if f.key == "contract_secret_string"][0]
+    assert secret.evidence["contract_role"] == "implementation"
+    assert secret.evidence["proxy_address"] == PROXY_ADDR
+    assert FAKE_PRIVATE_KEY in secret.value  # still shown in full
+
+
+def test_plugin_unverified_implementation_bytecode_only(monkeypatch):
+    proxy_src = {"source": PROXY_SOURCE, "contract_name": "MiniProxy",
+                 "compiler": "v0.8.20", "proxy": True,
+                 "implementation": IMPL_ADDR, "origin": "Blockscout"}
+    _patch_by_address(
+        monkeypatch,
+        {PROXY_ADDR: _craft_bytecode(), IMPL_ADDR: _craft_bytecode()},
+        {PROXY_ADDR: proxy_src})  # implementation source unverified
+    p = contract_recon.ContractReconPlugin()
+    target = Target(raw=PROXY_ADDR, type="crypto_wallet",
+                    normalized=PROXY_ADDR)
+    res = asyncio.run(p.run(target, FakeCtx()))
+    follow = [f for f in res.findings
+              if f.key == "contract_proxy_implementation"][0]
+    assert follow.evidence["implementation_source_verified"] is False
+    assert "bytecode analysis only" in follow.value
+    unavail = [f for f in res.findings
+               if f.key == "contract_source_unavailable"
+               and f.evidence.get("contract_role") == "implementation"]
+    assert unavail and unavail[0].evidence["address"] == IMPL_ADDR
+
+
 def test_plugin_skips_cleanly_without_addresses():
     p = contract_recon.ContractReconPlugin()
     target = Target(raw="example.com", type="domain",
