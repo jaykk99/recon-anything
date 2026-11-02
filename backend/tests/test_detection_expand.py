@@ -245,4 +245,4 @@ def test_cves_plugin_badges_kev_and_not_non_kev():
 def test_registry_grew_by_passive_subdomains():
     reg = discover()
     assert "passive_subdomains" in reg
-    assert len(reg) == 639  # 638 after the Nov 1 plugin merges (counts not bumped there) + 1 crypto drain analyzer
+    assert len(reg) == 640  # 639 + 1 audit toolbox (external auditor tools as one plugin)
