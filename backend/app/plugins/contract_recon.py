@@ -72,6 +72,14 @@ _REMEDIATION = {
         "Know who the proxy admin is: an upgradeable proxy means the "
         "code you audited can be replaced. Prefer timelocked, "
         "multisig-controlled admins and verify the implementation."),
+    "contract_proxy_implementation": (
+        "The proxy's real logic lives in the implementation contract; "
+        "audit it (its findings are tagged 'implementation' below) and "
+        "confirm who can change the implementation pointer."),
+    "contract_implementation_is_proxy": (
+        "The implementation is itself a proxy. Audit the full chain of "
+        "implementations before trusting this contract; each hop is "
+        "another upgrade authority."),
     "contract_privileged_function": (
         "Confirm every privileged function sits behind strong, "
         "preferably multisig, access control - these functions are "
@@ -88,11 +96,14 @@ class ContractReconPlugin(Plugin):
     group = "web3"
     requires_keys = []  # keyless-first: Blockscout + Sourcify + public RPC
     description = ("Pulls a contract's code from public chain data "
-                   "(Ethereum, BNB Chain, Polygon, Arbitrum) and shows "
-                   "it as findings: privileged functions, proxy pattern, "
-                   "dangerous code, secrets - plus bytecode analysis "
-                   "when source is unverified. Read-only, never "
-                   "interacts with contracts.")
+                   "(Ethereum, BNB Chain, Polygon, Arbitrum, Base, "
+                   "Optimism) and shows it as findings: privileged "
+                   "functions, proxy pattern, dangerous code, secrets - "
+                   "plus bytecode analysis when source is unverified. "
+                   "When the target is a proxy, the implementation "
+                   "behind it is resolved and analyzed too, with "
+                   "findings tagged by which contract they came from. "
+                   "Read-only, never interacts with contracts.")
     phase = 2  # also consumes addresses discovered by phase-1 miners
     timeout_s = 180
 
@@ -215,10 +226,14 @@ class ContractReconPlugin(Plugin):
             if chain_hint:
                 break
         if pairs == 0 and not rpc_all_failed:
+            chain_names = [cc.CHAINS[c].name
+                           for c in cc.DEFAULT_CHAIN_ORDER]
+            chain_list = ", ".join(chain_names[:-1]) + \
+                " or " + chain_names[-1]
             findings.append(self._f(
                 "web3", "contract_no_code",
                 f"LOW: {addr}: no contract code on "
-                f"{'the named chain' if chain_hint else 'Ethereum, BNB Chain, Polygon or Arbitrum'} "
+                f"{'the named chain' if chain_hint else chain_list} "
                 "- the address is a wallet (EOA) there, or the "
                 "contract lives on a chain this tool does not cover.",
                 source="public JSON-RPC eth_getCode",
@@ -247,14 +262,134 @@ class ContractReconPlugin(Plugin):
                               chain: cc.ChainConfig, addr: str,
                               code_hex: str,
                               findings: List[Finding]) -> None:
-        url = cc.explorer_url(chain, addr)
-        base_ev = {"address": addr, "chain": chain.id,
-                   "chain_id": chain.chain_id}
         ctx.publish("chain_contracts", {
             "address": addr, "chain": chain.id,
             "is_contract": True, "verified": False, "name": ""})
 
         src = await cc.fetch_verified_source(ctx, chain, addr, key)
+
+        # Proxy following: resolve the implementation (if any) BEFORE
+        # analyzing, so every finding can be tagged with the role of
+        # the contract it came from and both addresses.
+        res = {"implementation": "", "via": "", "beacon": ""}
+        try:
+            res = await cc.resolve_implementation(
+                ctx, chain, addr, code_hex,
+                {"implementation": (src or {}).get("implementation", "")})
+        except Exception:
+            pass
+        impl = res.get("implementation") or ""
+        role = "proxy_shell" if impl else "standalone"
+        await self._analyze_one(ctx, key, chain, addr, code_hex, src,
+                                findings, role=role, proxy_addr="",
+                                impl_addr=impl)
+        if not impl:
+            return
+
+        # One level of following: analyze the implementation itself.
+        impl_url = cc.explorer_url(chain, impl)
+        impl_code = None
+        impl_src = None
+        try:
+            impl_code = await cc.rpc_get_code(ctx, chain, impl)
+            impl_src = await cc.fetch_verified_source(
+                ctx, chain, impl, key)
+        except Exception:
+            impl_code, impl_src = None, None
+        findings.append(self._f(
+            "web3", "contract_proxy_implementation",
+            f"LOW: {addr} on {chain.name} is a proxy; its "
+            f"implementation is {impl} (resolved via "
+            f"{res.get('via') or 'explorer'}"
+            + (f", beacon {res['beacon']}" if res.get("beacon")
+               else "")
+            + "). The implementation's code is analyzed below - "
+              "findings tagged 'implementation'. The proxy shell's "
+              "own findings are tagged 'proxy_shell'."
+            + ("" if impl_src else
+               " The implementation's verified source is NOT "
+               "published, so it is covered by bytecode analysis "
+               "only."),
+            source="proxy resolution (explorer metadata / EIP-1167 "
+                   "bytecode / EIP-1967 storage slots)",
+            source_url=impl_url, confidence=88, passive=True,
+            evidence={"severity": "low", "address": addr,
+                      "chain": chain.id, "chain_id": chain.chain_id,
+                      "contract_role": "proxy_shell",
+                      "proxy_address": addr,
+                      "implementation_address": impl,
+                      "resolved_via": res.get("via", ""),
+                      "beacon": res.get("beacon", ""),
+                      "implementation_source_verified":
+                          bool(impl_src),
+                      "remediation": _REMEDIATION[
+                          "contract_proxy_implementation"]}))
+        if not impl_code or impl_code == "0x" or len(impl_code) < 4:
+            return  # pointer resolved but no code there to analyze
+        await self._analyze_one(ctx, key, chain, impl, impl_code,
+                                impl_src, findings,
+                                role="implementation", proxy_addr=addr,
+                                impl_addr=impl)
+        # If the implementation is itself a proxy, say so instead of
+        # recursing - one level of following is the contract.
+        try:
+            nested = await cc.resolve_implementation(
+                ctx, chain, impl, impl_code,
+                {"implementation":
+                 (impl_src or {}).get("implementation", "")})
+        except Exception:
+            nested = {"implementation": ""}
+        if nested.get("implementation"):
+            findings.append(self._f(
+                "web3", "contract_implementation_is_proxy",
+                f"MEDIUM: implementation {impl} of proxy {addr} on "
+                f"{chain.name} is itself a proxy (its implementation "
+                f"is {nested['implementation']}, via "
+                f"{nested.get('via') or 'explorer'}). Not followed "
+                "further - one level only. The chain of proxies is "
+                "part of this contract's trust surface.",
+                source="proxy resolution (explorer metadata / "
+                       "EIP-1167 bytecode / EIP-1967 storage slots)",
+                source_url=impl_url, confidence=85, passive=True,
+                evidence={"severity": "medium", "address": impl,
+                          "chain": chain.id,
+                          "chain_id": chain.chain_id,
+                          "contract_role": "implementation",
+                          "proxy_address": addr,
+                          "implementation_address": impl,
+                          "nested_implementation":
+                              nested["implementation"],
+                          "remediation": _REMEDIATION[
+                              "contract_implementation_is_proxy"]}))
+
+    async def _analyze_one(self, ctx: Ctx, key: Optional[str],
+                           chain: cc.ChainConfig, addr: str,
+                           code_hex: str,
+                           src: Optional[Dict[str, Any]],
+                           findings: List[Finding], role: str,
+                           proxy_addr: str, impl_addr: str) -> None:
+        """Analyze one contract's own code (verified source when
+        published, bytecode otherwise) and append its findings.
+
+        role tags every finding: "standalone" (not a proxy),
+        "proxy_shell" (the proxy's own code), or "implementation"
+        (code reached by following a proxy). Proxy findings carry
+        both the proxy and implementation addresses in evidence.
+        """
+        url = cc.explorer_url(chain, addr)
+        base_ev = {"address": addr, "chain": chain.id,
+                   "chain_id": chain.chain_id,
+                   "contract_role": role}
+        if role == "implementation":
+            base_ev["proxy_address"] = proxy_addr
+            base_ev["implementation_address"] = addr
+            tag = f" [implementation behind proxy {proxy_addr}]"
+        elif role == "proxy_shell":
+            base_ev["proxy_address"] = addr
+            base_ev["implementation_address"] = impl_addr
+            tag = f" [proxy shell; implementation {impl_addr}]"
+        else:
+            tag = ""
         bc = cc.analyze_bytecode(code_hex)
 
         if src:
@@ -265,7 +400,7 @@ class ContractReconPlugin(Plugin):
                 kind = item["kind"]
                 fkey = _KIND_TO_KEY.get(kind, "contract_code")
                 sev = item["severity"]
-                value = f"{sev.upper()}: {item['title']}"
+                value = f"{sev.upper()}: {item['title']}{tag}"
                 if item.get("code"):
                     value += f"\n\nCode:\n{item['code']}"
                 ev = dict(base_ev)
@@ -305,7 +440,7 @@ class ContractReconPlugin(Plugin):
             "published on Blockscout, Sourcify or Etherscan, so the "
             "code cannot be read as Solidity. Bytecode analysis only "
             "(below) - treat this contract as unauditable until its "
-            "source is verified.",
+            f"source is verified.{tag}",
             source="Blockscout/Sourcify/Etherscan source lookup",
             source_url=url, confidence=90, passive=True,
             evidence={**base_ev,
