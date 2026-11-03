@@ -287,7 +287,8 @@ across 259 plugin modules on current master. The health gate
 (`backend/tests/test_plugin_health.py`) enforces unique ids, valid
 groups, and metadata on all of them. Below are the core web plugins;
 the contract-analysis plugins are listed in the Smart contract
-analysis section above.
+analysis section above. Every plugin, all 655 of them, is listed
+in [All plugins](#all-plugins-655) below.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -307,6 +308,716 @@ analysis section above.
 With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
+
+## All plugins (655)
+
+Every plugin registered in the live registry, generated from
+`discover()` in `backend/app/plugins/registry.py` on current
+master. Grouped by the plugin's `group` value (the same grouping
+the UI uses), alphabetical by plugin id within each group.
+No sampling: if it is registered, it is listed here.
+
+Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 272 · Financial 43 · Graph 8 · **Total 655**.
+
+### Network (33)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| asn_scan | ASN + Infra Map | asn_scan | ASN/prefix lookup and web-port check on the target's own IPs. |
+| banners | Banner Grabber | banners | Grab service banners, flag outdated software. |
+| bitcoin | Bitcoin Node Exposure | bitcoin | Bitcoin service exposure: P2P (8333), RPC (8332), Electrum (50001/50002), and unauthenticated block explorer APIs. Connect-only, never authenticates. |
+| caa_audit | CAA Policy Audit | caa_audit | Grade the CAA issuance policy: missing policy, issuewild gaps, issuance forbids. |
+| censys_enum | Censys Exposure Search | censys_enum | Exposed hosts, services, and certificate anomalies: keyless crt.sh cert search always runs; Censys API keys (optional) add host exposure data. |
+| cmd_dns | Command DNS (dig/host) | cmdtools | dig/host/nslookup record enumeration: A, AAAA, MX, NS, TXT, SOA, CAA + PTR. |
+| cmd_dns_nscheck | Command DNS Nameserver Health (dig) | cmdtools | dig @NS SOA per nameserver: lame delegation (NS answers nothing authoritative) + SOA serial disagreement. |
+| cmd_dns_recurse | Command DNS Open Resolver (dig) | cmdtools | dig @NS test: does the domain's own nameserver answer recursive queries for unrelated names (open resolver)? |
+| cmd_ocsp | Command OCSP Stapling (openssl) | cmdtools | openssl s_client -status: stapled OCSP response present or missing (revocation checking). |
+| cmd_ports | Command Service Ports | cmdtools | TCP connect to common service ports + banner grabs (nc, socket fallback). Detection only. |
+| cmd_smtp | Command SMTP Check | cmdtools | MX-driven SMTP banner + STARTTLS capability. QUIT immediately, never sends mail. |
+| cmd_tls | Command TLS (openssl) | cmdtools | openssl s_client cert inspection: subject, issuer, SANs, protocol, cipher, expiry. |
+| db | Exposed Databases | db | Check if database ports are internet-reachable (no auth attempted). |
+| dns | DNS Records | dns | A, AAAA, CNAME, MX, TXT, NS, SOA, CAA, SRV, PTR + DNSSEC posture. |
+| dns_infra | DNS Infra Health | dns_infra | Delegation quality: lame NS, missing glue, SOA health, single-point-of-failure nameservers. |
+| fastmode | Fast Mode Triage | fastmode | Rapid triage: top 20 highest-value checks in under 30 seconds. |
+| ip_reputation | IP Reputation (DNSBL) | ip_reputation | Check the target's IPs against Spamhaus, Barracuda, SpamCop and SORBS blocklists. |
+| ipv6_check | IPv6 Support | ipv6_check | AAAA records + real IPv6 connectivity: ready, broken dual-stack, or IPv4-only. |
+| passive_dns | Passive DNS History | passive_dns | Historical DNS from AlienVault OTX + ThreatCrowd: past IPs, vanished hostnames, CNAME chains. Keyless, passive. |
+| passive_subdomains | Passive Subdomain Sources | passive_subdomains | Extra passive subdomain sources: CertSpotter CT, Wayback CDX and Bufferover passive DNS. Deduped, same-target only, no brute force. |
+| port_audit | Port Auditor | port_audit | ~1000-port sweep with banner/version grabs, OS hints, TLS-on-any-port detection, and dangerous-exposure flags (databases, RDP/VNC/Telnet/ADB, Docker, K8s, ICS, crypto). |
+| port_scan | Web Port Scan | port_scan | Deep scan of 50 web/dev ports with banner grab and TLS cert inspection. Read-only. |
+| ports | Port Scanner | ports | Common port suggestions (passive) or real scan (active). |
+| rapiddns | RapidDNS Subdomains | rapiddns | Subdomain enumeration from the RapidDNS index (multi-feed DNS data). Keyless, passive. |
+| rdap | WHOIS / RDAP | rdap | Registrar, creation/expiry dates, registrant org via RDAP. |
+| reverse_ip | Reverse IP (Co-hosted Domains) | reverse_ip | Co-hosted domains for an IP from hackertarget, AlienVault OTX passive DNS and RapidDNS same-IP listings. Keyless, passive. |
+| smtp_tls | Mail Server TLS | smtp_tls | Audit MX hosts: STARTTLS advertisement, handshake success, cleartext auth exposure. |
+| subdomain_brute | Subdomain Brute Force | subdomain_brute | DNS brute-force over a large wordlist with wildcard detection. Complements CT-log enumeration. |
+| subdomain_compiler | Passive Subdomain Compiler | subdomain_compiler | Fast keyless subdomain compilation from crt.sh, hackertarget, threatcrowd, AlienVault OTX, certspotter, urlscan.io, subdomain.center. |
+| subdomains | Subdomain Enum | subdomains | Certificate-transparency subdomains via crt.sh, plus active DNS brute force. |
+| takeover | Takeover Checker | takeover | Detect dangling DNS / subdomain takeover potential. Fingerprint CNAME targets, verify the target is unclaimed (NXDOMAIN or provider error page). Detection only - never claims anything. |
+| tls | TLS + Email Security | tls | Certificate details, SAN hostnames, SPF/DMARC/BIMI/MTA-STS posture. |
+| wayback | Wayback History | wayback | Historical snapshots and old URLs via the Wayback CDX API. |
+
+### Web (197)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| ai_llms_conflict | llms.txt vs robots.txt Conflicts | aipack | Flag llms.txt links to paths robots.txt tells crawlers to stay out of. |
+| ai_llms_index | llms.txt Index & Link Map | aipack | Read /llms.txt and /llms-full.txt, feed their same-origin links to the hunters, and flag links to sensitive-looking paths. |
+| ai_llms_secrets | llms.txt & Linked Docs Secret Miner | aipack | Mine llms.txt, llms-full.txt and the same-origin .md docs they link for credentials and secrets, masked + fingerprinted. |
+| ai_robots_ai | AI Crawler robots.txt Inventory | aipack | Inventory which AI crawlers robots.txt allows, blocks, or partially restricts. |
+| ai_tdm | TDM Reservation Protocol Audit | aipack | Audit the W3C TDM reservation: robots.txt tdm-reservation / tdm-policy lines and /.well-known/tdmrep.json. |
+| allsources | All Sources | allsources | Extract every public source: JS, CSS, images, docs, inline code, comments, meta, JSON-LD. |
+| altsvc_audit | Alt-Svc Header Audit | altsvc_audit | Parse the Alt-Svc response header (RFC 7838): HTTP/3 advertisements, draft versions, cross-origin alternative services, cleartext entries, and malformed headers. |
+| appintel | App Intelligence | appintel | Build the AI app-analysis brief: frameworks, API patterns, auth flows, file inventory, hot files. |
+| artifacts | Exposed Artifacts | artifacts | Sensitive-file exposure check (Wayback in passive, direct probe in active). |
+| assetmap | Asset Map | assetmap | Full asset inventory: every file the site loads, sizes, first vs third party, heaviest assets, orphans. |
+| auth | Auth Weakness Check | auth | JWT alg issues, cookie flags, default login hints. |
+| auth_surface | Auth Surface Map | auth_surface | Find signup flows and exposed Jira/Confluence/GitLab/Jenkins. |
+| autotriage | Auto Triage Router | autotriage | Route discovered tech to the right scanners; build manual test plan. |
+| backup | Backup File Sweeper | backup | Sweep backup extensions on common files; sniff for secrets. |
+| blogic | Business Logic Scout | blogic | Flag price params, coupons, paywalls for logic testing. |
+| bounty | Bug Bounty Checklist | bounty | Automated bug bounty checks: open redirects, debug pages, sensitive endpoints. |
+| cache_poisoning | Cache Poisoning Check | cache_poisoning | Detect web cache poisoning potential: unkeyed inputs reflected into cached responses. GET/HEAD only. |
+| cards | Exposed Card Numbers | cards | Find Luhn-valid credit/debit card numbers exposed in pages and JS. |
+| clickjack | Clickjack Tester | clickjack | Deep clickjacking analysis with PoC generation. |
+| cmd_http | Command HTTP (curl) | cmdtools | curl redirect chain, raw banner headers, HTTP version and timing. |
+| cmdi | Command Injection | cmdi | Command injection: time-based + error-based probes. |
+| cms_probes | CMS Probes | cms_probes | WordPress/Drupal/Joomla + Shopify/Squarespace/Wix version detection + known-vuln checks. GET only, no login attempts. |
+| cookie_security | Cookie Security Flags | cookie_security | Audit Set-Cookie flags: Secure, HttpOnly, SameSite, and __Host-/__Secure- prefix rules. |
+| cors | CORS Tester | cors | Deep CORS misconfiguration testing. |
+| crawler | Site Crawler | crawler | 5-level crawl: links, forms, comments, sitemap, CSS, externals. |
+| creds | Hardcoded Credentials | creds | Find hardcoded logins, DB URLs, basic-auth and framework secrets. |
+| crypto | Crypto Address Finder | crypto | Find published crypto addresses for fund-flow pivoting. |
+| cryptoconfig | Crypto RPC Checker | cryptoconfig | Check for open blockchain RPC endpoints. |
+| csp_audit | CSP Policy Audit | csp_audit | Parse and grade the Content-Security-Policy: unsafe-inline, wildcards, data: sources, missing fallbacks. |
+| cves | CVE Matcher | cves | Detect software versions, match against known CVEs with exploitability. |
+| da_archive_configs | App Archive Config Exposure (da) | artifacts_deep | JAR/WAR archives: embedded config filenames via ZIP central directory, keystore names, and masked secrets from one bounded config entry. |
+| da_build_listing | Build Artifact Listing (da) | artifacts_deep | Open listings of build folders exposing compiled artifacts by filename: .pyc/.class/.pdb/.hprof/.jar/.wasm and source files. |
+| da_crash_dump | Crash/Core Dump Exposure (da) | artifacts_deep | Windows minidump (.dmp) and ELF core dump files verified by file signature from a capped ranged read. |
+| da_debug_symbols | Debug Symbols Exposure (da) | artifacts_deep | PDB debug symbol files verified by the MSF signature and dSYM bundles exposed via their Info.plist. |
+| da_heap_dump | Heap Dump Exposure (da) | artifacts_deep | Java heap dumps (.hprof), Node/V8 heap snapshots and JVM thread dumps verified by format signature from a capped ranged read. |
+| da_wasm_surface | WASM Module Surface (da) | artifacts_deep | WebAssembly modules verified by the \0asm magic; import/export names and embedded URLs parsed from a capped head window. |
+| dedup | Finding Deduplicator | dedup | Remove duplicate findings across plugins and repeat scans; merge cross-plugin evidence; boost corroborated findings; flag contradictions. |
+| deepcrawl | Deep Source Analyzer | deepcrawl | Deep crawl: every link, JS file, API call. Complete surface map. |
+| dependency_conf | Dependency Confusion Detector | dependency_conf | Finds exposed dependency manifests and flags internal-looking packages against public registries. |
+| devtools | DevTools Analyzer | devtools | DevTools equivalent: page structure, network surface, error hints, performance. |
+| dir_brute | Directory Brute Force | dir_brute | Brute-force hidden paths (admin, backups, configs) with 404-baseline filtering. GET only, no login attempts. |
+| dorks | Google Dorks | dorks | Targeted Google dork queries for the domain. |
+| enterprise | Enterprise Software Scout | enterprise | Detect SAP, Oracle, Salesforce, SharePoint, Exchange, ServiceNow, Atlassian, Tableau, Splunk, Kibana and admin panels. Read-only. |
+| error_pages | Error Page Disclosure | error_pages | Probe nonexistent paths for stack traces, debug mode, SQL errors and path disclosure in error pages. |
+| exif | Image EXIF Extractor | exif | Extract EXIF GPS/device metadata from site images. |
+| exposed_debug | Exposed Debug Toolbars | exposed_debug | Detect dev debug toolbars/profilers (Django, Symfony, Laravel, Rails) left enabled in production. |
+| favicon_hash | Favicon Hasher | favicon_hash | MurmurHash3 favicon hash (Shodan-compatible) for asset pivoting. |
+| feroxbuster | Feroxbuster | feroxbuster | Recursive content discovery: auto-recurses into found dirs. GET only. |
+| filehunter | File Hunter | filehunter | Hunt exposed backups, configs, VCS, logs, DB dumps, archives. Notes 403s, never bypasses. |
+| financial | Financial Footprint | financial | Find payment processors, bank refs, crypto wallets, billing. |
+| fingerprint | Deep Tech Fingerprinter | fingerprint | Identify every framework, version, plugin, server, CDN. |
+| firecrawl | Firecrawl Mapper | firecrawl | Sitemap + robots + crawl path index. Keyless, no external API. |
+| forms | Form Catalog | forms | Crawl same-site pages and catalog every HTML form (method, action, inputs). Detection only, never submitted. |
+| fx_deserialization_surface | Deserialization Surface (passive) | fmtpack | Native serialized objects (Java, PHP, Python pickle, .NET) observed in the target's own cookies and responses - the classic untrusted-deserialization attack surface. |
+| fx_dtd_schema | DTD Exposed | fmtpack | A .dtd document type definition served publicly: element and entity declarations disclose the document grammar; external DTDs are also the classic XXE delivery file. |
+| fx_xsd_schema | XML Schema (XSD) Exposed | fmtpack | An .xsd XML Schema served publicly: element and type names disclose the exact document grammar the application accepts - the map for XXE and schema-complexity attacks. |
+| gau | Get All URLs | gau | Known URLs from OTX + Wayback + Common Crawl. Keyless archives only. |
+| giftcards | Exposed Gift Card Codes | giftcards | Find exposed gift card codes (Amazon, Steam, Visa gift) in pages and JS. |
+| giftinfra | Gift Card Infrastructure Map | giftinfra | Map gift card systems: providers, API endpoints, purchase/redeem/balance flows. |
+| git | Exposed .git Check | git | Deep .git exposure check: HEAD, config, logs, index. |
+| git_exposed | Exposed .git Detector | git_exposed | GitTools-style: probe for publicly readable VCS metadata (.git, .svn, .hg, .bzr). |
+| gitleaks_scan | GitLeaks Secret Scan | gitleaks_scan | GitLeaks-style rule pack: 40+ secret patterns across pages, JS, comments, and meta tags. |
+| gobuster | Gobuster | gobuster | Fast directory/file brute force: 350+ entries x extensions, 404-baseline filtered. GET only. |
+| graphql | GraphQL Analyzer | graphql | Finds GraphQL endpoints, runs one safe introspection query, and flags schema exposure and deep-query risk. |
+| gx_confluence_public_page | Public Confluence Page | gappack | Confluence pages linked from the target's pages and reachable without a login. |
+| gx_git_history_secrets | Git History Secret Scan | gappack | When /.git is exposed, walks the loose-object history (reflog -> commits -> trees -> blobs) and scans blobs - including secrets deleted at HEAD that still live in history. |
+| gx_google_share_link | Public Google Drive/Docs Link | gappack | Google Drive folders/files and Docs/Sheets/Slides share links in the target's pages; verified when they resolve without a Google sign-in wall. |
+| gx_jira_public_link | Public Jira Surface | gappack | Jira boards/dashboards/filters/projects linked from the target's pages and reachable without a login. |
+| gx_pinecone_key | Pinecone API Key Exposed | gappack | Pinecone vector DB API keys (pcsk_ format) in pages/JS - a leaked key hands over the account's indexes. hf_ tokens are covered elsewhere and are not repeated here. |
+| gx_training_data_refs | Training Data References | gappack | Training-data exposure leads in the target's pages/JS: public Hugging Face dataset links, load_dataset() calls, and direct dataset file URLs (jsonl/parquet/arrow) - the raw material AI features are trained on, left public. |
+| gx_trello_board | Public Trello Board | gappack | Public Trello boards linked from the target's pages; verified via the board's own public .json view. |
+| hakrawler | HaKrawler | hakrawler | Fast lightweight crawl: URLs, subdomains, JS files. GET only. |
+| hashid | Hash Identifier | hashid | Identify hash algorithms in page text and JS (CTF helper). |
+| headers | Security Headers | headers | Missing security headers and information-disclosure headers. |
+| hiddenpaths | Hidden Endpoint Finder | hiddenpaths | Brute-force unlinked paths. Find hidden endpoints. |
+| hsts | HSTS Analysis | hsts | Grade the HSTS policy: max-age, includeSubDomains, preload readiness, bare-domain downgrade. |
+| html_comments | HTML Comment Intel | html_comments | Mine HTML comments for TODOs, commented-out endpoints, internal hosts and credential patterns. |
+| htmli | HTML Injection | htmli | HTML injection: inert markup canary reflection check. |
+| http2_check | HTTP/2 / HTTP/3 Support | http2_check | Detect negotiated HTTP version via ALPN: HTTP/1.1-only, HTTP/2, or HTTP/3 (QUIC). |
+| http_methods | HTTP Methods Audit | http_methods | OPTIONS-based audit: TRACE/XST, PUT/DELETE, WebDAV verbs, DEBUG. Advertised methods only, never exercised. |
+| httrack | HTTrack Mapper | httrack | Full site structure map: directory tree, section sizes, orphan dirs. GET only. |
+| idor | IDOR Pattern Finder | idor | Flag predictable IDs; sequential=high risk, UUID=low. |
+| infodisclosure | Info Disclosure Probe | infodisclosure | Probe debug/info endpoints: phpinfo, server-status, actuator, pprof. |
+| js_retire | Vulnerable JS Libraries | js_retire | Retire.js-style: detect outdated/vulnerable JS libraries with CVE mapping. |
+| js_secrets | JS Secret Miner | js_secrets | Deep JS/HTML secret mining: 60+ patterns over every JS bundle, inline scripts, HTML comments, and source maps. |
+| jsdeep | Deep JS Analysis | jsdeep | Download all JS bundles: endpoints, URLs, secrets, TODOs, source maps + original-source reconstruction. |
+| jsminer | JS Bundle Miner | jsminer | Mine JS bundles for endpoints, hosts, keys; recover source maps. |
+| katana | Katana Crawler | katana | Next-gen crawl: isolate page URLs, API endpoints, and JS files. GET only. |
+| ldapi | LDAP Injection | ldapi | LDAP injection detection via safe error-based probes. |
+| misconfig | Framework Misconfig Detector | misconfig | Detects framework dev-mode exposures: Django debug, Laravel .env, Rails keys, Spring Boot actuator, phpinfo, Apache server-status. |
+| misconfig_sweep | Misconfig Sweep | misconfig_sweep | 50+ misconfiguration checks: headers, cookies, CORS, methods. |
+| mixed_content | Mixed Content | mixed_content | Find http:// subresources on https pages (active vs passive mixed content). |
+| nosqli | NoSQL Injection | nosqli | NoSQL injection: operator, error and timing probes. |
+| notifications | Scan Notifications | notifications | Sends scan-complete alerts to Discord / Slack / Telegram webhooks when configured. |
+| oob_callback | Out-of-Band Callback Trigger | oob_callback | Inject unique OOB callback canaries; documents payloads for Jay to check. |
+| opendir | Open Directories | opendir | Find open directory listings on common paths. |
+| openid_discovery | OIDC Discovery | openid_discovery | Parse /.well-known/openid-configuration: issuer, endpoints, and weak OIDC configuration. |
+| param_discovery | Parameter Discovery | param_discovery | Discover hidden GET params with canary probes; flag unencoded reflection (XSS candidates). GET only. |
+| param_fuzzer | Response-Diff Parameter Fuzzer | param_fuzzer | GET-only param fuzzer; flags behavior-changing params via response diff. |
+| pf_ably_api_key | Ably API key | privfind | Private findings: detects Ably API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_age_secret_key | age encryption secret key | privfind | Private findings: detects age encryption secret key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_airtable_pat | Airtable personal access token | privfind | Private findings: detects Airtable personal access token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_alibaba_access_key | Alibaba Cloud AccessKey ID | privfind | Private findings: detects Alibaba Cloud AccessKey ID publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_appsettings_json | ASP.NET appsettings with connection strings | privfind | Private findings: detects ASP.NET appsettings with connection strings publicly served at a well-known path. Marker-gated; detection only. |
+| pf_auth_json_file | Registry auth.json with credentials | privfind | Private findings: detects Registry auth.json with credentials publicly served at a well-known path. Marker-gated; detection only. |
+| pf_auth_secret_env | Framework auth secret (env-style) | privfind | Private findings: detects Framework auth secret (env-style) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_aws_session_token | AWS session token | privfind | Private findings: detects AWS session token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_buildkite_token | Buildkite API token | privfind | Private findings: detects Buildkite API token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_contentful_token | Contentful management token | privfind | Private findings: detects Contentful management token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_cookies_txt | cookies.txt session file | privfind | Private findings: detects cookies.txt session file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_docker_config_file | Docker client config with registry credentials | privfind | Private findings: detects Docker client config with registry credentials publicly served at a well-known path. Marker-gated; detection only. |
+| pf_doppler_token | Doppler service token | privfind | Private findings: detects Doppler service token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_edgerc_file | Akamai .edgerc API credentials | privfind | Private findings: detects Akamai .edgerc API credentials publicly served at a well-known path. Marker-gated; detection only. |
+| pf_facebook_token | Facebook access token | privfind | Private findings: detects Facebook access token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_figma_token | Figma personal access token | privfind | Private findings: detects Figma personal access token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_flutterwave_secret | Flutterwave secret key | privfind | Private findings: detects Flutterwave secret key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_gcp_sa_token | Google Cloud service-agent token | privfind | Private findings: detects Google Cloud service-agent token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_gitlab_runner_token | GitLab runner authentication token | privfind | Private findings: detects GitLab runner authentication token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_google_oauth_access | Google OAuth access token | privfind | Private findings: detects Google OAuth access token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_google_refresh_token | Google OAuth refresh token | privfind | Private findings: detects Google OAuth refresh token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_groq_api_key | Groq API key | privfind | Private findings: detects Groq API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_idea_workspace | JetBrains workspace.xml with credentials | privfind | Private findings: detects JetBrains workspace.xml with credentials publicly served at a well-known path. Marker-gated; detection only. |
+| pf_jwk_private_key | JWK private key material | privfind | Private findings: detects JWK private key material publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_kubeconfig_file | Kubernetes kubeconfig with client keys | privfind | Private findings: detects Kubernetes kubeconfig with client keys publicly served at a well-known path. Marker-gated; detection only. |
+| pf_laravel_log | Laravel log file with secrets | privfind | Private findings: detects Laravel log file with secrets publicly served at a well-known path. Marker-gated; detection only. |
+| pf_linear_api_key | Linear API key | privfind | Private findings: detects Linear API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_newrelic_api_key | New Relic user API key | privfind | Private findings: detects New Relic user API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_notebook_creds | Jupyter notebook with embedded credentials | privfind | Private findings: detects Jupyter notebook with embedded credentials publicly served at a well-known path. Marker-gated; detection only. |
+| pf_notion_secret | Notion integration secret | privfind | Private findings: detects Notion integration secret publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_otpauth_seed | TOTP/HOTP shared secret (otpauth URL) | privfind | Private findings: detects TOTP/HOTP shared secret (otpauth URL) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_perplexity_key | Perplexity API key | privfind | Private findings: detects Perplexity API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_posthog_personal_key | PostHog personal API key | privfind | Private findings: detects PostHog personal API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_postman_collection | Postman collection with embedded auth | privfind | Private findings: detects Postman collection with embedded auth publicly served at a well-known path. Marker-gated; detection only. |
+| pf_pypirc_file | PyPI .pypirc with repository password | privfind | Private findings: detects PyPI .pypirc with repository password publicly served at a well-known path. Marker-gated; detection only. |
+| pf_rails_master_key | Rails master key file | privfind | Private findings: detects Rails master key file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_replicate_token | Replicate API token | privfind | Private findings: detects Replicate API token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_reset_link_leak | Password-reset / magic-login link | privfind | Private findings: detects Password-reset / magic-login link publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_sentry_org_token | Sentry organization auth token | privfind | Private findings: detects Sentry organization auth token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_serverless_yml | Serverless Framework config with secrets | privfind | Private findings: detects Serverless Framework config with secrets publicly served at a well-known path. Marker-gated; detection only. |
+| pf_session_cookie_leak | Session cookie value in served text | privfind | Private findings: detects Session cookie value in served text publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_square_oauth_secret | Square OAuth application secret | privfind | Private findings: detects Square OAuth application secret publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_ssh_ed25519_file | SSH ed25519 private key file | privfind | Private findings: detects SSH ed25519 private key file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_stripe_webhook_secret | Stripe webhook signing secret | privfind | Private findings: detects Stripe webhook signing secret publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_supabase_service_key | Supabase service-role secret key | privfind | Private findings: detects Supabase service-role secret key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_tencent_secret_id | Tencent Cloud SecretId | privfind | Private findings: detects Tencent Cloud SecretId publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_terraform_cloud_token | Terraform Cloud API token | privfind | Private findings: detects Terraform Cloud API token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_terraformrc_file | Terraform CLI config with registry token | privfind | Private findings: detects Terraform CLI config with registry token publicly served at a well-known path. Marker-gated; detection only. |
+| pf_tfstate_file | Terraform state file (contains secrets) | privfind | Private findings: detects Terraform state file (contains secrets) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_tfvars_file | Terraform variables file with secrets | privfind | Private findings: detects Terraform variables file with secrets publicly served at a well-known path. Marker-gated; detection only. |
+| pf_token_in_url | Access token embedded in a public URL | privfind | Private findings: detects Access token embedded in a public URL publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_vault_token | HashiCorp Vault token | privfind | Private findings: detects HashiCorp Vault token publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_webhook_secret_env | Webhook signing secret (env-style) | privfind | Private findings: detects Webhook signing secret (env-style) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_xai_api_key | xAI API key | privfind | Private findings: detects xAI API key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| photon | Photon OSINT | photon | Fast OSINT scrape: background files, hidden endpoints, params, emails. |
+| phpinfo | phpinfo() Exposure | phpinfo | Detect exposed phpinfo() pages disclosing PHP config, paths and environment. |
+| proto_pollution | Prototype Pollution Detector | proto_pollution | Checks JS library versions for known prototype-pollution CVEs and tests for safe pollution-marker reflection. |
+| rate_limit_audit | Rate-Limit Headers | rate_limit_audit | Audit rate-limit signals (X-RateLimit-*, Retry-After): documented limits vs no abuse signals at all. |
+| rce | RCE Time Probe | rce | RCE check: time-delay canary + error-based detection. |
+| redirect_chain | Redirect Chain | redirect_chain | Analyze the homepage redirect chain: downgrades, off-domain hops, loops, long chains. |
+| robots | Robots / Sitemap | robots | Parse robots.txt and sitemap.xml for hidden paths. |
+| s3 | Cloud Bucket Finder | s3 | Find S3/GCS/Azure buckets and test public access. |
+| screenshots | Screenshot Capture | screenshots | Headless-browser screenshots of the target and discovered subdomains for fast visual vetting. |
+| secrets | Exposed API Keys | secrets | Mine pages and JS bundles for 90+ API key and token patterns. |
+| smartcontract | Smart Contract Scout | smartcontract | Find contract addresses and flag risky patterns. |
+| smb_tech | SMB Tech Stack | smb_tech | Detect small-business website platforms (Shopify, Squarespace, Wix, Weebly, GoDaddy, Webflow, Duda) and flag quick misconfigs. GET only. |
+| smuggling | Request Smuggling Detector | smuggling | Timing-based HTTP request-smuggling/desync detection with harmless conflicting-header probes. |
+| sourcemap | Source Map Reconstructor | sourcemap | Reconstruct source maps; extract secrets, internal URLs, debug flags. |
+| sqli | SQLi Probe | sqli | SQLi check: error-based + UNION + time-blind + boolean-blind. |
+| sri_audit | Subresource Integrity | sri_audit | Audit cross-origin scripts/stylesheets for missing SRI integrity attributes. |
+| ssrf | SSRF Sink Finder | ssrf | Find SSRF-prone params and metadata references (verify manually). |
+| ssti | SSTI Probe | ssti | SSTI check: math-canary probes across template engines. |
+| stealth_crawler | Stealth Crawler | stealth_crawler | Human-like crawler (jittered delays, rotating UAs, respects robots.txt) that finds hidden API endpoints, WebSocket URLs and dynamic routes in JS. |
+| supplychain | Supply Chain Scout | supplychain | Flag vulnerable third-party JS libraries. |
+| tech_fingerprint | Tech Fingerprint+ | tech_fingerprint | Exact version detection for 100+ technologies, CVE matching via OSV, and EOL flagging. |
+| tls_config | TLS Config Audit | tls_config | Audit TLS versions, weak ciphers, compression (CRIME) and forward secrecy. |
+| trackers | Third-Party Trackers | trackers | Inventory third-party trackers/adtech with script access on the page. |
+| traversal | Path Traversal Check | traversal | Probe file params for directory traversal (read-only passwd check). |
+| truffle_scan | TruffleHog Entropy Scan | truffle_scan | High-entropy string detection (TruffleHog-style) across pages, JS, and exposed .git metadata. |
+| urlscan | URL Analyzer | urlscan | Full HTTP transaction record: redirect chain, background resources, third-party domains. Keyless. |
+| waf | WAF Detector | waf | Detect Web Application Firewalls via shared vendor signatures. |
+| walletcheck | Wallet Security Check | walletcheck | Find exposed wallets, mnemonics, keystores. |
+| wallets | Wallet Key Exposure | wallets | Hunt exposed crypto private keys, seed phrases and wallet files. |
+| waybackurls | Wayback URLs | waybackurls | Every URL Wayback cached for the site. Keyless CDX API. |
+| web_manifest | PWA Manifest / SW Audit | web_manifest | Audit PWA manifest (scope, icons, start_url) and service worker exposure. |
+| webtech | Web Tech Fingerprint | webtech | Framework/CMS/CDN/analytics fingerprint + robots/sitemap/security.txt + favicon hash. |
+| well_known_audit | Well-Known URIs | well_known_audit | Audit /.well-known/ files: security.txt, change-password, assetlinks, apple-app-site-association, gpc.json. |
+| wget | Wget Mirror | wget | Recursive asset inventory (wget -r -np style). Reports URLs/types/sizes, stores nothing. |
+| xml_policy | XML Cross-Domain Policy Reader | xmlpack | Parse crossdomain.xml / clientaccesspolicy.xml contents: wildcard cross-domain grants let any site read this origin's data with a victim's session (existence probes existed; the policy itself was never read). |
+| xml_secrets | XML Secrets & Config Miner | xmlpack | Read the target's XML files (config XML, feeds, WSDLs, discovered .xml) for credentials, connection strings, secrets and PII. |
+| xml_sitemap_paths | XML Sitemap Path Miner | xmlpack | Parse sitemap contents from every source (probes, robots.txt declarations, index children): sensitive-path URLs become findings and all URLs feed the hunter bus. |
+| xml_wsdl | XML WSDL Service Reader | xmlpack | Read WSDL documents: published service addresses (internal ones flagged), operation names and imported schemas map the SOAP attack surface. |
+| xml_xxe_surface | XML External Entity Surface | xmlpack | Detect external entity, external DTD, parameter entity and XInclude declarations in the target's served XML (XXE surface). The declared URIs are reported, never fetched. |
+| xpathi | XPath Injection | xpathi | XPath injection detection via safe error-based probes. |
+| xs_leak | Cross-Site Leak Detector | xs_leak | Checks COOP/COEP/CORP isolation headers, framing protections, and status-code oracle candidates. |
+| xss | XSS Canary | xss | XSS check: reflected canary + DOM sink analysis. |
+| zeroday_differential | Zero-Day Candidate Hunter (Differential) | zeroday_differential | Mutates the types/shapes of parameters a target actually uses (arrays, duplicates, nulls, huge numbers, malformed bodies) and flags crash, debug disclosure, data-shaped or timing anomalies as candidate zero-days for human review. |
+| zeroday_error_miner | Zero-Day Candidate Hunter (Error-Path Miner) | zeroday_error_miner | Sends deliberately malformed requests (bad IDs, broken encodings, truncated bodies) to discovered endpoints and mines the error responses for internal paths, SQL detail, hostnames, env names and versions nobody enumerated. |
+
+### API (18)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| apidiscover | API Discovery | apidiscover | Backend inference, docs discovery, GraphQL introspection, API map. |
+| authscan | Authenticated Scanner | authscan | Test endpoints with your credentials (env-provided). Finds auth-gated vs unexpectedly open endpoints. |
+| bola | BOLA API Tester | bola | Detect BOLA candidates on API endpoints. |
+| endpointauth | Endpoint Auth Probe | endpointauth | Probe API-looking endpoints with one clean GET to classify auth requirements. Detection only: no parameters, no credentials, no auth attempts. |
+| fx_avro_schema | Avro Schema Exposed | fmtpack | An .avsc Avro schema served publicly: record and field names disclose the exact shape of the data pipeline's payloads. |
+| fx_capnp_schema | Cap'n Proto Schema Exposed | fmtpack | A .capnp Cap'n Proto schema served publicly: struct and interface definitions disclose the binary protocol contract. |
+| fx_flatbuffers_schema | FlatBuffers Schema Exposed | fmtpack | A .fbs FlatBuffers schema served publicly: table/struct definitions disclose the binary message layout exactly. |
+| fx_proto_schema | Protobuf Schema Exposed | fmtpack | A .proto file served publicly: the service, RPC method and message definitions are the API's complete blueprint. |
+| fx_thrift_schema | Thrift IDL Exposed | fmtpack | A .thrift interface definition served publicly: service and struct definitions disclose the RPC surface in full. |
+| graphql_deep | GraphQL Deep Analysis | graphql_deep | Deep read-only GraphQL analysis: schema field enumeration, batching and GET-query probes. No mutations executed. |
+| graphql_probe | GraphQL Exposure | graphql_probe | Detect GraphQL endpoints and whether introspection / GraphiQL consoles are exposed. |
+| gx_graphql_schema_exposure | GraphQL Schema Exposure (Discovered Endpoints) | gappack | Discovers GraphQL endpoints from the target's pages/JS (custom paths, Hasura, cross-host API hosts the fixed-path probes never see) and runs the standard introspection query: a returned schema is reported with total type/field counts. |
+| idor_comparator | Multi-Account IDOR Comparator | idor_comparator | Two-account IDOR/BOLA differential test (env tokens, never stored). |
+| js_endpoints | JS Endpoint Extractor | js_endpoints | LinkFinder-style: aggressive endpoint extraction from JS bundles (fetch/axios/XHR, GraphQL, WebSockets). |
+| jwt | JWT Analyzer | jwt | Finds JWTs in responses and JS, checks alg=none, weak secrets (offline), missing exp, and payload data. |
+| logici | API Logic Injection | logici | Logic injection: boolean/type-juggle differential probes. |
+| race_detect | Race Condition Detector | race_detect | Detects payment-style endpoints without idempotency-key support. Detection only - never sends concurrent or duplicate requests. |
+| websocket_tester | WebSocket Tester | websocket_tester | Finds ws/wss endpoints in JS and page source, tests the upgrade handshake connect-only. |
+
+### Mobile (5)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| binex | Deep Binary Analysis | binex | Deep APK static analysis: permissions, exported components, secrets, native libs, signer. |
+| da_mobile_package | Hosted Mobile Package (da) | artifacts_deep | APK/IPA/AAB hosted on the target: presence plus config entry names from the ZIP central directory (google-services.json and friends). |
+| mobile | Mobile App Analysis | mobile | APK/IPA metadata, static strings, secret scan, deep links. |
+| pf_apple_service_plist | Firebase GoogleService-Info.plist (mobile backend config) | privfind | Private findings: detects Firebase GoogleService-Info.plist (mobile backend config) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_google_services_json | Firebase google-services.json (mobile backend config) | privfind | Private findings: detects Firebase google-services.json (mobile backend config) publicly served at a well-known path. Marker-gated; detection only. |
+
+### Identity (26)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| breachwatch | Breach Watch | breachwatch | Defensive breach check for your own addresses: XposedOrNot keyless lookup, per-breach severity from leaked data classes. Never attempts logins. |
+| credential_strength | Credential Strength | credential_strength | Assess hashes/passwords found in public sources: hash type, public cracked-DB lookup, crackability verdict. No cracking performed. Works with no API keys. |
+| email_breach | Email Breach Exposure | email_breach | Check emails against public breach data (HaveIBeenPwned): which breaches, what data was exposed, when. |
+| email_exposure | Exposed Credentials | email_exposure | Hunt publicly exposed credentials for the target: GitHub code search, paste compilations, exposed .env/config files. |
+| email_infra | Email Security Posture | email_infra | Audit email spoofing defenses: SPF, DKIM, DMARC, MX provider. Scores spoofing risk. |
+| emails | Email Harvester | emails | Find email addresses on the target site. |
+| github | GitHub Dorker | github | Search GitHub code for target mentions and leaks. |
+| github_dorking | GitHub Secret Dorks | github_dorking | Secret dorking for committed secrets: keyless Sourcegraph code search + clickable dork links. GITHUB_TOKEN (optional) adds GitHub API results. |
+| hashcracker | Hash Cracker (Defensive) | hashcracker | Identify hash types and check public breach/rainbow databases (HIBP k-anonymity, keyless). Direct mode (submit a hash as the target): also cracks it with the bundled dictionary+rules engine, time-boxed 60s. Scan mode is analysis-only: verdicts, never plaintexts. |
+| jwt_audit | JWT Security Auditor | jwt_audit | Audits JWTs found during the scan for weak config (alg none, missing/long exp, sensitive claims, weak HMAC secrets checked offline). Detection only - never forges tokens. |
+| keyleak | Key Leak Checker | keyleak | Defensive: check if identifiers appear in public leaks (fast parallel). |
+| leaks | Leaks + Identity | leaks | Breach check, GitHub code search, dork generator, username enum. |
+| pastes | Paste Search | pastes | Search paste sites for leaked data. |
+| pf_pii_aadhaar_in | India Aadhaar number | privfind | Private findings: detects India Aadhaar number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_iban | IBAN (validated) | privfind | Private findings: detects IBAN (validated) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_nhs_uk | UK NHS number | privfind | Private findings: detects UK NHS number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_nino_uk | UK National Insurance number | privfind | Private findings: detects UK National Insurance number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_pan_in | India PAN | privfind | Private findings: detects India PAN publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_sin_ca | Canadian Social Insurance Number | privfind | Private findings: detects Canadian Social Insurance Number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_ssn_us | US Social Security number | privfind | Private findings: detects US Social Security number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_pii_tfn_au | Australian Tax File Number | privfind | Private findings: detects Australian Tax File Number publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| phones | Phone Lookup | phones | Carrier, line type, region, and validity for phone numbers (offline, no keys). Extracts phone numbers from pages. |
+| pivots | Pivot Finder | pivots | Favicon/Shodan pivot, tracking-ID pivot, tech-stack pivot queries. |
+| secret_identity | Exposed Secret Identification | secret_identity | Identify exactly which secret is exposed from masked metadata only: source, line, type, length, masked value, and fingerprint. Full values are never shown. |
+| social | Social Footprint | social | Find associated social media accounts. |
+| usernames | Username Checker | usernames | Sherlock-style username check; harvests candidates from sites. |
+
+### Infra (53)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| asm | Attack Surface Manager | asm | Track attack surface over time; detect new/removed/changed assets. |
+| atm | ATM Infrastructure Detection | atm | ATM footprint: subdomains, portals, mgmt interfaces, locations, vendor CVEs. Detection only. |
+| cdn_detect | CDN Detection | cdn_detect | Identify the CDN/edge provider from headers and DNS CNAMEs (edge naming only, no origin hunting). |
+| cloud | Cloud Misconfig Scout | cloud | Detect Azure/GCP/AWS cloud misconfigurations. |
+| cloud_buckets | Cloud Bucket Probe | cloud_buckets | Probe common bucket names on S3, GCS, Azure (list-only). |
+| cloud_enum | Multi-Cloud Enumerator | cloud_enum | CloudBrute-style: bucket/infra discovery across AWS, GCP, Azure, and DigitalOcean. |
+| da_device_config_export | Device Config Export (da) | artifacts_deep | Device/router configuration exports at conventional paths; first-bytes classification and credential field names as evidence. |
+| da_firmware_image | Firmware Image Exposure (da) | artifacts_deep | Firmware images (.bin/.img/.fw/.trx) verified by format signature - uImage, TRX, SquashFS, UBI, device-tree. |
+| da_ota_manifest | OTA/Update Manifest (da) | artifacts_deep | Firmware/OTA update manifests leaking version info and download URLs (internal URLs flagged). |
+| docker | Docker Exposure | docker | Detect open Docker registries and daemon sockets. |
+| edge_appliances | Edge Appliance Fingerprinter | edge_appliances | Detect VPN gateways, load balancers and mail servers from banners/headers/portal pages/certs, extract versions, and match known CVEs. Passive + port probes; no auth attempts. |
+| gx_azure_container_public | Azure Container Public Listing | gappack | Azure Blob CONTAINERS referenced by the target (account + container from real URLs - the level bucket-root probes miss), tested for anonymous listing. |
+| gx_chroma_open | Chroma Vector DB Open | gappack | Chroma vector database answering its API with no authentication - collections listable by anyone. |
+| gx_consul_catalog | Consul Service Catalog Open | gappack | Consul SERVICE CATALOG (/v1/catalog/services) readable with no token - the full internal service inventory. (The pf pack reads agent info; the catalog is the map of everything.) |
+| gx_eureka_registry | Eureka Service Registry Open | gappack | Netflix Eureka registry (/eureka/apps) readable with no auth - every registered service instance, host and port. |
+| gx_firebase_storage_public | Firebase Storage Public Listing | gappack | Firebase Storage buckets referenced by the target, tested for anonymous listing via the storage JSON API (s3.py mines these refs but never tests them). |
+| gx_istio_debug | Istio Pilot Debug Exposed | gappack | Istio Pilot debug endpoints (/debug/configz) reachable - they dump the full Envoy config: every internal cluster, listener and route. |
+| gx_milvus_open | Milvus Vector DB Open | gappack | Milvus vector database: health endpoint and the REST collection list answering with no auth. |
+| gx_mlflow_open | MLflow Tracking Server Open | gappack | MLflow tracking server listing experiments (and their artifact locations - where training data and models live) with no authentication. |
+| gx_nacos_registry | Nacos Service Registry Open | gappack | Nacos discovery catalog listing services with no auth - the internal service map of Spring Cloud / Alibaba stacks. |
+| gx_ollama_open | Ollama LLM Server Open | gappack | Ollama LLM server answering /api/tags with no auth - anyone can run inference on (and pull models to) the host. |
+| gx_public_object_read | Public Object Read | gappack | Object-level public access: the exact storage object URLs (and sensitive-file links) the target references, HEAD-probed anonymously. A bucket can be non-listable while its objects are world-readable. Proof is headers only - bodies are never downloaded. |
+| gx_qdrant_open | Qdrant Vector DB Open | gappack | Qdrant vector database answering /collections with no API key - anyone can enumerate (and query) the stored embeddings. |
+| gx_torchserve_open | TorchServe Management API Open | gappack | TorchServe management API listing registered models and their config - the management port also allows registering/unregistering models. |
+| gx_triton_open | Triton Inference Server Open | gappack | NVIDIA Triton inference server listing its models (/v2/models) with no authentication. |
+| gx_weaviate_open | Weaviate Vector DB Open | gappack | Weaviate vector database exposing its full schema (/v1/schema) with no authentication. |
+| hypervisor | Hypervisor Scout | hypervisor | Detect exposed hypervisor management interfaces. |
+| iot | IoT Device Scout | iot | Detect IoT devices, default creds, firmware disclosure. |
+| k8s | Kubernetes Misconfig | k8s | Detect exposed Kubernetes API and dashboard. |
+| pf_amqps_url | AMQP-over-TLS URL with credentials | privfind | Private findings: detects AMQP-over-TLS URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_azure_sas_url | Leaked Azure Storage SAS URL | privfind | Private findings: detects Leaked Azure Storage SAS URL publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_cassandra_url | Cassandra URL with credentials | privfind | Private findings: detects Cassandra URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_clickhouse_url | ClickHouse URL with credentials | privfind | Private findings: detects ClickHouse URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_consul_agent_info | Consul agent info (unauthenticated) | privfind | Private findings: detects Consul agent info (unauthenticated) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_elasticsearch_info | Elasticsearch cluster info (unauthenticated) | privfind | Private findings: detects Elasticsearch cluster info (unauthenticated) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_etcd_version | etcd version endpoint (unauthenticated) | privfind | Private findings: detects etcd version endpoint (unauthenticated) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_gcs_signed_url | Leaked Google Cloud Storage signed URL | privfind | Private findings: detects Leaked Google Cloud Storage signed URL publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_ldap_url | LDAP bind URL with credentials | privfind | Private findings: detects LDAP bind URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_mongo_express_console | Mongo Express console (DB contents browsable) | privfind | Private findings: detects Mongo Express console (DB contents browsable) publicly served at a well-known path. Marker-gated; detection only. |
+| pf_mqtt_url | MQTT URL with credentials | privfind | Private findings: detects MQTT URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_nats_url | NATS URL with credentials | privfind | Private findings: detects NATS URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_oracle_url | Oracle DB URL with credentials | privfind | Private findings: detects Oracle DB URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_portainer_console | Portainer container console | privfind | Private findings: detects Portainer container console publicly served at a well-known path. Marker-gated; detection only. |
+| pf_presigned_s3_url | Leaked presigned S3 URL | privfind | Private findings: detects Leaked presigned S3 URL publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_redis_commander_console | Redis Commander console | privfind | Private findings: detects Redis Commander console publicly served at a well-known path. Marker-gated; detection only. |
+| pf_s3_cred_url | S3 URL with embedded credentials | privfind | Private findings: detects S3 URL with embedded credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_smtp_url | SMTP URL with credentials | privfind | Private findings: detects SMTP URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_solr_admin | Apache Solr admin info | privfind | Private findings: detects Apache Solr admin info publicly served at a well-known path. Marker-gated; detection only. |
+| pf_sqlserver_url | SQL Server URL with credentials | privfind | Private findings: detects SQL Server URL with credentials publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| shadowit | Shadow IT Detector | shadowit | Find unauthorized internal tools exposed to the internet. |
+| threat_monitor | Threat Intel Monitor | threat_monitor | Watches public CVE feeds (NVD) for new vulnerabilities affecting the target's detected tech stack. |
+| typosquat | Typosquat Domains | typosquat | Generate typosquat variants and report which ones actually resolve (phishing risk / defensive holds). |
+| watchdog | Change Watchdog | watchdog | Continuous monitoring: new subdomains, new CVEs, surface drift. |
+
+### Web3 (272)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| aml_chain_hop | AML: Chain-Hopping Indicators | aml_typologies | Flags rapid cross-chain movement setups: one document embedding two or more verified bridge router addresses inside a deposit/withdrawal flow (multi-bridge routing is the chain-hopping pattern), and content advertising instant cross-chain swaps with no account. |
+| aml_giftcard_swap | AML: Gift Card Swap Indicators | aml_typologies | Flags the prepaid gift card typology: content offering to swap gift cards for crypto (the classic route for turning stolen or fraud-bought gift cards into clean funds) and references to gift-card-for-crypto services such as Bitrefill. |
+| aml_mixer | AML: Mixer / Tumbler Exposure | aml_typologies | Flags exposure to known crypto mixers: the scan target IS a Tornado Cash mixer contract, its verified source hardcodes a mixer pool/router address, or its pages reference the mixer service. Detection only - the mixer is never contacted. |
+| aml_mule_network | AML: Money Mule Recruitment Indicators | aml_typologies | Candidate-style detector for money-mule recruitment: a page only flags when THREE signal families co-occur - money movement (receive and forward funds), a commission for the middleman, and recruitment framing (work from home, payment processing agent, no experience needed). Ordinary job postings, which never combine all three, stay silent. Human review required. |
+| aml_non_kyc_exchange | AML: No-Account Instant Exchange Exposure | aml_typologies | Flags integrations with known no-account / conditional-KYC instant swap exchanges (SideShift, Godex, StealthEX, FixedFloat, SimpleSwap, Exolix, ChangeNOW): referral links, API endpoints or widgets in served content (MEDIUM), or the service baked into contract source (HIGH). |
+| aml_p2p_cash | AML: P2P Cash Trade Indicators | aml_typologies | Flags peer-to-peer cash-for-crypto routes: references to P2P platforms built around no-identification cash trades (Bisq, HodlHodl, Paxful) and cash-meetup language ('cash in person', 'cash by mail') alongside crypto context. |
+| aml_shell_account | AML: Shell / Verified Account Resale Indicators | aml_typologies | Flags the shell-company exchange-account typology: offers to sell verified or aged corporate exchange accounts (HIGH - a KYC identity for hire), and company-formation packages bundled with nominee directors and exchange/crypto accounts (MEDIUM). |
+| aml_xmr_conversion | AML: Monero Conversion Points | aml_typologies | Flags Monero conversion points on the target: checksum-valid XMR addresses in code or content, and instant-swap integrations advertising Monero. This flags the conversion POINT only - Monero transfers themselves are opaque by design, so nothing past the point can be scored from public data. |
+| audit_toolbox | Audit Toolbox (Slither/Aderyn/Semgrep/SMT/Fuzz/APIs) | toolbox | Runs the standard auditor toolbox over a contract's verified source and bytecode: Slither and Aderyn static analysis, Semgrep Solidity rules, solc SMTChecker, Heimdall bytecode disassembly, Echidna/Medusa property fuzzing (prepared harnesses only), plus GoPlus and Honeypot.is token-risk APIs. Heavy tools run only in the heavy lane (RECON_HEAVY_LANE / worker context); absent binaries skip silently - tools live outside the app image under ~/workspace/tools/audit. |
+| bridge | Bridge Security Scout | bridge | Detect bridge integrations and trust assumptions. |
+| chain_enrich | Multi-chain OSINT | chain_enrich | Keyless balance/activity enrichment for discovered Bitcoin, Litecoin, Dogecoin, BCH, Dash, Zcash, Tron, XRP and Solana addresses, plus public address labels (exchange/mixer/bridge/sanctioned/burn) on every address. Read-only public-explorer data. |
+| chain_osint | Blockchain OSINT | chain_osint | Chain enrichment for discovered addresses: keyless Blockchair balances/activity + Sourcify verified-source checks always run; ETHERSCAN_API_KEY (optional) adds full tx history and counterparties. Read-only. |
+| contract_audit | Contract Static Auditor | contract_audit | Static analysis of verified contract source: reentrancy, access control, tx.origin, unchecked calls, overflow. Keyless Sourcify source always tried; ETHERSCAN_API_KEY (optional) adds Etherscan coverage. Never interacts with contracts. |
+| contract_fuzz | Contract Fuzz Lane (Local Exploit Confirmation) | contract_fuzz | HEAVY LANE ONLY. Local exploit-confirmation fuzzing of ONE flagged contract: the verified source is scoped (bundle split, test/mock units dropped), compiled with a local solc, and deployed inside an Echidna harness where a HOUSE actor seeds it with mock ETH and an unauthenticated STRANGER (the harness) fuzz-calls every public state-changing function under per-call balance accounting. Only a falsified no-stranger-profit property (ETH or self-token) is reported, as fuzz_confirmed with Echidna's shrunk counterexample and recipient CALLER; everything else is a low-severity fuzz_inconclusive note with a machine reason (compile fail, constructor args, timeout, engine absent). Runs only in an explicitly marked heavy context under the RECON_HEAVY_TIMEOUT ceiling; refuses bulk sweeps. Local VM only - no transactions, no live chain calls beyond keyless source fetch. |
+| contract_logic | Smart Contract Logic Analyzer | contract_logic | Analyzes a contract's LOGIC, not just its surface: reentrancy (external call before the state update, plus cross-function hints), integer overflow/underflow (pre-0.8 unchecked arithmetic without SafeMath, >=0.8 unchecked{} blocks and assembly arithmetic on balances), and access-control flaws (ungated sensitive functions that perform the action, tx.origin authorization, unprotected initialize(), arbitrary delegatecall). Same false-positive discipline as the drain analyzer; guarded, gated, CEI-ordered, internal and view/pure code stays silent. With no verified source, falls back to a low-confidence bytecode opcode heuristic, clearly labeled as such. When the target is a proxy, the implementation behind it is analyzed too. Read-only, never interacts with contracts. |
+| contract_recon | Smart Contract Recon | contract_recon | Pulls a contract's code from public chain data (Ethereum, BNB Chain, Polygon, Arbitrum, Base, Optimism) and shows it as findings: privileged functions, proxy pattern, dangerous code, secrets - plus bytecode analysis when source is unverified. When the target is a proxy, the implementation behind it is resolved and analyzed too, with findings tagged by which contract they came from. Read-only, never interacts with contracts. |
+| contract_simulation | Contract Simulation (Fuzz + Symbolic) | contract_sim | HEAVY LANE ONLY. Read-only on-chain SIMULATION of one explicitly targeted or static-lane-flagged contract: boundary-input eth_call fuzzing of its public state-changing functions, cross-checked against the access gate its verified source implies, plus optional external Mythril symbolic execution behind RECON_SIM_SYMBOLIC=1. Runs only in an explicitly marked heavy-lane context under the RECON_HEAVY_TIMEOUT budget (default 120s, cap 300s); from the default/fast request path it returns an info note immediately. Flags are candidates for human review, never verdicts. Refuses bulk sweeps outright. Keyless: Blockscout/Sourcify source, eth_call only - no transactions, no funded key, no local node, no state changes. |
+| cp_ada_addr | Cardano Address (Bech32-verified) | cryptopack_addr | Shelley-era Cardano addr1/stake1 Bech32 addresses. |
+| cp_akash_addr | Akash (AKT) Address (Bech32-verified) | cryptopack_addr2 | akash1 Bech32 addresses with verified checksum. |
+| cp_algo_addr | Algorand Address (checksum-verified) | cryptopack_addr | Algorand addresses with verified SHA-512/256 checksum. |
+| cp_apikey_alchemy | Leaked Alchemy API key | cryptopack_secrets | Alchemy API keys embedded in RPC URLs or assignments. |
+| cp_apikey_ankr | Leaked Ankr endpoint token | cryptopack_secrets2 | Ankr infrastructure credentials/endpoints in served content. |
+| cp_apikey_binance | Leaked Binance API key | cryptopack_secrets | Binance API credentials in served content. |
+| cp_apikey_bingx | Leaked BingX API key | cryptopack_secrets2 | BingX API credentials in served content. |
+| cp_apikey_bitfinex | Leaked Bitfinex API key | cryptopack_secrets2 | Bitfinex API credentials in served content. |
+| cp_apikey_bitstamp | Leaked Bitstamp API key | cryptopack_secrets2 | Bitstamp API credentials in served content. |
+| cp_apikey_blockdaemon | Leaked Blockdaemon API key | cryptopack_secrets2 | Blockdaemon infrastructure credentials/endpoints in served content. |
+| cp_apikey_bybit | Leaked Bybit API key | cryptopack_secrets | Bybit API credentials in served content. |
+| cp_apikey_chainstack | Leaked Chainstack endpoint/key | cryptopack_secrets2 | Chainstack infrastructure credentials/endpoints in served content. |
+| cp_apikey_coinbase | Leaked Coinbase API key | cryptopack_secrets | Coinbase API credentials in served content. |
+| cp_apikey_deribit | Leaked Deribit API credentials | cryptopack_secrets2 | Deribit API credentials in served content. |
+| cp_apikey_etherscan | Leaked explorer API key (Etherscan family) | cryptopack_secrets | Etherscan/BscScan/PolygonScan/Snowtrace API keys in URLs or assignments in served content. |
+| cp_apikey_gateio | Leaked Gate.io API key | cryptopack_secrets2 | Gate.io API credentials in served content. |
+| cp_apikey_gemini | Leaked Gemini API key | cryptopack_secrets2 | Gemini API credentials in served content. |
+| cp_apikey_htx | Leaked HTX (Huobi) API key | cryptopack_secrets2 | HTX API credentials in served content. |
+| cp_apikey_infstones | Leaked InfStones API key | cryptopack_secrets2 | InfStones infrastructure credentials/endpoints in served content. |
+| cp_apikey_infura | Leaked Infura project key | cryptopack_secrets | Infura RPC project IDs/secrets embedded in served content. |
+| cp_apikey_kraken | Leaked Kraken API key | cryptopack_secrets | Kraken API credentials in served content. |
+| cp_apikey_kucoin | Leaked KuCoin API key | cryptopack_secrets | KuCoin API credentials in served content. |
+| cp_apikey_mexc | Leaked MEXC API key | cryptopack_secrets2 | MEXC API credentials in served content. |
+| cp_apikey_moralis | Leaked Moralis API key | cryptopack_secrets | Moralis API credentials in served content. |
+| cp_apikey_okx | Leaked OKX API key | cryptopack_secrets | OKX API credentials in served content. |
+| cp_apikey_quicknode | Leaked QuickNode endpoint token | cryptopack_secrets | QuickNode RPC endpoints with embedded auth tokens. |
+| cp_apikey_tenderly | Leaked Tenderly access token | cryptopack_secrets2 | Tenderly infrastructure credentials/endpoints in served content. |
+| cp_aptos_addr | Aptos Address (context-anchored) | cryptopack_addr | 0x 64-hex Aptos addresses anchored to Aptos context. |
+| cp_atom_addr | Cosmos Hub Address (Bech32-verified) | cryptopack_addr | cosmos1 Bech32 addresses with verified checksum. |
+| cp_avax_addr | Avalanche X-Chain Address (Bech32-verified) | cryptopack_addr2 | avax1 Bech32 addresses with verified checksum. |
+| cp_bch_addr | Bitcoin Cash Address (cashaddr-verified) | cryptopack_addr | Cashaddr-format BCH addresses with verified polymod checksum. |
+| cp_bnb_addr | BNB Beacon Chain Address (Bech32-verified) | cryptopack_addr | bnb1 Bech32 addresses with verified checksum. |
+| cp_brc20_refs | BRC-20 Token References | cryptopack_addr2 | BRC-20 deploy/mint/transfer JSON blobs and ticker references in the target's content. |
+| cp_btc_bech32 | Bitcoin SegWit Address (BIP-173 verified) | cryptopack_addr | Bech32 checksum-verified native SegWit (bc1q) addresses. |
+| cp_btc_legacy | Bitcoin Legacy Address (checksum-verified) | cryptopack_addr | Base58Check-verified Bitcoin P2PKH/P2SH addresses (1.../3...) published by the target. |
+| cp_btc_taproot | Bitcoin Taproot Address (BIP-350 verified) | cryptopack_addr | Bech32m checksum-verified Taproot (bc1p) addresses. |
+| cp_btc_testnet | Bitcoin Testnet Address | cryptopack_addr | Testnet addresses (tb1/m/n/2) on a production site: a test/prod mixup signal worth flagging. |
+| cp_celo_addr | Celo (CELO) Address (context-anchored) | cryptopack_addr2 | 0x addresses anchored to Celo (CELO) context - the EVM address shape is shared across chains, so attribution comes from the surrounding text. |
+| cp_clipboard_copy_swap | Clipboard hijacker: copy-event address swap | cryptopack_phish | JS listening for copy events and rewriting clipboard text with address-shaped replacements - the classic address-swapper trojan pattern. |
+| cp_clipboard_paste_swap | Clipboard hijacker: paste/input address rewrite | cryptopack_phish | JS intercepting paste/input on address fields and substituting a different address-shaped value. |
+| cp_cro_addr | Crypto.org Chain (CRO) Address (Bech32-verified) | cryptopack_addr2 | cro1 Bech32 addresses with verified checksum. |
+| cp_dash_addr | Dash Address (checksum-verified) | cryptopack_addr | Base58Check-verified Dash addresses (X.../7...). |
+| cp_dgb_addr | DigiByte SegWit Address (BIP-173 verified) | cryptopack_addr2 | dgb1 native SegWit addresses. (DigiByte legacy Base58Check shares Dogecoin's 0x1E version byte, so legacy forms are not attributed.) |
+| cp_dns_bip353 | DNS: BIP-353 payment instructions | cryptopack_dns | BIP-353 ₿ DNS payment instructions under _bitcoin-payment: BOLT12 offers / Lightning addresses bound to the domain. |
+| cp_dns_crypto_cnames | DNS: CNAMEs to hosted crypto services | cryptopack_dns | CNAME records delegating the domain (or www/pay/checkout subdomains) to hosted crypto payment services - the target's payment surface lives on someone else's infrastructure. |
+| cp_dns_openalias | DNS: OpenAlias payment records | cryptopack_dns | OpenAlias (oa1:) TXT records: human-readable crypto payment addresses bound to the domain, per chain (xmr/btc/eth/...). |
+| cp_doge_validated | Dogecoin Address (checksum-verified) | cryptopack_addr | Base58Check-verified Dogecoin addresses (D.../9.../A...). |
+| cp_dot_addr | Polkadot/Kusama Address (SS58-verified) | cryptopack_addr | SS58 addresses with verified Blake2 checksum (formats 0/2). |
+| cp_drainer_angel | Drainer kit: Angel Drainer | cryptopack_phish2 | Angel Drainer drainer-as-a-service kit signatures (loader strings, config names, brand marks) in the target's served content. |
+| cp_drainer_claim_kit | Phishing: fake airdrop / claim kit | cryptopack_phish | 'Claim your airdrop/reward' lures wired to a wallet connect + approval flow - the dominant drainer funnel. |
+| cp_drainer_ethsign | Drainer pattern: eth_sign bait | cryptopack_phish | JS requesting eth_sign / blind personal_sign with 'verify your wallet' framing - signs arbitrary payloads the user cannot read. |
+| cp_drainer_inferno | Drainer kit: Inferno Drainer | cryptopack_phish2 | Inferno Drainer drainer-as-a-service kit signatures (loader strings, config names, brand marks) in the target's served content. |
+| cp_drainer_ms | Drainer kit: MS / Monkey Drainer | cryptopack_phish2 | MS / Monkey Drainer drainer-as-a-service kit signatures (loader strings, config names, brand marks) in the target's served content. |
+| cp_drainer_permit | Drainer pattern: permit signature bait | cryptopack_phish | EIP-2612/Permit2 signature flows in JS (permit, PermitSingle, signTypedData with Permit types) - gasless approval theft's building blocks. |
+| cp_drainer_permit2 | Drainer pattern: Permit2 approval bait | cryptopack_phish2 | Permit2-specific signature bait: the canonical Permit2 contract, SignatureTransfer and witness permit flows - one signature can authorize unlimited token movement, which is why drainers standardized on it. |
+| cp_drainer_pink | Drainer kit: Pink Drainer | cryptopack_phish2 | Pink Drainer drainer-as-a-service kit signatures (loader strings, config names, brand marks) in the target's served content. |
+| cp_drainer_seedform | Phishing: seed phrase harvest form | cryptopack_phish | Forms asking for a seed/recovery phrase or mnemonic - no legitimate service ever does this in a browser. |
+| cp_drainer_setapproval | Drainer pattern: setApprovalForAll bait | cryptopack_phish | JS invoking setApprovalForAll - the one-call NFT drain primitive. Legit marketplaces use it too, so this inventories rather than accuses. |
+| cp_drainer_walletconnect_kit | Phishing: fake WalletConnect / wallet modal kit | cryptopack_phish | Wallet-connect modal clones that fall back to asking for a seed phrase or private key - the standard drainer-kit tell. |
+| cp_ens_name | ENS Name | cryptopack_names | Ethereum Name Service names (*.eth) published by the target. |
+| cp_eos_key | EOSIO Public Key (RIPEMD-160 verified) | cryptopack_addr2 | EOSIO account public keys (legacy EOS... and PUB_K1_/PUB_R1_ forms) with verified RIPEMD-160 checksum - the keys controlling EOSIO accounts the target publishes. |
+| cp_erc1155_contracts | ERC-1155 Contract Inventory | cryptopack_addr2 | Contract addresses anchored specifically to ERC-1155 context. |
+| cp_erc721_contracts | ERC-721 Contract Inventory | cryptopack_addr2 | Contract addresses anchored specifically to ERC-721 context (wave 1 lumped 721/1155 together). |
+| cp_ergo_addr | Ergo Address (Blake2b checksum-verified) | cryptopack_addr2 | Ergo P2PK addresses verified against their Blake2b-256 checksum (type byte + compressed key). |
+| cp_eth_eip55 | Ethereum Address (EIP-55 checksum state) | cryptopack_addr | 0x addresses with EIP-55 checksum classification: checksummed addresses are reported at high confidence; a mixed-case address with a BROKEN checksum is likely a typo that burns funds. |
+| cp_evmos_addr | Evmos (EVMOS) Address (Bech32-verified) | cryptopack_addr2 | evmos1 Bech32 addresses with verified checksum. |
+| cp_fetch_addr | Fetch.ai (FET) Address (Bech32-verified) | cryptopack_addr2 | fetch1 Bech32 addresses with verified checksum. |
+| cp_ftm_addr | Fantom (FTM) Address (context-anchored) | cryptopack_addr2 | 0x addresses anchored to Fantom (FTM) context - the EVM address shape is shared across chains, so attribution comes from the surrounding text. |
+| cp_hbar_addr | Hedera Account ID (context-anchored) | cryptopack_addr2 | Hedera account IDs (0.0.NNNN) - the dotted form is only reported with Hedera/HBAR context nearby. |
+| cp_hns_addr | Handshake Address (Bech32-verified) | cryptopack_addr2 | Handshake (hs1) SegWit-style Bech32 addresses. |
+| cp_inj_addr | Injective Address (Bech32-verified) | cryptopack_addr | inj1 Bech32 addresses with verified checksum. |
+| cp_ipfs_cid | IPFS Content ID (crypto context) | cryptopack_names | IPFS CIDs referenced with NFT/token context - the actual asset storage behind the target's Web3 claims. |
+| cp_juno_addr | Juno (JUNO) Address (Bech32-verified) | cryptopack_addr2 | juno1 Bech32 addresses with verified checksum. |
+| cp_kas_addr | Kaspa Address (checksum-verified) | cryptopack_addr | kaspa: addresses with verified cashaddr-family checksum. |
+| cp_kas_testnet_addr | Kaspa Testnet Address (checksum-verified) | cryptopack_addr2 | kaspatest: addresses on a production site - a test/prod mixup signal, like BTC testnet in wave 1. |
+| cp_kava_addr | Kava (KAVA) Address (Bech32-verified) | cryptopack_addr2 | kava1 Bech32 addresses with verified checksum. |
+| cp_kuji_addr | Kujira (KUJI) Address (Bech32-verified) | cryptopack_addr2 | kuji1 Bech32 addresses with verified checksum. |
+| cp_lightning_address | Lightning Address | cryptopack_names | Lightning Addresses (user@domain) - email-shaped, so they are only reported in Lightning context. |
+| cp_lightning_invoice | Lightning Invoice (BOLT11 verified) | cryptopack_names | BOLT11 Lightning invoices with verified Bech32 checksum - live payment requests the target publishes. |
+| cp_lnurl | LNURL (Bech32-verified) | cryptopack_names | LNURL bech32 strings (Lightning payment/withdraw links). |
+| cp_ltc_validated | Litecoin Address (checksum-verified) | cryptopack_addr | Base58Check (L/M/ltc1) and Bech32-verified Litecoin addresses. |
+| cp_miner_authedmine | Cryptojacking: AuthedMine | cryptopack_miners | AuthedMine opt-in CoinHive variant (authedmine.com loader/API). |
+| cp_miner_binary_links | Miner binary / release links | cryptopack_pay | Download links for miner software releases (xmrig, gminer, lolMiner, T-Rex, NBMiner, SRBMiner, TeamRedMiner) hosted or referenced by the target. |
+| cp_miner_coinhive | Cryptojacking: CoinHive | cryptopack_miners | CoinHive in-browser Monero miner (coinhive.com loader, CoinHive.Anonymous API, site-key start call). |
+| cp_miner_coinimp | Cryptojacking: CoinImp | cryptopack_miners | CoinImp miner (coinimp.com loader, Client.Anonymous API). |
+| cp_miner_coinnebula | Cryptojacking: CoinNebula | cryptopack_miners | CoinNebula miner (coinnebula.com loader, CoinNebula API). |
+| cp_miner_config_exposure | Exposed miner configuration (xmrig-style) | cryptopack_pay | xmrig-format miner config in served content: algorithm + pool URL + wallet user together are a working mining operation, whoever planted it. |
+| cp_miner_config_wallet | Exposed miner config with payout wallet | cryptopack_miners2 | xmrig-style config bodies whose pools array carries a stratum URL and a wallet 'user' - a complete mining operation, payout address included. The wallet is checksum-verified where the chain has one. |
+| cp_miner_cryptoloot | Cryptojacking: CryptoLoot | cryptopack_miners | CryptoLoot miner (crypto-loot.org loader, CryptoLoot.Anonymous). |
+| cp_miner_dashboard_refs | Miner dashboard / fleet management references | cryptopack_miners2 | Mining fleet dashboards (Hive OS, minerstat) and XMRig HTTP API references in the target's content - signs of an operated mining setup, legit or otherwise. |
+| cp_miner_deepminer | Cryptojacking: DeepMiner | cryptopack_miners2 | DeepMiner web miner (deepminer / deepminer.net loader). |
+| cp_miner_jsecoin | Cryptojacking: JSEcoin | cryptopack_miners | JSEcoin platform miner (jsecoin.com loader / JSEmining API). |
+| cp_miner_mineralt | Cryptojacking: Mineralt | cryptopack_miners | Mineralt miner network (mineralt.io loader, Minero API). |
+| cp_miner_minero | Cryptojacking: Minero | cryptopack_miners2 | Minero web miner network (minero.cc loader, Minero.User API). |
+| cp_miner_moneroocean | Cryptojacking: MoneroOcean web miner | cryptopack_miners | MoneroOcean pool web miner (moneroocean.stream miner script). |
+| cp_miner_stratum_endpoints | Mining Pool Stratum Endpoints | cryptopack_miners | Stratum mining endpoints referenced by the target (stratum+tcp/ssl/ws URLs): pool infrastructure the target's mining - or its compromises - talk to. |
+| cp_miner_wasm_cryptonight | Cryptojacking: CryptoNight WASM miner (generic) | cryptopack_miners | Generic WASM CryptoNight miner artifacts: cryptonight wasm modules plus worker bootstrap strings no legitimate library ships. |
+| cp_miner_webminepool | Cryptojacking: WebMinePool | cryptopack_miners | WebMinePool miner (webminepool.com loader, WMP.Anonymous API). |
+| cp_miner_webminerpool | Cryptojacking: WebMinerPool | cryptopack_miners2 | WebMinerPool open-source web miner (webminerpool.com loader / WMP-style globals distinct from WebMinePool). |
+| cp_miner_xmrig_proxy | Mining: XMRig proxy | cryptopack_miners2 | XMRig stratum proxy signatures - the aggregation layer mining botnets put between compromised miners and the pool. |
+| cp_miner_xmrig_web | Cryptojacking: XMRig web port | cryptopack_miners | XMRig compiled/ported for the browser (xmrig wasm workers, startXmrig-style bootstraps in JS). |
+| cp_near_addr | NEAR Account ID | cryptopack_addr | Named NEAR accounts (*.near / *.testnet) published by the target. |
+| cp_near_implicit_addr | NEAR Implicit Account (64-hex) | cryptopack_addr2 | NEAR implicit accounts are a bare 64-char lowercase hex string (the public key itself) - only reported with NEAR context nearby. |
+| cp_node_bitcoind_rpc | Bitcoin Core RPC exposure references | cryptopack_nodes | Credentialed bitcoind RPC URLs and bitcoin-cli references in served content - the keys to the node kingdom if the port is reachable. |
+| cp_node_btcpay_config | BTCPay Server config/backup artifacts | cryptopack_nodes | BTCPay Server database and config artifacts (BTCPayServer.db, NBXplorer settings, backup filenames) referenced in served content - the store's payment configuration, and often its xpubs, in one file. |
+| cp_node_devnode_refs | Dev node endpoints in production (Ganache/Hardhat) | cryptopack_nodes | Local dev-node endpoints (localhost:8545/7545) and Ganache/Hardhat node references shipped to production - environment bleed that maps the target's dev setup and breaks or exposes flows. |
+| cp_node_electrum_server | Electrum server references | cryptopack_nodes | Electrum server endpoints (electrum://, :50002 SSL stratum, ElectrumX) the target's wallet infrastructure depends on - a malicious or compromised server lies to every wallet using it. |
+| cp_node_hardhat_accounts | Known Hardhat test accounts in production | cryptopack_nodes | The deterministic Hardhat/Anvil test accounts (publicly known private keys) appearing in production content - test wallets treated as real ones; anything sent to them is gone. |
+| cp_node_near_rpc | NEAR / Avalanche RPC endpoint references | cryptopack_nodes | NEAR RPC endpoints and Avalanche C-Chain custom RPC paths - chain infrastructure wave 1's host inventory did not carry. |
+| cp_node_rpc_creds | RPC URLs with embedded credentials | cryptopack_nodes | Web3 RPC URLs carrying userinfo credentials (https://user:pass@node...) in served content - authenticated node access, leaked. |
+| cp_nostr_pubkey | Nostr Public Key (npub) | cryptopack_names | Nostr npub identifiers (Bech32-verified) published by the target. |
+| cp_onion_service | Tor Onion Service (crypto context) | cryptopack_names | v3 onion services referenced near crypto/payment keywords - the target's darknet payment/support door. |
+| cp_ordinals_inscriptions | Ordinals Inscription References | cryptopack_addr2 | Bitcoin Ordinals inscription IDs (<txid>i<n>) and explorer links the target publishes. |
+| cp_osmo_addr | Osmosis Address (Bech32-verified) | cryptopack_addr | osmo1 Bech32 addresses with verified checksum. |
+| cp_pay_bitpay | Payment rail: BitPay | cryptopack_pay | BitPay invoice/checkout links. |
+| cp_pay_blockonomics | Payment rail: Blockonomics | cryptopack_pay | Blockonomics payment links/widgets. |
+| cp_pay_btcpay | Payment rail: BTCPay Server | cryptopack_pay | BTCPay Server checkout/invoice endpoints the target uses. |
+| cp_pay_coinbase_commerce | Payment rail: Coinbase Commerce | cryptopack_pay | Coinbase Commerce hosted charge links. |
+| cp_pay_coingate | Payment rail: CoinGate | cryptopack_pay | CoinGate payment buttons/order endpoints. |
+| cp_pay_coinpayments | Payment rail: CoinPayments | cryptopack_pay | CoinPayments checkout buttons/links. |
+| cp_pay_cryptocom_pay | Payment rail: Crypto.com Pay | cryptopack_pay | Crypto.com Pay checkout references. |
+| cp_pay_nowpayments | Payment rail: NOWPayments | cryptopack_pay | NOWPayments payment links/widgets. |
+| cp_pay_opennode | Payment rail: OpenNode | cryptopack_pay | OpenNode Lightning/BTC checkout links. |
+| cp_payment_uri | Crypto Payment URI (BIP-21 style) | cryptopack_names | bitcoin:/litecoin:/ethereum: payment URIs - the click-to-pay form of a wallet address, often with amount and label parameters worth inventorying. |
+| cp_persistence_addr | Persistence (XPRT) Address (Bech32-verified) | cryptopack_addr2 | persistence1 Bech32 addresses with verified checksum. |
+| cp_phish_eligibility_scam | Phishing: fake airdrop eligibility checker | cryptopack_phish2 | 'Check your eligibility' funnels wired to a wallet connect - the current dominant airdrop scam shape (the check is fake; the approval is real). |
+| cp_phish_fake_exchange | Phishing: fake exchange login | cryptopack_phish | Exchange-brand login/verification pages (Binance, Coinbase, Kraken, KuCoin) served off-brand - credential + 2FA harvest kits. |
+| cp_phish_fake_metamask | Phishing: fake MetaMask UI | cryptopack_phish | MetaMask-branded unlock/import UI served by the target (not metamask.io): password or seed fields under the fox brand. |
+| cp_phish_presale_scam | Phishing: fake token presale | cryptopack_phish2 | Presale pages that take payment by direct transfer to a wallet address instead of a contract - the standard rug funnel. |
+| cp_phish_qr_swap | Phishing: payment QR / displayed address mismatch | cryptopack_phish | Cross-checks addresses embedded in QR-code image URLs against the addresses shown as page text. A mismatch is the signature of a QR-swap overlay: the victim reads one address and pays another. |
+| cp_phish_typosquat_links | Phishing: typosquat/homoglyph brand links | cryptopack_phish2 | Outbound links on the target that impersonate wallet/exchange brands: brand names embedded in lookalike domains, homoglyph swaps, punycode, or 1-2 edit distance from the real domain. |
+| cp_pool_2miners | Mining pool endpoints: 2Miners | cryptopack_miners2 | 2Miners stratum pool hostnames referenced by the target - its mining (or its compromise's mining) phones home here. |
+| cp_pool_domain_refs | Mining pool references | cryptopack_pay | Known mining pool domains referenced by the target (F2Pool, ViaBTC, AntPool, Hiveon, 2Miners, Nanopool, WoolyPooly, HeroMiners, SupportXMR, MoneroOcean) - its mining footprint, legitimate or planted. |
+| cp_pool_hiveon | Mining pool endpoints: Hiveon | cryptopack_miners2 | Hiveon stratum pool hostnames referenced by the target - its mining (or its compromise's mining) phones home here. |
+| cp_pool_luxor | Mining pool endpoints: Luxor | cryptopack_miners2 | Luxor stratum pool hostnames referenced by the target - its mining (or its compromise's mining) phones home here. |
+| cp_pool_nanopool | Mining pool endpoints: Nanopool | cryptopack_miners2 | Nanopool stratum pool hostnames referenced by the target - its mining (or its compromise's mining) phones home here. |
+| cp_pool_viabtc | Mining pool endpoints: ViaBTC | cryptopack_miners2 | ViaBTC stratum pool hostnames referenced by the target - its mining (or its compromise's mining) phones home here. |
+| cp_proto_centralized_mint_fee | Protocol: Centralized Mint / Fee | cryptopack_protocol | Owner mint with no supply cap, or fee setter with no bound. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_permit_signature_replay | Protocol: Permit Signature Replay | cryptopack_protocol | permit() / ecrecover() auth with no nonce and no deadline. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_rounding_order | Protocol: Rounding Order | cryptopack_protocol | Division before multiplication in share / price / reward math. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_single_source_oracle | Protocol: Single-Source Oracle | cryptopack_protocol | Spot price from a single DEX pair with no TWAP safeguard. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_timestamp_randomness | Protocol: Timestamp Randomness | cryptopack_protocol | block.timestamp / prevrandao used to pick a random outcome. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_unbounded_slippage | Protocol: Unbounded Slippage | cryptopack_protocol | Swap with zero minimum-out or a maximum deadline. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_unchecked_erc20_return | Protocol: Unchecked ERC20 Return | cryptopack_protocol | token.transfer / transferFrom return value not checked. Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_proto_unlimited_approval | Protocol: Unlimited Approval | cryptopack_protocol | Contract-side approve() to uint max or setApprovalForAll(true). Detection only: static analysis of code already served by the target. No RPC, no transaction, no exploit attempt. |
+| cp_secret_addr | Secret Network (SCRT) Address (Bech32-verified) | cryptopack_addr2 | secret1 Bech32 addresses with verified checksum. |
+| cp_secret_bip38 | Leaked BIP-38 encrypted private key | cryptopack_secrets2 | BIP-38 passphrase-encrypted private keys (6P...) - checksum-verified; brute-forceable offline against weak passphrases. |
+| cp_secret_bip39_sequence | Exposed BIP-39 seed phrase (checksum-verified) | cryptopack_secrets | Word sequences in served text that are valid BIP-39 mnemonics - every word on the official list AND a valid SHA-256 checksum. A verified seed phrase is a full wallet compromise. |
+| cp_secret_discord_webhook | Discord webhook in crypto context | cryptopack_secrets2 | Discord webhook URLs near crypto/trading keywords - the exfil/alert channel of trading bots and drainer kits alike. |
+| cp_secret_env_mnemonic | Leaked mnemonic in config assignment | cryptopack_secrets | MNEMONIC=/SEED_PHRASE= assignments in served JS or config text, word-validated against the BIP-39 list. |
+| cp_secret_env_privkey | Leaked private key in config assignment | cryptopack_secrets | PRIVATE_KEY-style assignments with 64-hex values in served JS/config text. |
+| cp_secret_env_privkey2 | Leaked private key in config assignment (wave-2 names) | cryptopack_secrets2 | More assignment names wave 1 missed: deployer/hot-wallet/treasury/faucet/relayer keys, plus Solana base58 keypairs in env-style assignments. |
+| cp_secret_ethers_wallet | Hardcoded signer in shipped JS | cryptopack_secrets | Live signer construction in production JS: new ethers.Wallet('<key>'), privateKeyToAccount, Wallet.fromMnemonic - keys baked into the bundle. |
+| cp_secret_hardhat_key | Hardcoded key in Hardhat/Truffle config | cryptopack_secrets | Deployer keys hardcoded in smart-contract tooling config (accounts arrays, privateKey fields) that ended up in served JS/source. |
+| cp_secret_js_comment_keys | Private keys inside JS comments | cryptopack_secrets2 | Keys developers left in // and /* */ comments of shipped JS ('temp', 'test only', 'remove before launch') - the bundle ships them anyway. |
+| cp_secret_keystore_file | Served Ethereum keystore file body | cryptopack_secrets | A full Web3 keystore (version 3 + KDF + cipher structure) in served content - brute-forceable offline if the password is weak. |
+| cp_secret_keystore_path_refs | Keystore file paths/names in served content | cryptopack_secrets2 | References to actual keystore files (the UTC-- filename format is unique to Ethereum keystores) and keystore paths in configs the target serves. |
+| cp_secret_nsec | Leaked Nostr private key (nsec) | cryptopack_secrets | Bech32-verified nsec private keys in served content - a full account compromise if real. |
+| cp_secret_signer_hex_ctx | Private key (64-hex) with signer context | cryptopack_secrets2 | Bare 64-hex keys sitting near signer/deployer/private-key words outside the named assignments wave 1 covers - JSON dumps, config objects, frontend bundle constants. |
+| cp_secret_solana_keypair | Leaked Solana keypair bytes | cryptopack_secrets | Solana secret keys as 64-byte arrays (id.json format) assigned to secretKey in served content. |
+| cp_secret_telegram_bot | Telegram bot token in crypto context | cryptopack_secrets2 | Telegram bot API tokens in served JS/config near crypto keywords - these bots typically control trading alerts, sniper bots or wallet trackers with users' funds in the loop. |
+| cp_secret_wallet_dat_ref | Wallet file references in served content | cryptopack_secrets | References to wallet.dat / Electrum wallet files / MetaMask vault blobs in pages, listings or storage dumps the target serves. |
+| cp_secret_wif_compressed | Leaked WIF private key (compressed) | cryptopack_secrets2 | Wallet Import Format private keys for compressed public keys (K/L...) - checksum-verified; anyone holding this string owns the wallet. |
+| cp_secret_wif_testnet | Leaked testnet WIF private key | cryptopack_secrets2 | Testnet WIF keys (0xEF) in production content - no direct funds, but a loud test/prod hygiene failure that often travels with real keys. |
+| cp_secret_wif_uncompressed | Leaked WIF private key (uncompressed) | cryptopack_secrets2 | Wallet Import Format private keys for uncompressed public keys (5...) - checksum-verified full wallet compromise. |
+| cp_secret_xprv | Leaked BIP-32 extended private key (xprv family) | cryptopack_secrets2 | Extended private keys (xprv/yprv/zprv) - one string derives every address in the wallet. |
+| cp_sei_addr | Sei (SEI) Address (Bech32-verified) | cryptopack_addr2 | sei1 Bech32 addresses with verified checksum. |
+| cp_solana_addr | Solana Address (32-byte verified) | cryptopack_addr | Base58 strings that decode to exactly 32 bytes (a real Ed25519 public key), not just look Solana-ish. |
+| cp_spl_mint | SPL Token Mint (context-anchored, 32-byte verified) | cryptopack_addr2 | Solana addresses anchored to mint/SPL-token context - the token mints the target works with, as opposed to arbitrary wallets. |
+| cp_stars_addr | Stargaze (STARS) Address (Bech32-verified) | cryptopack_addr2 | stars1 Bech32 addresses with verified checksum. |
+| cp_stride_addr | Stride (STRD) Address (Bech32-verified) | cryptopack_addr2 | stride1 Bech32 addresses with verified checksum. |
+| cp_sui_addr | Sui Address (context-anchored) | cryptopack_addr | 0x 64-hex Sui addresses anchored to Sui context (generic 0x64 strings alone are just hashes). |
+| cp_terra_addr | Terra (LUNA) Address (Bech32-verified) | cryptopack_addr2 | terra1 Bech32 addresses with verified checksum. |
+| cp_ton_addr | TON Address (CRC16-verified) | cryptopack_addr | TON user-friendly addresses with verified CRC16 checksum. |
+| cp_ton_raw_addr | TON Raw Address (workchain:hash form) | cryptopack_addr2 | TON raw-form addresses (0:<64 hex> / -1:<64 hex>) - the form contracts and explorers use; wave 1 only covered the user-friendly base64url form. |
+| cp_trx_validated | Tron Address (checksum-verified) | cryptopack_addr | Base58Check-verified Tron addresses (0x41 prefix). |
+| cp_unstoppable_domain | Unstoppable Domains Name | cryptopack_names | Web3 naming domains (.crypto/.nft/.x/.wallet/.bitcoin/.dao/.888/.zil) published by the target. |
+| cp_vet_addr | VeChain (VET) Address (context-anchored) | cryptopack_addr2 | 0x addresses anchored to VeChain (VET) context - the EVM address shape is shared across chains, so attribution comes from the surrounding text. |
+| cp_via_addr | Viacoin SegWit Address (BIP-173 verified) | cryptopack_addr2 | via1 native SegWit addresses. (Viacoin legacy shares Vertcoin's 0x47 version byte, so legacy forms are not attributed.) |
+| cp_vtc_addr | Vertcoin SegWit Address (BIP-173 verified) | cryptopack_addr2 | vtc1 native SegWit addresses, checksum-verified. |
+| cp_wallet_archive_file | Exposed wallet backup archive | cryptopack_wallet_files | Zip/tar archives named like wallet backups served publicly - the classic 'backed up my whole wallet folder to the web root' leak. |
+| cp_wallet_backup_text | Exposed wallet/seed backup text file | cryptopack_wallet_files | Seed/wallet backup text files at well-known paths, validated by content: a served file only counts when it actually contains a verified seed phrase, a labeled key, or validated addresses. |
+| cp_wallet_btc_conf | Exposed node config with RPC credentials (bitcoin.conf family) | cryptopack_wallet_files | bitcoin.conf / litecoin.conf / dogecoin.conf / elements.conf served publicly AND containing RPC credential lines - full node control if the RPC port is reachable. |
+| cp_wallet_config_creds | Wallet/node credentials in served config text | cryptopack_wallet_files | RPC usernames/passwords and wallet passphrases inside config text the target serves (conf dumps, env samples, JS config) - as opposed to wave 1's key-shaped assignments. |
+| cp_wallet_dat_file | Exposed wallet.dat file | cryptopack_wallet_files | A Bitcoin Core / fork wallet.dat database served over HTTP - the wallet itself, keys included, protected only by its passphrase (if any). |
+| cp_wallet_dir_listing | Directory listing naming wallet files | cryptopack_wallet_files | Open directory listings (backup/upload/wallet folders) whose index pages name wallet, seed or keystore files - the files are one click away. |
+| cp_wallet_electrum_file | Exposed Electrum wallet file | cryptopack_wallet_files | An Electrum wallet file (JSON with wallet_type / keystore structure) served publicly. |
+| cp_wallet_git_served | Wallet files in served .git history | cryptopack_wallet_files | When a target serves its own .git, the reflog commit messages reveal wallet/seed/key files that were committed - even if later deleted from the working tree. |
+| cp_wallet_keystore_file | Exposed Ethereum keystore file | cryptopack_wallet_files | A Web3 keystore JSON (version 3, KDF + cipher) served at a well-known path - brute-forceable offline against weak passphrases. |
+| cp_wallet_metamask_vault | MetaMask vault data in served content | cryptopack_wallet_files | MetaMask encrypted vault blobs (KeyringController state) inside pages, JS bundles or storage dumps the target serves - the vault plus a weak password is the whole wallet. |
+| cp_wallet_phantom_vault | Phantom/Solana wallet vault data in served content | cryptopack_wallet_files | Phantom wallet vault/seed structures inside served storage dumps or JS - Solana wallet compromise material if the password is weak. |
+| cp_wallet_qr_payload | QR-code payment payloads | cryptopack_wallet_files | QR generator URLs (qrserver / Google Charts / tec-it) whose payload parameter carries a crypto payment URI or validated address - the target's live payment destinations, decodable by anyone. |
+| cp_wallet_seed_file_refs | Links to wallet/seed backup files | cryptopack_wallet_files | Pages and JS that link or point at seed, mnemonic, keystore or wallet-backup files hosted on the target - the exposure path to the file itself. |
+| cp_wallet_served_docs | Wallet addresses in served docs (README/DONATE/FUNDING) | cryptopack_wallet_files | Donation and payment addresses published in documents the target serves at its web root - only checksum-validated addresses are reported. |
+| cp_wallet_sourcemap | Secrets & addresses in JS source maps | cryptopack_wallet_files | Source maps ship the target's original sources to every visitor; this checks sourcesContent for seed phrases, context-labeled private keys and checksum-validated wallet addresses. |
+| cp_web3_bridge_refs | Bridge references | cryptopack_web3 | Cross-chain bridge services/contracts the target points users at (Across, Hop, Stargate, Synapse, Connext, Orbiter) - high-value phishing clones cluster around these names. |
+| cp_web3_canonical_contracts | Canonical Contract References (WETH, stablecoins, Permit2) | cryptopack_addr2 | The canonical mainnet contracts every Web3 security review checks for: WETH, the big stablecoins, the Beacon deposit contract, Permit2, Seaport, the ENS registry. |
+| cp_web3_chainid_refs | Chain ID references | cryptopack_web3 | Chain IDs hardcoded in JS (hex or decimal) - the networks the target's Web3 code actually targets, including testnets that should not ship to prod. |
+| cp_web3_dex_routers | DEX router references (known addresses) | cryptopack_web3 | Canonical DEX router/factory addresses appearing in the target's content - which venues its swaps route through. |
+| cp_web3_hardhat_artifacts | Served contract artifacts / ABIs | cryptopack_web3 | Contract artifacts shipped to the browser: ABI arrays, deployed bytecode, contractName fields - a full map of the target's contract internals. |
+| cp_web3_multisig | Multisig (Safe) references | cryptopack_web3 | Safe/Gnosis multisig references: app links, contract names, owner/threshold config in JS. |
+| cp_web3_nft_contracts | NFT contract inventory (in context) | cryptopack_web3 | Contract addresses anchored to ERC-721/1155, minting, or marketplace (OpenSea/Blur) context. |
+| cp_web3_oracle_refs | Price oracle references (Chainlink) | cryptopack_web3 | Chainlink aggregator/feed references in code - the price sources the target's contracts trust. |
+| cp_web3_proxy_slots | EIP-1967 proxy slots | cryptopack_web3_gaps | EIP-1967 implementation/admin/beacon slot constants and proxy admin contract names in browser-served artifacts. Slot values are keccak(label)-1, computed, not recalled. Detection only. |
+| cp_web3_rpc_endpoints | Web3 RPC endpoint inventory | cryptopack_web3 | Public/third-party RPC endpoint URLs wired into the target's pages and JS, per provider. |
+| cp_web3_rpc_method_refs | Dangerous RPC method references | cryptopack_web3_gaps | JSON-RPC method names referenced in the target's public JS that must never be exposed to a browser (eth_sendTransaction, personal_unlockAccount, eth_sign). A reference only: no RPC call is made. |
+| cp_web3_rpc_misconfig | RPC endpoint misconfiguration | cryptopack_web3_gaps | Non-TLS http RPC URLs, RPC URLs on known RPC ports, and localhost/loopback RPC endpoints shipped in client code. Detected from text only; the endpoint is never contacted. URLs with credentials are deliberately not matched (see module docstring). |
+| cp_web3_siwe | Sign-In With Ethereum (SIWE) surface | cryptopack_web3 | SIWE message templates / sign-in domains in JS - the auth surface an attacker must clone to phish this target's users. |
+| cp_web3_solana_programs | Solana program references (known IDs) | cryptopack_web3 | Canonical Solana program IDs in content - which on-chain programs the target's frontend invokes. |
+| cp_web3_testnet_faucets | Testnet/faucet references in production | cryptopack_web3 | Testnet RPCs and faucet URLs referenced by the production site - environment bleed that maps the target's dev infrastructure. |
+| cp_web3_token_abi | Token ABI metadata | cryptopack_web3_gaps | Token symbol/decimals pairs and privileged ABI function names (mint, burn, pause, blacklist) served in the target's pages/JS. Detection only; no chain calls. |
+| cp_web3_token_contracts | Token contract inventory (in context) | cryptopack_web3 | 0x contract addresses anchored to ERC-20/token context (symbol, decimals, transfer ABI) - the tokens the target integrates, not random hashes. |
+| cp_web3_wallet_roles | Wallet role addresses | cryptopack_web3_gaps | Role-attributed wallet addresses in the target's pages/JS: owner, treasury, fee recipient, dev wallet, vault, admin. Public identifiers only, never secrets. |
+| cp_web3_walletconnect_project | WalletConnect project ID exposure | cryptopack_web3 | WalletConnect/Reown project IDs in JS - they map the dapp's wallet traffic to a cloud account and are a favorite clone target. |
+| cp_web3_xpub | BIP-32 extended public key (xpub family) | cryptopack_secrets2 | Extended public keys (xpub/ypub/zpub) - not spendable, but they expose the wallet's entire address history and balances to anyone. |
+| cp_xdc_addr | XDC Network Address (EIP-55 verified) | cryptopack_addr2 | xdc-prefixed addresses; the hex part carries an EIP-55 checksum exactly as if 0x-prefixed. |
+| cp_xlm_addr | Stellar Address (CRC16-verified) | cryptopack_addr | Stellar G... account IDs with verified CRC16-XMODEM checksum. |
+| cp_xmr_integrated | Monero Integrated Address (payment ID embedded) | cryptopack_addr | 106-char Monero integrated addresses: they embed a payment ID, which usually means exchange/service deposit infrastructure. |
+| cp_xmr_standard | Monero Standard Address (Keccak-verified) | cryptopack_addr | Monero standard addresses with verified Keccak checksum. |
+| cp_xmr_subaddress | Monero Subaddress (Keccak-verified) | cryptopack_addr | Monero subaddresses (per-customer/per-purpose wallets). |
+| cp_xrp_addr | XRP Address (checksum-verified) | cryptopack_addr | XRP addresses verified with the XRP Base58 alphabet and double-SHA256 checksum. |
+| cp_xtz_addr | Tezos Address (checksum-verified) | cryptopack_addr | tz1/tz2/tz3/KT1 addresses with verified Base58Check checksum. |
+| cp_zec_addr | Zcash Transparent Address (checksum-verified) | cryptopack_addr | t1/t3 Zcash addresses with verified Base58Check checksum. |
+| cp_zen_addr | Horizen Address (checksum-verified) | cryptopack_addr2 | Horizen transparent addresses (zn...) with verified two-byte-version Base58Check checksum. |
+| crypto_drain_scanner | Crypto Contract Drain Analyzer | crypto_drain | Analyzes a contract's verified source for unprotected drain functions: public/external functions with NO access gate that can move the contract's own ETH or tokens to the caller or a caller-supplied address (full-balance sweeps, withdraw/rescue functions, token rescue, selfdestruct). Gated, internal, view/pure and interface functions, own-balance withdrawals and msg.value pass-throughs are not flagged. When the target is a proxy, the implementation behind it is analyzed too. Read-only, never interacts with contracts. |
+| crypto_infra_ports | Crypto node port surface | crypto_infra | Bounded connect checks on the six crypto node ports (8545/8546/8899/8900/26657/1317) with one read-only version/health probe per open port. |
+| crypto_infra_rpc | Crypto RPC endpoint grading | crypto_infra | Harvests the RPC endpoints a crypto target's own pages/JS reference, flags keys embedded in them, and grades each endpoint read-only: client version, chain, rpc_modules namespaces, CORS. |
+| defi | DeFi Protocol Scout | defi | Detect DeFi patterns: flash loans, oracles, approvals. |
+| defi_risk | DeFi Risk Scanner | defi_risk | DeFi risk factors on discovered pool/vault contracts: proxy/upgrades, owner functions, pause switches, fee-on-transfer. Keyless Sourcify source always tried; ETHERSCAN_API_KEY (optional) adds Etherscan coverage. Public data only. |
+| keyharvest | Key Harvester | keyharvest | Expanded secret harvesting: private keys, seeds, API keys, DB strings. |
+| meme_coin | Meme Coin Risk Scanner | meme_coin | Meme-coin / token risk scan on verified source: honeypot shapes, rug-pull levers (mint, blacklist, taxes, trading toggles), tax asymmetry, ownership. Keyless Sourcify source always tried; ETHERSCAN_API_KEY (optional) adds Etherscan coverage. Static only, never touches the chain. |
+| nft | NFT Contract Scout | nft | Check NFT mint functions and metadata exposure. |
+| pf_aptos_private_key | Aptos private key | privfind | Private findings: detects Aptos private key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_cardano_signing_key | Cardano payment signing key (CBOR) | privfind | Private findings: detects Cardano payment signing key (CBOR) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_deposit_data_file | Eth2 validator deposit data file | privfind | Private findings: detects Eth2 validator deposit data file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_electrum_wallet_file | Electrum wallet file | privfind | Private findings: detects Electrum wallet file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_filecoin_key_export | Filecoin wallet key export | privfind | Private findings: detects Filecoin wallet key export publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_hedera_private_key | Hedera private key (DER ed25519) | privfind | Private findings: detects Hedera private key (DER ed25519) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_lnd_macaroon | LND macaroon (hex) | privfind | Private findings: detects LND macaroon (hex) publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_monero_spend_key | Monero secret spend key | privfind | Private findings: detects Monero secret spend key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_near_secret_key | NEAR account secret key | privfind | Private findings: detects NEAR account secret key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_priv_validator_key_file | Cosmos validator private key file | privfind | Private findings: detects Cosmos validator private key file publicly served at a well-known path. Marker-gated; detection only. |
+| pf_stellar_secret_key | Stellar secret key | privfind | Private findings: detects Stellar secret key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_sui_private_key | Sui private key | privfind | Private findings: detects Sui private key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_tendermint_privkey | Tendermint/Cosmos validator private key | privfind | Private findings: detects Tendermint/Cosmos validator private key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_xrp_family_seed | XRP family seed | privfind | Private findings: detects XRP family seed publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_zcash_spending_key | Zcash unified spending key | privfind | Private findings: detects Zcash unified spending key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| pf_zcash_viewing_key | Zcash Sapling viewing key | privfind | Private findings: detects Zcash Sapling viewing key publicly exposed in page/JS text. Masked + fingerprinted; detection only. |
+| rugpull | Rug Pull Indicators | rugpull | Flag honeypot and rug pull contract patterns. |
+| shodan_enum | Shodan Crypto Enumerator | shodan_enum | Exposed crypto infra: keyless urlscan.io host intel always runs; SHODAN_API_KEY (optional) adds Shodan ETH RPC 8545, WS 8546, node ports, open DBs. Detection only. |
+| solana_contract | Solana Contract Recon | solana_contract | Reads Solana contracts from public chain data: SPL token mints (mint/freeze authority still set, REAL holder distribution by owner wallet, full Token-2022 dangerous-extension audit, creator deep-dive, authority map), pump.fun coins (bonding curve, mutable metadata, creator holdings), DexScreener sell-side checks (no-sells, pair age, dumps), and programs (BPF upgrade authority). Read-only, never sends a transaction. |
+| stacks_contract | Stacks Contract Recon | stacks_contract | Reads Stacks (Clarity) contracts from the keyless Hiro API: mint authority (hardcoded principal vs data-var owner vs unguarded), mint cap enforced or decorative, burn / pause / freeze / blacklist powers, owner rotation, tx-sender auth patterns, and live SIP-010 supply state vs the cap. Read-only, never submits a transaction. |
+| token_rugcheck | Token Rug-Check | token_rugcheck | Scam-token safety check for a token contract (EVM) or Solana mint: holder concentration, unlocked liquidity, live mint/freeze authority, honeypot and tax signals, unverified source, owner control. Read-only via keyless GoPlus + DexScreener + public RPC. Detection only - never trades or touches funds. |
+| tokenapproval | Token Approval Risk | tokenapproval | Find unlimited token approvals (drain vector). |
+| zeroday_contract_guards | Zero-Day Candidate Hunter (Contract Guard Consistency) | zeroday_contract_guards | Learns a contract's own access-control convention from its verified source and flags public state-changing functions that break it (no guard where every sibling has one, allowance checks a sibling enforces but a spender skips) as candidate zero-days for human review. |
+
+### Financial (43)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| bank | Bank Infrastructure Detection | bank | Banking portals, admin panels, API surface, header audit, platform fingerprints. Detection only. |
+| bank_surface | Bank Surface Leaks & Fleet Panels | bank_surface | Internal IPs / hostnames leaked on branch & ATM locator pages, ATM fleet-management panel fingerprints. Detection only, read-only GETs. |
+| card_validator | Card Validator | card_validator | Report ONLY complete card records: 16-digit Luhn-valid PAN + MM/YY expiry + CVV found together. Partial numbers are never reported. |
+| fin_ach_config | ACH Transfer Config Exposure | bankpack_pay | ACH/Nacha processing configs disclosing the file-transfer (SFTP) hosts used to move payment files - internal hostnames or IPs included. |
+| fin_alerts_mail_posture | Alert Subdomain Spoofable (No SPF) | bankpack_infra | Banking alert/notification subdomains (alerts., notify., securemail., estatements.) that resolve but publish no SPF record - anyone can spoof the bank's alert sender. |
+| fin_api_docs_secrets | API Docs Credential Leak | bankpack_portals | Banking API documentation (Swagger/OpenAPI/developer docs) whose examples embed live-looking client secrets, API keys or tokens. Values are masked. |
+| fin_atm_journal | ATM Journal Data Exposure | bankpack_atm | Electronic-journal / receipt data served on the web surface: transaction records with masked PAN fragments, amounts and response codes. Fragments are reported as found (already masked at source). |
+| fin_atm_locator_feed | ATM Locator Feed Hardware Data | bankpack_atm | ATM locator feeds that go beyond location: terminal hardware models, firmware versions, internal asset tags and service vendors. |
+| fin_atm_monitor | ATM Monitoring Dashboard Exposure | bankpack_atm | ATM monitoring dashboards (MoniView, NCR Vision, K-Monitor, ProView...) reachable on public paths. Fingerprint only; no interaction with the console. |
+| fin_atm_network_status | ATM Network Status Internals | bankpack_atm | Bank-published ATM network status pages that name internal switch/core systems or internal incident ticket IDs. |
+| fin_atm_remote_access | ATM Remote-Access Gateway Exposure | bankpack_atm | Browser remote-access gateways (Guacamole, Thinfinity, Ericom...) reachable on the bank/ATM web surface. Fingerprint only; no session is started and no credential is tried. |
+| fin_atm_status_api | ATM Status API Sensitive Fields | bankpack_atm | Public APIs returning per-terminal ATM status with internal IPs, firmware versions, cassette/cash levels or technician data. |
+| fin_atm_switch_config | ATM Switch Config Exposure | bankpack_atm | Terminal/switch configuration files served publicly, disclosing transaction-switch hosts, ports and internal addresses. |
+| fin_atm_updates | ATM Software Update Exposure | bankpack_atm | ATM software-update / distribution endpoints listing terminal packages and versions - a map of exactly what unpatched software the fleet runs. |
+| fin_bin_config | BIN Lookup Config Exposure | bankpack_pay | BIN/IIN lookup endpoints or configs exposing the service API key or a downloadable full BIN database. |
+| fin_card_form_action | Card Form Posts Off-Site / Over HTTP | bankpack_pay | Payment forms collecting card numbers whose form action posts over plain HTTP or to a foreign host instead of the bank/processor - a skimming red flag. Forms are read, never submitted. |
+| fin_cert_expired | Banking Certificate Expired | bankpack_infra | TLS certificate on the banking host is expired or not yet valid, read from the certificate the server presents during a normal handshake. |
+| fin_cert_mismatch | Banking Certificate Name Mismatch | bankpack_infra | TLS certificate presented for the banking host does not cover that hostname (CN/SAN mismatch). |
+| fin_cert_weak | Banking Certificate Weak | bankpack_infra | Weak TLS material on the banking host: short keys, MD5/SHA1 signatures, or a legacy protocol version negotiated. |
+| fin_core_backup | Core Banking Backup Exposure | bankpack_docs | Core-banking database backups (SQL dumps with accounts/loans/transactions tables) on public paths. Content is sampled, never downloaded in full. |
+| fin_ct_internal_names | CT Log Internal Hostname Leak | bankpack_infra | Certificates logged in public CT logs whose names betray internal banking systems (internal, core, switch, uat, vpn hostnames). |
+| fin_doc_metadata | Document Metadata Internal Leak | bankpack_docs | PDFs published on the bank domain whose metadata (Author/Title/Creator) names internal users, domain accounts or file-server paths. |
+| fin_docstore_listing | Document Store Listing Exposure | bankpack_docs | Directory listings enabled on document stores (documents/files/uploads) of a bank domain, naming statements, wires, loans or backups. |
+| fin_form_hidden_fields | Application Form Internal Fields | bankpack_docs | Banking application forms whose hidden fields leak internal URLs, officer/employee IDs, workflow or branch routing codes to every visitor. |
+| fin_js_config | Banking JS Config Leak | bankpack_portals | Front-end banking config objects (window.__CONFIG__, apiBase, env blocks) that publish internal API hosts, IdP hosts or RFC1918 addresses to every visitor. |
+| fin_locator_api | Locator API Internal Fields | bankpack_portals | Branch/ATM locator APIs that return more than public data: internal IPs/hostnames, staff emails, vault or cash-handling fields. |
+| fin_login_thirdparty_scripts | Third-Party Scripts on Login/Payment Pages | bankpack_infra | Login and payment pages loading JavaScript from unexpected third-party hosts - the Magecart skimming pattern. Scripts are inventoried, never executed. |
+| fin_merchant_portal | Merchant Portal Exposure | bankpack_pay | Merchant acquiring portals (Moneris, Elavon, Worldpay, Global Payments...) reachable on the public domain. Existence + fingerprint only. |
+| fin_mobile_config | Mobile Banking Config Exposure | bankpack_portals | JSON config files served for the mobile-banking app that disclose internal backend hosts or embed API keys/secrets. Values are masked. |
+| fin_oidc_config | Banking OIDC Config Leak | bankpack_portals | OpenID Connect discovery documents on the bank domain that point at internal issuers/token hosts or advertise legacy password grants. |
+| fin_partner_portal | Partner / Agent Portal Exposure | bankpack_portals | Partner, agent, broker and advisor portals reachable on the public bank domain. Existence + fingerprint only; no login is attempted. |
+| fin_payment_secrets | Payment Secret Key Exposure | bankpack_pay | Payment-processor SECRET keys (Stripe sk_live, Adyen, Square, Braintree, Checkout.com) sitting in public pages, scripts or configs. Masked + fingerprinted; never used. |
+| fin_pos_config | POS Terminal Config Exposure | bankpack_pay | Point-of-sale configuration files served publicly with merchant IDs, terminal IDs, processor hosts or key IDs. |
+| fin_report_exports | Financial Report Export Exposure | bankpack_docs | Financial report exports (general-ledger / daily reports) served from public paths with real money rows. |
+| fin_saml_metadata | SAML Metadata Leak | bankpack_portals | SAML federation metadata served on the bank domain that exposes internal IdP/SSO hostnames or non-production entity IDs. |
+| fin_sandbox_live_mismatch | Sandbox Credentials in Production Config | bankpack_pay | Production-marked payment configs that still carry sandbox/test credentials or test endpoints - the classic sign the live site never got its real (or its test) configuration separated. |
+| fin_staff_directory | Staff Directory Internal Fields | bankpack_docs | Public staff directories / employee APIs exposing internal fields: extensions, employee IDs, department codes, reporting lines. |
+| fin_staging_env | Staging Banking Environment Exposed | bankpack_infra | Non-production online-banking environments (uat/dev/test/staging subdomains) that resolve and serve a banking login surface to the internet. |
+| fin_statement_sample | Statement Sample Internal Data | bankpack_docs | Publicly served account-statement samples/templates that still carry internal data: officer IDs, GL codes, core-banking system names, internal-use markers. |
+| fin_status_internals | Status Page Internal Systems | bankpack_infra | Public status/incident pages that name internal core-banking or payment systems and internal incident ticket IDs. |
+| fin_tax_sample_data | Tax Form Sample TIN Exposure | bankpack_docs | Public 'sample' 1099/tax forms carrying TIN-shaped values. Values are masked in the finding; samples must be synthetic, and real ones are reportable PII exposure. |
+| fin_treasury_portal | Treasury Portal Exposure | bankpack_portals | Treasury / cash-management / corporate banking portals reachable on the public domain. Existence + fingerprint only; no login is attempted. |
+| fin_webhook_secrets | Webhook Signing Secret Exposure | bankpack_pay | Webhook signing secrets (Stripe whsec_, Square signature keys, generic webhook_secret assignments) in public scripts/configs of a payment surface. Masked + fingerprinted; never used. |
+
+### Graph (8)
+
+| id | label | module | description |
+|----|-------|--------|-------------|
+| assetgraph | Asset Graph Builder | assetgraph | Build interactive attack-surface map: domains, IPs, tech, ports. |
+| chain_followups | Finding Chaining | chain_followups | Phase-2 chaining: every phase-1 finding feeds a real follow-up probe or a named follow-up plugin, same target only, depth 2, capped, fully audit-logged. Links in probed pages are followed one level deeper; secrets are never used. |
+| connections | Connection Mapper | connections | Map every relationship: devices, accounts, services, financial. |
+| fx_arangodb_open | ArangoDB Open (no auth) | fmtpack | ArangoDB's /_api/version answering without authentication - auth is disabled or the instance is otherwise wide open. |
+| fx_gremlin_open | Gremlin Server Open | fmtpack | A Gremlin Server (JanusGraph / TinkerPop) HTTP endpoint answering without authentication - its traversal endpoint executes submitted scripts by design. |
+| fx_neo4j_open | Neo4j Discovery Open | fmtpack | Neo4j's HTTP discovery endpoint answering without authentication and advertising its Bolt address - the graph database's front door. |
+| fx_sparql_endpoint | Open SPARQL Endpoint | fmtpack | A SPARQL endpoint answering an unauthenticated service-description request: the dataset/graph summary itself is disclosed, and a query endpoint that describes itself usually also answers queries. |
+| harvester | OSINT Harvester | harvester | TheHarvester-style: emails, subdomains, hostnames from keyless public sources. |
 
 ### New plugins (2026-10-20 batch)
 
