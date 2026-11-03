@@ -18,8 +18,8 @@ Layers:
    - C: self-service deposit/withdraw-own MUST NOT confirm (the
      claim accounting settles returns against own deposits);
    - D: a free public mint MUST confirm on the token property.
-4. Registry discovery picks the plugin up (count 655 = master 654
-   + this plugin).
+4. Registry discovery picks the plugin up (count 755 = master 655
+   + 100 BSC/BNB detectors).
 """
 import asyncio
 import os
@@ -414,4 +414,4 @@ def test_registry_discovers_contract_fuzz():
     reg = discover()
     assert "contract_fuzz" in reg
     assert reg["contract_fuzz"] is cf.ContractFuzzPlugin
-    assert len(reg) == 655  # master 654 (incl. PR #76) + this plugin
+    assert len(reg) == 755  # master 655 + 100 BSC/BNB detectors (bsc100)
