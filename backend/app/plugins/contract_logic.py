@@ -36,6 +36,30 @@ functions are skipped; ReentrancyGuard (nonReentrant) suppresses
 the reentrancy lane; CEI-ordered functions (state written before
 the call) do not flag.
 
+2026-11-02 FP fixes (adjudicated regression set: 99 false
+positives out of 103 hand-validated candidates across the
+10,000-contract sweep):
+1. Overflow lane: arithmetic inside internal/private functions,
+   arithmetic whose bound is require/if-revert checked earlier in
+   the same function (the canonical OpenZeppelin shape: balance
+   checked, THEN the unchecked block), and msg.value-bounded
+   arithmetic (WETH9 deposit) no longer flag.
+2. Gate detection reads the full body and the internal call path:
+   _msgSender() comparisons, boolean role-mapping lookups
+   (require(isMinter[msg.sender])), role predicate calls, custom
+   gate modifiers by name AND by definition body, registry-
+   indirect gates (bridges[msg.sender] + require on the struct),
+   and gates enforced by an internal helper the function calls.
+3. Compilation scoping: only the target contract and its
+   ancestors are analyzed. Sibling contracts bundled in the same
+   verified compilation, test/mock files, and free functions are
+   not methods of the deployed target and never flag.
+4. Recipient dataflow (the receive rule): an ungated sensitive
+   function whose moved value lands at a FIXED destination
+   (owner(), a stored project address, a literal) or back with
+   the caller metered by their own balance is emitted as
+   TRIGGER-ONLY at low severity, never as a candidate-grade flaw.
+
 Bytecode lane (key "bytecode_opcode_risk"): when no verified
 source exists, the runtime bytecode is disassembled through
 contract_chain.analyze_bytecode and the presence of SELFDESTRUCT
@@ -213,6 +237,431 @@ def _external_calls(text: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Compilation scope (FP fix 3): findings must map to the deployed
+# target contract's OWN code. Verified bundles routinely ship
+# sibling contracts (a DepositHandler next to the token), library
+# test fixtures (contracts/test/...), and free functions; none of
+# those are methods of the deployed target.
+# ---------------------------------------------------------------------------
+
+_FILE_MARKER_RE = re.compile(r"^//\s*====\s*(.+?)\s*====\s*$", re.M)
+_TEST_SEGMENT_RE = re.compile(
+    r"(?:^|/)(?:test|tests|mock|mocks)(?:/|$)", re.I)
+_CONTRACT_DECL_RE = re.compile(
+    r"\b(contract|library|interface)\s+([A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*(?:is\s+([^{;]+?))?\s*\{")
+_MODIFIER_DECL_RE = re.compile(
+    r"\bmodifier\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*\{")
+
+
+def _split_units(src: str) -> List[Tuple[str, str]]:
+    """Split a flattened verified source on its `// ==== path ====`
+    file markers (kept by _unwrap_source / Sourcify flattening).
+    A markerless source is a single unit with an empty path."""
+    marks = list(_FILE_MARKER_RE.finditer(src))
+    if not marks:
+        return [("", src)]
+    units: List[Tuple[str, str]] = []
+    head = src[:marks[0].start()].strip()
+    if head:
+        units.append(("", head))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(src)
+        units.append((m.group(1).strip(), src[m.end():end]))
+    return units
+
+
+def _brace_span(text: str, open_pos: int) -> int:
+    """Index just past the brace matching text[open_pos] == '{'."""
+    depth = 0
+    j = open_pos
+    while j < len(text):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return len(text)
+
+
+def _contract_spans(clean: str) -> List[Dict[str, Any]]:
+    """Contract/library/interface declarations with body spans:
+    {name, kind, ancestors, start, end} on comment-stripped text."""
+    spans: List[Dict[str, Any]] = []
+    for m in _CONTRACT_DECL_RE.finditer(clean):
+        brace = clean.index("{", m.start())
+        ancestors: List[str] = []
+        if m.group(3):
+            for part in m.group(3).split(","):
+                am = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", part)
+                if am:
+                    ancestors.append(am.group(1))
+        spans.append({"name": m.group(2), "kind": m.group(1),
+                      "ancestors": ancestors, "start": m.start(),
+                      "end": _brace_span(clean, brace)})
+    return spans
+
+
+def _extract_functions_pos(clean: str) -> List[Dict[str, Any]]:
+    """cc.extract_functions with start/end offsets into `clean`,
+    so scope membership is testable per function."""
+    out: List[Dict[str, Any]] = []
+    for m in cc._FUNC_START.finditer(clean):
+        name = m.group(2) or m.group(3) or m.group(4) or \
+            m.group(5) or ""
+        start = m.start()
+        i = m.end()
+        while i < len(clean) and clean[i] not in "{;":
+            i += 1
+        if i >= len(clean):
+            continue
+        signature = clean[start:i].strip()
+        if clean[i] == ";":
+            out.append({"name": name, "signature": signature,
+                        "text": clean[start:i + 1].strip(),
+                        "start": start, "end": i + 1})
+            continue
+        end = _brace_span(clean, i)
+        out.append({"name": name, "signature": signature,
+                    "text": clean[start:end].strip(),
+                    "start": start, "end": end})
+    return out
+
+
+class _Scope:
+    """The analysis scope of one verified compilation: the target
+    contract plus its inheritance chain, or (when the target name
+    is unknown / unmatched) every contract outside test/mock
+    files. Free functions are never in scope: they are not methods
+    of any deployed contract."""
+
+    def __init__(self, src: str, contract_name: str = ""):
+        self.functions: List[Dict[str, Any]] = []
+        self.modifiers: Dict[str, str] = {}
+        self.helpers: Dict[str, Dict[str, Any]] = {}
+        self.scoped_text = ""
+        self.target_found = False
+        self.contract_names = set()
+        units = []
+        all_spans: List[Dict[str, Any]] = []
+        for path, raw in _split_units(src):
+            clean = cc._strip_comments(raw)
+            spans = _contract_spans(clean)
+            for s in spans:
+                s["path"] = path
+                s["unit"] = len(units)
+            if not spans:
+                # Unparseable unit: keep it whole (legacy behavior)
+                # rather than blinding the analyzer.
+                spans = [{"name": "", "kind": "contract",
+                          "ancestors": [], "start": 0,
+                          "end": len(clean), "path": path,
+                          "unit": len(units)}]
+            units.append({"path": path, "clean": clean,
+                          "spans": spans,
+                          "functions": _extract_functions_pos(clean)})
+            all_spans.extend(spans)
+            self.contract_names.update(
+                s["name"] for s in spans if s["name"])
+        pool = [s for s in all_spans
+                if not _TEST_SEGMENT_RE.search(s["path"])] or all_spans
+        kept = pool
+        if contract_name:
+            by_name = {s["name"]: s for s in pool if s["name"]}
+            if contract_name in by_name:
+                self.target_found = True
+                keep_names = set()
+                stack = [contract_name]
+                while stack:
+                    n = stack.pop()
+                    if n in keep_names:
+                        continue
+                    keep_names.add(n)
+                    sp = by_name.get(n)
+                    if sp:
+                        stack.extend(sp["ancestors"])
+                kept = [s for s in pool if s["name"] in keep_names]
+        kept_ids = {id(s) for s in kept}
+        texts: List[str] = []
+        for unit in units:
+            clean = unit["clean"]
+            unit_kept = [s for s in unit["spans"] if id(s) in kept_ids]
+            for s in unit_kept:
+                texts.append(clean[s["start"]:s["end"]])
+            for m in _MODIFIER_DECL_RE.finditer(clean):
+                owner = next((s for s in unit["spans"]
+                              if s["start"] <= m.start() < s["end"]),
+                             None)
+                if owner is not None and id(owner) in kept_ids:
+                    brace = clean.index("{", m.start())
+                    self.modifiers[m.group(1)] = \
+                        clean[m.start():_brace_span(clean, brace)]
+            for fn in unit["functions"]:
+                owner = next((s for s in unit["spans"]
+                              if s["start"] <= fn["start"] < s["end"]),
+                             None)
+                if owner is not None and id(owner) in kept_ids:
+                    self.functions.append(fn)
+                    if re.search(r"\b(internal|private)\b",
+                                 fn["signature"]):
+                        self.helpers[fn["name"]] = fn
+        self.scoped_text = "\n".join(texts)
+
+
+def _gated_deep(fn: Dict[str, Any], scope: _Scope) -> bool:
+    """Gate check over the function, its custom modifiers'
+    DEFINITIONS, and the internal helpers it calls (FP fix 2:
+    the gate may live one hop down the internal call path)."""
+    sig, text = fn["signature"], fn["text"]
+    if cd._is_gated(sig, text):
+        return True
+    stripped = re.sub(r"returns\s*\([^)]*\)", "", sig)
+    i = stripped.find("(")
+    if i >= 0:
+        tail = stripped[cd._matching(stripped, i) + 1:]
+        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail):
+            body = scope.modifiers.get(tok)
+            if body and cd._is_gated("", body):
+                return True
+    for name, helper in scope.helpers.items():
+        if name == fn["name"]:
+            continue
+        if re.search(r"\b" + re.escape(name) + r"\s*\(", text) and \
+                cd._is_gated(helper["signature"], helper["text"]):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Overflow suppression (FP fix 1): canonical checked shapes
+# ---------------------------------------------------------------------------
+
+_OZ_INTERNAL_NAMES = {
+    "_transfer", "_mint", "_burn", "_update", "_increaseBalance",
+    "_decreaseBalance", "_spendAllowance", "_writeCheckpoint",
+    "_approve", "_beforeTokenTransfer", "_afterTokenTransfer",
+}
+
+
+def _bounds_checked_before(text: str, pos: int, var: str) -> bool:
+    """A require/assert/if-revert BEFORE pos compares the flagged
+    variable (or the balanceOf / totalSupply views over it)
+    against a bound: the canonical checked-then-unchecked shape
+    (OZ ERC20 require(fromBalance >= amount) before the unchecked
+    subtraction; WETH9 require(balanceOf >= wad) before `-=`)."""
+    head = text[:pos]
+    alts = [re.escape(var)] if var else []
+    alts += ["balanceOf", "totalSupply", "_totalSupply", "_balances"]
+    names = "|".join(alts)
+    cmpop = r"(?:>=|<=|>|<|==|!=)"
+    pat = re.compile(
+        r"(?:require|assert)\s*\([^;]*?\b(?:" + names + r")\b"
+        r"[^;]*?" + cmpop +
+        r"|(?:require|assert)\s*\([^;]*?" + cmpop +
+        r"[^;]*?\b(?:" + names + r")\b" +
+        r"|if\s*\([^)]*?\b(?:" + names + r")\b[^)]*?" + cmpop +
+        r"[^)]*\)\s*(?:\{[^}]*?)?revert")
+    return pat.search(head) is not None
+
+
+def _msgvalue_bounded(rhs: str, var: str, state: set,
+                      params: List[str]) -> bool:
+    """The operation's only external influence is msg.value: the
+    moved quantity is bounded by the value the caller actually
+    sent, and total ETH supply (~2^67 wei) can never push a sum
+    to 2^256 (WETH9 `balanceOf[msg.sender] += msg.value`)."""
+    if "msg.value" not in rhs:
+        return False
+    if any(re.search(r"\b" + re.escape(p) + r"\b", rhs)
+           for p in params):
+        return False
+    return not any(v != var and
+                   re.search(r"\b" + re.escape(v) + r"\b", rhs)
+                   for v in state)
+
+
+def _overflow_suppression(fn: Dict[str, Any], text: str, pos: int,
+                          var: str, snippet: str, state: set,
+                          params: List[str]) -> Optional[str]:
+    """Reason the flagged arithmetic is a known-safe shape, or
+    None when it stays a finding (FP fix 1)."""
+    sig = fn["signature"]
+    if re.search(r"\b(internal|private)\b", sig):
+        tag = ("canonical library internal pattern"
+               if fn["name"] in _OZ_INTERNAL_NAMES else
+               "internal/private function")
+        return f"{tag}: not an external entry point"
+    if _bounds_checked_before(text, pos, var):
+        return ("bounds checked by a require/if-revert earlier in "
+                "the function")
+    rhs = re.split(r"\+=|-=|\*=|=(?!=)", snippet, maxsplit=1)
+    if len(rhs) == 2 and _msgvalue_bounded(rhs[1], var, state,
+                                           params):
+        return "arithmetic bounded by msg.value (physically capped)"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Recipient dataflow (FP fix 4, the receive rule): where does the
+# moved value LAND? Ported from the adjudication harness
+# (recon-10k/recipient.py), which hand-validated the regression
+# set with exactly this classification.
+# ---------------------------------------------------------------------------
+
+_RECIP_SENDER = re.compile(r"msg\.sender|_msgSender\(\)|caller\(\)|tx\.origin")
+_RECIP_SELF_METER = re.compile(
+    r"balanceOf\[\s*msg\.sender|balances?\[\s*msg\.sender|"
+    r"shares?\[\s*msg\.sender|userInfo\[\s*msg\.sender|"
+    r"deposits?\[\s*msg\.sender|staked\[\s*msg\.sender|"
+    r"pending\w*\(\s*msg\.sender|earned\(\s*msg\.sender|"
+    r"dividend\w*\(\s*msg\.sender|withdrawable\w*\(\s*msg\.sender|"
+    r"_withdrawDividendOfUser\(\s*msg\.sender|"
+    r"withdrawableDividendOf|dividendOf\(", re.I)
+_RECIP_CALLS = re.compile(
+    r"(?P<recv>[A-Za-z_][\w]*(?:\s*\([^()]*\))?(?:\s*\.\s*[A-Za-z_]\w*"
+    r"(?:\s*\([^()]*\))?)*)\s*\.\s*"
+    r"(?P<method>transferFrom|safeTransferFrom|transfer|send|call)\s*"
+    r"(?P<brace>\{[^}]*\})?\s*\(")
+_RECIP_DIRECT = re.compile(r"(?P<fn>selfdestruct|_mint|mint|safeTransfer)\s*\(")
+
+
+def _recip_destinations(code: str) -> List[str]:
+    dests: List[str] = []
+    for m in _RECIP_CALLS.finditer(code):
+        recv, method = m.group("recv").strip(), m.group("method")
+        paren = m.end() - 1
+        args = cd._split_top(code[paren + 1:cd._matching(code, paren)])
+        if method in ("transfer", "send"):
+            dests.append(args[0] if len(args) >= 2 else recv)
+        elif method == "call":
+            dests.append(recv)
+        elif len(args) >= 2:  # transferFrom / safeTransferFrom
+            dests.append(args[1])
+    for m in _RECIP_DIRECT.finditer(code):
+        paren = m.end() - 1
+        args = cd._split_top(code[paren + 1:cd._matching(code, paren)])
+        if not args:
+            continue
+        if m.group("fn") == "safeTransfer" and len(args) >= 3:
+            dests.append(args[1])
+        else:
+            dests.append(args[0])
+    return dests
+
+
+def _recip_locals(body: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for m in re.finditer(r"(?:address(?:\s+payable)?|uint\w*|bool)\s+"
+                         r"([A-Za-z_]\w*)\s*=\s*([^;]+);", body):
+        out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def _recip_all_params(code: str) -> set:
+    names = set()
+    for m in re.finditer(r"function\s+\w+\s*\(([^)]*)\)", code):
+        for p in m.group(1).split(","):
+            toks = p.strip().split()
+            if toks:
+                names.add(toks[-1].lstrip("_"))
+    return names
+
+
+def _recip_class_expr(expr: str, params: List[str],
+                      addr_params: List[str], locals_: Dict[str, str],
+                      all_params: set) -> str:
+    e = cd._unwrap(expr)
+    # A nullary getter call (owner(), treasury(), ...) resolves to
+    # whatever the contract stored - a fixed destination, never
+    # caller-controlled.
+    m = re.fullmatch(r"([A-Za-z_]\w*)\(\)", e)
+    if m:
+        e = m.group(1)
+    if _RECIP_SENDER.search(e):
+        return "SENDER"
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", e):
+        return "FIXED"
+    base = re.split(r"[.\[(]", e)[0].strip()
+    if base in addr_params or base in params:
+        return "CALLER-SUPPLIED"
+    if base in locals_:
+        return _recip_class_expr(locals_[base], params, addr_params,
+                                 locals_, all_params)
+    if base in all_params:
+        # an internal helper's address parameter that entry
+        # functions feed - fed msg.sender at the call site in the
+        # adjudicated shapes, i.e. the caller's own payout channel
+        return "SENDER"
+    if base in ("address", "this"):
+        return "FIXED"
+    if re.fullmatch(r"[A-Za-z_]\w*", e):
+        return "FIXED"  # state variable / stored project address
+    if "msg.sender" in e:
+        return "SENDER"
+    return "UNRESOLVED"
+
+
+def classify_recipient(code: str) -> Tuple[str, str]:
+    """-> (recipient, detail). Recipient in CALLER,
+    CALLER-SUPPLIED, FIXED, HOLDER-SELF, UNRESOLVED."""
+    if not code or "{" not in code:
+        return "UNRESOLVED", "no function body in evidence"
+    sig = code.split("{", 1)[0]
+    body = code.split("{", 1)[1]
+    params = cd._param_names(sig)
+    addr_params = []
+    i = sig.find("(")
+    if i >= 0:
+        inner = sig[i + 1:cd._matching(sig, i)]
+        for part in cd._split_top(inner):
+            toks = [t for t in part.split()
+                    if t not in cd._PARAM_ATTRS]
+            if len(toks) >= 2 and "address" in part:
+                addr_params.append(toks[-1])
+    locals_ = _recip_locals(body)
+    all_params = _recip_all_params(code)
+    dests = _recip_destinations(code)
+    if not dests:
+        return "UNRESOLVED", "no value destination found in function"
+    classes = []
+    for d in dests:
+        c = _recip_class_expr(d, params, addr_params, locals_,
+                              all_params)
+        if c == "SENDER":
+            c = "HOLDER-SELF" if _RECIP_SELF_METER.search(code) \
+                else "CALLER"
+        classes.append(c)
+    for want in ("CALLER-SUPPLIED", "CALLER", "FIXED",
+                 "HOLDER-SELF"):
+        if want in classes:
+            return want, f"destinations={classes}"
+    return "UNRESOLVED", f"destinations={classes}"
+
+
+def _recipient_reclassify(item: Dict[str, Any], fn_text: str) -> None:
+    """Apply the receive rule to a finding in place: FIXED /
+    HOLDER-SELF destinations become TRIGGER-ONLY at low severity;
+    caller-reachable destinations stay candidate-grade."""
+    recipient, detail = classify_recipient(fn_text)
+    item["recipient"] = recipient
+    if recipient in ("FIXED", "HOLDER-SELF"):
+        item["report_class"] = "trigger_only"
+        item["severity"] = "low"
+        item["detail"] += (
+            f" Recipient analysis: moved value lands at a "
+            f"{recipient} destination ({detail}), so a stranger "
+            "can trigger this but receives nothing - classified "
+            "TRIGGER-ONLY under the receive rule.")
+    else:
+        item["report_class"] = "candidate"
+
+
+_SELF_FUNDED_RE = re.compile(r"msg\.value\s*==|==\s*msg\.value")
+
+
+# ---------------------------------------------------------------------------
 # Logic analysis over verified source (pure, testable)
 # ---------------------------------------------------------------------------
 
@@ -277,26 +726,34 @@ def _overflow_ops(text: str, state: set, params: List[str]
     return out
 
 
-def analyze_logic_source(src: str, compiler: str = ""
+def analyze_logic_source(src: str, compiler: str = "",
+                         contract_name: str = ""
                          ) -> List[Dict[str, Any]]:
     """Static logic analysis over verified Solidity source.
 
     Returns finding dicts {kind, logic_kind, severity, function,
-    code, detail}. Detection only - nothing here interacts with
-    the contract.
+    code, detail} (access-control findings that move value also
+    carry recipient + report_class). Detection only - nothing
+    here interacts with the contract.
+
+    Analysis is scoped to the deployed target contract and its
+    inheritance chain when `contract_name` identifies it in the
+    compilation (FP fix 3); test/mock files, sibling contracts
+    and free functions never produce findings.
     """
     clean = cc._strip_comments(src)
     version = solc_version(clean, compiler)
-    state = state_variables(clean)
+    scope = _Scope(src, contract_name)
+    state = state_variables(scope.scoped_text)
     # Pre-0.5 contracts name their constructor after the contract
     # itself; those functions run once, at deploy time, with
     # deployer-supplied arguments - not live logic. (USDT's
     # RequestToken-style hit in the 2026-11-02 live smoke was
     # exactly this shape.)
-    contract_names = set(re.findall(r"\bcontract\s+([A-Za-z_]\w*)",
-                                    clean))
+    contract_names = scope.contract_names or set(
+        re.findall(r"\bcontract\s+([A-Za-z_]\w*)", clean))
     out: List[Dict[str, Any]] = []
-    fns = [fn for fn in cc.extract_functions(clean) if fn["name"]
+    fns = [fn for fn in scope.functions if fn["name"]
            and fn["name"] not in ("constructor",)
            and fn["name"] not in contract_names]
     writes_after_call: Dict[str, List[str]] = {}
@@ -308,7 +765,7 @@ def analyze_logic_source(src: str, compiler: str = ""
         if re.search(r"\b(view|pure)\b", sig):
             continue
         params = cd._param_names(sig)
-        gated = cd._is_gated(sig, text)
+        gated = _gated_deep(fn, scope)
         guarded = "nonReentrant" in sig or "nonReentrant" in text
 
         # ---- tx.origin authorization (any function) ---------------
@@ -332,8 +789,15 @@ def analyze_logic_source(src: str, compiler: str = ""
         writes = _state_writes(text, state)
         if calls and writes and not gated and not guarded:
             first_call = calls[0]
+            # A variable already written BEFORE the call and
+            # written again after it is a rollback/compensation
+            # write (dividend trackers restore the credit when the
+            # payout transfer fails), not a CEI violation.
+            written_before = {v for p, v in writes
+                              if p < first_call["pos"]}
             late = [(p, v) for p, v in writes
-                    if p > first_call["pos"]]
+                    if p > first_call["pos"]
+                    and v not in written_before]
             for pos, var in late:
                 before = text[:first_call["pos"]]
                 amount = " ".join(
@@ -371,35 +835,43 @@ def analyze_logic_source(src: str, compiler: str = ""
         # could push the value to overflow is the privileged
         # account itself - self-harm by the operator, not an
         # attacker-reachable logic flaw. Same gate discipline as
-        # the drain analyzer.
+        # the drain analyzer. On top of that, FP fix 1 suppresses
+        # the canonical safe shapes (internal functions, bounds
+        # checked upstream, msg.value-bounded arithmetic) that
+        # produced 63 of the adjudicated FPs.
         if not gated and version is not None and version < (0, 8, 0):
-            if not re.search(r"\b internal \b|\b private \b", sig):
-                for pos, var, _op in _overflow_ops(text, state,
-                                                   params):
-                    out.append({
-                        "kind": "integer_overflow",
-                        "logic_kind": "pre080_unchecked_arithmetic",
-                        "severity": "high",
-                        "function": name,
-                        "code": cc._line_context(
-                            clean, clean.find(text) + pos
-                            if clean.find(text) >= 0 else pos,
-                            before=2, after=2) or cc._snip(text),
-                        "detail": (
-                            f"Solidity {'.'.join(map(str, version))} "
-                            f"(<0.8) arithmetic on state variable "
-                            f"'{var}' with no SafeMath: pre-0.8 "
-                            "arithmetic wraps silently on "
-                            "over/underflow. signature: "
-                            f"{sig[:200]}"),
-                    })
-                    break  # one finding per function is enough
+            for pos, var, op in _overflow_ops(text, state, params):
+                if _overflow_suppression(fn, text, pos, var, op,
+                                         state, params):
+                    continue
+                out.append({
+                    "kind": "integer_overflow",
+                    "logic_kind": "pre080_unchecked_arithmetic",
+                    "severity": "high",
+                    "function": name,
+                    "code": cc._line_context(
+                        clean, clean.find(text) + pos
+                        if clean.find(text) >= 0 else pos,
+                        before=2, after=2) or cc._snip(text),
+                    "detail": (
+                        f"Solidity {'.'.join(map(str, version))} "
+                        f"(<0.8) arithmetic on state variable "
+                        f"'{var}' with no SafeMath: pre-0.8 "
+                        "arithmetic wraps silently on "
+                        "over/underflow. signature: "
+                        f"{sig[:200]}"),
+                })
+                break  # one finding per function is enough
         # unchecked {} blocks exist only in >=0.8 sources
         for m in (re.finditer(r"\bunchecked\s*\{", text)
                   if not gated else []):
             brace = text.index("{", m.start())
             block = text[brace + 1:cd._matching(text, brace, "{", "}")]
-            for _pos, var, _op in _overflow_ops(block, state, params):
+            for _pos, var, _op in _overflow_ops(block, state,
+                                                params):
+                if _overflow_suppression(fn, text, brace + 1 + _pos,
+                                         var, _op, state, params):
+                    continue  # canonical safe shape (FP fix 1)
                 sev = "high" if _BALANCEY_RE.search(var) else "medium"
                 out.append({
                     "kind": "integer_overflow",
@@ -422,6 +894,9 @@ def analyze_logic_source(src: str, compiler: str = ""
             if re.search(r"\b(add|sub|mul)\s*\(", block) and \
                     ("sload" in block or
                      any(_reads_var(block, v) for v in state)):
+                if _overflow_suppression(fn, text, brace, "",
+                                         "", state, params):
+                    continue
                 out.append({
                     "kind": "integer_overflow",
                     "logic_kind": "assembly_arithmetic",
@@ -477,6 +952,13 @@ def analyze_logic_source(src: str, compiler: str = ""
                         f"{sig[:200]}"),
                 })
                 break
+        # Self-funded shapes are not access flaws: when the
+        # payout is bound to the caller's own payment
+        # (msg.value == amount, the POL system-contract withdraw
+        # and the crowdsale purchase shape), a stranger can only
+        # ever move their own money through the function.
+        if _SELF_FUNDED_RE.search(text):
+            continue
         # Withdraw-family names are only an access flaw when the
         # caller can take more than their own credited balance: a
         # withdraw bounded by balances[msg.sender] pays out what
@@ -493,7 +975,7 @@ def analyze_logic_source(src: str, compiler: str = ""
                 _performs_sensitive_action(text, state) and \
                 (_ADMIN_NAME_RE.search(name) or
                  "[msg.sender]" not in text):
-            out.append({
+            item = {
                 "kind": "access_control_flaw",
                 "logic_kind": "ungated_sensitive_function",
                 "severity": "high",
@@ -503,7 +985,12 @@ def analyze_logic_source(src: str, compiler: str = ""
                     f"sensitive function '{name}' performs its "
                     "action with NO access gate (gated=False; "
                     f"{_UNGATED_BASIS}). signature: {sig[:200]}"),
-            })
+            }
+            # FP fix 4: recipient dataflow decides whether this
+            # is candidate-grade (a stranger can RECEIVE) or
+            # trigger-only (value lands at a fixed destination).
+            _recipient_reclassify(item, text)
+            out.append(item)
 
     # ---- cross-function reentrancy hints ----------------------------
     if writes_after_call:
@@ -511,7 +998,7 @@ def analyze_logic_source(src: str, compiler: str = ""
             name, sig, text = fn["name"], fn["signature"], fn["text"]
             if "{" not in text or re.search(r"\b(view|pure)\b", sig):
                 continue
-            if cd._is_gated(sig, text) or "nonReentrant" in text:
+            if _gated_deep(fn, scope) or "nonReentrant" in text:
                 continue
             calls = _external_calls(text)
             if not calls:
@@ -824,8 +1311,9 @@ class ContractLogicPlugin(Plugin):
 
         version = solc_version(src["source"],
                                src.get("compiler", ""))
-        for item in analyze_logic_source(src["source"],
-                                         src.get("compiler", "")):
+        for item in analyze_logic_source(
+                src["source"], src.get("compiler", ""),
+                contract_name=src.get("contract_name", "")):
             sev_word = item["severity"].upper()
             ev = dict(base_ev)
             ev.update({
@@ -845,6 +1333,11 @@ class ContractLogicPlugin(Plugin):
             if item["kind"] == "access_control_flaw":
                 ev["gated"] = False
                 ev["ungated_basis"] = _UNGATED_BASIS
+            if item.get("report_class"):
+                # FP fix 4: trigger_only findings are emitted at
+                # low severity and are NOT candidate-grade.
+                ev["report_class"] = item["report_class"]
+                ev["recipient"] = item.get("recipient", "")
             findings.append(self._f(
                 "web3", item["kind"],
                 f"{sev_word}: {item['logic_kind'].replace('_', ' ')}"
