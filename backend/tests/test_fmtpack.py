@@ -163,7 +163,7 @@ def test_exactly_12_new_detectors_registered():
     assert len(fx) == 12
     # 575 through the gx pack + 12 fx (+5 xml_* reader pack)
     # +10 da_* (deep-artifacts pack); +5 ai_* (AI-crawler pack)
-    assert len(discover()) == 654  # 654 = master 653 (incl. audit toolbox PR #75) + 1 contract simulation (PR #76)
+    assert len(discover()) == 655  # 655 = master 654 (incl. contract simulation PR #76) + 1 contract fuzz lane
 
 
 # ---------------------------------------------------------------------------

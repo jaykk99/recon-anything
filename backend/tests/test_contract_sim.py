@@ -489,4 +489,4 @@ def test_mythril_adapter_missing_binary_is_honest(monkeypatch):
 def test_plugin_registered():
     reg = discover()
     assert "contract_simulation" in reg
-    assert len(reg) == 654  # master 653 (incl. audit toolbox PR #75) + this plugin
+    assert len(reg) == 655  # master 654 + 1 contract fuzz lane plugin
