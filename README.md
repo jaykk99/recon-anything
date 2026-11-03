@@ -1,15 +1,25 @@
-Live: https://recon-anything-9b68f.containers.snapdeploy.app
+Live: https://recon-anything.onrender.com
 
 # ReconAnything
 
-Universal OSINT and attack-surface recon. Give it almost any identifier
-(domain, URL, IP, email, username, phone, hash, wallet, JWT, GitHub repo,
-npm package, Play Store app...) and it discovers everything publicly
-knowable about it: DNS, subdomains, WHOIS, web tech, JS-buried endpoints,
-API maps, TLS posture, mobile app internals, leaks. No ownership of the
-target needed, no source code needed.
+A reconnaissance platform for web targets and smart contracts.
+Detection only: it finds and reports weaknesses, it never exploits
+them, never authenticates against a target it was not given credentials
+for, and never signs or sends a transaction.
 
-Passive by default. Active mode does polite, rate-limited direct probing.
+Give it almost any identifier (domain, URL, IP, email, username, phone,
+hash, wallet, contract address, JWT, GitHub repo, npm package, Play
+Store app...) and it discovers what is publicly knowable about it: DNS,
+subdomains, WHOIS, web tech, JS-buried endpoints, API maps, TLS
+posture, mobile app internals, leaks. For a smart contract it pulls the
+verified source (or bytecode when source is unverified) from public
+chain data and runs the contract-analysis stack described below:
+static analysis, auditor tooling, read-only simulation, and a local
+fuzz lane that can confirm whether a flagged weakness is actually
+reachable by an unauthenticated stranger.
+
+Passive by default. Active mode does polite, rate-limited direct
+probing.
 
 ## Quick start
 
@@ -45,7 +55,7 @@ Leave it empty for local dev only.
                     |  Next.js UI      |  input bar, live SSE run view,
                     |  (App Router)    |  findings, graph, API map, diff
                     +--------+---------+
-                             |  /api  (rewritten to backend)
+                             |  /api + /mcp  (rewritten to backend)
                     +--------v---------+
                     |  FastAPI        |  classify, plugin registry,
                     |  runner         |  SSE event bus, graph, reports
@@ -59,6 +69,61 @@ Leave it empty for local dev only.
         |  fallback)|               +--------------+
         +-----------+
 ```
+
+## Smart contract analysis
+
+Contract targets are first-class, not an afterthought. Coverage:
+
+- **EVM, 6 chains:** Ethereum (1), BNB Chain (56), Polygon (137),
+  Arbitrum One (42161), Base (8453), Optimism (10). Chains are config
+  in `backend/app/plugins/contract_chain.py`; adding one is one entry.
+  Verified source comes from Blockscout / Sourcify, keyless.
+- **Proxies are followed one level:** EIP-1967 implementation and
+  beacon slots and the EIP-1167 minimal-proxy bytecode pattern are
+  resolved read-only, and findings are tagged `proxy_shell` vs
+  implementation so a shell is never confused with the code behind it.
+- **Solana:** the `solana_contract` plugin analyzes programs and token
+  mints (authorities, supply, pool state), keyless via public RPC and
+  RugCheck.
+- **Stacks / Clarity:** `stacks_contract` reads contracts from the
+  keyless Hiro API: mint authority (hardcoded principal vs data-var
+  owner vs unguarded), whether the mint cap is enforced in the mint
+  path or merely decorative, burn / pause / freeze / blacklist
+  powers, owner rotation, `tx-sender` auth patterns, and live SIP-010
+  supply against the cap.
+
+The analysis plugins (all under `backend/app/plugins/`):
+
+| id | what it does |
+|----|--------------|
+| contract_recon | Pulls a contract's code from public chain data on the 6 EVM chains and reports privileged functions, proxy pattern, dangerous code and secrets, with bytecode analysis when source is unverified. Read-only. |
+| crypto_drain_scanner | Static repo/source analysis for unprotected drain functions: public functions with no access gate that can move the contract's own ETH or tokens to the caller or a caller-supplied address. Gated, internal, view/pure, own-balance and `msg.value` pass-through cases are not flagged. |
+| contract_logic | Logic flaws rather than surface patterns: reentrancy, integer overflow/underflow, access-control flaws (ungated sensitive functions, `tx.origin` auth, unprotected `initialize()`, arbitrary delegatecall). Falls back to a clearly labeled low-confidence bytecode opcode heuristic when no verified source exists. |
+| audit_toolbox | Runs the standard external auditor tools over the verified source and bytecode and normalizes their output: Slither, Aderyn, Semgrep (Solidity rules), solc SMTChecker, Heimdall, Echidna and Medusa (prepared harnesses), plus the GoPlus and Honeypot.is token-risk APIs. Heavy lane only; tools are optional external installs and absent binaries skip silently. |
+| contract_simulation | Read-only on-chain simulation of one flagged contract: boundary-input `eth_call` probes of its public state-changing functions from an unfunded caller, cross-checked against the gate its source implies, plus optional Mythril symbolic execution behind `RECON_SIM_SYMBOLIC=1`. Heavy lane only, refuses bulk sweeps. Its flags are candidates, never verdicts. |
+| contract_fuzz | Local exploit-confirmation fuzzing. The flagged contract is compiled with a local solc and deployed inside an Echidna harness where a house actor seeds it with mock ETH and an unauthenticated stranger fuzz-calls every public state-changing function under per-call balance accounting. A finding is reported as `fuzz_confirmed` only when the stranger actually ends up with profit beyond what it put in. Everything else is a low-severity inconclusive note with a machine-readable reason. Heavy lane only. |
+| zeroday_differential / zeroday_error_miner / zeroday_contract_guards | Zero-day candidate hunters: type/shape mutation of a target's parameters, mining error responses for internal disclosures, and flagging the one public state-changing function that breaks a contract's own access-control convention. Every output is labeled `candidate_zero_day`, severity is capped at high, and all of it is pending human review. Passive mode sends zero mutations. |
+| aml_* (8 plugins) | AML typology checks over discovered addresses: mixer/tumbler exposure, XMR conversion services, chain-hopping, non-KYC exchanges, P2P cash trades and related patterns. |
+
+### How findings are judged
+
+- **A finding is a candidate until verified.** Static detectors flag
+  shapes; shapes are not proof. Confidence and, where a check is
+  heuristic, `needs_manual_verification` say so on the finding itself.
+- **Recipient analysis is mandatory.** An ungated function is not a
+  stranger drain just because anyone can call it. Who receives the
+  value decides: the caller, a caller-supplied address, a fixed
+  hardcoded address, or the holder's own position. Only the first two
+  are reported as stranger-reachable; fixed-recipient and holder-self
+  cases are recorded as trigger-only, not as drains.
+- **`fuzz_confirmed` is the strongest class.** It means a local fuzz
+  run produced an actual call sequence in which an unauthenticated
+  stranger profited at the contract's expense, and it ships with that
+  shrunk counterexample as evidence.
+- **Detection only.** No exploit confirmation against live contracts,
+  no brute-forcing, no auth bypass, no transactions. Probes are
+  read-only `eth_call` simulations; fuzzing happens on local deploys
+  against mock balances.
 
 ### Attack-path correlation (cross-finding synthesis)
 
@@ -212,12 +277,17 @@ Rules:
   `ratelimit.fetch` (global + per-host limits, 429 Retry-After, backoff).
 - Tag each finding with the mode that produced it (`passive=True/False`).
 
-### Shipped plugins (197 and counting)
+### Shipped plugins (655)
 
 The registry auto-discovers every `Plugin` subclass in
 `backend/app/plugins/` - drop in a file, no central list to edit.
-Below are the core ones; the health gate (`backend/tests/test_plugin_health.py`)
-enforces unique ids, valid groups, and metadata on all 197.
+The count is the live registry size, measured by loading the registry
+(`discover()` in `backend/app/plugins/registry.py`): **655 plugins**
+across 259 plugin modules on current master. The health gate
+(`backend/tests/test_plugin_health.py`) enforces unique ids, valid
+groups, and metadata on all of them. Below are the core web plugins;
+the contract-analysis plugins are listed in the Smart contract
+analysis section above.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -242,7 +312,7 @@ With zero API keys the app still works using only free sources
 
 25 passive audit plugins, each with canned-response tests in
 `backend/tests/test_new_plugins.py` and a dead-network resilience gate
-(`test_plugin_resilience.py`) covering all 197 plugins:
+(`test_plugin_resilience.py`) covering the full plugin registry:
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -305,7 +375,7 @@ ReconAnything is a paid product with a free tier (`/pricing`):
 | Agency | $149/mo | unlimited | full | yes | bulk targets, white-label export |
 
 - Customers sign in with GitHub (OAuth; callback
-  `https://recon-anything-9b68f.containers.snapdeploy.app/api/auth/github/callback`,
+  `https://recon-anything.onrender.com/api/auth/github/callback`,
   also served at `/auth/github/callback` on the API service). Sessions
   are HMAC-signed cookies; users/orders/reveals live in `users`,
   `orders`, `finding_reveals` tables.
@@ -356,19 +426,18 @@ login of your own systems. For authorized testing only.
 
 ## Deploy
 
-### SnapDeploy (single container, free tier)
+### Render (the live deployment)
 
-The repo ships an all-in-one image at `snapdeploy/Dockerfile`:
-Next.js frontend + FastAPI backend in one container, one public port.
-
-1. In SnapDeploy, create a container from the GitHub repo,
-   Dockerfile path `snapdeploy/Dockerfile`, port `3000`.
-2. Set env vars: `RECON_ACCESS_CODE` (pick a strong one),
-   `RECON_MASTER_KEY` (generate with
-   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
-3. Deploy. SQLite is used by default (data resets on redeploy);
-   point `DATABASE_URL` at a Postgres for persistence (see
-   "Persistent storage on Render" below).
+The live instance at https://recon-anything.onrender.com runs on
+Render as three services from this repo: the Next.js frontend (which
+rewrites `/api/*` and `/mcp` to the backend), the FastAPI backend, and
+a standalone scan worker (`backend/app/worker_main.py`). Set
+`RECON_ACCESS_CODE` (pick a strong one) and `RECON_MASTER_KEY`
+(generate with
+`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
+on the backend and worker. SQLite is used by default (data resets on
+redeploy); point `DATABASE_URL` at a Postgres for persistence (see
+"Persistent storage on Render" below).
 
 ### Persistent storage on Render (free tier)
 
@@ -496,4 +565,4 @@ No em dashes in user-facing text.
 
 ## Live URL
 
-https://recon-anything-9b68f.containers.snapdeploy.app
+https://recon-anything.onrender.com
