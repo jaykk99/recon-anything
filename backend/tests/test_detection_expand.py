@@ -245,4 +245,4 @@ def test_cves_plugin_badges_kev_and_not_non_kev():
 def test_registry_grew_by_passive_subdomains():
     reg = discover()
     assert "passive_subdomains" in reg
-    assert len(reg) == 655  # 655 = master 654 (incl. contract simulation PR #76) + 1 contract fuzz lane
+    assert len(reg) == 656  # 656 = master 655 + 1 ast_visual_audit plugin

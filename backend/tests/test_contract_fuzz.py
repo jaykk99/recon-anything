@@ -666,4 +666,4 @@ def test_registry_discovers_contract_fuzz():
     reg = discover()
     assert "contract_fuzz" in reg
     assert reg["contract_fuzz"] is cf.ContractFuzzPlugin
-    assert len(reg) == 655  # master 654 (incl. PR #76) + this plugin
+    assert len(reg) == 656  # master 655 + 1 ast_visual_audit plugin

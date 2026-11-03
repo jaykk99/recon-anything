@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 655  # 655 = master 654 (incl. contract simulation PR #76) + 1 contract fuzz lane
+    assert len(discover()) == 656  # 656 = master 655 + 1 ast_visual_audit plugin
 
 
 def test_connstr_password_masked_with_fingerprint():
