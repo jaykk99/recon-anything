@@ -17,11 +17,19 @@ balance, never on a live chain:
    installs under ~/workspace/tools/audit + ~/.solc-select) and its
    ABI drives generation of an Echidna harness:
 
-   - a HOUSE actor (a helper contract) seeds the target with mock
-     ETH - a plain transfer, plus every zero-argument payable
-     function - so the target holds value that belongs to nobody
-     the fuzzer controls;
-   - the harness itself is the STRANGER: it deploys the target, it
+   - a HOUSE actor (a helper contract) DEPLOYS the target and
+     seeds it with mock ETH - a plain transfer, plus every
+     zero-argument payable function - so the target holds value
+     that belongs to nobody the fuzzer controls. Deployment sits
+     with the house on purpose: every constructor-assigned
+     deployer role (owner = msg.sender, Ownable's initial owner,
+     deployer role grants) then belongs to the house, never to
+     the stranger. (The first merged version deployed from the
+     harness itself, which silently handed the stranger those
+     roles; a role-gated mint on a real target "confirmed" that
+     way before a control replay exposed it. Regression canaries
+     E and F in the tests pin the separation.)
+   - the harness itself is the STRANGER: it deploys nothing, it
      is not the owner, it holds no position at start. Its balance
      is minted locally with the hevm `deal` cheatcode inside the
      fuzz VM only. Every public/external state-changing function
@@ -50,10 +58,18 @@ Honesty discipline (the mirror of the sim lane's):
 - Everything that is not a falsified property is a candidate-grade
   note at low severity, key fuzz_inconclusive, with a machine
   reason: engine_absent, solc_absent, compile_fail,
+  exact_pragma_unavailable (the source pins an exact solc that
+  is not installed and the solc-select acquisition attempt did
+  not provide it - substituting another version would only
+  manufacture a compile_fail), pragma_range_unavailable (no
+  installed solc satisfies the pragma range),
   constructor_args_unknown, unsupported_compiler (< 0.6),
   unsupported_constructor (array/tuple constructor params),
   target_not_deployable, linked_library, timeout, deploy_failed,
-  no_target_contract. A fuzz run that completes with no violation
+  no_target_contract. Compile failures carry the last ~40 lines
+  of the compiler output as evidence, and solc diagnostics
+  surfacing inside Echidna's own project build are classified
+  compile_fail, not engine errors. A fuzz run that completes with no violation
   is reported as fuzz_no_violation - coverage, not a verdict: the
   property held for the sequences tried, nothing more.
 - Self-service shapes cannot confirm BY CONSTRUCTION: a stranger
@@ -264,26 +280,214 @@ def pragma_version(source: str) -> Optional[Tuple[int, int, int]]:
             int(vm.group(3) or 0))
 
 
-def resolve_solc(source: str = "",
-                 compiler_hint: str = "") -> Optional[str]:
-    """Best local solc for a source: exact major.minor artifact
-    match (highest patch) first, then the newest artifact, then
-    the solc-select shim / PATH solc. None when no solc exists."""
+def _pad3(parts: Tuple[int, ...]) -> Tuple[int, int, int]:
+    return (tuple(parts) + (0, 0, 0))[:3]  # type: ignore[return-value]
+
+
+def _token_satisfied(version: Tuple[int, int, int],
+                     token: str) -> Optional[bool]:
+    """One comparator token of a pragma expression ('^0.8.19',
+    '>=0.6.0', '0.8.19', '0.8', ...) against an installed version.
+    None when the token is not a recognizable comparator."""
+    token = token.strip()
+    if token in ("*", "x", "X"):
+        return True
+    if token.endswith((".x", ".*", ".X")):
+        token = token[:-2]
+    m = re.fullmatch(r"(>=|<=|>|<|=|\^|~)?(\d+(?:\.\d+){0,2})", token)
+    if not m:
+        return None
+    op = m.group(1) or ""
+    parts = tuple(int(x) for x in m.group(2).split("."))
+    base = _pad3(parts)
+    if op in ("", "="):
+        if len(parts) == 3:
+            return version == base
+        # Bare partial ('0.8', '0'): the npm-style wildcard range
+        # >=parts.0 <(last given component + 1).
+        upper = _pad3(parts[:-1] + (parts[-1] + 1,))
+        return base <= version < upper
+    if op == "^":
+        # Solidity caret: >=base, below the leftmost non-zero
+        # component incremented (^0.8.19 <0.9.0, ^0.0.19 <0.0.20).
+        upper = (1, 0, 0)
+        for i, part in enumerate(base):
+            if part:
+                u = [0, 0, 0]
+                u[i] = part + 1
+                upper = (u[0], u[1], u[2])
+                break
+        return base <= version < upper
+    if op == "~":
+        if len(parts) == 1:
+            upper = (parts[0] + 1, 0, 0)
+        else:
+            upper = (parts[0], parts[1] + 1, 0)
+        return base <= version < upper
+    if op == ">=":
+        return version >= base
+    if op == "<=":
+        return version <= base
+    if op == ">":
+        return version > base
+    if op == "<":
+        return version < base
+    return None
+
+
+def pragma_satisfied(version: Tuple[int, int, int],
+                     expr: str) -> Optional[bool]:
+    """Does an installed solc version satisfy a pragma expression?
+    Space-separated comparators are ANDed, '||' alternatives are
+    ORed. None when any comparator is unrecognizable (the caller
+    then falls back to legacy resolution instead of guessing)."""
+    expr = (expr or "").strip()
+    if not expr:
+        return None
+    for alt in expr.split("||"):
+        tokens = [t for t in re.split(r"\s+", alt.strip()) if t]
+        if not tokens:
+            continue
+        results = [_token_satisfied(version, t) for t in tokens]
+        if any(r is None for r in results):
+            return None
+        if all(results):
+            return True
+    return False
+
+
+def pragma_exact_version(expr: str) -> Optional[Tuple[int, int, int]]:
+    """The pinned version when a pragma expression is a single
+    bare (or '='-prefixed) full version, else None."""
+    expr = (expr or "").strip()
+    if not expr or "||" in expr:
+        return None
+    tokens = [t for t in re.split(r"\s+", expr) if t]
+    if len(tokens) != 1:
+        return None
+    m = re.fullmatch(r"=?(\d+)\.(\d+)\.(\d+)", tokens[0])
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def pragma_expr_of(source: str) -> str:
+    m = _PRAGMA_RE.search(source or "")
+    return m.group(1).strip() if m else ""
+
+
+def resolve_solc_status(source: str = "",
+                        compiler_hint: str = ""
+                        ) -> Tuple[Optional[str], str]:
+    """Resolve a local solc for a source, honestly.
+
+    Returns (path, '') on success, else (None, reason) with reason
+    one of: 'solc_absent' (no solc installed at all),
+    'exact_pragma_unavailable' (the source pins an exact version
+    that is not installed - solc REJECTS compiling an exact pragma
+    with any other version, so substituting one would only
+    manufacture a compile_fail), 'pragma_range_unavailable' (no
+    installed version satisfies the pragma range).
+
+    With no parseable pragma (or an unrecognizable one), legacy
+    behaviour applies: the compiler hint's major.minor (highest
+    patch), then the newest artifact, then the shim."""
     cands = _solc_candidates()
     if not cands:
-        return None
-    want = pragma_version(source) or pragma_version(compiler_hint)
+        return None, "solc_absent"
     real = [(v, p) for v, p in cands if v != (0, 0, 0)]
+    expr = pragma_expr_of(source)
+    if expr:
+        exact = pragma_exact_version(expr)
+        if exact is not None:
+            for v, p in real:
+                if v == exact:
+                    return p, ""
+            return None, "exact_pragma_unavailable"
+        if real:
+            sat = [(v, p) for v, p in real
+                   if pragma_satisfied(v, expr)]
+            if sat:
+                return max(sat)[1], ""
+            if any(pragma_satisfied(v, expr) is not None
+                   for v, _p in real):
+                return None, "pragma_range_unavailable"
+            # Unrecognizable pragma: fall through to legacy.
+    want = pragma_version(source) or pragma_version(compiler_hint)
     if want and real:
         same = [(v, p) for v, p in real if v[:2] == want[:2]]
         if same:
-            return max(same)[1]
+            return max(same)[1], ""
         newer = [(v, p) for v, p in real if v >= want]
         if newer:
-            return min(newer)[1]
+            return min(newer)[1], ""
     if real:
-        return max(real)[1]
-    return cands[0][1]
+        return max(real)[1], ""
+    return cands[0][1], ""
+
+
+def resolve_solc(source: str = "",
+                 compiler_hint: str = "") -> Optional[str]:
+    """Best local solc for a source (see resolve_solc_status for
+    the exact/range semantics). None when no suitable solc is
+    installed."""
+    path, _reason = resolve_solc_status(source, compiler_hint)
+    return path
+
+
+def solc_select_binary() -> Optional[str]:
+    """The repo's solc acquisition tool: solc-select from the
+    slither venv (the same binary scripts/install-audit-tools.sh
+    uses to populate ~/.solc-select/artifacts), else PATH."""
+    venv = getattr(tb, "SLITHER_VENV", "") or ""
+    cand = os.path.join(venv, "bin", "solc-select")
+    if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    return shutil.which("solc-select")
+
+
+def _artifact_ready(version: Tuple[int, int, int]) -> bool:
+    """True when the exact version's solc-select artifact exists
+    and is executable. An interrupted install can leave the
+    downloaded binary behind without its execute bit (solc-select
+    chmods only at the very end); repairing the mode of our own
+    artifact completes that install."""
+    ver = ".".join(str(x) for x in version)
+    path = Path(os.path.expanduser(
+        f"~/.solc-select/artifacts/solc-{ver}/solc-{ver}"))
+    if not path.is_file():
+        return False
+    if not os.access(str(path), os.X_OK):
+        try:
+            path.chmod(0o755)
+        except Exception:
+            return False
+    return any(v == version for v, _p in _solc_candidates())
+
+
+async def ensure_exact_solc(version: Tuple[int, int, int],
+                            budget_s: float) -> bool:
+    """Best-effort install of ONE exact solc version via the
+    repo's existing acquisition path (solc-select install).
+    True when the artifact is usable afterwards. Never raises;
+    a failed or unavailable download just returns False and the
+    caller reports exact_pragma_unavailable."""
+    if _artifact_ready(version):
+        return True
+    binary = solc_select_binary()
+    if not binary:
+        return False
+    ver = ".".join(str(x) for x in version)
+    try:
+        await tb.run_tool(
+            [binary, "install", ver],
+            cwd=tempfile.gettempdir(), budget_s=budget_s)
+    except Exception:
+        return False
+    # Success is the artifact being usable, not the installer's
+    # exit code: on a slow link the budget kill can land after
+    # solc-select has already written the artifact to disk.
+    return _artifact_ready(version)
 
 
 def solc_path_version(path: str) -> Optional[Tuple[int, int, int]]:
@@ -307,6 +511,9 @@ def harness_flavor(version: Optional[Tuple[int, int, int]]) -> str:
     if version >= (0, 6, 0):
         return "legacy"
     return "unsupported"
+
+
+_SPDX_RE = re.compile(r"^//\s*SPDX-License-Identifier:")
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +542,13 @@ def build_scoped_source(source: str,
     fuzz lane may build: test/mock file units dropped (same path
     rule as contract_logic), imports stripped (bundles are
     flattened; a surviving import cannot resolve locally), one
-    pragma kept. Returns (scoped_source, target_contract_name).
+    pragma and ONE SPDX license identifier kept (solc hard-errors
+    on multiple SPDX lines, and a flattened bundle carries one
+    per original file), and units are emitted in inheritance
+    order (a base contract's unit before any unit that inherits
+    from it - solc rejects a derived contract whose base is
+    defined later in the merged file). Returns (scoped_source,
+    target_contract_name).
 
     Target selection: the caller's hint when it names a concrete
     contract in the kept units; otherwise the LAST concrete
@@ -361,24 +574,118 @@ def build_scoped_source(source: str,
         target = contract_name
     elif names:
         target = names[-1]
-    # Assemble: strip imports, keep only the first pragma.
-    pragma_seen = False
+    # Assemble: strip imports, keep only the first pragma and
+    # the first SPDX identifier (both "first" in ORIGINAL bundle
+    # order), and emit the units in dependency order - solc
+    # requires a base contract to be defined before any contract
+    # that inherits from it, and flattened bundles commonly list
+    # units alphabetically or main-file-first, which violates
+    # that. (This failure class was masked until the SPDX dedupe
+    # let compilation get far enough to reach it.)
+    win_pragma: Optional[Tuple[int, int]] = None
+    win_spdx: Optional[Tuple[int, int]] = None
+    for ui, (_p, text) in enumerate(kept):
+        for li, line in enumerate(text.splitlines()):
+            stripped = line.strip()
+            if win_pragma is None \
+                    and stripped.startswith("pragma solidity"):
+                win_pragma = (ui, li)
+            if win_spdx is None and _SPDX_RE.match(stripped):
+                win_spdx = (ui, li)
     parts: List[str] = []
-    for _path, text in kept:
+    for ui, (_path, text) in _order_units(kept):
         lines = []
-        for line in text.splitlines():
+        for li, line in enumerate(text.splitlines()):
             stripped = line.strip()
             if stripped.startswith("import "):
                 lines.append("// (import stripped by fuzz lane)")
                 continue
             if stripped.startswith("pragma solidity"):
-                if pragma_seen:
+                if (ui, li) != win_pragma:
                     lines.append("// (duplicate pragma stripped)")
                     continue
-                pragma_seen = True
+            if _SPDX_RE.match(stripped):
+                if (ui, li) != win_spdx:
+                    lines.append(
+                        "// (duplicate SPDX identifier stripped)")
+                    continue
             lines.append(line)
         parts.append("\n".join(lines))
     return "\n".join(parts), target
+
+
+_DECL_RE = re.compile(
+    r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)")
+_INHERIT_RE = re.compile(
+    r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+    r"[A-Za-z_][A-Za-z0-9_]*\s+is\s+([^{;]*)\{")
+
+
+def _split_is_list(text: str) -> List[str]:
+    """Base names from an inheritance list ('A, B(uint), C'):
+    top-level comma split, first identifier of each item."""
+    out: List[str] = []
+    depth = 0
+    cur = ""
+    parts: List[str] = []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    for part in parts:
+        m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", part)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _order_units(units: List[Tuple[str, str]]) -> List[
+        Tuple[int, Tuple[str, str]]]:
+    """Stable topological order of bundle units by cross-unit
+    inheritance: a unit is emitted after every unit that defines
+    one of its base contracts. Units keep their original relative
+    order wherever the edges allow; an (impossible in practice)
+    inheritance cycle falls back to original order for its
+    members. Returns (original_index, unit) pairs."""
+    indexed = list(enumerate(units))
+    if len(indexed) < 2:
+        return indexed
+    decl_unit: Dict[str, int] = {}
+    deps: List[set] = []
+    for idx, (_p, text) in indexed:
+        clean = cc._strip_comments(text)
+        for m in _DECL_RE.finditer(clean):
+            decl_unit.setdefault(m.group(1), idx)
+        bases: set = set()
+        for m in _INHERIT_RE.finditer(clean):
+            bases.update(_split_is_list(m.group(1)))
+        deps.append(bases)
+    dep_idx: List[set] = [set() for _ in indexed]
+    for idx, bases in enumerate(deps):
+        for b in bases:
+            j = decl_unit.get(b)
+            if j is not None and j != idx:
+                dep_idx[idx].add(j)
+    order: List[int] = []
+    remaining = set(range(len(indexed)))
+    while remaining:
+        ready = [i for i in sorted(remaining)
+                 if not (dep_idx[i] & remaining)]
+        if not ready:
+            order.extend(sorted(remaining))
+            break
+        order.append(ready[0])
+        remaining.discard(ready[0])
+    return [indexed[i] for i in order]
 
 
 # ---------------------------------------------------------------------------
@@ -503,9 +810,14 @@ def generate_harness(target_name: str,
                      wrappers: List[Dict[str, Any]],
                      ctor_inputs: List[Dict[str, Any]],
                      token_mode: bool, flavor: str) -> str:
-    """The Echidna project harness: house-seeded target + stranger
-    accounting wrappers + the two profit properties. See the
-    module docstring for the accounting argument."""
+    """The Echidna project harness: house-DEPLOYED-and-seeded
+    target + stranger accounting wrappers + the two profit
+    properties. The house deploys the target, so every
+    constructor-assigned deployer role (owner = msg.sender,
+    Ownable's initial owner, deployer role grants) sits with the
+    house; the harness (the stranger) never deploys anything and
+    holds no role. See the module docstring for the accounting
+    argument."""
     deal = DEAL_WEI
     seed = SEED_WEI
     house_call = _call_with_value(flavor, "t.call", "msg.value", '""')
@@ -525,6 +837,9 @@ def generate_harness(target_name: str,
         "}",
         "",
         f"contract {HOUSE_NAME} {{",
+        f"    function deploy() external returns ({target_name}) {{",
+        f"        return new {target_name}({ctor_args});",
+        "    }",
         "    function fund(address t) external payable returns (uint256) {",
         f"        (bool ok, ) = {house_call};",
         "        return ok ? msg.value : 0;",
@@ -548,7 +863,7 @@ def generate_harness(target_name: str,
         "    constructor() {",
         f"        HEVM.deal(address(this), {deal});",
         f"        house = new {HOUSE_NAME}();",
-        f"        target = new {target_name}({ctor_args});",
+        "        target = house.deploy();",
         f"        seedFunded += {_call_with_value(flavor, 'house.fund', str(seed), 'address(target)')};",
     ]
     lines.extend(seed_calls)
@@ -630,12 +945,52 @@ def generate_harness(target_name: str,
 # Compilation (local solc) + Echidna output parsing (pure)
 # ---------------------------------------------------------------------------
 
+def _output_tail(text: str, max_lines: int = 40,
+                 cap: int = 4000) -> str:
+    """The useful tail of a tool's output for evidence: the last
+    ~40 lines, character-capped. (The pre-fix behaviour kept only
+    a flat character slice whose last line was often a bare solc
+    caret, which made compile failures undiagnosable.)"""
+    lines = (text or "").splitlines()[-max_lines:]
+    return "\n".join(lines)[-cap:]
+
+
+def _first_error_line(text: str) -> str:
+    """First diagnostic line of a compiler output (the line that
+    names the actual error), for the one-line finding detail."""
+    fallback = ""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        fallback = stripped
+        if "Error" in stripped:
+            return stripped[:300]
+    return fallback[:300] if fallback else "unknown error"
+
+
+_SOLC_DIAG_RE = re.compile(
+    r"(?m)^\s*(?:ParserError|DeclarationError|TypeError|"
+    r"SyntaxError|Error):")
+
+
+def looks_like_solc_diagnostics(text: str) -> bool:
+    """True when a blob of tool output is really solc diagnostics
+    (an 'Error:' line plus a '-->' source-location line). Echidna
+    compiles the harness project itself via crytic-compile, so a
+    project that solc rejects surfaces as solc diagnostics inside
+    Echidna's output; those are compile failures, not engine
+    errors."""
+    text = text or ""
+    return "-->" in text and bool(_SOLC_DIAG_RE.search(text))
+
+
 async def compile_source(solc: str, source: str, workdir: str,
                          budget_s: float) -> Tuple[
                              Optional[Dict[str, Any]], str]:
     """Compile one Solidity file with solc --combined-json.
     Returns (contracts dict keyed 'path:Name' -> {abi, bin}, '')
-    or (None, error excerpt)."""
+    or (None, error tail: last ~40 lines, capped)."""
     path = os.path.join(workdir, "Target.sol")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(source)
@@ -643,12 +998,13 @@ async def compile_source(solc: str, source: str, workdir: str,
         [solc, "--combined-json", "abi,bin", path],
         cwd=workdir, budget_s=budget_s)
     if rc != 0 or not out.strip():
-        return None, (err or out or "solc failed")[-1200:]
+        return None, _output_tail(err or out or "solc failed") \
+            or "solc failed"
     try:
         data = json.loads(out)
         return data.get("contracts") or {}, ""
     except Exception:
-        return None, (err or out)[-1200:]
+        return None, _output_tail(err or out) or "solc failed"
 
 
 _FAILED_RE = re.compile(r"^([A-Za-z0-9_]+)(?:\(\))?:\s*failed", re.M)
@@ -763,7 +1119,9 @@ class ContractFuzzPlugin(Plugin):
         "ONE flagged contract: the verified source is scoped "
         "(bundle split, test/mock units dropped), compiled with a "
         "local solc, and deployed inside an Echidna harness where "
-        "a HOUSE actor seeds it with mock ETH and an unauthenticated "
+        "a HOUSE actor deploys it (holding every constructor "
+        "deployer role) and seeds it with mock ETH, while an "
+        "unauthenticated "
         "STRANGER (the harness) fuzz-calls every public "
         "state-changing function under per-call balance accounting. "
         "Only a falsified no-stranger-profit property (ETH or "
@@ -996,15 +1354,55 @@ class ContractFuzzPlugin(Plugin):
                 "(bundle split dropped every unit, or only "
                 "interfaces/libraries are present)"))
             return
-        solc = resolve_solc(scoped, item.get("compiler", ""))
+        pv = pragma_version(scoped) \
+            or pragma_version(item.get("compiler", ""))
+        if pv and harness_flavor(pv) == "unsupported":
+            findings.append(self._inconclusive(
+                label, target_name, "unsupported_compiler",
+                f"source targets solc {pv[0]}.{pv[1]}.{pv[2]}; "
+                "the fuzz harness dialect needs >= 0.6 "
+                "(try/catch + receive())"))
+            return
+        solc, miss = resolve_solc_status(
+            scoped, item.get("compiler", ""))
+        if solc is None and miss == "exact_pragma_unavailable":
+            exact = pragma_exact_version(pragma_expr_of(scoped))
+            acquired = False
+            if exact is not None:
+                remaining = deadline - time.monotonic()
+                acquired = await ensure_exact_solc(
+                    exact,
+                    budget_s=min(180.0, max(5.0, remaining - 30.0)))
+                if acquired:
+                    solc, miss = resolve_solc_status(
+                        scoped, item.get("compiler", ""))
+            if solc is None:
+                ver = ".".join(str(x) for x in exact) \
+                    if exact else "?"
+                findings.append(self._inconclusive(
+                    label, target_name, "exact_pragma_unavailable",
+                    f"source pins exact solc {ver}, which is not "
+                    "installed locally"
+                    + (" and the solc-select acquisition attempt "
+                       "did not provide it" if exact else "")
+                    + "; substituting another version would only "
+                      "manufacture a compile_fail, so none was "
+                      "tried"))
+                return
+        if solc is None and miss == "pragma_range_unavailable":
+            findings.append(self._inconclusive(
+                label, target_name, "pragma_range_unavailable",
+                "no installed solc satisfies the source's "
+                f"pragma ({pragma_expr_of(scoped)}); the lane "
+                "does not guess a version outside the range"))
+            return
         if not solc:
             findings.append(self._inconclusive(
                 label, target_name, "solc_absent",
                 "no local solc binary (audit tools / solc-select "
                 "artifacts) is installed on this machine"))
             return
-        version = pragma_version(scoped) \
-            or solc_path_version(solc)
+        version = pv or solc_path_version(solc)
         flavor = harness_flavor(version)
         if flavor == "unsupported":
             findings.append(self._inconclusive(
@@ -1032,7 +1430,7 @@ class ContractFuzzPlugin(Plugin):
                 findings.append(self._inconclusive(
                     label, target_name, "compile_fail",
                     "solc rejected the scoped source: "
-                    + (err.splitlines()[-1] if err else "unknown"),
+                    + _first_error_line(err),
                     {"solc_error_tail": err}))
                 return
             entry = None
@@ -1156,13 +1554,25 @@ class ContractFuzzPlugin(Plugin):
                     "deposits", source="contract fuzz lane",
                     confidence=70, evidence=ev, passive=False))
                 return
+            if looks_like_solc_diagnostics(text):
+                # Echidna compiles the harness project itself;
+                # when solc rejects that project, its output IS
+                # solc diagnostics. That is a compile failure of
+                # the project, not an engine error.
+                findings.append(self._inconclusive(
+                    label, target_name, "compile_fail",
+                    "solc rejected the fuzz project source: "
+                    + _first_error_line(text),
+                    {"solc_error_tail": _output_tail(text),
+                     "echidna_seed": seed}))
+                return
             findings.append(self._inconclusive(
                 label, target_name, "echidna_error",
                 "Echidna produced no recognizable verdict: "
                 + (text.strip().splitlines()[-1]
                    if text.strip() else "empty output"),
                 {"echidna_seed": seed,
-                 "echidna_output_tail": text[-1200:]}))
+                 "echidna_output_tail": _output_tail(text)}))
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
@@ -1210,8 +1620,11 @@ class ContractFuzzPlugin(Plugin):
             "house_seeded": True,
             "stranger_model": "harness contract: unauthenticated "
                               "caller, no owner role, no starting "
-                              "position; house funds are a separate "
-                              "actor's money",
+                              "position; the target was deployed "
+                              "by the house actor, so constructor "
+                              "deployer roles sit with the house, "
+                              "never the stranger; house funds are "
+                              "a separate actor's money",
             "exploitability": "public_poc",
             "remediation": _REMEDIATION_CONFIRMED,
             "skipped_functions": skipped,
