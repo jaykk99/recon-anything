@@ -110,6 +110,137 @@ else
   fail "medusa" "download/extract failed"
 fi
 
+# ------------------------------------------------------- Round 2 (Nov 3)
+# Mythril promotion, Wake, Securify 2.0, Slitherin, node tools
+# (Solhint / Surya / Scribble / SmartCheck), Foundry.
+
+# Mythril: its own venv. setuptools<81 is REQUIRED - mythril imports
+# pkg_resources at startup and crashes without it (proven live).
+# The venv ships the `myth` binary; the adapter looks for both
+# names (mythril / myth).
+if python3 -m venv "$AUDIT_DIR/venv-mythril" 2>/dev/null; then
+  V="$AUDIT_DIR/venv-mythril/bin"
+  if "$V/pip" install --quiet --no-input "mythril==0.24.8" \
+       "setuptools<81"; then
+    ok "mythril $("$V/myth" version 2>/dev/null | head -1)"
+  else
+    fail "mythril" "pip install failed"
+  fi
+else
+  fail "mythril" "could not create venv"
+fi
+
+# Slitherin (Pessimistic's extra Slither detectors) lives INSIDE the
+# slither venv: its detectors auto-register via entry points, so
+# every slither run includes them (hits are re-tagged tool=slitherin
+# by the adapter). NOTE: a crashing pess detector can kill a whole
+# slither run; the adapter retries core-only in that case.
+if [ -x "$AUDIT_DIR/venv-slither/bin/pip" ]; then
+  if "$AUDIT_DIR/venv-slither/bin/pip" install --quiet --no-input \
+       slitherin; then
+    ok "slitherin (pess-* detectors in the slither venv)"
+  else
+    fail "slitherin" "pip install failed"
+  fi
+fi
+
+# Wake (Ackee's framework): own venv. Its solc downloads over urllib
+# are unreliable on flaky egress, so pre-seed its compiler cache
+# from the solc-select artifacts slither already fetched, plus the
+# official list.json (curl). Versions must match _WAKE_SEEDED_SOLC
+# in toolbox.py and the solc-select set installed above.
+if python3 -m venv "$AUDIT_DIR/venv-wake" 2>/dev/null; then
+  V="$AUDIT_DIR/venv-wake/bin"
+  if "$V/pip" install --quiet --no-input eth-wake; then
+    WAKE_CACHE="$HOME/.local/share/wake/compilers"
+    mkdir -p "$WAKE_CACHE"
+    curl -fsSL --max-time 120 -o "$WAKE_CACHE/solc.json" \
+      "https://binaries.soliditylang.org/linux-amd64/list.json" \
+      >/dev/null 2>&1 || true
+    for ver in 0.8.26 0.8.20 0.7.6 0.6.12 0.5.17; do
+      # solc-select stores artifacts under ~/.solc-select no matter
+      # which venv's shim installed them
+      art="$HOME/.solc-select/artifacts/solc-$ver/solc-$ver"
+      if [ -f "$art" ]; then
+        name="solc-linux-amd64-v$ver"
+        mkdir -p "$WAKE_CACHE/$name"
+        cp "$art" "$WAKE_CACHE/$name/$name" && chmod +x "$WAKE_CACHE/$name/$name"
+      fi
+    done
+    ok "wake $("$V/wake" --version 2>/dev/null | head -1) + solc cache seeded"
+  else
+    fail "wake" "pip install failed"
+  fi
+else
+  fail "wake" "could not create venv"
+fi
+
+# Securify 2.0: no PyPI distribution - install the eth-sri git
+# release into its own venv. Two environment repairs are part of
+# the install (both proven necessary on Python 3.12):
+#  1. its vendored py-solc uses collections.Mapping (removed in
+#     3.10); a small collections.abc shim is applied to the
+#     installed copy.
+#  2. it needs the `souffle` Datalog binary on PATH at RUNTIME
+#     (apt install souffle where the mirror carries it); the
+#     adapter's availability() reports securify unavailable
+#     without it, honestly.
+if python3 -m venv "$AUDIT_DIR/venv-securify" 2>/dev/null; then
+  V="$AUDIT_DIR/venv-securify/bin"
+  if "$V/pip" install --quiet --no-input requests && \
+     "$V/pip" install --quiet --no-input \
+       "git+https://github.com/eth-sri/securify2"; then
+    SP="$AUDIT_DIR/venv-securify/lib/python3"*/site-packages/solc
+    for f in $SP/utils/types.py $SP/utils/string.py $SP/compilation/compiler.py; do
+      [ -f "$f" ] && sed -i \
+        -e 's/collections\.Mapping/collections.abc.Mapping/g' \
+        -e 's/collections\.Sequence/collections.abc.Sequence/g' \
+        -e '1i import collections.abc' "$f"
+    done
+    ok "securify 2.0 (git) + py3.12 collections shim"
+  else
+    fail "securify" "git install failed"
+  fi
+else
+  fail "securify" "could not create venv"
+fi
+if command -v souffle >/dev/null 2>&1; then
+  ok "souffle $(souffle --version 2>/dev/null | head -1)"
+else
+  fail "souffle" "not on PATH - securify installed but cannot run (apt install souffle)"
+fi
+
+# Node audit tools. ONE npm invocation on purpose: parallel npm
+# installs in the same directory prune each other's packages
+# (proven live, repeatedly). eth-scribble and smartcheck are
+# installed for operator use; neither has a toolbox adapter
+# (Scribble only instruments annotated code; SmartCheck's
+# jdeploy bootstrap never completes in this environment) - see
+# the PR availability matrix.
+mkdir -p "$AUDIT_DIR/node-tools"
+if (cd "$AUDIT_DIR/node-tools" && \
+    npm install --no-save --loglevel=error \
+      solhint surya eth-scribble @smartdec/smartcheck \
+      >/dev/null 2>&1); then
+  ok "node tools: solhint, surya (adapters) + eth-scribble, smartcheck (operator-only)"
+else
+  fail "node-tools" "npm install failed"
+fi
+
+# Foundry (forge/cast/anvil/chisel) release binaries: installed as
+# infrastructure (local chain / build tooling). No toolbox adapter
+# claims forge output as detections - see the PR matrix.
+if curl -fsSL --max-time 300 -o "$TMP/foundry.tar.gz" \
+     "https://github.com/foundry-rs/foundry/releases/download/v1.4.4/foundry_v1.4.4_linux_amd64.tar.gz" && \
+   tar -xzf "$TMP/foundry.tar.gz" -C "$TMP"; then
+  for b in forge cast anvil chisel; do
+    cp "$TMP/$b" "$BIN_DIR/$b" && chmod +x "$BIN_DIR/$b"
+  done
+  ok "foundry $("$BIN_DIR/forge" --version 2>/dev/null | head -1)"
+else
+  fail "foundry" "download/extract failed"
+fi
+
 echo
 echo "Installed under: $AUDIT_DIR"
 echo "The audit_toolbox plugin picks these up automatically (no keys,"

@@ -352,3 +352,205 @@ def test_plugin_no_address_skips():
                     normalized="example.com")
     res = asyncio.run(plugin.run(target, ctx))
     assert res.findings == []
+
+
+# ---------------------------------------------------------------------------
+# 6. Round 2 (Nov 3 lists): mythril promotion, wake, solhint,
+#    slitherin, surya graph, 4byte selectors
+# ---------------------------------------------------------------------------
+
+def test_mythril_parser_flags_canary():
+    # Saved REAL output of mythril 0.24.8 over MythrilCanary.sol
+    # (the tiny live-run canary; the full Vulnerable.sol run takes
+    # minutes and is exercised by the live adapter test instead).
+    hits = toolbox.parse_mythril(_load_json("mythril-canary.json"),
+                                 _src("MythrilCanary.sol"))
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["tool"] == "mythril"
+    # mythril emits the bare number "106"; the parser normalizes it
+    assert hit["swc_id"] == "SWC-106"
+    assert hit["severity"] == "high"
+    assert hit["detector"] == "unprotected_selfdestruct"
+    assert "selfdestruct" in hit["code"]
+    clean = toolbox.parse_mythril(_load_json("mythril-clean.json"),
+                                  _src("MythrilClean.sol"))
+    assert clean == []
+    # an error payload is absence, not a clean bill
+    assert toolbox.parse_mythril({"error": "boom"}) == []
+    assert toolbox.parse_mythril(None) == []
+
+
+def test_solhint_parser_flags_canary_and_clean_is_empty():
+    hits = toolbox.parse_solhint(_load_json("solhint-vulnerable.json"),
+                                 _src("Vulnerable.sol"))
+    by_rule = {h["detector"]: h for h in hits}
+    assert "avoid-tx-origin" in by_rule
+    assert by_rule["avoid-tx-origin"]["severity"] == "medium"
+    assert by_rule["avoid-tx-origin"]["swc_id"] == "SWC-115"
+    # the formatter's {"conclusion": ...} summary object is skipped
+    assert all(h["detector"] for h in hits)
+    assert toolbox.parse_solhint(_load_json("solhint-clean.json"),
+                                 _src("Clean.sol")) == []
+
+
+def test_wake_parser_flags_canary():
+    hits = toolbox.parse_wake(_load_json("wake-vulnerable.json"),
+                              _src("Vulnerable.sol"))
+    by_detector = {h["detector"]: h for h in hits}
+    assert "reentrancy" in by_detector
+    assert by_detector["reentrancy"]["severity"] == "high"
+    assert by_detector["reentrancy"]["swc_id"] == "SWC-107"
+    assert "unprotected-selfdestruct" in by_detector
+    assert all(h["tool"] == "wake" for h in hits)
+    assert toolbox.parse_wake({"not": "a list"}) == []
+
+
+def test_slitherin_detectors_retagged_by_slither_parser():
+    hits = toolbox.parse_slither(_load_json("slitherin-setter.json"),
+                                 _src("Setter.sol"))
+    assert hits, "the pess-unprotected-setter fixture must parse"
+    assert all(h["tool"] == "slitherin" for h in hits)
+    assert {h["detector"] for h in hits} == {"pess-unprotected-setter"}
+    assert all(h["via"] == "slither" for h in hits)
+    assert all(h["severity"] == "high" for h in hits)
+
+
+def test_surya_graph_parser():
+    hits = toolbox.parse_surya_graph(_load("surya-vulnerable.dot"))
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["tool"] == "surya"
+    assert hit["detector"] == "call_graph"
+    assert any("VulnerableVault.kill" in e for e in hit["edges"])
+    assert "digraph" in hit["call_graph_dot"]
+    assert toolbox.parse_surya_graph("not a graph") == []
+
+
+def test_fourbyte_parser_oldest_registration_wins():
+    hits = toolbox.parse_fourbyte(_load_json("fourbyte-transfer.json"),
+                                  "0xa9059cbb")
+    assert len(hits) == 1
+    # the API returns newest-first spam registrations; the parser
+    # must surface the 2016 canonical signature, not the junk
+    assert hits[0]["signature"] == "transfer(address,uint256)"
+    assert hits[0]["selector"] == "0xa9059cbb"
+    sels = toolbox.extract_selectors("0x6080604052a9059cbb63a9059cbb")
+    assert sels == ["0xa9059cbb"]
+
+
+def test_round2_availability_shape():
+    avail = toolbox.availability()
+    for name, lane in (("mythril", "symbolic"), ("wake", "static"),
+                       ("solhint", "static"), ("surya", "static"),
+                       ("securify", "static"),
+                       ("fourbyte", "bytecode")):
+        assert name in avail, name
+        assert avail[name]["lane"] == lane
+    assert avail["fourbyte"]["available"] is True  # keyless API
+
+
+def test_round2_missing_binaries_are_silent(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolbox, "_tool_paths", lambda: {})
+    monkeypatch.setenv("PATH", str(tmp_path))
+    src = _src("Vulnerable.sol")
+    for adapter in (toolbox._adapt_mythril, toolbox._adapt_wake,
+                    toolbox._adapt_solhint, toolbox._adapt_surya,
+                    toolbox._adapt_securify):
+        assert asyncio.run(adapter(str(tmp_path), src, 10)) == [], \
+            adapter.__name__
+    assert toolbox.tool_binary("mythril") is None
+    assert toolbox.tool_binary("wake") is None
+
+
+# -- live adapter runs (skip when the tool is not installed here) ---
+
+def _require(tool):
+    if not toolbox.tool_binary(tool):
+        import pytest
+        pytest.skip(f"{tool} not installed in this environment")
+
+
+def test_live_solhint_adapter(tmp_path):
+    _require("solhint")
+    hits = asyncio.run(toolbox._adapt_solhint(
+        str(tmp_path), _src("Vulnerable.sol"), 45))
+    assert "avoid-tx-origin" in {h["detector"] for h in hits}
+    clean = asyncio.run(toolbox._adapt_solhint(
+        str(tmp_path), _src("Clean.sol"), 45))
+    assert clean == []
+
+
+def test_live_wake_adapter(tmp_path):
+    _require("wake")
+    hits = asyncio.run(toolbox._adapt_wake(
+        str(tmp_path), _src("Vulnerable.sol"), 300))
+    detectors = {h["detector"] for h in hits}
+    assert "reentrancy" in detectors
+    clean = asyncio.run(toolbox._adapt_wake(
+        str(tmp_path), _src("Clean.sol"), 300))
+    assert "reentrancy" not in {h["detector"] for h in clean}
+    assert all(h["severity"] != "high" for h in clean)
+
+
+def test_live_surya_adapter(tmp_path):
+    _require("surya")
+    hits = asyncio.run(toolbox._adapt_surya(
+        str(tmp_path), _src("Vulnerable.sol"), 45))
+    assert len(hits) == 1
+    assert hits[0]["detector"] == "call_graph"
+
+
+def test_live_slitherin_and_defivuln_canary(tmp_path):
+    _require("slither")
+    # Slitherin: the pess-* detectors only exist in the run when
+    # slitherin is installed in the slither venv.
+    # distinct workdirs per call: the adapter's crytic-compile
+    # cache makes a shared directory return stale results
+    hits = asyncio.run(toolbox._adapt_slither(
+        str(tmp_path / "a"), _src("Setter.sol"), 300))
+    pess = [h for h in hits if h["tool"] == "slitherin"]
+    assert pess, "slitherin detectors must fire on the setter fixture"
+    assert "pess-unprotected-setter" in {h["detector"] for h in pess}
+    # DeFiVulnLabs canary (EtherStore, MIT, pinned commit in the
+    # fixture header): slither must flag the reentrancy and the
+    # remediated twin in the same file stays unflagged for it.
+    # (On this file the full run dies inside a Slitherin detector
+    # and the hits come from the adapter's core-only retry.)
+    hits = asyncio.run(toolbox._adapt_slither(
+        str(tmp_path / "b"), _src("EtherStore.sol"), 300))
+    reent = [h for h in hits if h["detector"] == "reentrancy-eth"]
+    assert reent, "slither must flag EtherStore reentrancy"
+    assert all("EtherStoreRemediated" not in h["message"]
+               for h in reent)
+
+
+def test_live_mythril_adapter(tmp_path):
+    _require("mythril")
+    hits = asyncio.run(toolbox._adapt_mythril(
+        str(tmp_path), _src("MythrilCanary.sol"), 300))
+    assert any(h.get("swc_id") == "SWC-106" for h in hits), hits
+    clean = asyncio.run(toolbox._adapt_mythril(
+        str(tmp_path), _src("MythrilClean.sol"), 300))
+    assert not any(h.get("swc_id") == "SWC-106" for h in clean)
+
+
+def test_securify_parser_violations_only():
+    # Fixture format is byte-faithful to format_match() in the
+    # installed securify2 package's analyses/analysis.py; the
+    # live run itself needs the Souffle binary, which is not
+    # installable from this VM's apt mirrors (see PR body), so
+    # the parser is pinned to the verified format instead of a
+    # captured run.
+    hits = toolbox.parse_securify(_load("securify-vulnerable.txt"),
+                                  _src("Vulnerable.sol"))
+    assert len(hits) == 1, hits
+    hit = hits[0]
+    assert hit["tool"] == "securify"
+    assert hit["pattern"] == "Reentrancy"
+    assert hit["severity"] == "high"
+    assert hit["lines"] == [19]
+    # the Compliant block (pattern holds = safe) is NOT a finding
+    assert all(h["pattern"] != "Locked Ether" for h in hits)
+    assert toolbox.parse_securify("garbage") == []
+    assert toolbox.parse_securify(None) == []

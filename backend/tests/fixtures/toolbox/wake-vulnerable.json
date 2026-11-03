@@ -1,0 +1,117 @@
+[
+  {
+    "detector_name": "reentrancy",
+    "impact": "high",
+    "confidence": "medium",
+    "uri": "https://ackee.xyz/wake/docs/4.22.2/static-analysis/detectors/reentrancy",
+    "detection": {
+      "message": "Possible reentrancy in `VulnerableVault.withdrawCredit()`",
+      "location": {
+        "path": "/tmp/waketest/Vulnerable.sol",
+        "relative_path": "Vulnerable.sol",
+        "contract": "VulnerableVault",
+        "source_start_line": 26,
+        "source_unit_name": "Vulnerable.sol",
+        "start_offset": 764,
+        "end_offset": 779,
+        "start_line": 29,
+        "start_col": 23,
+        "end_line": 29,
+        "end_col": 38,
+        "source": "\n    function withdrawCredit() public {\n        uint256 amount = contributions[msg.sender];\n        (bool ok, ) = msg.sender.call{value: amount}(\"\");\n        require(ok);\n        contributions[msg.sender] = 0;\n    }"
+      },
+      "subdetections": [
+        {
+          "message": "Exploitable from `VulnerableVault.withdrawCredit()`",
+          "location": {
+            "path": "/tmp/waketest/Vulnerable.sol",
+            "relative_path": "Vulnerable.sol",
+            "contract": "VulnerableVault",
+            "source_start_line": 26,
+            "source_unit_name": "Vulnerable.sol",
+            "start_offset": 750,
+            "end_offset": 798,
+            "start_line": 29,
+            "start_col": 9,
+            "end_line": 29,
+            "end_col": 57,
+            "source": "\n    function withdrawCredit() public {\n        uint256 amount = contributions[msg.sender];\n        (bool ok, ) = msg.sender.call{value: amount}(\"\");\n        require(ok);\n        contributions[msg.sender] = 0;\n    }"
+          }
+        }
+      ]
+    },
+    "suppressed": false
+  },
+  {
+    "detector_name": "unprotected-selfdestruct",
+    "impact": "high",
+    "confidence": "medium",
+    "uri": "https://ackee.xyz/wake/docs/4.22.2/static-analysis/detectors/unprotected-selfdestruct",
+    "detection": {
+      "message": "Selfdestruct call is not protected",
+      "location": {
+        "path": "/tmp/waketest/Vulnerable.sol",
+        "relative_path": "Vulnerable.sol",
+        "contract": "VulnerableVault",
+        "source_start_line": 36,
+        "source_unit_name": "Vulnerable.sol",
+        "start_offset": 1003,
+        "end_offset": 1036,
+        "start_line": 39,
+        "start_col": 9,
+        "end_line": 39,
+        "end_col": 42,
+        "source": "    }\n\n    function kill() public {\n        selfdestruct(payable(msg.sender));\n    }\n}"
+      }
+    },
+    "suppressed": false
+  },
+  {
+    "detector_name": "tx-origin",
+    "impact": "medium",
+    "confidence": "low",
+    "uri": "https://ackee.xyz/wake/docs/4.22.2/static-analysis/detectors/tx-origin#phishing-attacks",
+    "detection": {
+      "message": "Unsafe usage of tx.origin",
+      "location": {
+        "path": "/tmp/waketest/Vulnerable.sol",
+        "relative_path": "Vulnerable.sol",
+        "contract": "VulnerableVault",
+        "source_start_line": 20,
+        "source_unit_name": "Vulnerable.sol",
+        "start_offset": 562,
+        "end_offset": 571,
+        "start_line": 23,
+        "start_col": 17,
+        "end_line": 23,
+        "end_col": 26,
+        "source": "    }\n\n    function withdraw() public {\n        require(tx.origin == owner);\n        payable(msg.sender).transfer(address(this).balance);\n    }"
+      }
+    },
+    "suppressed": false
+  },
+  {
+    "detector_name": "tx-origin",
+    "impact": "warning",
+    "confidence": "low",
+    "uri": "https://ackee.xyz/wake/docs/4.22.2/static-analysis/detectors/tx-origin#account-abstraction",
+    "detection": {
+      "message": "Use of tx.origin may interfere with ERC-4337 account abstraction",
+      "location": {
+        "path": "/tmp/waketest/Vulnerable.sol",
+        "relative_path": "Vulnerable.sol",
+        "contract": "VulnerableVault",
+        "source_start_line": 20,
+        "source_unit_name": "Vulnerable.sol",
+        "start_offset": 562,
+        "end_offset": 571,
+        "start_line": 23,
+        "start_col": 17,
+        "end_line": 23,
+        "end_col": 26,
+        "source": "    }\n\n    function withdraw() public {\n        require(tx.origin == owner);\n        payable(msg.sender).transfer(address(this).balance);\n    }"
+      }
+    },
+    "suppressed": false
+  }
+]

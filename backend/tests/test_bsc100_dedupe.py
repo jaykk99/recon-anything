@@ -9,7 +9,7 @@
 3. Every clean control (one per family) produces ZERO findings
    from ALL 100 new detectors.
 4. Registry discovery registers exactly these 100 new plugin
-   ids on top of the 655 base (755 total).
+   ids on top of the 655 base (756 total with ast_visual_audit).
 """
 import os
 import sys
@@ -167,10 +167,10 @@ def test_every_clean_control_silent_under_all_100():
     assert problems == [], f"clean controls fired: {problems}"
 
 
-def test_registry_discovers_755_with_all_100_new():
+def test_registry_discovers_756_with_all_100_new():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 755, f"registry size {len(reg)}, expected 755"
+    assert len(reg) == 756, f"registry size {len(reg)}, expected 756"
     missing = [pid for pid in EXPECTED_IDS if pid not in reg]
     assert missing == [], f"not registered: {missing}"
     for pid in EXPECTED_IDS:
