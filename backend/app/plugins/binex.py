@@ -175,16 +175,26 @@ class BinexPlugin(Plugin):
             return
         names = zf.namelist()
 
+        # Each sub-analyzer is isolated: one analyzer's crash must not
+        # lose the others' findings (the SECRET_PATTERNS .items() crash
+        # in _strings_analysis used to kill the whole deep analysis and
+        # surface as a plugin error with zero findings).
+        def _isolated(fn, *a):
+            try:
+                fn(*a)
+            except Exception:
+                pass
+
         # Signer certificate fingerprint.
-        self._cert_info(zf, names, findings)
+        _isolated(self._cert_info, zf, names, findings)
         # Manifest: permissions + exported components.
-        self._manifest(zf, findings)
+        _isolated(self._manifest, zf, findings)
         # DEX inventory.
-        self._dex_info(zf, names, findings)
+        _isolated(self._dex_info, zf, names, findings)
         # Native libraries.
-        self._native_libs(names, findings)
+        _isolated(self._native_libs, names, findings)
         # Strings: URLs, IPs, secrets.
-        self._strings_analysis(zf, names, findings)
+        _isolated(self._strings_analysis, zf, names, findings)
 
     def _cert_info(self, zf: zipfile.ZipFile, names: List[str],
                    findings: List):
@@ -366,7 +376,7 @@ class BinexPlugin(Plugin):
         # Secrets via shared patterns (values redacted in titles).
         seen: Set[str] = set()
         secret_hits = []
-        for label, pat in SECRET_PATTERNS.items():
+        for label, pat, _conf in SECRET_PATTERNS:
             try:
                 rx = re.compile(pat)
             except re.error:

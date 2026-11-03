@@ -14,12 +14,24 @@ Layers:
    the plugin itself follows):
    - A: ungated drain paying msg.sender MUST confirm
      (fuzz_confirmed, recipient CALLER, counterexample present);
-   - B: the same drain behind onlyOwner MUST NOT confirm;
+   - B: the same drain behind onlyOwner MUST NOT confirm (the
+     owner is ASSIGNED in the constructor - the pre-fix canary
+     declared `address public owner` but never assigned it, so
+     it could never catch a harness that hands the stranger the
+     deployer role);
    - C: self-service deposit/withdraw-own MUST NOT confirm (the
      claim accounting settles returns against own deposits);
-   - D: a free public mint MUST confirm on the token property.
-4. Registry discovery picks the plugin up (count 755 = master 655
-   + 100 BSC/BNB detectors).
+   - D: a free public mint MUST confirm on the token property;
+   - E: an Ownable vault whose constructor assigns the owner and
+     whose drain is owner-only MUST NOT confirm - regression for
+     the deployer-role flaw (the harness used to deploy the
+     target itself, silently holding every constructor role);
+   - F: a USSD-shaped token (constructor-set owner, one-shot
+     onlyOwner setter appointing the staking contract, role-gated
+     mintRewards) MUST NOT confirm - the exact shape that
+     produced the false confirmation in the Nov 3 backlog run.
+4. Registry discovery picks the plugin up (count 755 = master 655,
+   this plugin included, + 100 BSC/BNB detectors).
 """
 import asyncio
 import os
@@ -68,6 +80,9 @@ CANARY_A = VAULT_BODY % r"""
 
 CANARY_B = VAULT_BODY % r"""
     address public owner;
+    constructor() {
+        owner = msg.sender;
+    }
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
         _;
@@ -89,6 +104,75 @@ contract FreeToken {
     function mint(uint256 a) external {
         balanceOf[msg.sender] += a;
     }
+}
+"""
+
+CANARY_E = r"""
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract OwnedVault {
+    address public owner;
+    mapping(address => uint256) public balances;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    function deposit() public payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function withdrawMine() external {
+        uint256 a = balances[msg.sender];
+        balances[msg.sender] = 0;
+        payable(msg.sender).transfer(a);
+    }
+
+    function drain() external onlyOwner {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    receive() external payable {}
+}
+"""
+
+CANARY_F = r"""
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract RoleMintToken {
+    mapping(address => uint256) public balanceOf;
+    address public owner;
+    address public stakingContract;
+    address public insuranceContract;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    function connectStaking(address s) external onlyOwner {
+        require(stakingContract == address(0), "already set");
+        stakingContract = s;
+    }
+
+    function mintRewards(uint256 amount, address to) external {
+        require(msg.sender == stakingContract ||
+                msg.sender == insuranceContract, "not minter");
+        balanceOf[to] += amount;
+    }
+
+    receive() external payable {}
 }
 """
 
@@ -301,6 +385,142 @@ def test_translate_sequence_and_static_recipient():
         "UNRESOLVED"
 
 
+def test_scope_dedupes_spdx_identifiers():
+    # A flattened bundle carries one SPDX line per original file;
+    # solc hard-errors on more than one in the merged unit.
+    bundle = (
+        "// SPDX-License-Identifier: MIT\n"
+        "// ==== contracts/Token.sol ====\n"
+        "pragma solidity ^0.8.20;\n"
+        "contract MyToken { function mint(uint256 a) external {} }\n"
+        "// ==== contracts/Lib.sol ====\n"
+        "// SPDX-License-Identifier: GPL-3.0\n"
+        "pragma solidity ^0.8.20;\n"
+        "library Lib { function f(uint256 x) internal pure returns (uint256) { return x; } }\n"
+        "// ==== contracts/Other.sol ====\n"
+        "//SPDX-License-Identifier: Apache-2.0\n"
+        "pragma solidity ^0.8.20;\n"
+        "contract Other { function g() external {} }\n"
+    )
+    scoped, name = cf.build_scoped_source(bundle, "MyToken")
+    assert name == "MyToken"
+    assert scoped.count("SPDX-License-Identifier:") == 1
+    assert "duplicate SPDX identifier stripped" in scoped
+
+
+def test_scope_orders_base_units_before_derived():
+    # Flattened bundles list units in arbitrary (often
+    # alphabetical) order; solc requires a base contract to be
+    # defined before the contracts that inherit from it.
+    bundle = (
+        "// SPDX-License-Identifier: MIT\n"
+        "// ==== contracts/Token.sol ====\n"
+        "pragma solidity ^0.8.20;\n"
+        "contract MyToken is ERC20 { function mint(uint256 a) external {} }\n"
+        "// ==== contracts/Context.sol ====\n"
+        "pragma solidity ^0.8.20;\n"
+        "contract Context { function _msgSender() internal view returns (address) { return msg.sender; } }\n"
+        "// ==== contracts/ERC20.sol ====\n"
+        "pragma solidity ^0.8.20;\n"
+        "contract ERC20 is Context { function f() external {} }\n"
+    )
+    scoped, name = cf.build_scoped_source(bundle, "MyToken")
+    assert name == "MyToken"
+    assert scoped.index("contract Context") < \
+        scoped.index("contract ERC20")
+    assert scoped.index("contract ERC20") < \
+        scoped.index("contract MyToken")
+    # The first pragma / SPDX in bundle order still win.
+    assert scoped.count("pragma solidity") == 1
+    assert scoped.count("SPDX-License-Identifier:") == 1
+
+
+_FAKE_CANCS = [((0, 8, 20), "/fake/solc-0.8.20"),
+               ((0, 8, 26), "/fake/solc-0.8.26"),
+               ((0, 7, 6), "/fake/solc-0.7.6"),
+               ((0, 6, 12), "/fake/solc-0.6.12"),
+               ((0, 0, 0), "/fake/shim")]
+
+
+def test_resolve_solc_exact_pragma(monkeypatch):
+    monkeypatch.setattr(cf, "_solc_candidates",
+                        lambda: list(_FAKE_CANCS))
+    # Exact version installed: that artifact, NOT the newest
+    # patch of the same major.minor (solc rejects exact pragmas
+    # compiled by any other version).
+    assert cf.resolve_solc_status("pragma solidity 0.8.20;") == \
+        ("/fake/solc-0.8.20", "")
+    # Exact version missing: a distinct reason, never a silent
+    # substitution that would manufacture a compile_fail.
+    path, reason = cf.resolve_solc_status("pragma solidity 0.8.19;")
+    assert path is None and reason == "exact_pragma_unavailable"
+    assert cf.resolve_solc("pragma solidity 0.8.19;") is None
+
+
+def test_resolve_solc_ranges_pick_highest_satisfying(monkeypatch):
+    monkeypatch.setattr(cf, "_solc_candidates",
+                        lambda: list(_FAKE_CANCS))
+    # Caret: highest installed inside the caret range.
+    assert cf.resolve_solc("pragma solidity ^0.8.19;") == \
+        "/fake/solc-0.8.26"
+    assert cf.resolve_solc("pragma solidity ^0.6.0;") == \
+        "/fake/solc-0.6.12"
+    # Range with an upper bound: 0.8.x must NOT be picked.
+    assert cf.resolve_solc("pragma solidity >=0.6.0 <0.8.0;") == \
+        "/fake/solc-0.7.6"
+    # Unsatisfiable range: distinct reason, no guess.
+    path, reason = cf.resolve_solc_status(
+        "pragma solidity >=0.8.27 <0.9.0;")
+    assert path is None and reason == "pragma_range_unavailable"
+    # No pragma at all: legacy fallback (newest artifact).
+    assert cf.resolve_solc_status("") == ("/fake/solc-0.8.26", "")
+    # Nothing installed: solc_absent.
+    monkeypatch.setattr(cf, "_solc_candidates", lambda: [])
+    assert cf.resolve_solc_status("pragma solidity ^0.8.20;") == \
+        (None, "solc_absent")
+
+
+def test_harness_house_deploys_target_never_stranger():
+    abi = [
+        {"type": "function", "name": "deposit",
+         "stateMutability": "payable", "inputs": []},
+        {"type": "function", "name": "drain",
+         "stateMutability": "nonpayable", "inputs": []},
+        {"type": "constructor", "inputs": [{"type": "address"}]},
+    ]
+    wrappers, _ = cf.plan_wrappers(abi)
+    ctor, _r = cf.constructor_plan(abi)
+    h = cf.generate_harness("Vault", wrappers, ctor, False,
+                            "modern")
+    house_part, _sep, harness_part = h.partition(
+        f"contract {cf.HARNESS_NAME}")
+    # The HOUSE deploys the target (with the defaulted ctor args);
+    # the harness only ever receives it via house.deploy().
+    assert "function deploy()" in house_part
+    assert "return new Vault(address(0));" in house_part
+    assert "target = house.deploy();" in harness_part
+    assert "new Vault(" not in harness_part
+
+
+def test_solc_diagnostics_classification_and_tail():
+    diag = (
+        "Compiling FuzzProject.sol...\n"
+        "Error: Identifier not found or not unique.\n"
+        " --> FuzzProject.sol:9:22:\n"
+        "  |\n"
+        "9 | contract X is Missing {\n"
+        "  |             ^^^^^^^\n")
+    assert cf.looks_like_solc_diagnostics(diag) is True
+    assert cf.looks_like_solc_diagnostics(
+        "echidna_stranger_no_eth_profit: passed!\n") is False
+    assert cf._first_error_line(diag).startswith("Error:")
+    long = "\n".join(f"line {i}" for i in range(200))
+    tail = cf._output_tail(long)
+    assert tail.splitlines()[-1] == "line 199"
+    assert len(tail.splitlines()) == 40
+    assert len(tail) <= 4000
+
+
 def test_budget_resolution_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("RECON_FUZZ_TIMEOUT", raising=False)
     assert cf.fuzz_timeout_s() == cf.DEFAULT_FUZZ_TIMEOUT_S
@@ -391,6 +611,38 @@ def test_canary_c_self_service_never_confirms():
     res = _live_run(CANARY_C, "FuzzVault")
     assert not [f for f in res.findings
                 if f.key == "fuzz_confirmed_stranger_profit"]
+    clean = [f for f in res.findings if f.key == "fuzz_no_violation"]
+    assert clean, [f.value for f in res.findings]
+    assert clean[0].evidence["total_calls"] > 0
+
+
+@needs_engine
+def test_canary_e_constructor_owner_vault_never_confirms():
+    # Regression for the deployer-role flaw: the target's
+    # constructor assigns owner = msg.sender. If the harness (the
+    # stranger) deployed the target - as the first merged version
+    # did - it would hold the owner role and drain() would
+    # confirm. With the house deploying, drain() always reverts
+    # for the stranger and the campaign completes clean.
+    res = _live_run(CANARY_E, "OwnedVault")
+    assert not [f for f in res.findings
+                if f.key == "fuzz_confirmed_stranger_profit"], \
+        [f.value for f in res.findings]
+    clean = [f for f in res.findings if f.key == "fuzz_no_violation"]
+    assert clean, [f.value for f in res.findings]
+    assert clean[0].evidence["total_calls"] > 0
+
+
+@needs_engine
+def test_canary_f_ussd_shape_never_confirms():
+    # The exact shape behind the Nov 3 false confirmation:
+    # constructor-set owner, one-shot onlyOwner connectStaking,
+    # mintRewards gated on the staking/insurance role addresses.
+    # A stranger can neither appoint itself nor call the mint.
+    res = _live_run(CANARY_F, "RoleMintToken")
+    assert not [f for f in res.findings
+                if f.key == "fuzz_confirmed_stranger_profit"], \
+        [f.value for f in res.findings]
     clean = [f for f in res.findings if f.key == "fuzz_no_violation"]
     assert clean, [f.value for f in res.findings]
     assert clean[0].evidence["total_calls"] > 0
