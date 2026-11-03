@@ -666,4 +666,4 @@ def test_registry_discovers_contract_fuzz():
     reg = discover()
     assert "contract_fuzz" in reg
     assert reg["contract_fuzz"] is cf.ContractFuzzPlugin
-    assert len(reg) == 762  # master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin
+    assert len(reg) == 762  # 762 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 6 deep-audit batch-2 detectors
