@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 655  # 655 = master 654 (incl. contract simulation PR #76) + 1 contract fuzz lane
+    assert len(reg) == 755  # 755 = master 655 + 100 BSC/BNB detectors (bsc100)
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"

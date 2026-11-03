@@ -30,8 +30,8 @@ Layers:
      onlyOwner setter appointing the staking contract, role-gated
      mintRewards) MUST NOT confirm - the exact shape that
      produced the false confirmation in the Nov 3 backlog run.
-4. Registry discovery picks the plugin up (count 655 = master 654
-   + this plugin).
+4. Registry discovery picks the plugin up (count 755 = master 655,
+   this plugin included, + 100 BSC/BNB detectors).
 """
 import asyncio
 import os
@@ -666,4 +666,4 @@ def test_registry_discovers_contract_fuzz():
     reg = discover()
     assert "contract_fuzz" in reg
     assert reg["contract_fuzz"] is cf.ContractFuzzPlugin
-    assert len(reg) == 655  # master 654 (incl. PR #76) + this plugin
+    assert len(reg) == 755  # master 655 + 100 BSC/BNB detectors (bsc100)
