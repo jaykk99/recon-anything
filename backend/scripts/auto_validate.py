@@ -40,6 +40,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from app.plugins.auto_validator import STRANGER, \
     validate_candidate  # noqa: E402
 from app.plugins import contract_chain as cc  # noqa: E402
+from app.plugins import contract_sim as sim  # noqa: E402
 
 CAST = os.path.expanduser("~/workspace/tools/audit/bin/cast")
 SOURCIFY = "https://sourcify.dev/server/files/any/{cid}/{addr}"
@@ -176,30 +177,56 @@ def native_balance(chain, address):
             "source": "all RPC routes failed"}
 
 
-# Default/boundary arguments per static parameter type. Anything
-# else (arrays, tuples, strings, bytes) is not encodable here and
-# the probe is skipped - the engine reports the missing probe.
-def default_args(signature, address):
-    try:
-        inner = signature[signature.index("(") + 1:
-                          signature.rindex(")")]
-    except ValueError:
+# Default arguments per parameter type, built from the canonical
+# types sim._param_types extracts (arrays/tuples included).
+# Returns None only when _param_types returns None (a named
+# struct parameter, which cast cannot be given blind either).
+def _cast_default(typ):
+    node = sim._parse_type_str(typ)
+    if node is None:
         return None
-    if not inner.strip():
-        return []
-    args = []
-    for part in inner.split(","):
-        t = part.strip().split()[0] if part.strip() else ""
-        if t == "address":
-            args.append(STRANGER)
-        elif t.startswith("uint") or t.startswith("int"):
-            args.append("0")
-        elif t == "bool":
-            args.append("false")
-        elif t == "bytes32":
-            args.append("0x" + "00" * 32)
-        else:
+    kind = node[0]
+    if kind == "array":
+        elem = _cast_default(sim._node_str(node[1]))
+        if elem is None:
             return None
+        if node[2] is None:
+            return "[]"
+        return "[" + ",".join([elem] * node[2]) + "]"
+    if kind == "tuple":
+        parts = []
+        for member in node[1]:
+            d = _cast_default(sim._node_str(member))
+            if d is None:
+                return None
+            parts.append(d)
+        return "(" + ",".join(parts) + ")"
+    name = node[1]
+    if name == "address":
+        return STRANGER
+    if name.startswith("uint") or name.startswith("int"):
+        return "0"
+    if name == "bool":
+        return "false"
+    if name == "bytes":
+        return "0x"
+    if name.startswith("bytes"):
+        return "0x" + "00" * int(name[5:])
+    if name == "string":
+        return ""
+    return None
+
+
+def default_args(signature, address):
+    types = sim._param_types(signature)
+    if types is None:
+        return None
+    args = []
+    for typ in types:
+        d = _cast_default(typ)
+        if d is None:
+            return None
+        args.append(d)
     return args
 
 

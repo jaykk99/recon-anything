@@ -416,10 +416,12 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
                 cases = sim.boundary_cases(types, addr)
                 probe = {"status": "transport_error",
                          "detail": "no probe case ran"}
-                for case in cases[:3]:
+                for values, _label in cases[:3]:
+                    enc = sim.encode_call_args(types, values)
+                    if enc is None:
+                        continue
                     data = sim.function_selector(
-                        sim.canonical_signature(fn_name, types)) + \
-                        (case["encoded"] or "")
+                        sim.canonical_signature(fn_name, types)) + enc
                     res = await sim.eth_call(ctx, chain, addr, data,
                                              STRANGER)
                     probe = res
