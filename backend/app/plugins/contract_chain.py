@@ -59,8 +59,26 @@ CHAINS: Dict[str, ChainConfig] = {
         native="ETH"),
     "bsc": ChainConfig(
         id="bsc", name="BNB Chain", chain_id=56,
-        rpc_urls=("https://bsc-rpc.publicnode.com",
-                  "https://bsc-dataseed.bnbchain.org"),
+        # Keyless public endpoints, tried in order by every chain
+        # reader (rpc_get_code / rpc_get_storage_at / contract_sim
+        # eth_call all loop this tuple and move on at the first
+        # failure, so one dead or rate-limited endpoint no longer
+        # degrades the whole chain). The old 2-endpoint list
+        # (publicnode + bnbchain.org) rate-limited / failed for a
+        # full afternoon on 2026-11-03 and degraded every BSC scan
+        # (WBNB, BMB tokens, the BNB-chain sweep) while hand probes
+        # to the Binance dataseed family answered fine - so the
+        # dataseed family leads now and the old pair stays in the
+        # rotation as later fallbacks. Every endpoint below was
+        # verified live (eth_chainId, HTTP 200) on 2026-11-03.
+        rpc_urls=("https://bsc-dataseed.binance.org",
+                  "https://bsc-dataseed1.binance.org",
+                  "https://bsc-dataseed2.binance.org",
+                  "https://bsc-dataseed3.binance.org",
+                  "https://bsc-dataseed4.binance.org",
+                  "https://bsc-dataseed.bnbchain.org",
+                  "https://rpc.ankr.com/bsc",
+                  "https://bsc-rpc.publicnode.com"),
         blockscout_api="https://bsc.blockscout.com/api",
         explorer_address="https://bscscan.com/address/{addr}",
         native="BNB"),
