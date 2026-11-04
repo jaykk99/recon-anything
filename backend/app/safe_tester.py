@@ -679,7 +679,13 @@ def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
 
     Only GET/HEAD. Rate-limited. Returns which candidates were confirmed.
     """
-    base = (base_url or "").rstrip("/") or "https://example.com"
+    base = (base_url or "").strip().rstrip("/")
+    # Domain/IP targets normalize to a bare host (no scheme); httpx rejects a
+    # scheme-less URL, which would make every probe throw and report works=False
+    # ("no finding") even when advise() produced real candidates. Default to https.
+    if base and "://" not in base:
+        base = "https://" + base
+    base = base or "https://example.com"
     results = []
     for c in candidates:
         fn = PROBE_MAP.get(c["id"])
