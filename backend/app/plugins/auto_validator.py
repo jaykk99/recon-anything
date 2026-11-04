@@ -319,7 +319,13 @@ def _own_standard_surface(fn: Optional[Dict[str, Any]],
         and "totalSupply" in scope.scoped_text)
     if not is_token:
         return False
-    if not _LEDGER_MOVE_RE.search(fn["text"]):
+    # The ledger move is either in the function body itself or
+    # one super-delegation away (the common OpenZeppelin shape:
+    # a thin override that calls super.transfer /
+    # super.transferFrom into the in-scope ERC20 implementation).
+    if not _LEDGER_MOVE_RE.search(fn["text"]) and not re.search(
+            r"super\.\s*" + re.escape(fn["name"]) + r"\s*\(",
+            fn["text"]):
         return False
     if fn["name"] == "transferFrom" and \
             not _ALLOWANCE_RE.search(flow_text):
