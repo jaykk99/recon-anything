@@ -34,7 +34,8 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "test-service-key-123"
 EXPECTED_TOOLS = {"recon_health", "recon_start_scan", "recon_list_runs",
                   "recon_run_status", "recon_get_findings",
-                  "recon_get_graph", "recon_list_plugins"}
+                  "recon_get_graph", "recon_list_plugins",
+                  "recon_query_knowledge", "recon_get_delta"}
 
 
 def _free_port() -> int:
@@ -127,7 +128,7 @@ def test_mcp_initialize_with_key(prod_server):
     assert result["protocolVersion"] == "2025-03-26"
 
 
-def test_mcp_tools_list_has_seven_tools(prod_server):
+def test_mcp_tools_list_has_nine_tools(prod_server):
     r = _rpc(prod_server, {"jsonrpc": "2.0", "id": 2,
                            "method": "tools/list"},
              headers={"Authorization": f"Bearer {TEST_KEY}"})

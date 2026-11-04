@@ -3,9 +3,10 @@
 Backs the contract_recon plugin. Everything here is READ-ONLY public
 chain data:
 
-- verified source from keyless Blockscout instances and the keyless
-  Sourcify repository (Etherscan only when a key is already configured,
-  as an enhancement - never a requirement);
+- verified source from keyless Blockscout instances, then the
+  Sourcify v2 API (``sourcify.dev/server/v2``), then the legacy
+  Sourcify repository route as a fallback (Etherscan only when a key
+  is already configured, as an enhancement - never a requirement);
 - deployed bytecode via public JSON-RPC ``eth_getCode``.
 
 No transactions, no eth_call, no state-changing anything. Detection
@@ -26,6 +27,7 @@ from ..ratelimit import fetch
 from .cryptopack_util import keccak256
 
 SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
+SOURCIFY_V2_API = "https://sourcify.dev/server/v2/contract"
 ETH_V2_API = "https://api.etherscan.io/v2/api"
 
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -57,8 +59,26 @@ CHAINS: Dict[str, ChainConfig] = {
         native="ETH"),
     "bsc": ChainConfig(
         id="bsc", name="BNB Chain", chain_id=56,
-        rpc_urls=("https://bsc-rpc.publicnode.com",
-                  "https://bsc-dataseed.bnbchain.org"),
+        # Keyless public endpoints, tried in order by every chain
+        # reader (rpc_get_code / rpc_get_storage_at / contract_sim
+        # eth_call all loop this tuple and move on at the first
+        # failure, so one dead or rate-limited endpoint no longer
+        # degrades the whole chain). The old 2-endpoint list
+        # (publicnode + bnbchain.org) rate-limited / failed for a
+        # full afternoon on 2026-11-03 and degraded every BSC scan
+        # (WBNB, BMB tokens, the BNB-chain sweep) while hand probes
+        # to the Binance dataseed family answered fine - so the
+        # dataseed family leads now and the old pair stays in the
+        # rotation as later fallbacks. Every endpoint below was
+        # verified live (eth_chainId, HTTP 200) on 2026-11-03.
+        rpc_urls=("https://bsc-dataseed.binance.org",
+                  "https://bsc-dataseed1.binance.org",
+                  "https://bsc-dataseed2.binance.org",
+                  "https://bsc-dataseed3.binance.org",
+                  "https://bsc-dataseed4.binance.org",
+                  "https://bsc-dataseed.bnbchain.org",
+                  "https://rpc.ankr.com/bsc",
+                  "https://bsc-rpc.publicnode.com"),
         blockscout_api="https://bsc.blockscout.com/api",
         explorer_address="https://bscscan.com/address/{addr}",
         native="BNB"),
@@ -180,6 +200,72 @@ async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
             continue
         if isinstance(d, dict) and isinstance(d.get("result"), str):
             return d["result"]
+    return None
+
+
+async def rpc_get_balance(ctx: Any, chain: ChainConfig,
+                          address: str) -> Optional[int]:
+    """eth_getBalance via public JSON-RPC. Read-only.
+
+    Returns the native balance in wei, or None when every RPC
+    endpoint failed. Endpoint list is read from the chain config at
+    call time, so config-level endpoint changes apply here too.
+    """
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
+               "params": [address, "latest"]}
+    for rpc in chain.rpc_urls:
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                            json=payload, timeout=12, max_retries=0)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except Exception:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            try:
+                return int(d["result"], 16)
+            except ValueError:
+                continue
+    return None
+
+
+async def rpc_batch(ctx: Any, chain: ChainConfig,
+                    calls: List[Tuple[str, list]]) -> Optional[list]:
+    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+
+    ``calls`` is a list of (method, params) read-only calls
+    (eth_getCode / eth_getBalance / eth_getStorageAt / ...). Returns
+    the list of raw JSON-RPC ``result`` values in request order
+    (None for an individual call that errored), or None when the
+    batch itself failed on every endpoint - callers then fall back
+    to the per-call helpers above, so a batch-hostile endpoint can
+    never lose data, only the speedup. Goes through the same
+    rate-limited fetch as every other read: one limiter slot for
+    the whole batch, spike backoff untouched.
+    """
+    if not calls:
+        return []
+    payload = [{"jsonrpc": "2.0", "id": i + 1, "method": m,
+                "params": p} for i, (m, p) in enumerate(calls)]
+    for rpc in chain.rpc_urls:
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                            json=payload, timeout=12, max_retries=0)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except Exception:
+            continue
+        if not isinstance(d, list):
+            continue
+        by_id: Dict[Any, Any] = {}
+        for item in d:
+            if isinstance(item, dict) and "id" in item:
+                by_id[item["id"]] = item.get("result")
+        if not by_id:
+            continue
+        return [by_id.get(i + 1) for i in range(len(calls))]
     return None
 
 
@@ -391,6 +477,74 @@ async def _source_sourcify(ctx: Any, chain: ChainConfig,
     return None
 
 
+def _parse_sourcify_v2_payload(d: Any, address: str) -> Optional[Dict[str, Any]]:
+    """Parse a Sourcify v2 contract payload into the standard source dict.
+
+    Pure helper (no I/O): ``d`` is the decoded JSON of
+    ``GET /server/v2/contract/{chain_id}/{address}?fields=sources,compilation``,
+    shaped ``{sources: {path: {content}}, compilation: {name,
+    compilerVersion}}``. ``address`` is accepted for signature symmetry
+    with the other routes / future validation; parsing does not need it.
+
+    Source assembly: sorted paths, ``.sol`` files only, each part
+    prefixed with a ``// ==== {path} ====`` header, capped at 40
+    parts, and at least one non-empty part is required.
+    """
+    if not isinstance(d, dict):
+        return None
+    sources = d.get("sources") or {}
+    if not isinstance(sources, dict):
+        return None
+    parts: List[str] = []
+    for path in sorted(sources):
+        if not isinstance(path, str) or not path.endswith(".sol"):
+            continue
+        entry = sources.get(path)
+        content = ""
+        if isinstance(entry, dict):
+            content = entry.get("content") or ""
+        elif isinstance(entry, str):
+            content = entry
+        if content:
+            parts.append(f"\n// ==== {path} ====\n{content}")
+        if len(parts) >= 40:
+            break
+    if not parts:
+        return None
+    comp = d.get("compilation") or {}
+    if not isinstance(comp, dict):
+        comp = {}
+    return {
+        "source": "\n".join(parts),
+        "contract_name": comp.get("name") or "",
+        "compiler": comp.get("compilerVersion") or "",
+        "proxy": False,
+        "implementation": "",
+        "origin": "Sourcify v2",
+    }
+
+
+async def _source_sourcify_v2(ctx: Any, chain: ChainConfig,
+                              address: str) -> Optional[Dict[str, Any]]:
+    """Keyless verified source from the Sourcify v2 API.
+
+    The legacy repo route below relies on Sourcify API v1, which
+    upstream removed; the v2 route serves the same verified sources
+    (plus compilation metadata) in a single call.
+    """
+    url = (f"{SOURCIFY_V2_API}/{chain.chain_id}/{address}"
+           "?fields=sources,compilation")
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                        max_retries=0)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    return _parse_sourcify_v2_payload(d, address)
+
+
 async def _source_etherscan(ctx: Any, chain: ChainConfig, address: str,
                             key: str) -> Optional[Dict[str, Any]]:
     """Verified source via Etherscan v2 (multichain). Only used when a
@@ -423,28 +577,81 @@ async def _source_etherscan(ctx: Any, chain: ChainConfig, address: str,
     }
 
 
+async def fetch_verified_source_with_status(
+        ctx: Any, chain: ChainConfig, address: str,
+        etherscan_key: Optional[str] = None) -> Dict[str, Any]:
+    """Verified source for a contract, with an honest status report.
+
+    Route order: Blockscout, Sourcify v2, legacy Sourcify repo route
+    (fallback), then Etherscan (only when a key is configured).
+
+    Returns {"source": <standard source dict or None>,
+    "status": "ok" | "degraded", "routes_tried": [route names in the
+    order they were attempted]}. Status is "degraded" when every
+    route failed, so callers can distinguish "no verified source
+    exists / source transport is down" from a clean negative.
+
+    Successful results are memoized per run on
+    ``ctx.shared["_source_cache"]`` keyed by (chain.id,
+    address.lower()) when ctx exposes a ``shared`` dict; failures
+    are never cached.
+    """
+    shared = getattr(ctx, "shared", None)
+    cache_key = (chain.id, address.lower())
+    if isinstance(shared, dict):
+        cache = shared.get("_source_cache")
+        if isinstance(cache, dict) and cache_key in cache:
+            return {"source": cache[cache_key], "status": "ok",
+                    "routes_tried": []}
+
+    routes_tried: List[str] = []
+    routes = (
+        ("Blockscout", _source_blockscout),
+        ("Sourcify v2", _source_sourcify_v2),
+        ("Sourcify", _source_sourcify),
+    )
+    got: Optional[Dict[str, Any]] = None
+    for name, route in routes:
+        routes_tried.append(name)
+        try:
+            got = await route(ctx, chain, address)
+        except Exception:
+            got = None
+        if got:
+            break
+    if not got and etherscan_key:
+        routes_tried.append("Etherscan")
+        try:
+            got = await _source_etherscan(ctx, chain, address,
+                                          etherscan_key)
+        except Exception:
+            got = None
+    if got:
+        if isinstance(shared, dict):
+            cache = shared.get("_source_cache")
+            if not isinstance(cache, dict):
+                cache = {}
+                shared["_source_cache"] = cache
+            cache[cache_key] = got
+        return {"source": got, "status": "ok",
+                "routes_tried": routes_tried}
+    return {"source": None, "status": "degraded",
+            "routes_tried": routes_tried}
+
+
 async def fetch_verified_source(ctx: Any, chain: ChainConfig, address: str,
                                 etherscan_key: Optional[str] = None
                                 ) -> Optional[Dict[str, Any]]:
     """Verified source for a contract, keyless routes first.
 
     Returns {source, contract_name, compiler, proxy, implementation,
-    origin} or None when no explorer has verified source.
+    origin} or None when no explorer has verified source. Thin
+    wrapper over fetch_verified_source_with_status so existing
+    callers keep their exact return contract.
     """
-    for route in (_source_blockscout, _source_sourcify):
-        try:
-            got = await route(ctx, chain, address)
-        except Exception:
-            got = None
-        if got:
-            return got
-    if etherscan_key:
-        try:
-            return await _source_etherscan(ctx, chain, address,
-                                           etherscan_key)
-        except Exception:
-            return None
-    return None
+    result = await fetch_verified_source_with_status(
+        ctx, chain, address, etherscan_key)
+    return result["source"]
 
 
 # ---------------------------------------------------------------------------
