@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import urllib.request
@@ -230,6 +231,41 @@ def default_args(signature, address):
     return args
 
 
+def _canonical_signature(head, function):
+    """Canonical name(types) signature cast can parse, or None.
+
+    sim._param_types canonicalizes ordinary signatures: it reads
+    the first parenthesized group, so custom modifiers and
+    returns clauses trailing the parameter list do not poison
+    it. When it returns None, the usual cause is an
+    interface-typed parameter (IERC20-style): at ABI level that
+    is an address, so map bare interface identifiers to
+    address. Anything else (named structs) stays
+    uncanonicalizable -> None, and the caller keeps the raw
+    head (default_args then declines and the probe is skipped,
+    honestly, instead of failing inside cast).
+    """
+    types = sim._param_types(head)
+    if types is not None:
+        return sim.canonical_signature(function, types)
+    from app.plugins import crypto_drain as cd
+    i = head.find("(")
+    if i < 0:
+        return None
+    inner = head[i + 1:cd._matching(head, i)]
+    types = []
+    for part in cd._split_top(inner):
+        toks = part.strip().split()
+        if not toks:
+            continue
+        t = toks[0]
+        if re.fullmatch(r"I?[A-Z][A-Za-z0-9_]*", t):
+            types.append("address")
+        else:
+            return None
+    return sim.canonical_signature(function, types)
+
+
 def signature_of(source, function, contract_name=""):
     """Canonical signature of a function from verified source."""
     from app.plugins import contract_logic as cl
@@ -243,7 +279,8 @@ def signature_of(source, function, contract_name=""):
                        " private", " payable", " view", " pure"):
                 head = head.replace(kw, "")
             head = " ".join(head.split())
-            return head, fn
+            canon = _canonical_signature(head, function)
+            return (canon if canon is not None else head), fn
     return None, None
 
 
