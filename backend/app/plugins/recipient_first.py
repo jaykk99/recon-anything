@@ -59,6 +59,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from . import chain_data
 from . import contract_chain as cc
 from . import contract_logic as cl
 
@@ -738,15 +739,15 @@ class RecipientFirstPlugin(Plugin):
             if pairs >= MAX_CHAIN_PAIRS:
                 break
             chain = cc.CHAINS[cid]
-            code = await cc.rpc_get_code(ctx, chain, addr)
+            code = await chain_data.get_code(ctx, chain, addr)
             if code is None:
                 continue
             rpc_all_failed = False
             if code == "0x" or len(code) < 4:
                 continue
             pairs += 1
-            src = await cc.fetch_verified_source(ctx, chain, addr,
-                                                 key)
+            src = await chain_data.get_source(ctx, chain, addr,
+                                              key)
             if src:
                 got_source = True
                 items = analyze_recipient_source(

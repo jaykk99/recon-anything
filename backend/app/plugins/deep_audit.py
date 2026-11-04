@@ -50,6 +50,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from . import chain_data
 from . import contract_chain as cc
 from . import contract_logic as cl
 from .bsc_common import DetectorSpec, S
@@ -565,22 +566,36 @@ class DeepAuditPlugin(Plugin):
         findings: List[Finding] = []
         analyzed = 0
         no_source = 0
+        degraded = 0
         pairs_done = 0
         for chain_hint, addr in work:
             if pairs_done >= MAX_CHAIN_PAIRS:
                 break
             try:
-                pairs, got = await self._scan_address(
+                pairs, got, deg = await self._scan_address(
                     ctx, key, chain_hint, addr, findings)
             except Exception:
-                pairs, got = 0, False
+                pairs, got, deg = 0, False, False
             pairs_done += pairs
             if pairs:
                 analyzed += 1
                 if not got:
                     no_source += 1
+            elif deg:
+                degraded += 1
         dur = int((time.monotonic() - t0) * 1000)
         hits = sum(1 for f in findings if f.key == spec.id)
+        if analyzed == 0 and degraded:
+            # Shared layer says every route failed: DEGRADED,
+            # never a clean-looking skip (bsc_common pattern).
+            res = self._degraded(
+                f"DEGRADED: {spec.id}: chain data unavailable for "
+                f"{degraded} contract address(es) - every RPC/source "
+                f"route failed, so nothing was analyzed and the "
+                f"contract is NOT cleared")
+            res.findings = findings
+            res.duration_ms = dur
+            return res
         res = self._ok(
             findings,
             f"{spec.id}: analyzed {analyzed} contract address(es) "
@@ -627,19 +642,23 @@ class DeepAuditPlugin(Plugin):
     async def _scan_address(self, ctx: Ctx, key: Optional[str],
                             chain_hint: Optional[str], addr: str,
                             findings: List[Finding]
-                            ) -> Tuple[int, bool]:
+                            ) -> Tuple[int, bool, bool]:
         if chain_hint:
             chain_ids = [chain_hint]
         else:
             chain_ids = list(cc.DEFAULT_CHAIN_ORDER)
         pairs = 0
         got_source = False
+        degraded = False
         for cid in chain_ids:
             if pairs >= MAX_CHAIN_PAIRS:
                 break
             chain = cc.CHAINS[cid]
-            code = await cc.rpc_get_code(ctx, chain, addr)
-            if code is None or code == "0x" or len(code) < 4:
+            code = await chain_data.get_code(ctx, chain, addr)
+            if code is None:
+                degraded = True
+                continue
+            if code == "0x" or len(code) < 4:
                 continue
             pairs += 1
             if await self._scan_on_chain(ctx, key, chain, addr,
@@ -647,16 +666,16 @@ class DeepAuditPlugin(Plugin):
                 got_source = True
             if chain_hint:
                 break
-        return pairs, got_source
+        return pairs, got_source, degraded
 
     async def _scan_on_chain(self, ctx: Ctx, key: Optional[str],
                              chain: cc.ChainConfig, addr: str,
                              code_hex: str,
                              findings: List[Finding]) -> bool:
-        src = await cc.fetch_verified_source(ctx, chain, addr, key)
+        src = await chain_data.get_source(ctx, chain, addr, key)
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
-            res = await cc.resolve_implementation(
+            res = await chain_data.get_implementation(
                 ctx, chain, addr, code_hex,
                 {"implementation": (src or {}).get(
                     "implementation", "")})
@@ -671,8 +690,8 @@ class DeepAuditPlugin(Plugin):
         impl_code = None
         impl_src = None
         try:
-            impl_code = await cc.rpc_get_code(ctx, chain, impl)
-            impl_src = await cc.fetch_verified_source(
+            impl_code = await chain_data.get_code(ctx, chain, impl)
+            impl_src = await chain_data.get_source(
                 ctx, chain, impl, key)
         except Exception:
             impl_code, impl_src = None, None
