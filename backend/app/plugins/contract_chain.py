@@ -185,6 +185,33 @@ async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
     return None
 
 
+async def rpc_get_balance(ctx: Any, chain: ChainConfig,
+                          address: str) -> Optional[int]:
+    """eth_getBalance via public JSON-RPC. Read-only.
+
+    Returns the native balance in wei, or None when every RPC
+    endpoint failed. Endpoint list is read from the chain config at
+    call time, so config-level endpoint changes apply here too.
+    """
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
+               "params": [address, "latest"]}
+    for rpc in chain.rpc_urls:
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                            json=payload, timeout=12, max_retries=0)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except Exception:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            try:
+                return int(d["result"], 16)
+            except ValueError:
+                continue
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Proxy implementation resolution (read-only)
 # ---------------------------------------------------------------------------

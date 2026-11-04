@@ -82,6 +82,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc
+from . import chain_data
 from . import crypto_drain as cd
 
 MAX_ADDRESSES = 4       # addresses analyzed per run
@@ -1116,9 +1117,10 @@ class ContractLogicPlugin(Plugin):
                 pairs, got_source = 0, False
                 findings.append(self._f(
                     "web3", "contract_logic_failed",
-                    f"MEDIUM: {addr}: logic analysis failed - chain "
-                    "data could not be retrieved (explorers/RPC "
-                    "unreachable). No conclusion drawn.",
+                    f"MEDIUM: {addr}: DEGRADED - logic analysis failed, "
+                    "chain data could not be retrieved "
+                    "(explorers/RPC unreachable). No conclusion "
+                    "drawn.",
                     source="contract logic analyzer",
                     confidence=60, passive=True,
                     evidence={"severity": "medium", "address": addr,
@@ -1197,7 +1199,7 @@ class ContractLogicPlugin(Plugin):
             if pairs >= MAX_CHAIN_PAIRS:
                 break
             chain = cc.CHAINS[cid]
-            code = await cc.rpc_get_code(ctx, chain, addr)
+            code = await chain_data.get_code(ctx, chain, addr)
             if code is None:
                 continue
             rpc_all_failed = False
@@ -1212,9 +1214,9 @@ class ContractLogicPlugin(Plugin):
         if pairs == 0 and rpc_all_failed:
             findings.append(self._f(
                 "web3", "contract_logic_failed",
-                f"MEDIUM: {addr}: every public RPC endpoint failed, "
-                "so no chain data could be retrieved. No conclusion "
-                "drawn.",
+                f"MEDIUM: {addr}: DEGRADED - every public RPC endpoint "
+                "failed, so no chain data could be retrieved. "
+                "No conclusion drawn.",
                 source="public JSON-RPC eth_getCode",
                 confidence=60, passive=True,
                 evidence={"severity": "medium", "address": addr,
@@ -1231,7 +1233,7 @@ class ContractLogicPlugin(Plugin):
             "address": addr, "chain": chain.id,
             "is_contract": True, "verified": False, "name": ""})
 
-        src = await cc.fetch_verified_source(ctx, chain, addr, key)
+        src = await chain_data.get_source(ctx, chain, addr, key)
 
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
@@ -1251,8 +1253,8 @@ class ContractLogicPlugin(Plugin):
         impl_code = None
         impl_src = None
         try:
-            impl_code = await cc.rpc_get_code(ctx, chain, impl)
-            impl_src = await cc.fetch_verified_source(
+            impl_code = await chain_data.get_code(ctx, chain, impl)
+            impl_src = await chain_data.get_source(
                 ctx, chain, impl, key)
         except Exception:
             impl_code, impl_src = None, None
