@@ -547,4 +547,4 @@ def test_registry_discovers_deep_plugins():
     for pid in ("cross_contract_call_graph", "storage_state_analysis",
                 "bytecode_deep_analysis", "candidate_confirmation_queue"):
         assert pid in reg
-    assert len(reg) == 778  # 774 master + 4 deep-analysis plugins (deep_layers)
+    assert len(reg) == 783  # 778 master + 4 deep-analysis plugins (deep_layers) + 5 deep3 plugins
