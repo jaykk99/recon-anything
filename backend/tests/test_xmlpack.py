@@ -109,7 +109,7 @@ def test_exactly_5_new_detectors_registered():
     assert len(xml) == 5
     # 592 when the xml pack landed; +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 798  # 798 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 12 deep-audit batch-5 detectors (deep_audit5)
+    assert len(discover()) == 833  # 833 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 12 deep-audit batch-5 detectors (deep_audit5)
 
 
 def test_connstr_password_masked_with_fingerprint():
