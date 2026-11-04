@@ -626,6 +626,78 @@ def probe_actuator(base: str) -> Tuple[bool, str]:
         return False, f"Live test failed: {str(e)[:100]}"
 
 
+def probe_csp(base: str) -> Tuple[bool, str]:
+    """GET base - inspect Content-Security-Policy header (read-only)."""
+    try:
+        with _client() as c:
+            r = c.get(base)
+        csp = r.headers.get("content-security-policy", "")
+        if not csp:
+            return True, "Live test: no Content-Security-Policy header set. No CSP protection."
+        weak = [d for d in ("'unsafe-inline'", "'unsafe-eval'") if d in csp]
+        wildcard = any(w in csp for w in ("default-src *", "script-src *", "default-src 'self' *"))
+        if weak or wildcard:
+            why = ", ".join(weak) if weak else "wildcard source"
+            return True, f"Live test: CSP present but bypassable ({why}). Inline/remote script allowed."
+        return False, "Live test: CSP header present with no obvious bypass directives."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_hsts(base: str) -> Tuple[bool, str]:
+    """GET over http:// without following redirects - is plaintext served
+    (no upgrade to https, no HSTS)? Read-only."""
+    host = base.split("://", 1)[-1]
+    try:
+        with _no_follow_client() as c:
+            r = c.get("http://" + host)
+        loc = r.headers.get("location", "")
+        if r.status_code in (301, 302, 303, 307, 308) and loc.startswith("https://"):
+            return False, f"Live test: http:// returned {r.status_code} redirect to https. HTTPS enforced."
+        if r.status_code < 400:
+            return True, (f"Live test: http://{host} served {r.status_code} without redirect to https. "
+                          f"Plaintext HTTP reachable (HSTS downgrade possible).")
+        return False, f"Live test: http:// returned {r.status_code}."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_verbose_errors(base: str) -> Tuple[bool, str]:
+    """GET a nonexistent path - check the error page for stack-trace / debug
+    markers (read-only, no payloads)."""
+    markers = ["traceback (most recent call last)", "stack trace", "at java.",
+               "werkzeug", "django.core", "symfony", "nullpointerexception",
+               "sqlstate", "exception in thread", ".py\", line "]
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/this-path-should-not-exist-9a7f2c"))
+        body = (r.text or "")[:20000].lower()
+        hit = [m for m in markers if m in body]
+        if hit:
+            return True, f"Live test: error page leaked debug markers ('{hit[0]}'). Verbose errors enabled."
+        return False, f"Live test: error page returned {r.status_code} with no stack-trace markers."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
+def probe_debug_toolbar(base: str) -> Tuple[bool, str]:
+    """GET base - look for dev debug toolbar / profiler markers in headers or
+    body (read-only)."""
+    markers = ["djdt", "django-debug-toolbar", "sf-toolbar", "symfony profiler",
+               "werkzeug debugger", "x-debug-token", "__debug__/", "flask-debugtoolbar"]
+    try:
+        with _client() as c:
+            r = c.get(base)
+        body = (r.text or "")[:40000].lower()
+        hdr = " ".join(f"{k}:{v}" for k, v in r.headers.items()).lower()
+        hit = [m for m in markers if m in body or m in hdr]
+        if hit:
+            return True, f"Live test: debug toolbar/profiler marker '{hit[0]}' present. Dev tooling in production."
+        return False, "Live test: no debug toolbar/profiler markers found."
+    except Exception as e:
+        return False, f"Live test failed: {str(e)[:100]}"
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator: run every candidate's real probe, return what worked.
 # ---------------------------------------------------------------------------
@@ -661,6 +733,23 @@ PROBE_MAP = {
     "jwt-live": lambda base, c: probe_jwt_live(base),
     "debug-pprof": lambda base, c: probe_debug_pprof(base),
     "actuator-env": lambda base, c: probe_actuator(base),
+    "csp-bypass": lambda base, c: probe_csp(base),
+    "hsts-downgrade": lambda base, c: probe_hsts(base),
+    "verbose-errors": lambda base, c: probe_verbose_errors(base),
+    "debug-toolbar": lambda base, c: probe_debug_toolbar(base),
+}
+
+# Candidates that are real findings but can't be confirmed with an HTTP
+# GET/HEAD probe (different protocol, or require a method the safe tester
+# won't send). These were already evidenced by the scan itself, so they get
+# an honest note rather than reading as a failed probe.
+NO_HTTP_PROBE = {
+    "smtp-cleartext-auth": "SMTP-level finding, not reachable over HTTP",
+    "tls-deprecated": "TLS handshake finding, not reachable over HTTP",
+    "ip-blocklisted": "DNS blocklist finding, not reachable over HTTP",
+    "typosquat": "DNS/registration finding, not reachable over HTTP",
+    "graphql-introspection": "needs a POST introspection query (probes are GET/HEAD only)",
+    "http-trace": "needs the TRACE method (probes are GET/HEAD only)",
 }
 
 
@@ -713,10 +802,13 @@ def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
     for c in candidates:
         fn = PROBE_MAP.get(c["id"])
         if not fn:
+            note = NO_HTTP_PROBE.get(c["id"])
+            detail = (f"Evidenced by the scan; not independently re-probed — {note}."
+                      if note else "No safe probe available for this candidate.")
             results.append({
                 "id": c["id"], "name": c["name"], "severity": c["severity"],
                 "confidence": c["confidence"], "works": False,
-                "detail": "No safe probe available for this candidate.",
+                "detail": detail,
                 "poc_code": c["poc_code"], "poc_lang": c["poc_lang"],
                 "why_viable": c["why_viable"], "remediation": c["remediation"],
             })
