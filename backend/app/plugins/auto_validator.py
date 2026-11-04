@@ -196,6 +196,26 @@ _TOKEN_MARKERS = (
 )
 
 
+_SELF_FUNDED_FLOW = (
+    # ERC4626 / allowance-deposit shape: the function pulls the
+    # underlying FROM the caller before minting/paying out.
+    re.compile(r"transferFrom\s*\(\s*"
+               r"(msg\.sender|_msgSender\(\)|caller)\b"),
+    # WETH shape: the credited amount IS the caller's msg.value.
+    re.compile(r"_mint\s*\([^,]+,\s*msg\.value\s*\)"),
+    re.compile(r"\[\s*msg\.sender\s*\]\s*\+=\s*msg\.value"),
+)
+
+
+def _self_funded(text: str) -> bool:
+    """The flagged path funds the payout from the caller
+    themselves (deposit / wrap shapes). A stranger 'receiving'
+    on such a path receives their own money back in another
+    form - not a drain, and a successful probe (typically with
+    a zero amount) proves nothing about an unbacked payout."""
+    return any(p.search(text) for p in _SELF_FUNDED_FLOW)
+
+
 def _payout_denominations(text: str) -> str:
     """Which denomination(s) the flagged value flow pays out:
     "native", "token", "mixed", or "unknown". Used to keep the
@@ -459,6 +479,22 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         native = balances.get("native_wei")
         denom = _payout_denominations(flow_text)
         out["evidence"]["payout_denomination"] = denom
+        if _self_funded(flow_text):
+            # Deposit / wrap shape: the payout is funded by the
+            # caller (transferFrom from msg.sender, or the
+            # credited amount is the caller's own msg.value).
+            # A stranger receives only their own funds back;
+            # a successful probe proves no unbacked payout.
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "self-funded path: the flagged function pulls "
+                "the value from the caller themselves "
+                "(transferFrom from msg.sender, or the payout "
+                "amount is the caller's own msg.value) before "
+                "paying out; a stranger receives only their own "
+                "funds back, so the probe success proves no "
+                "unbacked receipt")
+            return out
         # Zero-balance kills are denomination-aware: 0 wei only
         # kills a native payout; a token payout is bounded by
         # token state, not by the native balance (and a mint
@@ -493,7 +529,11 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "actually receive is unmeasured")
             return out
         out["verdict"] = "VERIFIED_REAL"
-        if denom == "token" and token_self is not None:
+        if denom == "token" and mint_payout:
+            out["value"] = ("token issuance to the "
+                            "caller-reachable recipient (mint; "
+                            "no balance bound applies)")
+        elif denom == "token" and token_self is not None:
             out["value"] = (f"contract own-token balance "
                             f"{token_self} (base units, upper "
                             "bound on the token payout)")
