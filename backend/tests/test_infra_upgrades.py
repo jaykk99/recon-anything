@@ -543,4 +543,4 @@ def test_mcp_knowledge_tools(tmp_path, monkeypatch):
 
 def test_registry_still_795():
     from app.plugins.registry import discover
-    assert len(discover()) == 795  # infra adds no plugins; 778 = master total incl. 4 deep-analysis plugins
+    assert len(discover()) == 809  # infra adds no plugins; 778 = master total incl. 4 deep-analysis plugins
