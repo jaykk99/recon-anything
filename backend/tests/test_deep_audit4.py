@@ -7,7 +7,7 @@ MUST fire trigger-only at low severity (never a candidate);
 every clean control MUST stay silent under ALL three
 detectors; every other plugin's vulnerable fixture MUST stay
 silent under this one (no cross-talk); the registry discovers
-exactly 833 plugins including all three.
+exactly 841 plugins including all three.
 """
 import os
 import sys
@@ -41,10 +41,10 @@ def test_three_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_798():
+def test_registry_count_794():
     reg = discover()
-    assert len(reg) == 833, \
-        f"registry size {len(reg)}, expected 833"
+    assert len(reg) == 841, \
+        f"registry size {len(reg)}, expected 841"
 
 
 def test_vuln_fires_candidate_with_evidence():
