@@ -151,6 +151,42 @@ def test_out_of_scope_function_without_probe_stays_unverified():
                             "contract scope"]
 
 
+UNRESOLVED_GATED_SRC = """
+contract GatedMystery {
+    address public owner;
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+    function sweep() public onlyOwner {
+        _settle();
+    }
+    function _settle() internal {
+        _accounting += 1;
+    }
+    uint256 private _accounting;
+}
+"""
+
+
+def test_unresolved_recipient_but_gated_and_reverting_is_fp():
+    v = av.validate_candidate({
+        "function": "sweep", "kind": "access_control_flaw",
+        "source": UNRESOLVED_GATED_SRC,
+        "probe": STRANGER_PROBE_REVERT, "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert v["recipient"] == "UNRESOLVED"
+    assert "gate" in v["reason"]
+
+
+def test_unresolved_recipient_without_kill_evidence_stays_unverified():
+    v = av.validate_candidate({
+        "function": "sweep", "kind": "access_control_flaw",
+        "source": UNRESOLVED_GATED_SRC, "balances": BAL0})
+    assert v["verdict"] == "UNVERIFIED"
+    assert v["missing"] == ["recipient destination"]
+
+
 def test_caller_supplied_probe_success_zero_balance_is_fp():
     v = av.validate_candidate({
         "function": "destroy", "kind": "unprotected_drain",
