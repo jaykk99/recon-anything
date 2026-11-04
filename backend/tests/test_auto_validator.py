@@ -299,6 +299,66 @@ def test_token_mint_payout_not_killed_by_zero_native_balance():
         "probe": STRANGER_PROBE_OK, "balances": BAL0})
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["evidence"].get("payout_denomination") == "token"
+    # The value statement must be the issuance, never a
+    # self-contradictory "0 wei upper bound".
+    assert "issuance" in v["value"]
+
+
+ERC4626_SRC = """
+contract Vault {
+    TokenLike asset;
+    mapping(address => uint256) public balanceOf;
+    function mint(uint256 shares, address receiver) external
+        returns (uint256) {
+        uint256 assets = shares;
+        _deposit(msg.sender, receiver, assets, shares);
+        return assets;
+    }
+    function _deposit(address caller, address receiver,
+                      uint256 assets, uint256 shares) internal {
+        asset.transferFrom(caller, address(this), assets);
+        _mint(receiver, shares);
+    }
+    function _mint(address to, uint256 amount) internal {
+        balanceOf[to] += amount;
+    }
+}
+"""
+
+
+def test_erc4626_self_funded_mint_is_not_verified_real():
+    # Found live in the backlog re-run (ParifiVault, Arbitrum):
+    # an ERC4626 mint whose probe succeeds with a zero amount.
+    # The vault pulls the underlying from the caller before
+    # minting - a deposit, not a drain.
+    v = av.validate_candidate({
+        "function": "mint", "kind": "access_control_flaw",
+        "source": ERC4626_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert "self-funded" in v["reason"]
+
+
+WETH_SRC = """
+contract WrappedNative {
+    mapping(address => uint256) public balanceOf;
+    function deposit() public payable {
+        _mint(msg.sender, msg.value);
+    }
+    function _mint(address to, uint256 amount) internal {
+        balanceOf[to] += amount;
+    }
+}
+"""
+
+
+def test_weth_style_deposit_is_self_funded():
+    v = av.validate_candidate({
+        "function": "deposit", "kind": "access_control_flaw",
+        "source": WETH_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert "self-funded" in v["reason"]
 
 
 TOKEN_CLAIM_SRC = """
