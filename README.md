@@ -77,11 +77,25 @@ Contract targets are first-class, not an afterthought. Coverage:
 - **EVM, 6 chains:** Ethereum (1), BNB Chain (56), Polygon (137),
   Arbitrum One (42161), Base (8453), Optimism (10). Chains are config
   in `backend/app/plugins/contract_chain.py`; adding one is one entry.
-  Verified source comes from Blockscout / Sourcify, keyless.
+  Verified source comes keyless from Blockscout, then the Sourcify v2
+  API, then the legacy Sourcify repository route (Etherscan only when
+  a key is already configured, never a requirement). Public RPC access
+  fails over per chain: BNB Chain alone carries 8 endpoints, so one
+  dead RPC never silently degrades a scan.
 - **Proxies are followed one level:** EIP-1967 implementation and
   beacon slots and the EIP-1167 minimal-proxy bytecode pattern are
   resolved read-only, and findings are tagged `proxy_shell` vs
   implementation so a shell is never confused with the code behind it.
+- **EIP-7702 delegations are resolved live:** when an account's code
+  is a 7702 delegation designator (`0xef0100` + delegate address), the
+  delegate is read from live chain state before findings are judged,
+  so a delegated account is never scored as if the designator were
+  its real code (`eip7702_unverified_delegate`).
+- **One fetch per contract:** every contract plugin reads through a
+  shared chain-data layer (`chain_data`), so code, verified source,
+  balances and proxy resolution are fetched once per contract per run
+  and shared, instead of each plugin re-paying the same RPC and
+  source routes.
 - **Solana:** the `solana_contract` plugin analyzes programs and token
   mints (authorities, supply, pool state), keyless via public RPC and
   RugCheck.
@@ -103,6 +117,9 @@ The analysis plugins (all under `backend/app/plugins/`):
 | contract_simulation | Read-only on-chain simulation of one flagged contract: boundary-input `eth_call` probes of its public state-changing functions from an unfunded caller, cross-checked against the gate its source implies, plus optional Mythril symbolic execution behind `RECON_SIM_SYMBOLIC=1`. Heavy lane only, refuses bulk sweeps. Its flags are candidates, never verdicts. |
 | contract_fuzz | Local exploit-confirmation fuzzing. The flagged contract is compiled with a local solc and deployed inside an Echidna harness where a house actor seeds it with mock ETH and an unauthenticated stranger fuzz-calls every public state-changing function under per-call balance accounting. A finding is reported as `fuzz_confirmed` only when the stranger actually ends up with profit beyond what it put in. Everything else is a low-severity inconclusive note with a machine-readable reason. Heavy lane only. |
 | zeroday_differential / zeroday_error_miner / zeroday_contract_guards | Zero-day candidate hunters: type/shape mutation of a target's parameters, mining error responses for internal disclosures, and flagging the one public state-changing function that breaks a contract's own access-control convention. Every output is labeled `candidate_zero_day`, severity is capped at high, and all of it is pending human review. Passive mode sends zero mutations. |
+| deep_layers (4 plugins) | The depth pass that runs after surface detection: `cross_contract_call_graph` traces calls across contract boundaries, `storage_state_analysis` reads the live storage state (initialized flags, counters, balances) that decides whether a flagged pattern is actually open, `bytecode_deep_analysis` works unverified bytecode at opcode depth, and `candidate_confirmation_queue` ranks the surviving candidates for confirmation. |
+| recipient_first (6 plugins) + auto_validator | Recipient-first detectors establish who would receive the value (caller, caller-supplied address, fixed address, holder's own position) before severity is assigned. The `auto_validator` lane then adjudicates every candidate to exactly one verdict (see "How findings are judged"), replacing hand re-reads of source one contract at a time. |
+| deep_audit / deep_audit2 / deep_audit3 (16 plugins) | Deep-audit detector batches for narrow, high-value shapes: vault share inflation, unguarded AA validation and diamond cuts, `ecrecover` zero-signer, read-only reentrancy, bridge replay on unbound digests, CREATE2 metamorphic redeploys, EIP-7702 delegates, fee-on-transfer over-credit, hook CEI reentrancy, missing L2 sequencer checks, Uniswap v4 hook delta accounting, transient-storage latches, inverted-division collapse, share/transfer desync, and EIP-712 digests not bound to their payload. New batches are added as the hunting research lands them. |
 | aml_* (8 plugins) | AML typology checks over discovered addresses: mixer/tumbler exposure, XMR conversion services, chain-hopping, non-KYC exchanges, P2P cash trades and related patterns. |
 
 ### How findings are judged
@@ -116,6 +133,23 @@ The analysis plugins (all under `backend/app/plugins/`):
   hardcoded address, or the holder's own position. Only the first two
   are reported as stranger-reachable; fixed-recipient and holder-self
   cases are recorded as trigger-only, not as drains.
+- **Every candidate gets a machine verdict.** The auto-validator
+  adjudicates each candidate to exactly one of `VERIFIED_REAL`,
+  `TRIGGER_ONLY`, `FALSE_POSITIVE` or `UNVERIFIED`, naming the
+  evidence that decided it (a gate found on the deep source read, a
+  live probe that reverted, a zero contract balance) and, for
+  `UNVERIFIED`, exactly which piece of evidence is missing. Candidates
+  from degraded evidence are never silently cleared.
+- **Live verdicts need live proof.** On a live target, `VERIFIED_REAL`
+  requires a read-only `eth_call` probe from an unfunded stranger
+  address against the contract in its current on-chain state, with
+  the recipient checked as caller or caller-supplied and the
+  contract's live balance read as evidence. The probes are built by
+  an encoder that handles complex argument types and canonicalizes
+  function signatures, so a probe fires on the function the source
+  actually declares. Local simulation and fuzz
+  results can show a weakness is reachable in the lab; they never
+  promote a live verdict on their own.
 - **`fuzz_confirmed` is the strongest class.** It means a local fuzz
   run produced an actual call sequence in which an unauthenticated
   stranger profited at the contract's expense, and it ships with that
@@ -276,6 +310,39 @@ Rules:
 - Every external call goes through `ctx.cache` (per-source TTLs) and
   `ratelimit.fetch` (global + per-host limits, 429 Retry-After, backoff).
 - Tag each finding with the mode that produced it (`passive=True/False`).
+
+### Engine infrastructure
+
+- **Shared chain-data layer** (`backend/app/plugins/chain_data.py`):
+  one fetch sequence per contract per run serves every plugin (code,
+  verified source, balances, proxy implementation), with batched RPC
+  reads (`eth_getCode` + `eth_getBalance` in a single POST) and
+  memoized proxy resolution.
+- **Knowledge store** (`backend/app/knowledge_store.py`): assets from
+  every finalized run accumulate in a cross-run store, so later runs
+  and queries build on what earlier runs already found. Exposed to
+  MCP clients as `recon_query_knowledge`.
+- **Checkpoints and resume** (`backend/app/checkpoints.py`): long
+  runs checkpoint their progress by content hash, so an interrupted
+  run resumes from the last checkpoint instead of starting over.
+- **Delta engine** (`backend/app/delta.py`): a per-target diff
+  between the previous and latest completed runs, with each asset
+  labeled `+ NEW_*`, `- REMOVED_*` or `~ CHANGED_*` by kind. Exposed
+  to MCP clients as `recon_get_delta`.
+- **Adaptive rate limiting and event bus** (`backend/app/ratelimit.py`,
+  `backend/app/eventbus.py`): per-host pacing with backoff protects
+  targets and upstream APIs; run events stream over the bus to the
+  live SSE view and the store/delta writers.
+
+**Measured effect (benchmark, 2026-11-04):** with the same 20-plugin
+harness on the same fixed set of 32 BSC contracts (30 market contracts
+plus the WBNB and BlackMambaCoin controls), the shared chain-data
+layer cut wall time from 1,786.5s to 148.5s (64.5 to 775.9
+contracts/hour, about 12x) and per-contract HTTP calls from ~210 to
+~24, with findings identical on every contract (625 of 625, same
+per-plugin verdicts). Benchmark numbers are from the change's own
+before/after runs; the merged code and its test suites were
+re-verified on master.
 
 ### Shipped plugins (783)
 
@@ -1278,6 +1345,17 @@ on the backend and worker. SQLite is used by default (data resets on
 redeploy); point `DATABASE_URL` at a Postgres for persistence (see
 "Persistent storage on Render" below).
 
+**Continuous crypto scanning.** Since 2026-11-04 the contract stack
+also runs as a standing operator-side schedule, separate from the
+hosted services: every 30 minutes a local runner works a bounded
+batch from rotating queues (roughly 5,000 contracts: the BNB Chain
+long tail, a deep-layer re-scan of the known market set, fresh
+contracts, and the zero-day candidate tail), checkpointing after
+every contract so an interrupted batch resumes where it stopped. It
+uses the same local plugin stack and the same verdict rules as
+above, and it reports only when a candidate verifies live as
+stranger-reachable; everything else stays in its working files.
+
 ### Persistent storage on Render (free tier)
 
 Render's free tier has no persistent disks (disks need a paid plan) and the
@@ -1351,11 +1429,16 @@ exactly like the web app):
 | `recon_get_findings` | A run's findings (secrets masked) with confidences; optional `min_confidence` filter |
 | `recon_get_graph` | A run's attack-surface correlation graph (nodes/edges) |
 | `recon_list_plugins` | The full plugin registry |
+| `recon_query_knowledge` | Query the cross-run knowledge store (assets accumulated across every finalized run) |
+| `recon_get_delta` | Asset-level delta for a target between its previous and latest completed runs (`+ NEW` / `- REMOVED` / `~ CHANGED`) |
 
 Auth: every MCP request needs the service key, as the
 `X-Recon-Service-Key` header (or `Authorization: Bearer <key>`). No key
 or a wrong key gets HTTP 401. See the `RECON_SERVICE_KEY` env vars
-above.
+above. Setup note for the live deployment: the `RECON_SERVICE_KEY`
+set on the Render backend must match the key the client presents;
+a mismatch fails the handshake with 401 before any tool call, so set
+the backend value first, then configure clients with the same key.
 
 Client config (Claude / any MCP host):
 
