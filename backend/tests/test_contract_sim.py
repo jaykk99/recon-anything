@@ -489,4 +489,4 @@ def test_mythril_adapter_missing_binary_is_honest(monkeypatch):
 def test_plugin_registered():
     reg = discover()
     assert "contract_simulation" in reg
-    assert len(reg) == 762  # 762 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 6 deep-audit batch-2 detectors
+    assert len(reg) == 769  # master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator

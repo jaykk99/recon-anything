@@ -170,7 +170,7 @@ def test_every_clean_control_silent_under_all_100():
 def test_registry_discovers_762_with_all_100_new():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 762, f"registry size {len(reg)}, expected 762"
+    assert len(reg) == 769, f"registry size {len(reg)}, expected 769"
     missing = [pid for pid in EXPECTED_IDS if pid not in reg]
     assert missing == [], f"not registered: {missing}"
     for pid in EXPECTED_IDS:
