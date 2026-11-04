@@ -173,7 +173,7 @@ def test_exactly_23_new_detectors_registered():
     # 575 when the gx pack landed; +12 fx_* (format & graph pack);
     # +5 xml_* (XML reader pack); +10 da_* (deep-artifacts pack);
     # +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 756  # 756 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin
+    assert len(discover()) == 762  # 762 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 6 deep-audit batch-2 detectors
 
 
 def test_trello_board_verified_public():

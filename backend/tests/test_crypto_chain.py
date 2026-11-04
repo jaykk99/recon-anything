@@ -131,7 +131,7 @@ def test_new_plugins_registered():
                 "cp_web3_rpc_misconfig", "cp_web3_rpc_method_refs",
                 "cp_web3_proxy_slots", "chain_followups"):
         assert pid in REG, f"{pid} missing from registry"
-    assert len(REG) == 756, f"registry size {len(REG)}, expected 756"  # 756 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin
+    assert len(REG) == 762, f"registry size {len(REG)}, expected 762"  # 762 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 6 deep-audit batch-2 detectors
 
 
 # --- Task 2: chaining layer ----------------------------------------------
