@@ -323,13 +323,19 @@ def _own_standard_surface(fn: Optional[Dict[str, Any]],
     # one super-delegation away (the common OpenZeppelin shape:
     # a thin override that calls super.transfer /
     # super.transferFrom into the in-scope ERC20 implementation).
-    if not _LEDGER_MOVE_RE.search(fn["text"]) and not re.search(
-            r"super\.\s*" + re.escape(fn["name"]) + r"\s*\(",
-            fn["text"]):
+    delegated = bool(re.search(
+        r"super\.\s*" + re.escape(fn["name"]) + r"\s*\(",
+        fn["text"]))
+    if not _LEDGER_MOVE_RE.search(fn["text"]) and not delegated:
         return False
-    if fn["name"] == "transferFrom" and \
-            not _ALLOWANCE_RE.search(flow_text):
-        return False
+    if fn["name"] == "transferFrom":
+        # Allowance mechanics may live in the ancestor's body
+        # when the entry only delegates, so the scoped text
+        # counts as evidence too.
+        if not _ALLOWANCE_RE.search(flow_text) and not (
+                delegated and _ALLOWANCE_RE.search(
+                    scope.scoped_text)):
+            return False
     return True
 
 

@@ -380,6 +380,47 @@ def test_own_erc20_transfer_from_is_not_a_drain():
     assert v["evidence"].get("own_standard_erc20_surface") is True
 
 
+OZ_STYLE_SRC = """
+contract OZToken {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    function transferFrom(address from, address to,
+                          uint256 amount) public returns (bool) {
+        return super.transferFrom(from, to, amount);
+    }
+    function _baseTransferFrom(address from, address to,
+                               uint256 amount) internal {
+        _spendAllowance(from, msg.sender, amount);
+        _transfer(from, to, amount);
+    }
+    function _spendAllowance(address owner, address spender,
+                             uint256 amount) internal {
+        uint256 cur = allowance[owner][spender];
+        require(cur >= amount, "allowance");
+        allowance[owner][spender] = cur - amount;
+    }
+    function _transfer(address from, address to,
+                       uint256 amount) internal {
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+    }
+}
+"""
+
+
+def test_own_erc20_super_delegated_transfer_from_is_not_a_drain():
+    # The AERO shape: a thin override delegating via
+    # super.transferFrom into the in-scope ERC20 implementation,
+    # whose allowance mechanics live in the ancestor body.
+    v = av.validate_candidate({
+        "function": "transferFrom", "kind": "contract_logic",
+        "source": OZ_STYLE_SRC, "probe": BOOL_TRUE_PROBE,
+        "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert v["evidence"].get("own_standard_erc20_surface") is True
+
+
 BACKDOOR_TF_SRC = """
 contract BackdoorToken {
     uint256 public totalSupply;
