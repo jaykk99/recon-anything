@@ -115,6 +115,42 @@ def test_axlusdc_shape_is_false_positive_on_revert():
     assert "revert" in v["reason"]
 
 
+SIBLING_SRC = """
+contract Target {
+    function ping() public {}
+}
+contract DepositHandler {
+    function destroy(address etherDestination) external {
+        selfdestruct(payable(etherDestination));
+    }
+}
+"""
+
+
+def test_out_of_scope_function_reverting_probe_is_fp():
+    # axlUSDC shape: destroy() lives in a bundled sibling
+    # contract, not in the deployed target; the live probe
+    # reverts, so the flagged path is dead at live state.
+    v = av.validate_candidate({
+        "address": "0xeb466342c4d449bc9f53a865d5cb90586f405215",
+        "chain": "base", "function": "destroy",
+        "kind": "unprotected_drain", "source": SIBLING_SRC,
+        "contract_name": "Target", "function_out_of_scope": True,
+        "probe": STRANGER_PROBE_REVERT, "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert "sibling" in v["reason"]
+
+
+def test_out_of_scope_function_without_probe_stays_unverified():
+    v = av.validate_candidate({
+        "function": "destroy", "kind": "unprotected_drain",
+        "source": SIBLING_SRC, "contract_name": "Target",
+        "function_out_of_scope": True, "balances": BAL0})
+    assert v["verdict"] == "UNVERIFIED"
+    assert v["missing"] == ["flagged function in deployed "
+                            "contract scope"]
+
+
 def test_caller_supplied_probe_success_zero_balance_is_fp():
     v = av.validate_candidate({
         "function": "destroy", "kind": "unprotected_drain",
@@ -190,6 +226,81 @@ def test_entitlement_metered_probe_success_stays_unverified():
         "probe": STRANGER_PROBE_OK, "balances": BAL,
         "entitlement_metered": True})
     assert v["verdict"] == "UNVERIFIED"
+
+
+HELPER_FLOW_SRC = """
+contract HelperFlow {
+    function withdraw(uint256 amount) public {
+        _payout(msg.sender, amount);
+    }
+    function _payout(address to, uint256 amt) internal {
+        payable(to).transfer(amt);
+    }
+}
+"""
+
+
+def test_value_flow_through_internal_helper_is_classified():
+    # The payout lives one hop down the internal call path.
+    # Classifying the entry body alone found no destination
+    # (the continuous-scanner stall); the value-flow expansion
+    # must resolve it to the caller.
+    v = av.validate_candidate({
+        "function": "withdraw", "kind": "unprotected_drain",
+        "source": HELPER_FLOW_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL})
+    assert v["verdict"] == "VERIFIED_REAL"
+    assert v["recipient"] == "CALLER"
+    assert v["evidence"].get("value_flow_helpers") == ["_payout"]
+
+
+def test_token_mint_payout_not_killed_by_zero_native_balance():
+    # A mint payout is denominated in the token, not in wei:
+    # 0 native balance must not false-positive it.
+    v = av.validate_candidate({
+        "function": "mint", "kind": "unprotected_mint",
+        "source": fx.VULN["recipient_mint_to_caller"],
+        "probe": STRANGER_PROBE_OK, "balances": BAL0})
+    assert v["verdict"] == "VERIFIED_REAL"
+    assert v["evidence"].get("payout_denomination") == "token"
+
+
+TOKEN_CLAIM_SRC = """
+contract TokenClaim {
+    TokenLike tok;
+    function claim() public {
+        tok.transfer(msg.sender, 5);
+    }
+}
+"""
+
+
+def test_token_payout_with_zero_token_balance_is_fp():
+    bal = dict(BAL0)
+    bal["token_self_wei"] = 0
+    v = av.validate_candidate({
+        "function": "claim", "kind": "recipient_unbacked_claim",
+        "source": TOKEN_CLAIM_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": bal})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert "0 of its own token" in v["reason"]
+
+
+def test_balances_and_reserves_ride_along_in_evidence():
+    bal = dict(BAL)
+    bal["token_self_wei"] = 12345
+    bal["amm_reserves"] = {"reserve0": 100, "reserve1": 200,
+                           "observed_at": "2026-11-04T00:00:00Z",
+                           "source": "test"}
+    v = av.validate_candidate({
+        "function": "withdraw",
+        "kind": "recipient_overdraw_withdraw",
+        "source": fx.VULN["recipient_overdraw_withdraw"],
+        "probe": STRANGER_PROBE_OK, "balances": bal})
+    assert v["verdict"] == "VERIFIED_REAL"
+    assert v["evidence"]["balances"]["amm_reserves"]["reserve0"] \
+        == 100
+    assert v["evidence"]["probe"]["status"] == "success"
 
 
 # ---------------------------------------------------------------------------

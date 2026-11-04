@@ -178,6 +178,64 @@ def native_balance(chain, address):
             "source": "all RPC routes failed"}
 
 
+def _call_uint(chain, address, signature, args=()):
+    """One read-only cast call returning a uint256, or None."""
+    cfg = cc.CHAINS.get(chain)
+    if cfg is None:
+        return None
+    for rpc in cfg.rpc_urls:
+        out, err = _cast(["call", "--from", STRANGER,
+                          "--rpc-url", rpc, address, signature,
+                          *args], timeout=15)
+        if out is None:
+            continue
+        s = out.strip()
+        if s.startswith("0x") and "revert" not in s.lower():
+            try:
+                return int(s, 16)
+            except Exception:
+                return None
+    return None
+
+
+def token_self_balance(chain, address):
+    """balanceOf(address) of the contract on itself: the live
+    bound for a payout denominated in its own token. None when
+    not an ERC20 or unreachable."""
+    return _call_uint(chain, address, "balanceOf(address)(uint256)",
+                      (address,))
+
+
+def pair_reserves(chain, address):
+    """Live AMM reserves when the contract is a UniswapV2-style
+    pair (getReserves). None when it is not a pair."""
+    cfg = cc.CHAINS.get(chain)
+    if cfg is None:
+        return None
+    import datetime as _dt
+    for rpc in cfg.rpc_urls:
+        out, err = _cast(["call", "--from", STRANGER,
+                          "--rpc-url", rpc, address,
+                          "getReserves()(uint112,uint112,uint32)"],
+                         timeout=15)
+        if out is None:
+            continue
+        s = out.strip()
+        if "revert" in s.lower() or "Error" in s:
+            continue
+        nums = re.findall(r"\d+", s)
+        if len(nums) >= 2:
+            try:
+                return {"reserve0": int(nums[0]),
+                        "reserve1": int(nums[1]),
+                        "observed_at": _dt.datetime.now(
+                            _dt.timezone.utc).isoformat(),
+                        "source": rpc}
+            except Exception:
+                continue
+    return None
+
+
 # Default arguments per parameter type, built from the canonical
 # types sim._param_types extracts (arrays/tuples included).
 # Returns None only when _param_types returns None (a named
@@ -266,21 +324,51 @@ def _canonical_signature(head, function):
     return sim.canonical_signature(function, types)
 
 
+def function_scope(source, function, contract_name=""):
+    """Where the flagged function lives: "scoped" (the deployed
+    contract or its ancestors), "compilation_only" (a bundled
+    sibling contract in the same verified compilation), or
+    "absent" (nowhere in the compilation)."""
+    from app.plugins import contract_logic as cl
+    scope = cl._Scope(source, contract_name)
+    if any(fn["name"] == function and "{" in fn["text"]
+           for fn in scope.functions):
+        return "scoped"
+    all_scope = cl._Scope(source, "")
+    if any(fn["name"] == function and "{" in fn["text"]
+           for fn in all_scope.functions):
+        return "compilation_only"
+    return "absent"
+
+
 def signature_of(source, function, contract_name=""):
     """Canonical signature of a function from verified source."""
     from app.plugins import contract_logic as cl
     scope = cl._Scope(source, contract_name)
-    for fn in scope.functions:
-        if fn["name"] == function and "{" in fn["text"]:
-            sig = fn["signature"]
-            head = sig[:sig.index("{")] if "{" in sig else sig
-            head = head.replace("function ", "").strip()
-            for kw in (" public", " external", " internal",
-                       " private", " payable", " view", " pure"):
-                head = head.replace(kw, "")
-            head = " ".join(head.split())
-            canon = _canonical_signature(head, function)
-            return (canon if canon is not None else head), fn
+    matches = [fn for fn in scope.functions
+               if fn["name"] == function and "{" in fn["text"]]
+    if not matches:
+        # Fall back to the whole compilation so a probe can
+        # still be built for a bundled-sibling function; pair
+        # with function_scope() to mark it out of scope.
+        scope = cl._Scope(source, "")
+        matches = [fn for fn in scope.functions
+                   if fn["name"] == function
+                   and "{" in fn["text"]]
+    # Prefer the external entry point over an internal/private
+    # same-named definition (same rule as the engine's _find_fn).
+    matches.sort(key=lambda fn: bool(
+        re.search(r"\b(internal|private)\b", fn["signature"])))
+    for fn in matches:
+        sig = fn["signature"]
+        head = sig[:sig.index("{")] if "{" in sig else sig
+        head = head.replace("function ", "").strip()
+        for kw in (" public", " external", " internal",
+                   " private", " payable", " view", " pure"):
+            head = head.replace(kw, "")
+        head = " ".join(head.split())
+        canon = _canonical_signature(head, function)
+        return (canon if canon is not None else head), fn
     return None, None
 
 
@@ -318,6 +406,10 @@ def main():
             cand["contract_name"] = src.get("contract_name", "")
             cand["source_origin"] = src.get("origin", "")
         if src and cand["function"] and not args.no_probe:
+            if function_scope(src["source"], cand["function"],
+                              cand["contract_name"]) == \
+                    "compilation_only":
+                cand["function_out_of_scope"] = True
             sig, _fn = signature_of(src["source"], cand["function"],
                                     cand["contract_name"])
             if sig:
@@ -331,6 +423,11 @@ def main():
                         "runner (non-static parameter types)")
             cand["balances"] = native_balance(cand["chain"],
                                               cand["address"])
+            cand["balances"]["token_self_wei"] = \
+                token_self_balance(cand["chain"], cand["address"])
+            reserves = pair_reserves(cand["chain"], cand["address"])
+            if reserves is not None:
+                cand["balances"]["amm_reserves"] = reserves
         verdict = validate_candidate(cand)
         verdict["symbol"] = row.get("symbol", "")
         verdict["source_origin"] = cand.get("source_origin", "")

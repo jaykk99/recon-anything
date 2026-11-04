@@ -574,6 +574,13 @@ def _recip_class_expr(expr: str, params: List[str],
                       addr_params: List[str], locals_: Dict[str, str],
                       all_params: set) -> str:
     e = cd._unwrap(expr)
+    # payable(X) is just a cast of X: classify the inner
+    # expression (payable(operator) is the FIXED project wallet,
+    # payable(to) is the helper's address parameter).
+    pm = re.fullmatch(r"payable\s*\((.*)\)", e, re.S)
+    if pm:
+        return _recip_class_expr(pm.group(1), params, addr_params,
+                                 locals_, all_params)
     # A nullary getter call (owner(), treasury(), ...) resolves to
     # whatever the contract stored - a fixed destination, never
     # caller-controlled.

@@ -32,7 +32,11 @@ Evidence gathered per candidate, in order:
 2. Recipient classification (contract_logic.classify_recipient).
 3. Read-only eth_call probes from the unfunded stranger
    0x00000000000000000000000000000000deaDBeef (contract_sim.eth_call).
-4. Native balance read with time/source stamps.
+4. Balance evidence with time/source stamps: native balance,
+   the contract's own-token balanceOf (the live bound for a
+   token-denominated payout), and live AMM reserves when the
+   contract is itself a pair. Zero-balance kills are
+   denomination-aware (see _payout_denominations).
 5. Fork/local simulation where a lane provides one (the Part A
    fixture proof runs the vulnerable fixtures on a local anvil
    chain; the fuzz lane's fixed-harness confirmations feed the
@@ -128,10 +132,84 @@ def _beneficiary_metered(fn: Dict[str, Any]) -> Optional[str]:
 
 def _find_fn(source: str, name: str, contract_name: str = ""):
     scope = cl._Scope(source, contract_name)
-    for fn in scope.functions:
-        if fn["name"] == name and "{" in fn["text"]:
+    matches = [fn for fn in scope.functions
+               if fn["name"] == name and "{" in fn["text"]]
+    if not matches:
+        return scope, None
+    # Detectors flag external entry points. When several
+    # definitions share the name (an ancestor's variant, an
+    # internal helper), prefer a non-internal/private one over
+    # whichever happens to come first in scope order.
+    for fn in matches:
+        if not re.search(r"\b(internal|private)\b", fn["signature"]):
             return scope, fn
-    return scope, None
+    return scope, matches[0]
+
+
+def _expanded_fn_text(fn: Dict[str, Any], scope: cl._Scope,
+                      max_depth: int = 3) -> "tuple[str, List[str]]":
+    """Entry function text plus the bodies of the internal
+    helpers it calls, transitively (depth-limited).
+
+    Value routinely moves one or two hops down the internal call
+    path (withdraw() -> _payout(to, amt) -> to.transfer(amt)).
+    classify_recipient on the entry body alone sees no
+    destination there and gives up; its own internals
+    (_recip_all_params, the helper-parameter rules) were built
+    for function+helper text - the validator just never fed it
+    any. Returns (expanded_text, helper_names_included)."""
+    parts = [fn["text"]]
+    included: List[str] = []
+    seen = {fn["name"]}
+    frontier = [fn["text"]]
+    for _ in range(max_depth):
+        nxt = []
+        for text in frontier:
+            for name, helper in scope.helpers.items():
+                if name in seen:
+                    continue
+                if re.search(r"\b" + re.escape(name) + r"\s*\(",
+                             text):
+                    seen.add(name)
+                    included.append(name)
+                    parts.append(helper["text"])
+                    nxt.append(helper["text"])
+        if not nxt:
+            break
+        frontier = nxt
+    return "\n".join(parts), included
+
+
+_NATIVE_MARKERS = (
+    re.compile(r"selfdestruct\s*\("),
+    re.compile(r"\.call\s*\{[^}]*\bvalue\b"),
+    re.compile(r"\.send\s*\("),
+    re.compile(r"payable\s*\([^)]*\)\s*\.\s*transfer\s*\("),
+)
+_TOKEN_MARKERS = (
+    re.compile(r"(?<![\w.])_?mint\s*\("),
+    re.compile(r"safeTransfer(From)?\s*\("),
+    re.compile(r"\.transferFrom\s*\("),
+    # two-argument .transfer(to, amount) is the ERC20 shape;
+    # the native shape takes exactly one argument.
+    re.compile(r"\.transfer\s*\([^()]*,"),
+)
+
+
+def _payout_denominations(text: str) -> str:
+    """Which denomination(s) the flagged value flow pays out:
+    "native", "token", "mixed", or "unknown". Used to keep the
+    zero-balance kill denomination-aware: a contract holding
+    0 wei can still pay out tokens it holds or mints."""
+    native = any(p.search(text) for p in _NATIVE_MARKERS)
+    token = any(p.search(text) for p in _TOKEN_MARKERS)
+    if native and token:
+        return "mixed"
+    if native:
+        return "native"
+    if token:
+        return "token"
+    return "unknown"
 
 
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -202,6 +280,36 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         scope, fn = _find_fn(source, candidate["function"],
                              candidate.get("contract_name", ""))
         if fn is None:
+            if candidate.get("function_out_of_scope"):
+                # The detector flagged a function that exists
+                # in the verified compilation but NOT in the
+                # deployed contract or its ancestors (a bundled
+                # sibling contract - the axlUSDC / DepositHandler
+                # shape from Nov 2). The deployed contract does
+                # not expose it; a reverting live probe proves
+                # the path is dead at live state.
+                out["evidence"]["probe"] = {
+                    "status": probe.get("status"),
+                    "via": probe.get("via", "")}
+                if probe.get("status") == "revert":
+                    out["verdict"] = "FALSE_POSITIVE"
+                    out["reason"] = (
+                        "flagged function is not part of the "
+                        "deployed contract or its ancestors - it "
+                        "lives in a bundled sibling contract in "
+                        "the same verified compilation - and the "
+                        "live stranger probe reverts; the path "
+                        "is dead at live state")
+                    return out
+                out["missing"] = ["flagged function in deployed "
+                                  "contract scope"]
+                out["reason"] = (
+                    f"function '{candidate['function']}' exists "
+                    "in the verified compilation only in a "
+                    "bundled sibling contract, not in the "
+                    "deployed contract or its ancestors, and no "
+                    "reverting live probe settles it")
+                return out
             out["missing"] = ["flagged function in verified source"]
             out["reason"] = (
                 f"function '{candidate['function']}' not found in "
@@ -214,10 +322,27 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         gated = bool(cl._gated_deep(fn, scope))
     out["gated"] = gated
 
-    # 2. Recipient classification.
+    # Evidence passthrough: balances (native + token + AMM
+    # reserves, whatever the gathering lane read) and the probe
+    # outcome ride along in every verdict from here on.
+    if balances:
+        out["evidence"]["balances"] = balances
+    if probe:
+        out["evidence"]["probe"] = {
+            "status": probe.get("status"),
+            "via": probe.get("via", ""),
+            "detail": str(probe.get("detail", ""))[:200]}
+
+    # 2. Recipient classification over the value flow: the
+    # flagged function PLUS the internal helpers it calls
+    # (value routinely moves one or two hops down).
+    flow_text = fn["text"] if fn is not None else ""
     recipient = candidate.get("recipient_override")
     if recipient is None and fn is not None:
-        recipient, rdetail = cl.classify_recipient(fn["text"])
+        flow_text, helpers = _expanded_fn_text(fn, scope)
+        if helpers:
+            out["evidence"]["value_flow_helpers"] = helpers
+        recipient, rdetail = cl.classify_recipient(flow_text)
         out["evidence"]["recipient_detail"] = rdetail
         if recipient == "CALLER-SUPPLIED":
             metered = _beneficiary_metered(fn)
@@ -317,12 +442,30 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     if probe.get("status") == "success":
         native = balances.get("native_wei")
-        if native is not None and int(native) == 0:
+        denom = _payout_denominations(flow_text)
+        out["evidence"]["payout_denomination"] = denom
+        # Zero-balance kills are denomination-aware: 0 wei only
+        # kills a native payout; a token payout is bounded by
+        # token state, not by the native balance (and a mint
+        # payout is bounded by issuance, not by any balance).
+        if denom == "native" and native is not None \
+                and int(native) == 0:
             out["verdict"] = "FALSE_POSITIVE"
             out["reason"] = (
                 "stranger probe succeeds but the contract holds "
                 "0 native balance; there is nothing for a "
                 "stranger to receive")
+            return out
+        token_self = balances.get("token_self_wei")
+        mint_payout = bool(re.search(r"(?<![\w.])_?mint\s*\(",
+                                     flow_text))
+        if denom == "token" and not mint_payout \
+                and token_self is not None and int(token_self) == 0:
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "stranger probe succeeds but the contract holds "
+                "0 of its own token; the token payout has "
+                "nothing to pay out")
             return out
         if candidate.get("entitlement_metered"):
             out["missing"] = ["fork/local simulation (an "
@@ -335,7 +478,11 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "actually receive is unmeasured")
             return out
         out["verdict"] = "VERIFIED_REAL"
-        if native is not None:
+        if denom == "token" and token_self is not None:
+            out["value"] = (f"contract own-token balance "
+                            f"{token_self} (base units, upper "
+                            "bound on the token payout)")
+        elif native is not None:
             out["value"] = f"contract native balance {native} wei (upper bound on the native payout)"
         out["reason"] = (
             "read-only probe from the unfunded stranger "
@@ -387,6 +534,47 @@ async def _native_balance(ctx: Ctx, chain: cc.ChainConfig,
             "source": "all routes failed"}
 
 
+def _word_at(result_hex: str, idx: int) -> Optional[int]:
+    try:
+        h = result_hex[2:] if result_hex.startswith("0x") \
+            else result_hex
+        return int(h[idx * 64:(idx + 1) * 64], 16)
+    except Exception:
+        return None
+
+
+async def _token_self_balance(ctx: Ctx, chain: cc.ChainConfig,
+                              address: str) -> Optional[int]:
+    """balanceOf(address) of the contract on ITSELF - the live
+    bound for a payout denominated in the contract's own token.
+    None when the contract is not an ERC20 or no route answers."""
+    data = sim.function_selector("balanceOf(address)") + \
+        address[2:].lower().rjust(64, "0")
+    res = await sim.eth_call(ctx, chain, address, data, STRANGER)
+    if res.get("status") != "success":
+        return None
+    return _word_at(res.get("result", ""), 0)
+
+
+async def _pair_reserves(ctx: Ctx, chain: cc.ChainConfig,
+                         address: str) -> Optional[Dict[str, Any]]:
+    """Live AMM reserves when the contract itself is a
+    UniswapV2-style pair (getReserves). Oracle/price candidates
+    cannot be judged without live reserve state; None when the
+    contract is not a pair or no route answers."""
+    data = sim.function_selector("getReserves()")
+    res = await sim.eth_call(ctx, chain, address, data, STRANGER)
+    if res.get("status") != "success":
+        return None
+    r0 = _word_at(res.get("result", ""), 0)
+    r1 = _word_at(res.get("result", ""), 1)
+    if r0 is None or r1 is None:
+        return None
+    return {"reserve0": r0, "reserve1": r1,
+            "observed_at": _now(),
+            "source": res.get("via", "eth_call (live)")}
+
+
 async def gather_and_validate(ctx: Ctx, key: Optional[str],
                               candidate: Dict[str, Any]
                               ) -> Dict[str, Any]:
@@ -410,6 +598,17 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
     if src and fn_name:
         scope, fn = _find_fn(src["source"], fn_name,
                              candidate.get("contract_name", ""))
+        if fn is None:
+            # Not in the deployed contract's scope: if it exists
+            # elsewhere in the compilation (bundled sibling),
+            # mark it and still probe - a revert settles the
+            # verdict in validate_candidate.
+            all_scope = cl._Scope(src["source"], "")
+            for afn in all_scope.functions:
+                if afn["name"] == fn_name and "{" in afn["text"]:
+                    fn = afn
+                    candidate["function_out_of_scope"] = True
+                    break
         if fn is not None:
             types = sim._param_types(fn["signature"])
             if types is not None:
@@ -428,7 +627,13 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
                     if res.get("status") in ("success", "revert"):
                         break
                 candidate["probe"] = probe
-    candidate["balances"] = await _native_balance(ctx, chain, addr)
+    balances = await _native_balance(ctx, chain, addr)
+    balances["token_self_wei"] = await _token_self_balance(
+        ctx, chain, addr)
+    reserves = await _pair_reserves(ctx, chain, addr)
+    if reserves is not None:
+        balances["amm_reserves"] = reserves
+    candidate["balances"] = balances
     return validate_candidate(candidate)
 
 
