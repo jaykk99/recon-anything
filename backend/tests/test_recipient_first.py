@@ -39,7 +39,7 @@ def test_all_six_specs_registered():
     for spec_id in SPECS:
         assert spec_id in reg, spec_id
     assert "auto_validator" in reg
-    assert len(reg) == 783, f"registry size {len(reg)}, expected 783"
+    assert len(reg) == 786, f"registry size {len(reg)}, expected 786"
 
 
 def test_vulnerable_fixtures_fire_as_candidates():
