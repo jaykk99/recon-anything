@@ -21,7 +21,7 @@ Layers:
    over Simple.sol produces the map finding and no highlights;
    over Inheritance.sol it produces every highlight class.
 4. Plugin run with the chain layer stubbed (no network), and
-   registry discovery (count 774 = master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator).
+   registry discovery (count 778 = master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins).
 """
 import asyncio
 import json
@@ -254,4 +254,4 @@ def test_plugin_no_source_reports_not_produced(monkeypatch):
 def test_registry_count_includes_ast_visual_audit():
     reg = discover()
     assert "ast_visual_audit" in reg
-    assert len(reg) == 774  # master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator
+    assert len(reg) == 778  # master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers)

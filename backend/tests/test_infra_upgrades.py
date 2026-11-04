@@ -541,6 +541,6 @@ def test_mcp_knowledge_tools(tmp_path, monkeypatch):
         mcp._tool_get_delta({})
 
 
-def test_registry_still_774():
+def test_registry_still_778():
     from app.plugins.registry import discover
-    assert len(discover()) == 774  # infra adds no plugins; 774 = post-landing master total
+    assert len(discover()) == 778  # infra adds no plugins; 778 = master total incl. 4 deep-analysis plugins
