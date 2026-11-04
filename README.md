@@ -344,18 +344,18 @@ per-plugin verdicts). Benchmark numbers are from the change's own
 before/after runs; the merged code and its test suites were
 re-verified on master.
 
-### Shipped plugins (783)
+### Shipped plugins (786)
 
 The registry auto-discovers every `Plugin` subclass in
 `backend/app/plugins/` - drop in a file, no central list to edit.
 The count is the live registry size, measured by loading the registry
-(`discover()` in `backend/app/plugins/registry.py`): **783 plugins**
-across 256 plugin modules on current master. The health gate
+(`discover()` in `backend/app/plugins/registry.py`): **786 plugins**
+across 257 plugin modules on current master. The health gate
 (`backend/tests/test_plugin_health.py`) enforces unique ids, valid
 groups, and metadata on all of them. Below are the core web plugins;
 the contract-analysis plugins are listed in the Smart contract
-analysis section above. Every plugin, all 783 of them, is listed
-in [All plugins](#all-plugins-783) below.
+analysis section above. Every plugin, all 786 of them, is listed
+in [All plugins](#all-plugins-786) below.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -376,7 +376,7 @@ With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
 
-## All plugins (783)
+## All plugins (786)
 
 Every plugin registered in the live registry, generated from
 `discover()` in `backend/app/plugins/registry.py` on current
@@ -384,7 +384,7 @@ master. Grouped by the plugin's `group` value (the same grouping
 the UI uses), alphabetical by plugin id within each group.
 No sampling: if it is registered, it is listed here.
 
-Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 400 · Financial 43 · Graph 8 · **Total 783**.
+Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 403 · Financial 43 · Graph 8 · **Total 786**.
 
 ### Network (33)
 
@@ -748,7 +748,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | typosquat | Typosquat Domains | typosquat | Generate typosquat variants and report which ones actually resolve (phishing risk / defensive holds). |
 | watchdog | Change Watchdog | watchdog | Continuous monitoring: new subdomains, new CVEs, surface drift. |
 
-### Web3 (400)
+### Web3 (403)
 
 | id | label | module | description |
 |----|-------|--------|-------------|
@@ -789,7 +789,9 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | bridge_emergency_pause_lockup | Bridge Emergency Pause Lockup (BSC) | bsc_common | BSC/BNB detector for bridge emergency pause lockup: Emergency pause lockup: pause() flips the paused state with NO access gate while user funds exit through whenNotPaused paths - any stranger can freeze every withdrawal on the contract at any time, for as long as they keep re-pausing after an unpause. Static verified-source analysis, fast lane, detection only. |
 | bridge_message_payload_injection | Bridge Message Payload Injection (BSC) | bsc_common | BSC/BNB detector for bridge message payload injection: Bridge message payload injection: the message executor calls a target taken from the message / call parameters with no validator verification in the path, so a forged 'message' makes the bridge execute arbitrary calls with the bridge's own identity and balances. Static verified-source analysis, fast lane, detection only. |
 | bridge_native_gas_drain | Bridge Native Gas Drain (BSC) | bsc_common | BSC/BNB detector for bridge native gas drain: Native gas drain: the relayer 'gas refund' / fee is paid to msg.sender in an amount taken from the call/message parameters, with no gas-price derivation and no cap - anyone can name the refund and drain the bridge's native balance fee by fee. Static verified-source analysis, fast lane, detection only. |
+| bridge_proof_length_unvalidated | Bridge Proof Length Unvalidated | deep_audit4 | Deep-audit detector (batch 4) for bridge proof length unvalidated: Bridge Merkle proof length never validated: a caller-supplied bytes32[] proof is consumed by the verify / claim path and NO require, assert or if condition anywhere in the contract compares the proof's length against an expected depth or any bound. Proof length is part of the statement being proven (leaf position and tree shape derive from it); accepting arbitrary-length proofs lets a caller replay proofs across trees of different depths and probe the verifier with shapes the bridge never committed to. Static verified-source analysis, fast lane, detection only. |
 | bridge_replay_unbound_digest | Bridge Replay Unbound Digest | deep_audit2 | Deep-audit detector (batch 2) for bridge replay unbound digest: Bridge message replay (unbound digest): the executor verifies a signature / proof over a message digest that does not bind the full message identity - the source chain id, the origin sender and/or a nonce is missing from the hashed inputs - so the same proven message can be replayed on another chain, attributed to another sender, or executed again wherever the executed marker is keyed on the same under-bound digest. Verification being present is exactly what keeps generic payload-injection detectors silent here. Static verified-source analysis, fast lane, detection only. |
+| bridge_root_zero_assertion | Bridge Root Zero Assertion | deep_audit4 | Deep-audit detector (batch 4) for bridge root zero assertion: Mute root assertion: a validation condition asserts the Merkle/root variable EQUALS the zero hash. As a gate in a verify / claim path that check passes exactly when NO root is committed, so it validates nothing - a proof checked under it is checked against an unset root. (The one-shot setter guard, require(root == 0) in the function that first assigns that root, is the legitimate shape and does not fire.) Static verified-source analysis, fast lane, detection only. |
 | bridge_validator_quorum_manipulation | Bridge Validator Quorum Manipulation (BSC) | bsc_common | BSC/BNB detector for bridge validator quorum manipulation: Validator quorum manipulation: validator signatures are COUNTED (ecrecover in a loop) but signers are never deduplicated and the count is never compared against a real quorum - the same validator signing repeatedly (or a threshold of one signature) satisfies the 'quorum', so one compromised or rogue validator is the whole bridge. Static verified-source analysis, fast lane, detection only. |
 | bridge_withdrawer_identity_spoof | Bridge Withdrawer Identity Spoof (BSC) | bsc_common | BSC/BNB detector for bridge withdrawer identity spoof: Withdrawer identity spoof: the bridge release pays a recipient taken straight from the call parameters, and the recipient is not bound to any deposit record or signed message hash in the function - whoever submits the withdrawal names the payee, so a watcher can redirect other users' releases to themselves. Static verified-source analysis, fast lane, detection only. |
 | bridge_wrapped_token_mint_unbacked | Bridge Wrapped Token Mint Unbacked (BSC) | bsc_common | BSC/BNB detector for bridge wrapped token mint unbacked: Unbacked wrapped-token mint: this wrapped / bridge token's mint has NO bridge-role gate, so anyone can mint the wrapped asset without any corresponding lock or burn on the origin chain - instant unbacked supply. Static verified-source analysis, fast lane, detection only. |
@@ -1128,6 +1130,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | share_transfer_cancel_desync | Share Transfer Cancel Desync | deep_audit3 | Deep-audit detector (batch 3) for share transfer cancel desync: Share-transfer cancel desync: the contract stores a per-user entitlement in a mapping at join/deposit, issues freely transferable shares, but cancel()/withdraw() refunds from the STORED mapping while burning balanceOf(msg.sender) - which may be 0 after the user transferred their shares away - without reconciling stored vs live balance. A user can transfer shares and then still cancel on the stored entitlement (double exit), or be shorted when the ledgers diverge - the BriVault shape. Non-transferable shares, or a cancel that burns from the stored mapping, is the protected shape. Static verified-source analysis, fast lane, detection only. |
 | shodan_enum | Shodan Crypto Enumerator | shodan_enum | Exposed crypto infra: keyless urlscan.io host intel always runs; SHODAN_API_KEY (optional) adds Shodan ETH RPC 8545, WS 8546, node ports, open DBs. Detection only. |
 | solana_contract | Solana Contract Recon | solana_contract | Reads Solana contracts from public chain data: SPL token mints (mint/freeze authority still set, REAL holder distribution by owner wallet, full Token-2022 dangerous-extension audit, creator deep-dive, authority map), pump.fun coins (bonding curve, mutable metadata, creator holdings), DexScreener sell-side checks (no-sells, pair age, dumps), and programs (BPF upgrade authority). Read-only, never sends a transaction. |
+| spot_price_own_balance | Spot Price Own Balance | deep_audit4 | Deep-audit detector (batch 4) for spot price own balance: Spot price derived from the contract's own token balance: a price / rate / valuation is computed from balanceOf(address(this)) with arithmetic on the balance. The contract's own spot balance is movable by anyone in a single transaction (direct donation, flash-minted deposit, skim), so every mint / borrow / settlement priced off it can be manipulated at near-zero cost. No TWAP, oracle feed or multi-source safeguard is visible. Static verified-source analysis, fast lane, detection only. |
 | stacks_contract | Stacks Contract Recon | stacks_contract | Reads Stacks (Clarity) contracts from the keyless Hiro API: mint authority (hardcoded principal vs data-var owner vs unguarded), mint cap enforced or decorative, burn / pause / freeze / blacklist powers, owner rotation, tx-sender auth patterns, and live SIP-010 supply state vs the cap. Read-only, never submits a transaction. |
 | staking_lockup_duration_bypass | Staking Lockup Duration Bypass (BSC) | bsc_common | BSC/BNB detector for staking lockup duration bypass: Lockup bypass: the staking contract declares a lock (lockPeriod / unlockTime state) but the withdraw path never reads any lock or timestamp state - the advertised lockup is unenforced and stakers can exit at any time, defeating the lock's purpose (and any reward priced for it). Static verified-source analysis, fast lane, detection only. |
 | staking_reward_compounding_reentrancy | Staking Reward Compounding Reentrancy (BSC) | bsc_common | BSC/BNB detector for staking reward compounding reentrancy: Compounding reentrancy: the compound/claim path makes its external call BEFORE updating the user's reward state (checks-effects-interactions violated, no reentrancy guard), so a caller contract can re-enter during the payout and compound/claim against the stale position repeatedly. Static verified-source analysis, fast lane, detection only. |
