@@ -275,7 +275,7 @@ class ContractReconPlugin(Plugin):
         # the contract it came from and both addresses.
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
-            res = await cc.resolve_implementation(
+            res = await chain_data.get_implementation(
                 ctx, chain, addr, code_hex,
                 {"implementation": (src or {}).get("implementation", "")})
         except Exception:
@@ -335,7 +335,7 @@ class ContractReconPlugin(Plugin):
         # If the implementation is itself a proxy, say so instead of
         # recursing - one level of following is the contract.
         try:
-            nested = await cc.resolve_implementation(
+            nested = await chain_data.get_implementation(
                 ctx, chain, impl, impl_code,
                 {"implementation":
                  (impl_src or {}).get("implementation", "")})

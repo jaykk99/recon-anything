@@ -640,7 +640,7 @@ class CryptoDrainPlugin(Plugin):
 
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
-            res = await cc.resolve_implementation(
+            res = await chain_data.get_implementation(
                 ctx, chain, addr, code_hex,
                 {"implementation": (src or {}).get("implementation", "")})
         except Exception:

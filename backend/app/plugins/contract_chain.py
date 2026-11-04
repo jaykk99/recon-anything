@@ -212,6 +212,45 @@ async def rpc_get_balance(ctx: Any, chain: ChainConfig,
     return None
 
 
+async def rpc_batch(ctx: Any, chain: ChainConfig,
+                    calls: List[Tuple[str, list]]) -> Optional[list]:
+    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+
+    ``calls`` is a list of (method, params) read-only calls
+    (eth_getCode / eth_getBalance / eth_getStorageAt / ...). Returns
+    the list of raw JSON-RPC ``result`` values in request order
+    (None for an individual call that errored), or None when the
+    batch itself failed on every endpoint - callers then fall back
+    to the per-call helpers above, so a batch-hostile endpoint can
+    never lose data, only the speedup. Goes through the same
+    rate-limited fetch as every other read: one limiter slot for
+    the whole batch, spike backoff untouched.
+    """
+    if not calls:
+        return []
+    payload = [{"jsonrpc": "2.0", "id": i + 1, "method": m,
+                "params": p} for i, (m, p) in enumerate(calls)]
+    for rpc in chain.rpc_urls:
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                            json=payload, timeout=12, max_retries=0)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except Exception:
+            continue
+        if not isinstance(d, list):
+            continue
+        by_id: Dict[Any, Any] = {}
+        for item in d:
+            if isinstance(item, dict) and "id" in item:
+                by_id[item["id"]] = item.get("result")
+        if not by_id:
+            continue
+        return [by_id.get(i + 1) for i in range(len(calls))]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Proxy implementation resolution (read-only)
 # ---------------------------------------------------------------------------

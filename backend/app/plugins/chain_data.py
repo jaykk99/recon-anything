@@ -39,6 +39,20 @@ detects:
 
 Read-only throughout: eth_getCode, eth_getBalance and explorer
 source reads. Never transacts, never calls a contract function.
+
+Phase 2B additions (perf/scan-throughput):
+
+- ``_fetch_once`` reads code + balance in ONE batched JSON-RPC
+  POST (``contract_chain.rpc_batch``) when an HTTP client is
+  available, falling back to the per-call helpers when the batch
+  fails - same results, fewer round trips and limiter slots.
+- ``get_implementation`` memoizes proxy resolution per
+  (chain, address) per run with the same singleflight pattern:
+  before this, every plugin re-ran ``resolve_implementation``
+  (up to 3 eth_getStorageAt reads) for the same contract.
+- ``stats(ctx)`` exposes cheap counters (fetch sequences started,
+  cache hits, batched reads) so benchmarks can prove dedupe
+  instead of asserting it.
 """
 from __future__ import annotations
 
@@ -58,6 +72,33 @@ STATUS_DEGRADED = "degraded"
 
 _CACHE_KEY = "_chain_data_cache"
 _INFLIGHT_KEY = "_chain_data_inflight"
+_IMPL_KEY = "_chain_data_impl_cache"
+_IMPL_INFLIGHT_KEY = "_chain_data_impl_inflight"
+_STATS_KEY = "_chain_data_stats"
+
+
+def _bump(ctx: Any, name: str) -> None:
+    shared = getattr(ctx, "shared", None)
+    if not isinstance(shared, dict):
+        return
+    st = shared.setdefault(_STATS_KEY, {})
+    st[name] = st.get(name, 0) + 1
+
+
+def stats(ctx: Any) -> Dict[str, int]:
+    """Per-run dedupe counters for this layer (benchmark evidence).
+
+    fetch_sequences: real _fetch_once executions (one per contract
+    per run when sharing works); cache_hits: get_chain_data calls
+    served from the shared record; batched_reads: _fetch_once calls
+    whose code+balance came from a single batched POST;
+    impl_resolutions / impl_cache_hits: same pair for
+    get_implementation.
+    """
+    shared = getattr(ctx, "shared", None)
+    if not isinstance(shared, dict):
+        return {}
+    return dict(shared.get(_STATS_KEY, {}))
 
 
 @dataclass
@@ -128,9 +169,31 @@ def cached_status(ctx: Any, chain: cc.ChainConfig,
 
 async def _fetch_once(ctx: Any, chain: cc.ChainConfig, address: str,
                       etherscan_key: Optional[str]) -> ChainData:
+    _bump(ctx, "fetch_sequences")
     rec = ChainData(chain_id=chain.id, address=address,
                     fetched_at=time.monotonic())
-    code = await cc.rpc_get_code(ctx, chain, address)
+    code: Optional[str] = None
+    balance: Optional[int] = None
+    # Batched read: code + balance in one POST when a real HTTP
+    # client is present. Any batch failure falls back to the
+    # per-call helpers, so results are identical either way.
+    if getattr(ctx, "http", None) is not None:
+        try:
+            results = await cc.rpc_batch(ctx, chain, [
+                ("eth_getCode", [address, "latest"]),
+                ("eth_getBalance", [address, "latest"])])
+        except Exception:
+            results = None
+        if results is not None and isinstance(results[0], str):
+            code = results[0]
+            _bump(ctx, "batched_reads")
+            if isinstance(results[1], str):
+                try:
+                    balance = int(results[1], 16)
+                except ValueError:
+                    balance = None
+    if code is None:
+        code = await cc.rpc_get_code(ctx, chain, address)
     if code is None:
         rec.status = STATUS_DEGRADED
         return rec
@@ -138,8 +201,9 @@ async def _fetch_once(ctx: Any, chain: cc.ChainConfig, address: str,
     if not rec.has_code:
         rec.status = STATUS_NO_CODE
         return rec
-    rec.balance_wei = None
-    if getattr(ctx, "http", None) is not None:
+    rec.balance_wei = balance
+    if rec.balance_wei is None and \
+            getattr(ctx, "http", None) is not None:
         try:
             rec.balance_wei = await cc.rpc_get_balance(
                 ctx, chain, address)
@@ -162,8 +226,10 @@ async def get_chain_data(ctx: Any, chain: cc.ChainConfig,
     rec = cache.get(key)
     if rec is not None:
         if rec.status != STATUS_DEGRADED:
+            _bump(ctx, "cache_hits")
             return rec
         if time.monotonic() - rec.fetched_at < DEGRADED_TTL_S:
+            _bump(ctx, "cache_hits")
             return rec
         # Stale degraded record: fall through and retry for real.
 
@@ -200,3 +266,70 @@ async def get_source(ctx: Any, chain: cc.ChainConfig, address: str,
     cc.fetch_verified_source."""
     rec = await get_chain_data(ctx, chain, address, etherscan_key)
     return rec.source
+
+
+# -- Shared proxy resolution ----------------------------------------
+# resolve_implementation costs up to 3 eth_getStorageAt reads and
+# every scaffolding plugin used to pay it per contract. The result
+# is a pure function of (chain, address, code, source metadata) for
+# the life of a run, so memoize it with the same singleflight
+# pattern as the fetch layer. Resolution failures are NOT cached:
+# the caller gets the empty result its own try/except would have
+# produced, and a later plugin may retry.
+
+def _impl_cache(ctx: Any) -> Dict[str, Dict[str, str]]:
+    shared = getattr(ctx, "shared", None)
+    if shared is None:
+        cache = getattr(ctx, "_chain_data_impl_fallback", None)
+        if cache is None:
+            cache = {}
+            try:
+                ctx._chain_data_impl_fallback = cache
+            except Exception:
+                pass
+        return cache
+    return shared.setdefault(_IMPL_KEY, {})
+
+
+def _impl_inflight(ctx: Any) -> Dict[str, Any]:
+    shared = getattr(ctx, "shared", None)
+    if shared is None:
+        return {}
+    return shared.setdefault(_IMPL_INFLIGHT_KEY, {})
+
+
+async def get_implementation(ctx: Any, chain: cc.ChainConfig,
+                             address: str,
+                             code_hex: Optional[str] = None,
+                             source_meta: Optional[Dict[str, Any]] = None
+                             ) -> Dict[str, str]:
+    """cc.resolve_implementation, shared per run.
+
+    Same return shape ({"implementation", "via", "beacon"}). The
+    first caller's (code_hex, source_meta) wins for the run - in
+    practice every plugin passes the same shared code/source for
+    the same contract, which is exactly the duplication this
+    removes.
+    """
+    cache = _impl_cache(ctx)
+    key = f"{chain.id}:{address.lower()}"
+    rec = cache.get(key)
+    if rec is not None:
+        _bump(ctx, "impl_cache_hits")
+        return rec
+    inflight = _impl_inflight(ctx)
+    task = inflight.get(key)
+    if task is None:
+        _bump(ctx, "impl_resolutions")
+
+        async def _resolve() -> Dict[str, str]:
+            return await cc.resolve_implementation(
+                ctx, chain, address, code_hex, source_meta)
+
+        task = asyncio.get_running_loop().create_task(_resolve())
+        inflight[key] = task
+        task.add_done_callback(
+            lambda _t: inflight.pop(key, None))
+    rec = await asyncio.shield(task)
+    cache[key] = rec
+    return rec
