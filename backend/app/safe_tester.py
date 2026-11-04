@@ -674,6 +674,27 @@ def _shadow_host(candidate: Dict) -> str:
     return m.group(1) if m else ""
 
 
+def _reachable_base(base: str) -> str:
+    """Pick the scheme that actually connects.
+
+    `base` already carries a scheme (default https). If https fails at the
+    connection level, retry as http so plain-HTTP-only hosts still get
+    probed instead of every probe failing and reporting "no finding". Any
+    HTTP response (even 4xx/5xx) counts as a reachable scheme.
+    """
+    candidates = [base]
+    if base.startswith("https://"):
+        candidates.append("http://" + base[len("https://"):])
+    for cand in candidates:
+        try:
+            with _client() as c:
+                c.get(cand)
+            return cand
+        except Exception:
+            continue
+    return base
+
+
 def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
     """Run real (safe, non-destructive) detection probes against the target.
 
@@ -686,6 +707,8 @@ def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
     if base and "://" not in base:
         base = "https://" + base
     base = base or "https://example.com"
+    # Fall back to http:// if https doesn't connect, so HTTP-only hosts probe.
+    base = _reachable_base(base)
     results = []
     for c in candidates:
         fn = PROBE_MAP.get(c["id"])
