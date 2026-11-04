@@ -385,6 +385,21 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
             "receives $0")
         return out
     if recipient in (None, "UNRESOLVED"):
+        if gated and probe.get("status") == "revert":
+            # The destination could not be classified, but two
+            # independent lanes agree a stranger cannot use the
+            # path at all: the deep source read finds a gate AND
+            # the live stranger probe reverts. That settles the
+            # candidate even without a destination.
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "gated: the deep source read finds an access "
+                "gate on the flagged function and the live "
+                "read-only stranger probe reverts; the value "
+                "destination could not be classified, but a "
+                "stranger can neither trigger the path nor "
+                "receive from it")
+            return out
         out["missing"] = ["recipient destination"]
         out["reason"] = ("no value destination could be "
                          "classified in the flagged function")
