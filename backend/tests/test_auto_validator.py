@@ -316,7 +316,8 @@ contract Vault {
     }
     function _deposit(address caller, address receiver,
                       uint256 assets, uint256 shares) internal {
-        asset.transferFrom(caller, address(this), assets);
+        SafeERC20.safeTransferFrom(asset, caller,
+                                   address(this), assets);
         _mint(receiver, shares);
     }
     function _mint(address to, uint256 amount) internal {

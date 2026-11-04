@@ -196,15 +196,35 @@ _TOKEN_MARKERS = (
 )
 
 
-_SELF_FUNDED_FLOW = (
-    # ERC4626 / allowance-deposit shape: the function pulls the
-    # underlying FROM the caller before minting/paying out.
-    re.compile(r"transferFrom\s*\(\s*"
-               r"(msg\.sender|_msgSender\(\)|caller)\b"),
-    # WETH shape: the credited amount IS the caller's msg.value.
-    re.compile(r"_mint\s*\([^,]+,\s*msg\.value\s*\)"),
-    re.compile(r"\[\s*msg\.sender\s*\]\s*\+=\s*msg\.value"),
-)
+_CALLER_EXPRS = {"msg.sender", "_msgSender()", "caller"}
+_TF_CALL_RE = re.compile(r"(safeTransferFrom|transferFrom)\s*\(")
+
+
+def _split_call_args(text: str, open_paren: int) -> List[str]:
+    """Top-level argument strings of the call whose '(' sits at
+    open_paren (nested parens/brackets tracked)."""
+    args: List[str] = []
+    cur: List[str] = []
+    depth = 0
+    for i in range(open_paren, len(text)):
+        ch = text[i]
+        if ch in "([{":
+            depth += 1
+            if depth > 1:
+                cur.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                if cur:
+                    args.append("".join(cur).strip())
+                return args
+            cur.append(ch)
+        elif ch == "," and depth == 1:
+            args.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    return args
 
 
 def _self_funded(text: str) -> bool:
@@ -212,8 +232,29 @@ def _self_funded(text: str) -> bool:
     themselves (deposit / wrap shapes). A stranger 'receiving'
     on such a path receives their own money back in another
     form - not a drain, and a successful probe (typically with
-    a zero amount) proves nothing about an unbacked payout."""
-    return any(p.search(text) for p in _SELF_FUNDED_FLOW)
+    a zero amount) proves nothing about an unbacked payout.
+
+    Shapes: ERC4626 deposits pulling the underlying from the
+    caller - token.transferFrom(caller, ...),
+    SafeERC20.safeTransferFrom(token, caller, ...) (the caller
+    is the SECOND argument in the library form) - and WETH
+    wraps where the credited amount is the caller's msg.value.
+    """
+    if re.search(r"_mint\s*\([^,]+,\s*msg\.value\s*\)", text) or \
+            re.search(r"\[\s*msg\.sender\s*\]\s*\+=\s*msg\.value",
+                      text):
+        return True
+    for m in _TF_CALL_RE.finditer(text):
+        args = _split_call_args(text, m.end() - 1)
+        if not args:
+            continue
+        if m.group(1) == "safeTransferFrom" and len(args) >= 4:
+            src = args[1]  # SafeERC20 library: (token, from, ...)
+        else:
+            src = args[0]  # direct: (from, to, amount)
+        if src in _CALLER_EXPRS:
+            return True
+    return False
 
 
 def _payout_denominations(text: str) -> str:
