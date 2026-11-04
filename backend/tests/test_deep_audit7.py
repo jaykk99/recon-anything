@@ -8,7 +8,7 @@ candidate at the spec severity; the FIXED-recipient variant
 severity, never a candidate; every clean control MUST stay
 silent under ALL twelve detectors; every other plugin's
 vulnerable / variant fixture MUST stay silent under this one
-(no cross-talk); the registry discovers exactly 821 plugins
+(no cross-talk); the registry discovers exactly 833 plugins
 including all twelve.
 """
 import os
@@ -54,8 +54,8 @@ def test_twelve_plugins_registered():
 
 def test_registry_count_798():
     reg = discover()
-    assert len(reg) == 821, \
-        f"registry size {len(reg)}, expected 821"
+    assert len(reg) == 833, \
+        f"registry size {len(reg)}, expected 833"
 
 
 def test_vuln_fires_candidate_with_evidence():

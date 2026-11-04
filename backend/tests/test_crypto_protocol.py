@@ -123,7 +123,7 @@ def test_each_check_individually_named():
 
 def test_registry_grew_by_eight():
     reg = discover()
-    assert len(reg) == 821  # 821 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 12 deep-audit batch-7 detectors (deep_audit7)
+    assert len(reg) == 833  # 833 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 12 deep-audit batch-5 detectors (deep_audit5)
     for c in CHECKS:
         pid = f"cp_proto_{c}"
         assert pid in reg, f"{pid} missing from registry"
