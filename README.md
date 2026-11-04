@@ -277,18 +277,18 @@ Rules:
   `ratelimit.fetch` (global + per-host limits, 429 Retry-After, backoff).
 - Tag each finding with the mode that produced it (`passive=True/False`).
 
-### Shipped plugins (774)
+### Shipped plugins (778)
 
 The registry auto-discovers every `Plugin` subclass in
 `backend/app/plugins/` - drop in a file, no central list to edit.
 The count is the live registry size, measured by loading the registry
-(`discover()` in `backend/app/plugins/registry.py`): **774 plugins**
-across 254 plugin modules on current master. The health gate
+(`discover()` in `backend/app/plugins/registry.py`): **778 plugins**
+across 255 plugin modules on current master. The health gate
 (`backend/tests/test_plugin_health.py`) enforces unique ids, valid
 groups, and metadata on all of them. Below are the core web plugins;
 the contract-analysis plugins are listed in the Smart contract
-analysis section above. Every plugin, all 774 of them, is listed
-in [All plugins](#all-plugins-774) below.
+analysis section above. Every plugin, all 778 of them, is listed
+in [All plugins](#all-plugins-778) below.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -309,7 +309,7 @@ With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
 
-## All plugins (774)
+## All plugins (778)
 
 Every plugin registered in the live registry, generated from
 `discover()` in `backend/app/plugins/registry.py` on current
@@ -317,7 +317,7 @@ master. Grouped by the plugin's `group` value (the same grouping
 the UI uses), alphabetical by plugin id within each group.
 No sampling: if it is registered, it is listed here.
 
-Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 391 · Financial 43 · Graph 8 · **Total 774**.
+Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 395 · Financial 43 · Graph 8 · **Total 778**.
 
 ### Network (33)
 
@@ -681,7 +681,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | typosquat | Typosquat Domains | typosquat | Generate typosquat variants and report which ones actually resolve (phishing risk / defensive holds). |
 | watchdog | Change Watchdog | watchdog | Continuous monitoring: new subdomains, new CVEs, surface drift. |
 
-### Web3 (391)
+### Web3 (395)
 
 | id | label | module | description |
 |----|-------|--------|-------------|
@@ -726,6 +726,8 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | bridge_validator_quorum_manipulation | Bridge Validator Quorum Manipulation (BSC) | bsc_common | BSC/BNB detector for bridge validator quorum manipulation: Validator quorum manipulation: validator signatures are COUNTED (ecrecover in a loop) but signers are never deduplicated and the count is never compared against a real quorum - the same validator signing repeatedly (or a threshold of one signature) satisfies the 'quorum', so one compromised or rogue validator is the whole bridge. Static verified-source analysis, fast lane, detection only. |
 | bridge_withdrawer_identity_spoof | Bridge Withdrawer Identity Spoof (BSC) | bsc_common | BSC/BNB detector for bridge withdrawer identity spoof: Withdrawer identity spoof: the bridge release pays a recipient taken straight from the call parameters, and the recipient is not bound to any deposit record or signed message hash in the function - whoever submits the withdrawal names the payee, so a watcher can redirect other users' releases to themselves. Static verified-source analysis, fast lane, detection only. |
 | bridge_wrapped_token_mint_unbacked | Bridge Wrapped Token Mint Unbacked (BSC) | bsc_common | BSC/BNB detector for bridge wrapped token mint unbacked: Unbacked wrapped-token mint: this wrapped / bridge token's mint has NO bridge-role gate, so anyone can mint the wrapped asset without any corresponding lock or burn on the origin chain - instant unbacked supply. Static verified-source analysis, fast lane, detection only. |
+| bytecode_deep_analysis | Bytecode Deep Analysis (Deep) | deep_layers | Deep bytecode lane for contracts with NO verified source: pure-Python disassembly (PUSH4 selectors + DELEGATECALL/SELFDESTRUCT/CALL opcode scan), dangerous-selector findings at labeled lower confidence with recipient classification or UNRESOLVED + the missing piece named. Heimdall availability is reported, never faked. |
+| candidate_confirmation_queue | Candidate Confirmation Queue (Deep, Heavy Lane) | deep_layers | HEAVY lane only. Consumes candidates published on the run bus (deep_candidates / candidates / sim_candidates / fuzz_candidates dicts with source) and reclassifies each with Slither via the audit-toolbox lane: tool-confirmed pattern / trigger-only / false-positive / unconfirmed (tool unavailable - reason named, never silently confirmed). Storage synergy and step paths are attached; tool output never becomes a live VERIFIED verdict (no-simulation rule). |
 | chain_enrich | Multi-chain OSINT | chain_enrich | Keyless balance/activity enrichment for discovered Bitcoin, Litecoin, Dogecoin, BCH, Dash, Zcash, Tron, XRP and Solana addresses, plus public address labels (exchange/mixer/bridge/sanctioned/burn) on every address. Read-only public-explorer data. |
 | chain_osint | Blockchain OSINT | chain_osint | Chain enrichment for discovered addresses: keyless Blockchair balances/activity + Sourcify verified-source checks always run; ETHERSCAN_API_KEY (optional) adds full tx history and counterparties. Read-only. |
 | contract_audit | Contract Static Auditor | contract_audit | Static analysis of verified contract source: reentrancy, access control, tx.origin, unchecked calls, overflow. Keyless Sourcify source always tried; ETHERSCAN_API_KEY (optional) adds Etherscan coverage. Never interacts with contracts. |
@@ -958,6 +960,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | cp_zec_addr | Zcash Transparent Address (checksum-verified) | cryptopack_addr | t1/t3 Zcash addresses with verified Base58Check checksum. |
 | cp_zen_addr | Horizen Address (checksum-verified) | cryptopack_addr2 | Horizen transparent addresses (zn...) with verified two-byte-version Base58Check checksum. |
 | create2_metamorphic_redeploy | Create2 Metamorphic Redeploy | deep_audit2 | Deep-audit detector (batch 2) for create2 metamorphic redeploy: CREATE2 metamorphic redeploy: the compilation both deploys with CREATE2 and contains a selfdestruct path, so the code at a fixed, pre-computed address can be destroyed and replaced by different code at the same address. Approvals, allowlist entries and integrations that trust the address keep trusting it after a total code swap. This is not salt squatting (the deterministic-collision class needs no selfdestruct); the destroy leg is what makes the address's code mutable. Static verified-source analysis, fast lane, detection only. |
+| cross_contract_call_graph | Cross-Contract Call Graph (Deep) | deep_layers | Follows the target's external calls ONE level deep: extracts call targets from verified source, fetches each callee's verified source, and flags gate bypass through an ungated callee function and caller-supplied value routes. Edges and callees are recorded in the shared per-target record for the confirmation lane and step-path builder. Read-only. |
 | crypto_drain_scanner | Crypto Contract Drain Analyzer | crypto_drain | Analyzes a contract's verified source for unprotected drain functions: public/external functions with NO access gate that can move the contract's own ETH or tokens to the caller or a caller-supplied address (full-balance sweeps, withdraw/rescue functions, token rescue, selfdestruct). Gated, internal, view/pure and interface functions, own-balance withdrawals and msg.value pass-throughs are not flagged. When the target is a proxy, the implementation behind it is analyzed too. Read-only, never interacts with contracts. |
 | crypto_infra_ports | Crypto node port surface | crypto_infra | Bounded connect checks on the six crypto node ports (8545/8546/8899/8900/26657/1317) with one read-only version/health probe per open port. |
 | crypto_infra_rpc | Crypto RPC endpoint grading | crypto_infra | Harvests the RPC endpoints a crypto target's own pages/JS reference, flags keys embedded in them, and grades each endpoint read-only: client version, chain, rpc_modules namespaces, CORS. |
@@ -1060,6 +1063,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | staking_reward_compounding_reentrancy | Staking Reward Compounding Reentrancy (BSC) | bsc_common | BSC/BNB detector for staking reward compounding reentrancy: Compounding reentrancy: the compound/claim path makes its external call BEFORE updating the user's reward state (checks-effects-interactions violated, no reentrancy guard), so a caller contract can re-enter during the payout and compound/claim against the stale position repeatedly. Static verified-source analysis, fast lane, detection only. |
 | staking_total_shares_mismatch | Staking Total Shares Mismatch (BSC) | bsc_common | BSC/BNB detector for staking total shares mismatch: Total-shares mismatch: shares are credited from the REQUESTED deposit amount, never from the balance delta actually received. With a fee-on-transfer staking token (the BNB Chain norm), every deposit over-credits shares, so totalShares permanently exceeds the assets backing them and late withdrawers are shorted. Static verified-source analysis, fast lane, detection only. |
 | staking_zero_deposit_harvest | Staking Zero Deposit Harvest (BSC) | bsc_common | BSC/BNB detector for staking zero deposit harvest: Zero-deposit harvest loop: this deposit/claim path pays out pending rewards but never writes rewardDebt, so the same pending amount stays claimable - calling deposit(0) (or the claim path) repeatedly harvests the same rewards until the reward balance is empty. Static verified-source analysis, fast lane, detection only. |
+| storage_state_analysis | Storage State Analysis (Deep) | deep_layers | Reads LIVE storage (EIP-1967 slots + the source-derived layout) for gate-deciding values - owner, implementation, paused, fee/recipient - and combines them with source analysis: findings fire when live state changes the source-shape verdict. Also extracts token parameters (decimals/totalSupply/cap/totalAssets via eth_call, fee params from source) into the shared per-target record for the math layer. Read-only eth_getStorageAt / eth_call. |
 | system_assembly_memory_overwrite | System Assembly Memory Overwrite (BSC) | bsc_common | BSC/BNB detector for system assembly memory overwrite: Assembly memory overwrite: inline assembly writes directly to memory slot 0x40 (the free memory pointer) or the 0x00 scratch slot with a value that is not a computed allocation, corrupting the allocator for every subsequent memory operation in the call. Static verified-source analysis, fast lane, detection only. |
 | system_ether_transfer_fallback_brick | System Ether Transfer Fallback Brick (BSC) | bsc_common | BSC/BNB detector for system ether transfer fallback brick: Ether transfer brick: native payouts use .transfer()/.send()-style 2300-gas semantics (.transfer with a single value argument), which permanently fails for recipients whose fallback does real work (smart wallets, multisigs, contracts) - their withdrawals brick while plain accounts succeed. Call-based payouts in the same function suppress this. Static verified-source analysis, fast lane, detection only. |
 | system_hardcoded_gas_limits | System Hardcoded Gas Limits (BSC) | bsc_common | BSC/BNB detector for system hardcoded gas limits: Hardcoded gas limit: a low-level call carries a literal gas stipend baked into the code. Stipends chosen for today's opcode prices break silently when gas repricing lands (the 2300 transfer stipend class of bug), and a stipend too small for the callee's fallback bricks the call path. Static verified-source analysis, fast lane, detection only. |
