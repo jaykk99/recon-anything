@@ -207,33 +207,210 @@ def _encode_static(typ: str, value: Any) -> str:
     return _word(int(value))
 
 
-def encode_call_args(types: List[str], values: List[Any]) -> Optional[str]:
-    """ABI-encode arguments. Returns hex (no 0x) or None when a type
-    is unsupported (arrays, tuples) - those functions are skipped,
-    never probed with malformed calldata."""
-    heads: List[str] = []
-    tails: List[str] = []
-    offset = 32 * len(types)
-    for typ, value in zip(types, values):
-        if "[" in typ or typ.startswith("tuple"):
-            return None  # arrays / tuples are unsupported, skip
-        if typ in ("bytes", "string"):
+# Type tree: ("base", name) | ("array", elem_node, size|None)
+# | ("tuple", (member_node, ...)). size None = dynamic array.
+def _parse_type_at(s: str, i: int):
+    if i >= len(s):
+        raise ValueError("unexpected end of type")
+    if s[i] == "(":
+        i += 1
+        members = []
+        if i < len(s) and s[i] == ")":
+            raise ValueError("empty tuple")
+        while True:
+            member, i = _parse_type_at(s, i)
+            members.append(member)
+            if i < len(s) and s[i] == ",":
+                i += 1
+                continue
+            if i < len(s) and s[i] == ")":
+                i += 1
+                break
+            raise ValueError("malformed tuple type")
+        node: Any = ("tuple", tuple(members))
+    elif s.startswith("tuple", i) and i + 5 < len(s) \
+            and s[i + 5] == "(":
+        node, i = _parse_type_at(s, i + 5)
+    else:
+        m = re.match(r"[A-Za-z][A-Za-z0-9]*", s[i:])
+        if not m:
+            raise ValueError("malformed base type")
+        name = m.group(0)
+        if name == "uint":
+            name = "uint256"
+        elif name == "int":
+            name = "int256"
+        elif name == "byte":
+            name = "bytes1"
+        i += len(m.group(0))
+        node = ("base", name)
+    while i < len(s) and s[i] == "[":
+        j = s.find("]", i)
+        if j < 0:
+            raise ValueError("malformed array type")
+        inside = s[i + 1:j]
+        if inside and not inside.isdigit():
+            raise ValueError("malformed array size")
+        node = ("array", node, None if inside == "" else int(inside))
+        i = j + 1
+    return node, i
+
+
+def _validate_node(node: Any) -> bool:
+    kind = node[0]
+    if kind == "base":
+        name = node[1]
+        if name in ("address", "bool", "string", "bytes"):
+            return True
+        if re.fullmatch(r"bytes\d+", name):
+            return 1 <= int(name[5:]) <= 32
+        if re.fullmatch(r"uint\d+", name):
+            n = int(name[4:])
+            return 8 <= n <= 256 and n % 8 == 0
+        if re.fullmatch(r"int\d+", name):
+            n = int(name[3:])
+            return 8 <= n <= 256 and n % 8 == 0
+        return False
+    if kind == "array":
+        return _validate_node(node[1])
+    if kind == "tuple":
+        return bool(node[1]) and all(_validate_node(m) for m in node[1])
+    return False
+
+
+def _parse_type_str(s: str):
+    """Parse a canonical type string to a node tree, or None."""
+    try:
+        compact = "".join(str(s).split())
+        if not compact:
+            return None
+        node, pos = _parse_type_at(compact, 0)
+        if pos != len(compact) or not _validate_node(node):
+            return None
+        return node
+    except Exception:
+        return None
+
+
+def _node_str(node: Any) -> str:
+    kind = node[0]
+    if kind == "base":
+        return node[1]
+    if kind == "tuple":
+        return "(" + ",".join(_node_str(m) for m in node[1]) + ")"
+    # array: suffix attaches to the element rendering
+    return _node_str(node[1]) + "[" + \
+        ("" if node[2] is None else str(node[2])) + "]"
+
+
+def _is_dynamic(node: Any) -> bool:
+    kind = node[0]
+    if kind == "base":
+        return node[1] in ("bytes", "string")
+    if kind == "array":
+        return node[2] is None or _is_dynamic(node[1])
+    return any(_is_dynamic(m) for m in node[1])  # tuple
+
+
+def _static_size(node: Any) -> int:
+    kind = node[0]
+    if kind == "base":
+        return 32
+    if kind == "array":
+        return int(node[2]) * _static_size(node[1])
+    return sum(_static_size(m) for m in node[1])  # tuple
+
+
+def _word_bytes(n: int) -> bytes:
+    return (n % (1 << 256)).to_bytes(32, "big")
+
+
+def _encode_node(node: Any, value: Any) -> bytes:
+    kind = node[0]
+    if kind == "base":
+        name = node[1]
+        if name == "string":
             data = value if isinstance(value, bytes) \
                 else str(value).encode()
-            heads.append(_word(offset))
-            tail = _word(len(data)) + data.hex().ljust(
-                ((len(data) + 31) // 32) * 64, "0")
+            pad = ((len(data) + 31) // 32) * 32
+            return _word_bytes(len(data)) + data.ljust(pad, b"\x00")
+        if name == "bytes":
+            if isinstance(value, (bytes, bytearray)):
+                data = bytes(value)
+            elif isinstance(value, str) \
+                    and value.startswith("0x"):
+                data = bytes.fromhex(value[2:])
+            else:
+                data = str(value).encode()
+            pad = ((len(data) + 31) // 32) * 32
+            return _word_bytes(len(data)) + data.ljust(pad, b"\x00")
+        return bytes.fromhex(_encode_static(name, value))
+    if kind == "array":
+        elem, size = node[1], node[2]
+        vals = list(value)
+        if size is None:
+            return _word_bytes(len(vals)) + \
+                _encode_seq([elem] * len(vals), vals)
+        if len(vals) != size:
+            raise ValueError("fixed array length mismatch")
+        return _encode_seq([elem] * size, vals)
+    # tuple
+    return _encode_seq(list(node[1]), list(value))
+
+
+def _encode_seq(nodes: List[Any], values: List[Any]) -> bytes:
+    if len(nodes) != len(values):
+        raise ValueError("arity mismatch")
+    head_size = sum(32 if _is_dynamic(n) else _static_size(n)
+                    for n in nodes)
+    heads: List[bytes] = []
+    tails: List[bytes] = []
+    offset = head_size
+    for node, value in zip(nodes, values):
+        if _is_dynamic(node):
+            heads.append(_word_bytes(offset))
+            tail = _encode_node(node, value)
             tails.append(tail)
-            offset += len(tail) // 2
-        elif typ == "address" or typ == "bool" \
-                or typ.startswith(("uint", "int", "bytes")):
-            heads.append(_encode_static(typ, value))
+            offset += len(tail)
         else:
+            heads.append(_encode_node(node, value))
+    return b"".join(heads + tails)
+
+
+def encode_call_args(types: List[str], values: List[Any]) -> Optional[str]:
+    """ABI-encode arguments. Returns hex (no 0x) or None when a type
+    cannot be parsed - those functions are skipped, never probed
+    with malformed calldata. Supports base types, bytes/string,
+    fixed/dynamic arrays and tuples, arbitrarily nested."""
+    if len(types) != len(values):
+        return None
+    nodes = []
+    for typ in types:
+        node = _parse_type_str(typ)
+        if node is None:
             return None
-    return "".join(heads + tails)
+        nodes.append(node)
+    try:
+        return _encode_seq(nodes, list(values)).hex()
+    except Exception:
+        return None
+
+
+def _default_for_node(node: Any) -> Any:
+    kind = node[0]
+    if kind == "array":
+        if node[2] is None:
+            return []
+        return [_default_for_node(node[1]) for _ in range(node[2])]
+    if kind == "tuple":
+        return tuple(_default_for_node(m) for m in node[1])
+    return _default_value(node[1])
 
 
 def _default_value(typ: str) -> Any:
+    node = _parse_type_str(typ)
+    if node is not None and node[0] != "base":
+        return _default_for_node(node)
     if typ == "address":
         return cc.ZERO_ADDRESS
     if typ == "bool":
@@ -247,6 +424,14 @@ def _default_value(typ: str) -> Any:
 
 def _boundary_values(typ: str, contract_addr: str) -> List[Any]:
     """Boundary inputs per type (the default/zero case is separate)."""
+    node = _parse_type_str(typ)
+    if node is not None and node[0] == "array":
+        elem_default = _default_for_node(node[1])
+        if node[2] is None:
+            return [[elem_default]]
+        return [[elem_default] * node[2]]
+    if node is not None and node[0] == "tuple":
+        return [tuple(_default_for_node(m) for m in node[1])]
     if typ.startswith("uint"):
         return [1, (1 << 256) - 1]
     if typ.startswith("int"):
@@ -299,31 +484,95 @@ _STATE_WRITE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_.]*(\s*\[[^\]]*\])?\s*(\+=|-=|=(?![=>]))")
 
 
+def _extract_canonical(fragment: str) -> Optional[str]:
+    """Canonical type of one parameter fragment (a type plus an
+    optional name / payable / memory / calldata tail), or None
+    for a named struct type that cannot be encoded without the
+    ABI (dotted like DataTypes.Args, or a bare custom name)."""
+    frag = fragment.strip()
+    if not frag:
+        return None
+    if frag.startswith("tuple") and len(frag) > 5 \
+            and frag[5:].lstrip().startswith("("):
+        return _extract_canonical(frag[5:].lstrip())
+    if frag.startswith("("):
+        j = cd._matching(frag, 0)
+        tuple_inner = frag[1:j]
+        rest = frag[j + 1:].lstrip()
+        suffixes = ""
+        while rest.startswith("["):
+            k = rest.find("]")
+            if k < 0:
+                return None
+            inside = rest[1:k]
+            if inside and not inside.isdigit():
+                return None
+            suffixes += rest[:k + 1]
+            rest = rest[k + 1:].lstrip()
+        if not tuple_inner.strip():
+            return None
+        members: List[str] = []
+        for member_frag in cd._split_top(tuple_inner):
+            mc = _extract_canonical(member_frag)
+            if mc is None:
+                return None
+            members.append(mc)
+        return "(" + ",".join(members) + ")" + suffixes
+    m = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)", frag)
+    if not m:
+        return None
+    base = m.group(1)
+    rest = frag[m.end():].lstrip()
+    suffixes = ""
+    while rest.startswith("["):
+        k = rest.find("]")
+        if k < 0:
+            return None
+        inside = rest[1:k]
+        if inside and not inside.isdigit():
+            return None
+        suffixes += rest[:k + 1]
+        rest = rest[k + 1:].lstrip()
+    if "." in base:
+        return None  # dotted named struct: needs the ABI
+    if base in ("address", "bool", "string"):
+        canon = base
+    elif base == "uint":
+        canon = "uint256"
+    elif base == "int":
+        canon = "int256"
+    elif base == "byte":
+        canon = "bytes1"
+    elif re.fullmatch(r"uint\d+", base) \
+            or re.fullmatch(r"int\d+", base):
+        canon = base
+    elif re.fullmatch(r"bytes\d*", base):
+        if base != "bytes" and not 1 <= int(base[5:]) <= 32:
+            return None
+        canon = base
+    else:
+        return None  # bare custom struct / unknown type
+    return canon + suffixes
+
+
 def _param_types(signature: str) -> Optional[List[str]]:
-    """Parameter types of a function signature, or None when any
-    parameter uses an unsupported type (array/tuple/struct)."""
+    """Parameter types of a function signature, canonicalized,
+    or None when any parameter is a named struct type (which
+    cannot be encoded without the ABI). Array and tuple types
+    are accepted and canonicalized recursively (uint->uint256,
+    int->int256, names/spaces stripped)."""
     i = signature.find("(")
     if i < 0:
         return []
     inner = signature[i + 1:cd._matching(signature, i)]
     types: List[str] = []
     for part in cd._split_top(inner):
-        toks = part.split()
-        if not toks:
+        if not part.strip():
             continue
-        typ = toks[0]
-        if typ == "address" and len(toks) > 1 and toks[1] == "payable":
-            typ = "address"
-        if typ == "uint":
-            typ = "uint256"
-        elif typ == "int":
-            typ = "int256"
-        if "[" in typ or typ.startswith("tuple") or "." in typ:
-            return None  # arrays / tuples / struct types: skip
-        if not re.fullmatch(
-                r"(u?int\d*|address|bool|bytes\d*|string)", typ):
+        canon = _extract_canonical(part)
+        if canon is None:
             return None
-        types.append(typ)
+        types.append(canon)
     return types
 
 
