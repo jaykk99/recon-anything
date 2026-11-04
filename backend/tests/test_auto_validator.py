@@ -292,16 +292,203 @@ def test_value_flow_through_internal_helper_is_classified():
 
 def test_token_mint_payout_not_killed_by_zero_native_balance():
     # A mint payout is denominated in the token, not in wei:
-    # 0 native balance must not false-positive it.
+    # 0 native balance must not false-positive it. But since
+    # the Nov 4 audit, a mint ALSO cannot be VERIFIED_REAL
+    # without evidence the issued token has value - this case
+    # has none, so it parks at UNVERIFIED with the missing
+    # piece named (never FALSE_POSITIVE on the 0 wei, never
+    # VERIFIED_REAL on a bare probe success).
     v = av.validate_candidate({
         "function": "mint", "kind": "unprotected_mint",
         "source": fx.VULN["recipient_mint_to_caller"],
         "probe": STRANGER_PROBE_OK, "balances": BAL0})
-    assert v["verdict"] == "VERIFIED_REAL"
+    assert v["verdict"] == "UNVERIFIED"
     assert v["evidence"].get("payout_denomination") == "token"
-    # The value statement must be the issuance, never a
-    # self-contradictory "0 wei upper bound".
-    assert "issuance" in v["value"]
+    assert "minted token has value" in " ".join(v["missing"])
+
+
+def test_token_mint_with_value_evidence_is_verified_real():
+    bal = dict(BAL0)
+    bal["token_pair_reserves"] = {"reserve0": 10**20,
+                                  "reserve1": 3 * 10**18,
+                                  "observed_at": "2026-11-04T00:00:00Z",
+                                  "source": "test"}
+    v = av.validate_candidate({
+        "function": "mint", "kind": "unprotected_mint",
+        "source": fx.VULN["recipient_mint_to_caller"],
+        "probe": STRANGER_PROBE_OK, "balances": bal})
+    assert v["verdict"] == "VERIFIED_REAL"
+    assert "token value evidence" in v["value"]
+
+
+STD_TOKEN_SRC = """
+contract StdToken {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    function transfer(address to, uint256 amount)
+        public returns (bool) {
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+    function transferFrom(address from, address to,
+                          uint256 amount) public returns (bool) {
+        _spendAllowance(from, msg.sender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+    function _spendAllowance(address owner, address spender,
+                             uint256 amount) internal {
+        uint256 cur = allowance[owner][spender];
+        if (cur != type(uint256).max) {
+            require(cur >= amount, "allowance");
+            allowance[owner][spender] = cur - amount;
+        }
+    }
+    function _transfer(address from, address to,
+                       uint256 amount) internal {
+        require(balanceOf[from] >= amount, "balance");
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+    }
+}
+"""
+
+BOOL_TRUE_PROBE = {"status": "success", "via": "test",
+                   "detail": "0x" + "0" * 63 + "1"}
+
+
+def test_own_erc20_transfer_is_not_a_drain():
+    # Nov 4 backlog shape (Base 0x3f5b...a4ee, Ethereum
+    # 0x0199...350b): the token's OWN transfer() probed with a
+    # zero-amount boundary call "succeeds" (returns true) -
+    # normal ERC20 semantics, worth $0 as a finding.
+    v = av.validate_candidate({
+        "function": "transfer", "kind": "unprotected_drain",
+        "source": STD_TOKEN_SRC, "probe": BOOL_TRUE_PROBE,
+        "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert v["evidence"].get("own_standard_erc20_surface") is True
+
+
+def test_own_erc20_transfer_from_is_not_a_drain():
+    v = av.validate_candidate({
+        "function": "transferFrom", "kind": "unprotected_drain",
+        "source": STD_TOKEN_SRC, "probe": BOOL_TRUE_PROBE,
+        "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert v["evidence"].get("own_standard_erc20_surface") is True
+
+
+BACKDOOR_TF_SRC = """
+contract BackdoorToken {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    function transferFrom(address from, address to,
+                          uint256 amount) public returns (bool) {
+        _transfer(from, to, amount);
+        return true;
+    }
+    function _transfer(address from, address to,
+                       uint256 amount) internal {
+        require(balanceOf[from] >= amount, "balance");
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+    }
+}
+"""
+
+
+def test_transfer_from_without_allowance_is_not_cleared():
+    # A transferFrom with NO allowance mechanics anywhere is a
+    # backdoor shape, not standard semantics: the self-surface
+    # rule must not clear it.
+    v = av.validate_candidate({
+        "function": "transferFrom", "kind": "unprotected_drain",
+        "source": BACKDOOR_TF_SRC, "probe": BOOL_TRUE_PROBE,
+        "balances": BAL0})
+    assert v["evidence"].get("own_standard_erc20_surface") is not True
+    assert v["verdict"] != "FALSE_POSITIVE" or \
+        "standard ERC20" not in v["reason"]
+
+
+ZERO_RETURN_WITHDRAW_SRC = """
+contract ZeroWithdraw {
+    function withdraw() public returns (uint256) {
+        uint256 amt = _owed(msg.sender);
+        if (amt > 0) {
+            payable(msg.sender).transfer(amt);
+        }
+        return amt;
+    }
+    function _owed(address who) internal view returns (uint256) {
+        return 0;
+    }
+}
+"""
+
+ZERO_AMOUNT_PROBE = {"status": "success", "via": "test",
+                     "detail": "0x" + "0" * 64}
+
+
+def test_probe_returning_zero_amount_is_fp():
+    # Nov 4 backlog shape (Ethereum 0x1265...65a / 0x225c...f773
+    # withdraw): the probe "succeeds" but returns a zero payout
+    # amount - the stranger's measured receipt is 0 even though
+    # the contract holds a positive native balance.
+    v = av.validate_candidate({
+        "function": "withdraw", "kind": "unprotected_drain",
+        "source": ZERO_RETURN_WITHDRAW_SRC,
+        "probe": ZERO_AMOUNT_PROBE, "balances": BAL})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert v["evidence"].get("probe_return_amount") == 0
+
+
+UNKNOWN_DENOM_SRC = """
+contract MysteryPayer {
+    function withdrawTo(address to) public {
+        _pay(to);
+    }
+    function _pay(address to) internal {
+        (bool ok, ) = to.call("");
+        require(ok, "pay failed");
+    }
+}
+"""
+
+
+def test_unknown_denomination_with_no_value_anywhere_is_fp():
+    # Nov 4 backlog shape (Arbitrum 0x848e...409b withdrawTo):
+    # the payout markers are invisible to the denomination
+    # read, the contract holds 0 wei and no token balance was
+    # measured - a bare probe success is not value evidence.
+    v = av.validate_candidate({
+        "function": "withdrawTo", "kind": "unprotected_drain",
+        "source": UNKNOWN_DENOM_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL0})
+    assert v["verdict"] == "FALSE_POSITIVE"
+    assert "no positive value evidence" in v["reason"]
+
+
+def test_unknown_denomination_with_positive_balance_is_vr():
+    v = av.validate_candidate({
+        "function": "withdrawTo", "kind": "unprotected_drain",
+        "source": UNKNOWN_DENOM_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL})
+    assert v["verdict"] == "VERIFIED_REAL"
+    assert "positive value evidence" in v["reason"]
+
+
+def test_token_payout_without_token_balance_evidence_is_unverified():
+    # Denom is token, the payout is not a mint, and nobody
+    # measured the contract's own-token balance: the old engine
+    # called this VERIFIED_REAL citing a 0-wei native bound.
+    v = av.validate_candidate({
+        "function": "claim", "kind": "recipient_unbacked_claim",
+        "source": TOKEN_CLAIM_SRC, "probe": STRANGER_PROBE_OK,
+        "balances": BAL0})
+    assert v["verdict"] == "UNVERIFIED"
+    assert "own-token balance" in " ".join(v["missing"])
 
 
 ERC4626_SRC = """

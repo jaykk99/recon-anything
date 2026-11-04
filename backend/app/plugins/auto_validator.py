@@ -11,7 +11,15 @@ a candidate finding plus whatever evidence lanes could gather and
 returns exactly one verdict:
 
 - VERIFIED_REAL: stranger receives, and a read-only stranger probe
-  or a fork/local simulation PROVES it. Value stated.
+  or a fork/local simulation PROVES it, with POSITIVE value
+  evidence attached: a nonzero balance bound in the payout
+  denomination, a probe that returns a nonzero payout amount, or
+  live reserve / pair evidence. A probe that merely succeeds is
+  never enough on its own (zero-amount boundary calls succeed on
+  standard contracts by design), and a mint payout additionally
+  requires evidence the issued token has value (a live pair or
+  reserves); without it the candidate stays UNVERIFIED with the
+  missing piece named.
 - TRIGGER_ONLY: the code is real and ungated, but the value lands
   at a FIXED or HOLDER-SELF destination - a stranger can trigger
   it and receives $0. Token-authority findings (a mint/freeze
@@ -273,6 +281,110 @@ def _payout_denominations(text: str) -> str:
     return "unknown"
 
 
+_ERC20_SELF_SURFACE = {"transfer", "transferFrom"}
+_LEDGER_MOVE_RE = re.compile(
+    r"(_transfer\s*\(|_balances\s*\[|balances\s*\[|balanceOf\s*\[)")
+_ALLOWANCE_RE = re.compile(r"(_spendAllowance|allowance\s*\()")
+
+
+def _own_standard_surface(fn: Optional[Dict[str, Any]],
+                          scope: Optional[cl._Scope],
+                          flow_text: str) -> bool:
+    """The flagged function IS the target token's own standard
+    ERC20 transfer surface, not an external drain path.
+
+    True only when all of these hold: the function is named
+    transfer / transferFrom; the analysis scope (the deployed
+    contract plus ancestors) is itself an ERC20 token (it defines
+    balanceOf and totalSupply); the function body moves that
+    token's own ledger (_transfer / balance writes); and, for
+    transferFrom, allowance mechanics are present (a transferFrom
+    with NO allowance check is a backdoor shape, not standard
+    semantics, and must not be cleared by this rule).
+
+    Such a function moves value only against the sender's own
+    balance (transfer) or an existing allowance (transferFrom).
+    A stranger probe "succeeding" - the boundary probes use
+    zero amounts, which standard tokens accept by design - is
+    normal token semantics, and the Nov 4 backlog re-run proved
+    the old engine minted VERIFIED_REAL verdicts out of exactly
+    this shape."""
+    if fn is None or scope is None:
+        return False
+    if fn["name"] not in _ERC20_SELF_SURFACE:
+        return False
+    names = {f["name"] for f in scope.functions}
+    is_token = {"balanceOf", "totalSupply"} <= names or (
+        "balanceOf" in scope.scoped_text
+        and "totalSupply" in scope.scoped_text)
+    if not is_token:
+        return False
+    if not _LEDGER_MOVE_RE.search(fn["text"]):
+        return False
+    if fn["name"] == "transferFrom" and \
+            not _ALLOWANCE_RE.search(flow_text):
+        return False
+    return True
+
+
+def _probe_amount_return(fn: Optional[Dict[str, Any]],
+                         probe: Dict[str, Any]) -> Optional[int]:
+    """The payout amount a successful live probe measured, when
+    it can be read: the flagged function declares exactly one
+    uint/int return value and the probe's return data carries
+    it as the first word. None when the amount cannot be read
+    (no declared numeric return, no return data)."""
+    if fn is None:
+        return None
+    m = re.search(r"returns\s*\(([^)]*)\)", fn["signature"])
+    if not m:
+        return None
+    parts = [p.strip() for p in m.group(1).split(",") if p.strip()]
+    if len(parts) != 1 or not re.search(r"\bu?int\d*\b", parts[0]):
+        return None
+    raw = probe.get("result") or probe.get("detail") or ""
+    if not isinstance(raw, str):
+        return None
+    h = raw[2:] if raw.startswith("0x") else raw
+    if len(h) < 64 or not re.fullmatch(r"[0-9a-fA-F]{64}", h[:64]):
+        return None
+    return int(h[:64], 16)
+
+
+def _reserves_value(balances: Dict[str, Any],
+                    key: str) -> Optional[int]:
+    r = balances.get(key)
+    if not isinstance(r, dict):
+        return None
+    try:
+        return int(r.get("reserve0") or 0) + int(r.get("reserve1") or 0)
+    except Exception:
+        return None
+
+
+def _token_value_evidence(candidate: Dict[str, Any],
+                          balances: Dict[str, Any]) -> Optional[str]:
+    """Evidence that a token this contract can mint actually has
+    value: the contract is itself a live AMM pair, the gathering
+    lane read live reserves for a pair of this token, or a lane
+    supplied explicit token-value evidence. A mint of a token
+    with no market is issuance of paper, not a payable payout."""
+    total = _reserves_value(balances, "amm_reserves")
+    if total:
+        return (f"the contract is itself a live AMM pair "
+                f"(reserves sum {total} base units)")
+    total = _reserves_value(balances, "token_pair_reserves")
+    if total:
+        return (f"live pair reserves for the token "
+                f"(reserves sum {total} base units)")
+    tve = candidate.get("token_value_evidence")
+    if isinstance(tve, dict) and tve.get("detail"):
+        return str(tve["detail"])
+    if isinstance(tve, str) and tve:
+        return tve
+    return None
+
+
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Machine verdict for one candidate finding.
 
@@ -420,6 +532,26 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 recipient = "HOLDER-SELF"
     out["recipient"] = recipient
 
+    if fn is not None and not candidate.get("function_out_of_scope") \
+            and _own_standard_surface(fn, scope, flow_text):
+        # The token's own standard transfer surface is not a
+        # drain candidate: it can only move the sender's own
+        # balance or an approved allowance, and the recipient
+        # classification of its `to` parameter (CALLER-SUPPLIED)
+        # is just the ERC20 interface shape.
+        out["evidence"]["own_standard_erc20_surface"] = True
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            "the flagged function is the target token's own "
+            "standard ERC20 transfer surface: it moves the "
+            "token's own ledger only against the sender's "
+            "balance (transfer) or an existing allowance "
+            "(transferFrom). A stranger probe succeeding - the "
+            "boundary probes use zero amounts, which standard "
+            "tokens accept by design - is normal token "
+            "semantics, not an external drain")
+        return out
+
     if recipient in ("FIXED", "HOLDER-SELF"):
         if gated:
             out["verdict"] = "FALSE_POSITIVE"
@@ -518,6 +650,7 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     if probe.get("status") == "success":
         native = balances.get("native_wei")
+        token_self = balances.get("token_self_wei")
         denom = _payout_denominations(flow_text)
         out["evidence"]["payout_denomination"] = denom
         if _self_funded(flow_text):
@@ -536,29 +669,23 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "funds back, so the probe success proves no "
                 "unbacked receipt")
             return out
-        # Zero-balance kills are denomination-aware: 0 wei only
-        # kills a native payout; a token payout is bounded by
-        # token state, not by the native balance (and a mint
-        # payout is bounded by issuance, not by any balance).
-        if denom == "native" and native is not None \
-                and int(native) == 0:
-            out["verdict"] = "FALSE_POSITIVE"
-            out["reason"] = (
-                "stranger probe succeeds but the contract holds "
-                "0 native balance; there is nothing for a "
-                "stranger to receive")
-            return out
-        token_self = balances.get("token_self_wei")
-        mint_payout = bool(re.search(r"(?<![\w.])_?mint\s*\(",
-                                     flow_text))
-        if denom == "token" and not mint_payout \
-                and token_self is not None and int(token_self) == 0:
-            out["verdict"] = "FALSE_POSITIVE"
-            out["reason"] = (
-                "stranger probe succeeds but the contract holds "
-                "0 of its own token; the token payout has "
-                "nothing to pay out")
-            return out
+        # A successful probe is a liveness result, not a value
+        # result: the boundary probes use zero amounts, and
+        # zero-amount calls succeed on standard contracts by
+        # design. When the probe's own return data measures the
+        # payout amount and it is zero, the stranger's measured
+        # receipt is zero.
+        amount = _probe_amount_return(fn, probe)
+        if amount is not None:
+            out["evidence"]["probe_return_amount"] = amount
+            if amount == 0:
+                out["verdict"] = "FALSE_POSITIVE"
+                out["reason"] = (
+                    "live read-only stranger probe succeeds but "
+                    "returns a zero payout amount; the measured "
+                    "receipt for a stranger is 0, so the probe "
+                    "proves no payable payout")
+                return out
         if candidate.get("entitlement_metered"):
             out["missing"] = ["fork/local simulation (an "
                               "eth_call cannot measure a payout "
@@ -569,21 +696,142 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "entitlement, so the amount a stranger would "
                 "actually receive is unmeasured")
             return out
-        out["verdict"] = "VERIFIED_REAL"
-        if denom == "token" and mint_payout:
-            out["value"] = ("token issuance to the "
-                            "caller-reachable recipient (mint; "
-                            "no balance bound applies)")
-        elif denom == "token" and token_self is not None:
-            out["value"] = (f"contract own-token balance "
-                            f"{token_self} (base units, upper "
-                            "bound on the token payout)")
-        elif native is not None:
-            out["value"] = f"contract native balance {native} wei (upper bound on the native payout)"
+        # POSITIVE VALUE EVIDENCE GATE. From here, VERIFIED_REAL
+        # requires at least one measured, nonzero value bound in
+        # the payout's denomination (or, for a mint, evidence
+        # the issued token has value). Zero-balance kills stay
+        # denomination-aware: 0 wei only kills a native payout;
+        # a token payout is bounded by token state, not wei.
+        mint_payout = bool(re.search(r"(?<![\w.])_?mint\s*\(",
+                                     flow_text))
+        if denom == "native":
+            if native is None:
+                out["missing"] = ["native balance evidence"]
+                out["reason"] = (
+                    "stranger probe succeeds on a native payout "
+                    "path, but no native balance was measured; "
+                    "a successful probe alone is not value "
+                    "evidence")
+                return out
+            if int(native) == 0:
+                out["verdict"] = "FALSE_POSITIVE"
+                out["reason"] = (
+                    "stranger probe succeeds but the contract "
+                    "holds 0 native balance; there is nothing "
+                    "for a stranger to receive")
+                return out
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = (
+                f"contract native balance {native} wei (upper "
+                "bound on the native payout)")
+            out["reason"] = (
+                "read-only probe from the unfunded stranger "
+                "succeeds, the function is ungated, the value "
+                f"destination is {recipient}, and the contract "
+                f"holds a positive native balance ({native} "
+                "wei) bounding the payout")
+            return out
+        if denom == "token":
+            if mint_payout:
+                tve = _token_value_evidence(candidate, balances)
+                if tve is None:
+                    out["missing"] = [
+                        "evidence the minted token has value "
+                        "(live pair / reserves)"]
+                    out["reason"] = (
+                        "stranger probe succeeds on an ungated "
+                        "mint path, but nothing shows the issued "
+                        "token has value: no live pair or "
+                        "reserve evidence was gathered. Issuance "
+                        "of an untraded token is not a payable "
+                        "payout")
+                    return out
+                out["verdict"] = "VERIFIED_REAL"
+                out["value"] = (
+                    "token issuance to the caller-reachable "
+                    f"recipient (mint); token value evidence: "
+                    f"{tve}")
+                out["reason"] = (
+                    "read-only probe from the unfunded stranger "
+                    "succeeds, the function is ungated, the "
+                    f"value destination is {recipient}, and the "
+                    f"minted token has value evidence: {tve}")
+                return out
+            if token_self is None:
+                out["missing"] = ["contract own-token balance "
+                                  "evidence"]
+                out["reason"] = (
+                    "stranger probe succeeds on a token payout "
+                    "path, but the contract's own-token balance "
+                    "was not measured; a successful probe alone "
+                    "is not value evidence")
+                return out
+            if int(token_self) == 0:
+                out["verdict"] = "FALSE_POSITIVE"
+                out["reason"] = (
+                    "stranger probe succeeds but the contract "
+                    "holds 0 of its own token; the token payout "
+                    "has nothing to pay out")
+                return out
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = (
+                f"contract own-token balance {token_self} "
+                "(base units, upper bound on the token payout)")
+            out["reason"] = (
+                "read-only probe from the unfunded stranger "
+                "succeeds, the function is ungated, the value "
+                f"destination is {recipient}, and the contract "
+                f"holds a positive own-token balance "
+                f"({token_self} base units) bounding the payout")
+            return out
+        # mixed / unknown denomination: any measured positive
+        # bound counts; measured zeros across the board kill;
+        # nothing measured stays UNVERIFIED with the gap named.
+        positives: List[str] = []
+        if native is not None and int(native) > 0:
+            positives.append(
+                f"contract native balance {native} wei")
+        if token_self is not None and int(token_self) > 0:
+            positives.append(
+                f"contract own-token balance {token_self} "
+                "base units")
+        reserves_total = _reserves_value(balances, "amm_reserves")
+        if reserves_total:
+            positives.append(
+                f"live AMM reserves (sum {reserves_total} "
+                "base units)")
+        if mint_payout:
+            tve = _token_value_evidence(candidate, balances)
+            if tve is not None:
+                positives.append(f"mint value evidence: {tve}")
+        if positives:
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = "; ".join(positives)
+            out["reason"] = (
+                "read-only probe from the unfunded stranger "
+                "succeeds, the function is ungated, and the "
+                f"value destination is {recipient}; positive "
+                "value evidence: " + "; ".join(positives))
+            return out
+        if native is not None or token_self is not None \
+                or reserves_total is not None:
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "stranger probe succeeds but there is no "
+                "positive value evidence: the contract holds "
+                f"{native} wei native and "
+                f"{token_self} of its own token, with no live "
+                "reserves; a successful probe (zero-amount "
+                "boundary calls succeed by design) does not "
+                "prove a payable payout")
+            return out
+        out["missing"] = ["positive value evidence (contract "
+                          "balances / reserves)"]
         out["reason"] = (
-            "read-only probe from the unfunded stranger "
-            "succeeds, the function is ungated, and the value "
-            f"destination is {recipient}")
+            "stranger probe succeeds and the source read is "
+            f"candidate-grade (ungated, recipient {recipient}), "
+            "but no balance or reserve evidence was measured, "
+            "so there is no proof anything payable exists")
         return out
 
     out["missing"] = ["stranger probe or fork/local simulation"]
