@@ -254,4 +254,4 @@ def test_plugin_no_source_reports_not_produced(monkeypatch):
 def test_registry_count_includes_ast_visual_audit():
     reg = discover()
     assert "ast_visual_audit" in reg
-    assert len(reg) == 756  # master 655 + 100 BSC/BNB detectors + this plugin
+    assert len(reg) == 760  # master 655 + 100 BSC/BNB detectors + this plugin + 4 deep-analysis plugins (deep_layers)
