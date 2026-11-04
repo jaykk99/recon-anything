@@ -179,7 +179,12 @@ def native_balance(chain, address):
 
 
 def _call_uint(chain, address, signature, args=()):
-    """One read-only cast call returning a uint256, or None."""
+    """One read-only cast call returning a uint256, or None.
+
+    A revert is a definitive contract-level answer (the
+    function does not exist or rejects the call) - it is NOT
+    retried on other RPCs; only transport failures fall
+    through to the next route."""
     cfg = cc.CHAINS.get(chain)
     if cfg is None:
         return None
@@ -190,7 +195,9 @@ def _call_uint(chain, address, signature, args=()):
         if out is None:
             continue
         s = out.strip()
-        if s.startswith("0x") and "revert" not in s.lower():
+        if "revert" in s.lower():
+            return None
+        if s.startswith("0x"):
             try:
                 return int(s, 16)
             except Exception:
@@ -221,7 +228,10 @@ def pair_reserves(chain, address):
         if out is None:
             continue
         s = out.strip()
-        if "revert" in s.lower() or "Error" in s:
+        if "revert" in s.lower():
+            return None  # definitively not a pair; do not
+            # retry the remaining RPCs
+        if "Error" in s:
             continue
         nums = re.findall(r"\d+", s)
         if len(nums) >= 2:
