@@ -121,7 +121,10 @@ def test_encode_call_args():
     assert enc == "0" * 24 + ADDR[2:] + "%064x" % 1
     dyn = contract_sim.encode_call_args(["string"], ["fuzz"])
     assert dyn is not None and dyn.startswith("%064x" % 32)
-    assert contract_sim.encode_call_args(["uint256[]"], [[1]]) is None
+    # Arrays are encodable since the complex-args encoder fix:
+    # offset + length + element.
+    assert contract_sim.encode_call_args(["uint256[]"], [[1]]) == \
+        "%064x" % 32 + "%064x" % 1 + "%064x" % 1
 
 
 def test_boundary_cases_cover_extremes():
