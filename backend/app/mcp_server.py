@@ -384,6 +384,65 @@ def _tool_get_graph(args: Dict) -> Dict:
     return payload
 
 
+def _ks_store_or_none():
+    """Open the cross-run knowledge store, or None when it has no
+    data yet (it is populated by ingest at run finalize)."""
+    from .knowledge_store import KnowledgeStore, default_db_path
+    if not os.path.exists(default_db_path()):
+        return None
+    return KnowledgeStore()
+
+
+def _tool_query_knowledge(args: Dict) -> Dict:
+    store = _ks_store_or_none()
+    if store is None:
+        return {"available": False,
+                "note": "knowledge store has no data yet: it is "
+                        "populated when a scan run finalizes"}
+    since_ts = None
+    since = args.get("since")
+    if since is not None:
+        try:
+            since_ts = float(since)
+        except (TypeError, ValueError):
+            try:
+                since_ts = dt.datetime.fromisoformat(
+                    str(since).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                raise ToolError("since must be epoch seconds or ISO 8601")
+    limit = args.get("limit", 200)
+    try:
+        limit = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        raise ToolError("limit must be an integer")
+    is_cdn = args.get("is_cdn")
+    if is_cdn is not None and not isinstance(is_cdn, bool):
+        raise ToolError("is_cdn must be a boolean")
+    assets = store.query_assets(
+        scope=args.get("scope") or None, kind=args.get("kind") or None,
+        tech_contains=args.get("tech") or None, is_cdn=is_cdn,
+        ip=args.get("ip") or None, since=since_ts, limit=limit)
+    return {"available": True, "count": len(assets), "assets": assets}
+
+
+def _tool_get_delta(args: Dict) -> Dict:
+    scope = str(args.get("scope") or "").strip()
+    if not scope:
+        raise ToolError("scope is required (a target root, "
+                        "e.g. example.com)")
+    store = _ks_store_or_none()
+    if store is None:
+        return {"available": False,
+                "note": "knowledge store has no data yet: it is "
+                        "populated when a scan run finalizes"}
+    from .delta import diff, format_delta
+    result = diff(store, scope, run_old=args.get("from_run") or None,
+                  run_new=args.get("to_run") or None)
+    result["available"] = True
+    result["formatted"] = format_delta(result)
+    return result
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "recon_health",
@@ -490,6 +549,71 @@ TOOLS: List[Dict[str, Any]] = [
                        "requirements.",
         "inputSchema": {"type": "object", "properties": {}},
         "handler": _tool_list_plugins,
+    },
+    {
+        "name": "recon_query_knowledge",
+        "description": "Query the cross-run knowledge store "
+                       "(app/knowledge_store.py): assets accumulated "
+                       "across every finalized run - domains, "
+                       "subdomains, IPs, endpoints - each with "
+                       "domain, ip, ports, tech_stack and is_cdn "
+                       "fields queryable. Filter by tech substring "
+                       "(the '%Nginx%' shape), is_cdn, kind, ip, "
+                       "scope, or first-seen since a timestamp.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tech": {"type": "string",
+                         "description": "Substring match over the "
+                                        "asset's tech stack, "
+                                        "e.g. 'Nginx'."},
+                "is_cdn": {"type": "boolean",
+                           "description": "True = behind a CDN, "
+                                          "False = verified not."},
+                "kind": {"type": "string",
+                         "enum": ["host", "domain", "subdomain", "ip",
+                                  "endpoint", "url"],
+                         "description": "Asset kind filter."},
+                "ip": {"type": "string",
+                       "description": "Exact resolved IP match."},
+                "scope": {"type": "string",
+                          "description": "Target root scope, "
+                                         "e.g. example.com."},
+                "since": {"type": ["number", "string"],
+                          "description": "Only assets first seen at "
+                                         "or after this time (epoch "
+                                         "seconds or ISO 8601)."},
+                "limit": {"type": "integer", "default": 200,
+                          "minimum": 1, "maximum": 1000},
+            },
+        },
+        "handler": _tool_query_knowledge,
+    },
+    {
+        "name": "recon_get_delta",
+        "description": "Asset-level delta for a target scope "
+                       "between its previous and latest completed "
+                       "runs (app/delta.py): + NEW assets, "
+                       "- REMOVED assets, ~ CHANGED tech stack / "
+                       "TLS certificate / ports / status. Optionally "
+                       "pass explicit from_run / to_run ids.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string",
+                          "description": "Target root scope, "
+                                         "e.g. example.com."},
+                "from_run": {"type": "string",
+                             "description": "Older run id "
+                                            "(default: previous "
+                                            "completed run)."},
+                "to_run": {"type": "string",
+                           "description": "Newer run id (default: "
+                                          "latest completed run)."},
+            },
+            "required": ["scope"],
+        },
+        "handler": _tool_get_delta,
     },
 ]
 
