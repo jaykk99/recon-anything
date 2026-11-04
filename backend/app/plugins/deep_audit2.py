@@ -445,7 +445,39 @@ def _fn_addr_params(sig: str) -> List[str]:
     return names
 
 
-def _analyze_7702(src, spec, compiler, contract_name):
+_7702_NO_DESIGNATOR_SUFFIX = (
+    " Live-code gate: the target's live code does NOT carry "
+    "the EIP-7702 designator 0xef0100, so this source pattern "
+    "is not a live 7702 delegation - source-note only, not a "
+    "candidate.")
+
+
+def _apply_7702_live_gate(out, live_code_hex):
+    """Gate source findings on the target's live code.
+
+    When live_code_hex is provided and carries no EIP-7702
+    designator (0xef0100), every item is downgraded to a
+    source-note (severity low, report_class source_note) -
+    never a candidate. When a designator is present, items
+    are kept as-is and annotated with the live delegate.
+    """
+    delegate = eip7702_delegate_of(live_code_hex)
+    if delegate is None:
+        for item in out:
+            item["severity"] = "low"
+            item["report_class"] = "source_note"
+            item["live_code_gate"] = "no_designator"
+            item["detail"] = item.get("detail", "") + \
+                _7702_NO_DESIGNATOR_SUFFIX
+    else:
+        for item in out:
+            item["live_code_gate"] = "designator_present"
+            item["live_delegate"] = delegate
+    return out
+
+
+def _analyze_7702(src, spec, compiler, contract_name,
+                  live_code_hex=None):
     scope, fns = _scope_fns(src, contract_name)
     stripped = cc._strip_comments(src)
     has_7702_context = bool(re.search(
@@ -500,6 +532,8 @@ def _analyze_7702(src, spec, compiler, contract_name):
             item = _hit(spec, fn["name"], cc._snip(text), detail,
                         "ungated init, no initialized flag")
             out.append(_finish_recipient(spec, item, text))
+    if live_code_hex is not None:
+        return _apply_7702_live_gate(out, live_code_hex)
     return out
 
 
@@ -711,14 +745,26 @@ ANALYZERS = {
 
 def analyze_deep2_source(src: str, spec: DetectorSpec,
                          compiler: str = "",
-                         contract_name: str = ""
+                         contract_name: str = "",
+                         live_code_hex: Optional[str] = None
                          ) -> List[Dict[str, Any]]:
     """Run ONE batch-2 detector over verified source. Returns
     finding dicts {kind(=spec.id), severity, function, code,
-    detail, gate_analysis, recipient, report_class}."""
+    detail, gate_analysis, recipient, report_class}.
+
+    live_code_hex is passed through only for the EIP-7702
+    analyzer, which gates its source findings on the target's
+    live code carrying the 0xef0100 designator. The plugin run
+    path always supplies live code; live_code_hex=None is for
+    offline analysis / tests and preserves the legacy
+    source-only behavior. Other analyzers keep their existing
+    signatures and behavior."""
     fn = ANALYZERS.get(spec.id)
     if fn is None:
         return []
+    if spec.id == EIP7702_ID:
+        return fn(src, spec, compiler, contract_name,
+                  live_code_hex=live_code_hex)
     return fn(src, spec, compiler, contract_name)
 
 
@@ -857,7 +903,8 @@ class DeepAudit2Plugin(Plugin):
         impl = res.get("implementation") or ""
         role = "proxy_shell" if impl else "standalone"
         got = self._analyze_contract(chain, addr, src, findings,
-                                     role=role, impl_addr=impl)
+                                     role=role, impl_addr=impl,
+                                     live_code_hex=code_hex)
         if self._spec is not None and \
                 self._spec.id == EIP7702_ID:
             got = await self._bytecode_7702(
@@ -876,7 +923,8 @@ class DeepAudit2Plugin(Plugin):
             return got
         return self._analyze_contract(
             chain, impl, impl_src, findings,
-            role="implementation", proxy_addr=addr) or got
+            role="implementation", proxy_addr=addr,
+            live_code_hex=impl_code) or got
 
     async def _bytecode_7702(self, ctx: Ctx, key: Optional[str],
                              chain: cc.ChainConfig, addr: str,
@@ -978,7 +1026,9 @@ class DeepAudit2Plugin(Plugin):
                           src: Optional[Dict[str, Any]],
                           findings: List[Finding], role: str,
                           proxy_addr: str = "",
-                          impl_addr: str = "") -> bool:
+                          impl_addr: str = "",
+                          live_code_hex: Optional[str] = None
+                          ) -> bool:
         spec = self._spec
         if spec is None or not src:
             return False
@@ -998,7 +1048,8 @@ class DeepAudit2Plugin(Plugin):
             tag = ""
         for item in analyze_deep2_source(
                 src["source"], spec, src.get("compiler", ""),
-                contract_name=src.get("contract_name", "")):
+                contract_name=src.get("contract_name", ""),
+                live_code_hex=live_code_hex):
             ev = dict(base_ev)
             ev.update({
                 "severity": item["severity"],
@@ -1018,6 +1069,10 @@ class DeepAudit2Plugin(Plugin):
                 ev["recipient"] = item.get("recipient", "")
             if item.get("gate_analysis"):
                 ev["gate_analysis"] = item["gate_analysis"]
+            if item.get("live_code_gate"):
+                ev["live_code_gate"] = item["live_code_gate"]
+            if item.get("live_delegate"):
+                ev["live_delegate"] = item["live_delegate"]
             fn_txt = f"function '{item['function']}' " \
                 if item["function"] else ""
             findings.append(self._f(

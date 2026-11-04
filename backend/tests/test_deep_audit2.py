@@ -130,6 +130,55 @@ def test_fot_names_the_deposit_function():
     assert [h["function"] for h in hits] == ["deposit"]
 
 
+EIP7702_PID = "eip7702_unverified_delegate"
+DESIGNATOR_CODE = "0xef0100" + "11" * 20
+ORDINARY_CODE = "0x6080604052348015600e575f5ffd5b50"
+
+
+def test_7702_live_gate_designator_present_keeps_candidate():
+    hits = analyze_deep2_source(
+        fx.VULN[EIP7702_PID], SPECS_BY_ID[EIP7702_PID],
+        live_code_hex=DESIGNATOR_CODE)
+    assert hits, "vulnerable fixture did not fire with designator"
+    assert any(h["report_class"] == "candidate"
+               and h["severity"] == "high" for h in hits)
+    for h in hits:
+        assert h["live_code_gate"] == "designator_present"
+        assert h["live_delegate"] == "0x" + "11" * 20
+
+
+def test_7702_live_gate_no_designator_downgrades_to_source_note():
+    hits = analyze_deep2_source(
+        fx.VULN[EIP7702_PID], SPECS_BY_ID[EIP7702_PID],
+        live_code_hex=ORDINARY_CODE)
+    # Downgrade, don't drop: the source-note path must be exercised.
+    assert hits, "downgrade path emitted zero items"
+    for h in hits:
+        assert h["report_class"] == "source_note", h
+        assert h["severity"] == "low", h
+        assert h["live_code_gate"] == "no_designator", h
+        assert "does NOT carry the EIP-7702 designator" \
+            in h["detail"]
+    assert not any(h["report_class"] == "candidate" for h in hits)
+
+
+def test_7702_clean_stays_silent_with_and_without_designator():
+    for code in (None, DESIGNATOR_CODE, ORDINARY_CODE):
+        kwargs = {} if code is None else {"live_code_hex": code}
+        hits = analyze_deep2_source(
+            fx.CLEAN[EIP7702_PID], SPECS_BY_ID[EIP7702_PID],
+            **kwargs)
+        assert hits == [], f"clean fired with live_code_hex={code}"
+
+
+def test_7702_no_live_code_legacy_source_only_behavior():
+    hits = hits_for(fx.VULN[EIP7702_PID], EIP7702_PID)
+    assert hits
+    assert any(h["report_class"] == "candidate"
+               and h["severity"] == "high" for h in hits)
+    assert all("live_code_gate" not in h for h in hits)
+
+
 def test_create2_names_the_deploy_function():
     hits = hits_for(fx.VULN["create2_metamorphic_redeploy"],
                     "create2_metamorphic_redeploy")

@@ -120,6 +120,27 @@ def test_run_7702_designator_unverified_delegate(monkeypatch):
     assert ev["bytecode_only"] is True
 
 
+def test_run_7702_vuln_source_ordinary_live_code_no_candidate(
+        monkeypatch):
+    # Live code is ordinary bytecode (no 0xef0100 designator) but
+    # verified source is the vulnerable 7702 fixture: the live-code
+    # gate must downgrade it, so no candidate finding is emitted.
+    _patch(monkeypatch, _meta(fx.VULN[EIP]),
+           code="0x6080604052348015600e575f5ffd5b50")
+    plugin = discover()[EIP]()
+    res = asyncio.run(plugin.run(_target(), FakeCtx()))
+    hits = [f for f in res.findings if f.key == EIP]
+    assert hits, "expected a downgraded source-note finding"
+    for f in hits:
+        assert f.evidence.get("report_class") != "candidate", \
+            f.evidence
+    assert any(f.evidence.get("report_class") == "source_note"
+               and f.evidence.get("severity") == "low"
+               and f.evidence.get("live_code_gate")
+               == "no_designator"
+               for f in hits)
+
+
 def test_run_non_designator_code_no_7702_finding(monkeypatch):
     _patch(monkeypatch, None, code="0x60006000")
     plugin = discover()[EIP]()
