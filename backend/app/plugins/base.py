@@ -368,6 +368,10 @@ class Ctx:
     keys: Dict[str, str]  # decrypted API keys by name
     limiter: Any = None  # rate limiter
     emit: Any = None  # optional async callback(event dict)
+    # Async event bus (app/eventbus.py), attached per run by the
+    # runner. publish() mirrors discoveries onto it so subscribed
+    # consumers react immediately instead of waiting for phase 2.
+    event_bus: Any = None
     module_overrides: Dict[str, str] = field(default_factory=dict)
     evidence_dir: str = "./evidence"
     # Source type of the run: "website" | "bank" | "atm".
@@ -388,6 +392,20 @@ class Ctx:
                 bucket.append(item)
         else:
             bucket.append(item)
+        # Mirror onto the async event bus when one is attached:
+        # consumers subscribed to EVENT_TARGET_DISCOVERED /
+        # SUBDOMAIN_DISCOVERED / ENDPOINT_FOUND / FINDING_RECORDED
+        # process the asset NOW, in parallel, not after the phase.
+        # Non-blocking and never raises into the plugin.
+        if self.event_bus is not None:
+            try:
+                from ..eventbus import topics_for_kind
+                for topic in topics_for_kind(kind):
+                    self.event_bus.publish_nowait(
+                        topic, {"kind": kind, "item": item,
+                                "run_id": self.run_id})
+            except Exception:
+                pass
 
     def consume(self, kind: str) -> List[Any]:
         """Read everything published under a discovery kind."""

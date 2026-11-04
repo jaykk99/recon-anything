@@ -25,7 +25,7 @@ Layers:
    lane disagreement marks probe_settles.
 7. Plugin runs with ALL network stubbed at the contract_chain /
    module boundary, following test_contract_logic's FakeCtx style.
-8. Registry discovery: 756 + 4 = 760.
+8. Registry discovery: 774 + 4 = 778.
 """
 import asyncio
 import os
@@ -547,4 +547,4 @@ def test_registry_discovers_deep_plugins():
     for pid in ("cross_contract_call_graph", "storage_state_analysis",
                 "bytecode_deep_analysis", "candidate_confirmation_queue"):
         assert pid in reg
-    assert len(reg) == 760
+    assert len(reg) == 778  # 774 master + 4 deep-analysis plugins (deep_layers)

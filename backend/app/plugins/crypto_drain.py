@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc
+from . import chain_data
 
 MAX_ADDRESSES = 4       # addresses analyzed per run
 MAX_CHAIN_PAIRS = 4     # (chain, address) pairs analyzed per run
@@ -512,9 +513,10 @@ class CryptoDrainPlugin(Plugin):
                 pairs, got_source = 0, False
                 findings.append(self._f(
                     "web3", "crypto_drain_failed",
-                    f"MEDIUM: {addr}: drain analysis failed - chain "
-                    "data could not be retrieved (explorers/RPC "
-                    "unreachable). No conclusion drawn.",
+                    f"MEDIUM: {addr}: DEGRADED - drain analysis failed, "
+                    "chain data could not be retrieved "
+                    "(explorers/RPC unreachable). No conclusion "
+                    "drawn.",
                     source="crypto drain analyzer",
                     confidence=60, passive=True,
                     evidence={"severity": "medium", "address": addr,
@@ -535,7 +537,8 @@ class CryptoDrainPlugin(Plugin):
         res = self._ok(
             findings,
             f"drain-analyzed {analyzed} contract address(es) "
-            f"({unverified} without verified source, skipped), "
+            f"({unverified} without verified source - bytecode-only, "
+            f"not cleared), "
             f"{drains} unprotected drain(s) found")
         res.duration_ms = dur
         return res
@@ -596,7 +599,7 @@ class CryptoDrainPlugin(Plugin):
             if pairs >= MAX_CHAIN_PAIRS:
                 break
             chain = cc.CHAINS[cid]
-            code = await cc.rpc_get_code(ctx, chain, addr)
+            code = await chain_data.get_code(ctx, chain, addr)
             if code is None:
                 continue  # this chain's RPCs failed; try the next
             rpc_all_failed = False
@@ -611,9 +614,9 @@ class CryptoDrainPlugin(Plugin):
         if pairs == 0 and rpc_all_failed:
             findings.append(self._f(
                 "web3", "crypto_drain_failed",
-                f"MEDIUM: {addr}: every public RPC endpoint failed, "
-                "so no chain data could be retrieved. No conclusion "
-                "drawn.",
+                f"MEDIUM: {addr}: DEGRADED - every public RPC "
+                "endpoint failed, so no chain data could be "
+                "retrieved. No conclusion drawn.",
                 source="public JSON-RPC eth_getCode",
                 confidence=60, passive=True,
                 evidence={"severity": "medium", "address": addr,
@@ -633,11 +636,11 @@ class CryptoDrainPlugin(Plugin):
             "address": addr, "chain": chain.id,
             "is_contract": True, "verified": False, "name": ""})
 
-        src = await cc.fetch_verified_source(ctx, chain, addr, key)
+        src = await chain_data.get_source(ctx, chain, addr, key)
 
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
-            res = await cc.resolve_implementation(
+            res = await chain_data.get_implementation(
                 ctx, chain, addr, code_hex,
                 {"implementation": (src or {}).get("implementation", "")})
         except Exception:
@@ -653,8 +656,8 @@ class CryptoDrainPlugin(Plugin):
         impl_code = None
         impl_src = None
         try:
-            impl_code = await cc.rpc_get_code(ctx, chain, impl)
-            impl_src = await cc.fetch_verified_source(
+            impl_code = await chain_data.get_code(ctx, chain, impl)
+            impl_src = await chain_data.get_source(
                 ctx, chain, impl, key)
         except Exception:
             impl_code, impl_src = None, None

@@ -121,7 +121,10 @@ def test_encode_call_args():
     assert enc == "0" * 24 + ADDR[2:] + "%064x" % 1
     dyn = contract_sim.encode_call_args(["string"], ["fuzz"])
     assert dyn is not None and dyn.startswith("%064x" % 32)
-    assert contract_sim.encode_call_args(["uint256[]"], [[1]]) is None
+    # Arrays are encodable since the complex-args encoder fix:
+    # offset + length + element.
+    assert contract_sim.encode_call_args(["uint256[]"], [[1]]) == \
+        "%064x" % 32 + "%064x" % 1 + "%064x" % 1
 
 
 def test_boundary_cases_cover_extremes():
@@ -489,4 +492,4 @@ def test_mythril_adapter_missing_binary_is_honest(monkeypatch):
 def test_plugin_registered():
     reg = discover()
     assert "contract_simulation" in reg
-    assert len(reg) == 760  # master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 4 deep-analysis plugins (deep_layers)
+    assert len(reg) == 778  # master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers)
