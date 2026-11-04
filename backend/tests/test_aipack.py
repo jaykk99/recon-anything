@@ -104,7 +104,7 @@ def test_exactly_5_new_detectors_registered():
     assert ai == sorted(AI_IDS)
     assert len(ai) == 5
     # 602 when the xml pack landed; +5 ai_* (AI-crawler surface pack)
-    assert len(discover()) == 786  # 786 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4)
+    assert len(discover()) == 794  # 794 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9)
 
 
 def test_llms_index_present_and_links_fed_to_hunters():
