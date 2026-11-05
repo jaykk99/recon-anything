@@ -205,7 +205,7 @@ def _no_oob_env(monkeypatch):
 
 def test_registry_count_tier6():
     reg = discover()
-    assert len(reg) == 861, f"registry size {len(reg)}, expected 861"
+    assert len(reg) == 912, f"registry size {len(reg)}, expected 912"
     for pid in NEW_IDS + DUP_IDS:
         assert pid in reg, f"{pid} missing from registry"
 
