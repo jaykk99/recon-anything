@@ -178,7 +178,12 @@ _CMP_RE = re.compile(
 # is a bounds check, not an identity gate, and does not match.
 _MAP_GATE_RE = re.compile(
     r"(?:require\s*\(\s*!?|if\s*\(\s*!)\s*[A-Za-z_][A-Za-z0-9_]*\s*"
-    r"\[\s*" + _SENDER_RE + r"\s*\]\s*[,\)]")
+    r"\[\s*" + _SENDER_RE + r"\s*\]\s*[,\)|&]")
+# The terminator set includes | and & (FP elimination,
+# 2026-11-05): Liquity-style membership gates OR several
+# registries together - require(BOAddresses[msg.sender] ||
+# activePoolAddresses[msg.sender]) - and the bare `]` was
+# previously required to be followed by only , or ).
 
 # Role/permission predicate call on the caller inside a require/if:
 # require(isMinter(msg.sender)), require(hasRole(ROLE, msg.sender)).
