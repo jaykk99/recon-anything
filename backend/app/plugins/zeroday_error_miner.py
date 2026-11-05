@@ -178,7 +178,7 @@ class ZerodayErrorMinerPlugin(Plugin):
                 break
         if not endpoints:
             from ..net import web_base
-            base = web_base(target.normalized)
+            base = await web_base(ctx, target, domain)
             if base:
                 endpoints = [base]
 

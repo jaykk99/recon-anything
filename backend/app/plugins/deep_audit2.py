@@ -331,10 +331,21 @@ _BINDINGS = (
         r"chainid|chainId|srcChain|sourceChain|originChain|"
         r"fromChain", re.I)),
     ("origin sender", re.compile(
-        r"sender|originator|messageSender|srcSender", re.I)),
+        r"sender|originator|messageSender|srcSender|signer|"
+        r"\bfrom\b", re.I)),
     ("nonce / message id", re.compile(
         r"nonce|messageId|sequence|msgIndex|messageIndex", re.I)),
 )
+
+_EIP712_WRAP_RE2 = re.compile(
+    r"\\x19\\x01|\x19\x01|domainSeparator|DOMAIN_SEPARATOR", re.I)
+_SIGNER_EQ_RE = re.compile(
+    r"require\s*\([^)]*(signer|recovered\w*)\s*==\s*"
+    r"[A-Za-z_][\w\.\[\]]*", re.I)
+_NONCE_CONSUMED_RE = re.compile(
+    r"\b\w*[Nn]once\w*\s*(\[[^\]]*\])?\s*(\+\+|\+=|=[^=])|"
+    r"\b(executed|processed|consumed|claimed|used)\w*\s*"
+    r"\[[^\]]*\]\s*=\s*true")
 
 
 def _digest_inputs(text: str) -> List[str]:
@@ -362,6 +373,12 @@ def _analyze_bridge_replay(src, spec, compiler, contract_name):
             continue
         if not _VERIFY_RE.search(text):
             continue  # no verification: payload-injection class
+        # EIP-712 typed data: chain binding lives in the
+        # domain separator (separator lane owns it) and
+        # replay protection in the nonce lane; a permit /
+        # typed-claim digest is not a bridge message digest.
+        if _EIP712_WRAP_RE2.search(text):
+            continue
         if not (_MSG_FN_RE.search(fn["name"]) or
                 _MSG_FN_RE.search(text)):
             continue
@@ -371,6 +388,12 @@ def _analyze_bridge_replay(src, spec, compiler, contract_name):
         joined = " ".join(inputs)
         missing = [label for label, rx in _BINDINGS
                    if not rx.search(joined)]
+        # The signature itself binds the origin when the
+        # recovered signer must equal a stored authority:
+        # there is no relayed sender left unbound.
+        if "origin sender" in missing and \
+                _SIGNER_EQ_RE.search(text):
+            missing.remove("origin sender")
         # A binding enforced outside the digest still binds:
         # a require comparing the chain id, or an executed /
         # consumed marker keyed on a nonce-shaped parameter.
@@ -401,7 +424,30 @@ def _analyze_bridge_replay(src, spec, compiler, contract_name):
             f"{', '.join(missing)}. Gate analysis: {gate}.")
         item = _hit(spec, fn["name"], cc._snip(text), detail,
                     gate)
-        out.append(_finish_recipient(spec, item, text))
+        item = _finish_recipient(spec, item, text)
+        if missing == ["source chain id"] and \
+                _NONCE_CONSUMED_RE.search(text):
+            # Nonce bound AND consumed, origin bound: the
+            # same-chain replay is dead. The only residual
+            # is a twin deployment on another chain at the
+            # same address with the same authority - report
+            # it trigger-only, not as a candidate.
+            item["report_class"] = "trigger_only"
+            item["severity"] = "low"
+            item["detail"] += (
+                " Replay analysis: the digest binds the "
+                "origin and a nonce that this function "
+                "consumes, so same-chain replay is dead; "
+                "the residual is a same-address twin "
+                "deployment on another chain - classified "
+                "TRIGGER-ONLY (nonce consumed, chain term "
+                "absent).")
+            item["gate_analysis"] = (
+                "nonce bound and consumed in-function; "
+                "origin bound; only the cross-chain twin-"
+                "deployment residual remains, reported "
+                "trigger-only")
+        out.append(item)
     return out
 
 
@@ -481,12 +527,18 @@ def _analyze_7702(src, spec, compiler, contract_name,
                   live_code_hex=None):
     scope, fns = _scope_fns(src, contract_name)
     stripped = cc._strip_comments(src)
+    # EIP-7702 context means the 7702 designator / spec
+    # vocabulary - NOT the bare word "delegate": governance
+    # tokens delegate VOTES and proxies delegate CALLS, and
+    # matching those made every ERC20Votes token and proxy
+    # a "7702 account" (FP elimination, 2026-11-05).
     has_7702_context = bool(re.search(
-        r"7702|0xef0100|delegat", stripped, re.I))
+        r"7702|0xef0100", stripped))
     out: List[Dict[str, Any]] = []
     for fn in fns:
         text = fn["text"]
-        is_setter = bool(_DELEGATE_FN_RE.search(fn["name"])) or \
+        is_setter = (bool(_DELEGATE_FN_RE.search(fn["name"]))
+                     and has_7702_context) or \
             "0xef0100" in text
         if is_setter and re.search(r"=\s*[^=]", text):
             if _VERIFY_DELEGATE_RE.search(text) or \

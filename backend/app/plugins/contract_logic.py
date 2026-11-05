@@ -734,6 +734,170 @@ def _overflow_ops(text: str, state: set, params: List[str]
     return out
 
 
+def _balanced_local(text: str, open_pos: int):
+    depth = 0
+    i = open_pos
+    while i < len(text):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_pos + 1:i], i
+        i += 1
+    return text[open_pos + 1:], len(text)
+
+
+def _expand_helpers_local(text: str, scope: _Scope,
+                          max_depth: int = 2) -> str:
+    """Entry text + in-scope internal helper bodies (bounded).
+
+    Local copy of the validator's expansion pattern (the
+    validator imports this module, so the dependency cannot
+    run the other way)."""
+    parts = [text]
+    seen = set()
+    frontier = [text]
+    for _ in range(max_depth):
+        nxt = []
+        for t in frontier:
+            for hname, helper in scope.helpers.items():
+                if hname in seen:
+                    continue
+                if re.search(r"\b" + re.escape(hname) +
+                             r"\s*\(", t):
+                    seen.add(hname)
+                    parts.append(helper["text"])
+                    nxt.append(helper["text"])
+            # super.<fn>(...) reaches the base-contract
+            # implementation (ERC4626 mint/deposit overrides
+            # in vault contracts): include that body too.
+            for sm in re.finditer(r"\bsuper\s*\.\s*(\w+)"
+                                  r"\s*\(", t):
+                base_name = sm.group(1)
+                if ("super:" + base_name) in seen:
+                    continue
+                for cand in scope.functions:
+                    if cand["name"] == base_name and \
+                            "{" in cand["text"] and \
+                            cand["text"] not in parts:
+                        seen.add("super:" + base_name)
+                        parts.append(cand["text"])
+                        nxt.append(cand["text"])
+                        break
+        if not nxt:
+            break
+        frontier = nxt
+    return "\n".join(parts)
+
+
+_CALLER_PULL_RE = re.compile(
+    r"(?:safeTransferFrom|transferFrom|_transfer|_burn|"
+    r"safeTransfer)\s*\(\s*(msg\.sender|[A-Za-z_]\w*)")
+_EXT_AUTH_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*\.\s*(\w*(?:check|allowed|"
+    r"verif|valid|authori|qualified)\w*)\s*\(",
+    re.I)
+
+
+def _fp_downgrade_reason(text: str, scope: _Scope,
+                         state: set) -> str:
+    """Structural reasons an ungated sensitive function is
+    NOT a stranger-reachable access flaw (FP elimination,
+    2026-11-05). Returns a reason string or "".
+
+    - caller-funded: the function pulls value FROM the
+      caller (transferFrom / internal _transfer / burn of
+      the caller's own tokens or shares, possibly one
+      helper hop away with msg.sender passed through), so
+      the payout is backed by the caller's own money
+      (ERC4626 deposit/mint, share-burning vault withdraw,
+      fee-collecting minter application).
+    - self-balance accounting: the function meters the
+      payout from the contract's own token balance delta
+      (AMM pair mint against reserves).
+    - external authorization: execution is gated by an
+      authorization call on a state-held external contract
+      (Comptroller.mintAllowed(...) == 0 required, or a
+      checkQualified(msg.sender) call that reverts for
+      unqualified callers).
+    """
+    expanded = _expand_helpers_local(text, scope)
+    caller_ids = {"msg.sender"}
+    for m in re.finditer(
+            r"(\w+)\s*=\s*(?:_msgSender\s*\(\s*\)|"
+            r"msg\.sender)\b", expanded):
+        caller_ids.add(m.group(1))
+    # helper params bound to the caller at a call site
+    for hname, helper in scope.helpers.items():
+        for cm in re.finditer(
+                r"\b" + re.escape(hname) + r"\s*\(",
+                text):
+            args, _ = _balanced_local(text, cm.end() - 1)
+            sig_inner = ""
+            if "(" in helper["signature"]:
+                sig_inner, _ = _balanced_local(
+                    helper["signature"],
+                    helper["signature"].index("("))
+            params = []
+            for part in cd._split_top(sig_inner):
+                words = re.findall(r"[A-Za-z_]\w*",
+                                   part)
+                if words:
+                    params.append(words[-1])
+            arg_list = [a.strip() for a in
+                        cd._split_top(args)]
+            for i, a in enumerate(arg_list):
+                if a in ("msg.sender", "_msgSender()") \
+                        and i < len(params):
+                    caller_ids.add(params[i])
+    for m in _CALLER_PULL_RE.finditer(expanded):
+        # Determine the FROM argument positionally:
+        # transferFrom(from, to, amt) / _transfer(from, ...)
+        # / _burn(from, amt) take it first, while
+        # SafeERC20.safeTransferFrom(token, from, to, amt)
+        # takes it second.
+        paren = expanded.find("(", m.start())
+        if paren < 0:
+            continue
+        args, _ = _balanced_local(expanded, paren)
+        arg_list = [a.strip() for a in cd._split_top(args)]
+        from_args = arg_list[:1]
+        if "safeTransferFrom" in m.group(0) and \
+                len(arg_list) >= 4:
+            from_args = arg_list[1:2]
+        if any(a in caller_ids or a.rstrip(")") in
+               caller_ids for a in from_args):
+            return ("caller-funded: value is pulled from "
+                    "the caller (or the caller's own shares "
+                    "burned) inside the function, so the "
+                    "payout is backed by the caller's own "
+                    "money")
+    if "balanceOf(address(this))" in expanded:
+        return ("self-balance accounting: the payout is "
+                "metered from the contract's own token "
+                "balance against recorded reserves (AMM "
+                "pair surface)")
+    for m in _EXT_AUTH_RE.finditer(text):
+        obj = m.group(1)
+        # state-held external contract: either in the
+        # elementary state set or declared at contract
+        # level with a contract/interface type (Comptroller,
+        # reserve, ...) - state_variables() only captures
+        # elementary declarations.
+        declared = obj in state or re.search(
+            r"\b[A-Za-z_]\w*\s+(?:public\s+|private\s+|"
+            r"internal\s+|immutable\s+)*" +
+            re.escape(obj) + r"\s*[;=]", scope.scoped_text)
+        if declared:
+            return (f"external authorization: execution "
+                    f"is gated by {obj}."
+                    f"{m.group(2)}(...) on a state-held "
+                    f"external contract")
+    return ""
+
+
 def analyze_logic_source(src: str, compiler: str = "",
                          contract_name: str = ""
                          ) -> List[Dict[str, Any]]:
@@ -998,6 +1162,16 @@ def analyze_logic_source(src: str, compiler: str = "",
             # is candidate-grade (a stranger can RECEIVE) or
             # trigger-only (value lands at a fixed destination).
             _recipient_reclassify(item, text)
+            # FP elimination (2026-11-05): caller-funded,
+            # self-balance-metered and externally
+            # authorized shapes are public surface, not
+            # stranger-reachable access flaws.
+            reason = _fp_downgrade_reason(text, scope, state)
+            if reason:
+                item["report_class"] = "trigger_only"
+                item["severity"] = "low"
+                item["detail"] += (
+                    f" Downgraded to TRIGGER-ONLY: {reason}.")
             out.append(item)
 
     # ---- cross-function reentrancy hints ----------------------------

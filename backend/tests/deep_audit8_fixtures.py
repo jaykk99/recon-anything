@@ -418,7 +418,7 @@ contract EcdsaRecoverVuln {
     }
 
     function claimWithSig(bytes32 hash, bytes memory sig, uint256 amount) public {
-        address signer = ECDSA.recover(hash, sig);
+        (address signer, ECDSA.RecoverError err) = ECDSA.tryRecover(hash, sig);
         require(signer == owner, "bad signer");
         token.transfer(msg.sender, amount);
     }
@@ -455,6 +455,24 @@ contract EcdsaRecoverClean {
     function claimWithSig(bytes32 hash, bytes memory sig, uint256 amount) public {
         address signer = ECDSA.recover(hash, sig);
         require(signer != address(0), "zero signer");
+        require(signer == owner, "bad signer");
+        token.transfer(msg.sender, amount);
+    }
+}
+"""
+
+
+_ECDSA_PLAIN_CLEAN = _TOKEN_IFACE + """
+contract EcdsaPlainRecoverClean {
+    IERC20Like public token;
+    address public owner;
+
+    constructor(address _token) {
+token = IERC20Like(_token);
+    }
+
+    function claimWithSig(bytes32 hash, bytes memory sig, uint256 amount) public {
+        address signer = ECDSA.recover(hash, sig);
         require(signer == owner, "bad signer");
         token.transfer(msg.sender, amount);
     }
@@ -736,6 +754,7 @@ CLEAN = {
     "multicall_value_reuse": _MULTICALL_CLEAN,
     "push_payment_revert_dos": _PUSH_CLEAN,
     "ecdsa_recover_zero_unchecked": _ECDSA_CLEAN,
+    "ecdsa_recover_plain_no_zero_check": _ECDSA_PLAIN_CLEAN,
     "raw_ecrecover_s_unbounded": _S_UNBOUNDED_CLEAN,
     "merkle_leaf_single_hash": _MERKLE_CLEAN,
     "hardcoded_hash_constant_mismatch": _HASH_CONST_CLEAN,
