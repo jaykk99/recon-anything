@@ -260,4 +260,4 @@ def test_plugin_runs_search(tmp_path, monkeypatch):
 def test_registry_count_includes_unified_search():
     reg = discover()
     assert "unified_keyword_search" in reg
-    assert len(reg) == 847  # 841 + this plugin + 5 deep-audit batch-10 detectors (deep_audit10)
+    assert len(reg) == 857  # 841 + this plugin + 5 deep-audit batch-10 detectors (deep_audit10)
