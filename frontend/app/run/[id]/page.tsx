@@ -2239,6 +2239,45 @@ function VulnsView({ runId }: { runId: string }) {
           )}
         </div>
       )}
+      {/* checked-but-not-confirmed: every probe that ran and did NOT confirm,
+          with the reason, so suppressed findings are visible instead of vanishing */}
+      {sim && sim.results.filter((r) => !r.works).length > 0 && (
+        <div className="card p-4 border border-slate-700/60">
+          <h2 className="font-semibold text-slate-300">
+            Checked — not confirmed{" "}
+            <span className="text-slate-500 text-xs">({sim.results.filter((r) => !r.works).length} of {sim.total_tested})</span>
+          </h2>
+          <p className="text-[11px] text-slate-500 mt-1">
+            These candidates were probed but did not hold up. The reason is listed for each — a soft-404 / app-shell
+            response, no matching payload, or a finding that can only be evidenced by the scan (not re-probed over HTTP).
+          </p>
+          <div className="space-y-2 mt-3">
+            {sim.results.filter((r) => !r.works).map((r) => {
+              const isOpen = !!simExpanded["nc-" + r.id];
+              return (
+                <div key={"nc-" + r.id} className="rounded-lg p-3 border border-slate-800 bg-slate-950/30">
+                  <button className="w-full text-left min-h-[44px]"
+                    onClick={() => setSimExpanded((e) => ({ ...e, ["nc-" + r.id]: !e["nc-" + r.id] }))}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-slate-500 text-sm">NOT CONFIRMED</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sevColor(r.severity)}`}>{r.severity.toUpperCase()}</span>
+                      <span className="font-semibold text-sm text-slate-300">{r.name}</span>
+                      <span className="text-slate-500 text-xs ml-auto">{isOpen ? "▲" : "▼"}</span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1 break-words">{r.detail}</p>
+                  </button>
+                  {isOpen && (
+                    <div className="pt-2 mt-2 border-t border-slate-800 space-y-2">
+                      <p className="text-xs text-slate-400 break-words"><span className="font-semibold text-slate-500">Why it was a candidate: </span>{r.why_viable}</p>
+                      <p className="text-xs text-slate-400 break-words"><span className="font-semibold text-slate-500">If you confirm it manually, fix: </span>{r.remediation}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {(cands || []).length === 0 && (
         <div className="card p-4 text-sm text-slate-500">
           No strong vulnerability paths found from this scan. Run more plugins or try a different target.
