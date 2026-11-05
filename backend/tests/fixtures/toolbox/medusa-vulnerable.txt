@@ -1,0 +1,56 @@
+⇾ Reading the configuration file at: /tmp/medusatest/medusa.json
+⇾ Compiling targets with crytic-compile
+⇾ Running command:
+/home/hatch/workspace/tools/audit/venv-slither/bin/crytic-compile EchidnaTest.sol --export-format solc
+⇾ Finished compiling targets in 1s
+⇾ artifacts: Medusa is running against a new set of build artifacts
+⇾ No Slither cached results found at slither_results.json
+⇾ Running Slither:
+/home/hatch/workspace/tools/audit/venv-slither/bin/slither EchidnaTest.sol --ignore-compile --print echidna --json -
+⇾ Finished running Slither in 2s
+⇾ Setting up test chain
+⇾ Finished setting up test chain
+⇾ Creating corpus...
+⇾ Fuzzing with 2 workers
+⇾ [NOT STARTED] Assertion Test: EchidnaHarness.vault()
+⇾ [NOT STARTED] Assertion Test: EchidnaHarness.attack()
+⇾ [NOT STARTED] Assertion Test: EchidnaHarness.fundReenterer()
+⇾ [NOT STARTED] Assertion Test: EchidnaHarness.reenterer()
+⇾ fuzz: elapsed:       0s, calls:          0 (     0/sec), seq/s:      0, branches:     45, corpus:     0, failures: 0/0, gas/s:            0
+⇾ [NOT STARTED] Assertion Test: EchidnaHarness.seedVault()
+⇾ [Worker 0] Shrinking call sequence for Assertion Test: EchidnaHarness.attack() with 6 call(s)
+⇾ [Worker 1] Shrinking call sequence for Assertion Test: EchidnaHarness.attack() with 7 call(s)
+⇾ fuzz: elapsed:       3s, calls:         13 (     4/sec), seq/s:      0, branches:    178, corpus:     7, failures: 0/2, gas/s:       276489
+⇾ [Worker 0] Shrinking complete after 5000 attempts (limit: 5000)
+⇾ [Worker 1] Shrinking complete after 5000 attempts (limit: 5000)
+⇾ Fuzzer stopped, test results follow below ...
+⇾ [PASSED] Assertion Test: EchidnaHarness.fundReenterer()
+⇾ [PASSED] Assertion Test: EchidnaHarness.reenterer()
+⇾ [PASSED] Assertion Test: EchidnaHarness.seedVault()
+⇾ [PASSED] Assertion Test: EchidnaHarness.vault()
+⇾ [FAILED] Assertion Test: EchidnaHarness.attack()
+Test for method "EchidnaHarness.attack()" resulted in an assertion failure after the following call sequence:
+[Call Sequence]
+1) EchidnaHarness.seedVault()() (block=2, time=2, gas=12500000, gasprice=0, value=1, sender=0x10000)
+2) EchidnaHarness.fundReenterer()() (block=2, time=2, gas=12500000, gasprice=0, value=1, sender=0x10000)
+3) EchidnaHarness.attack()() (block=2, time=2, gas=12500000, gasprice=0, value=0, sender=0x10000)
+[Execution Trace]
+ => [call] EchidnaHarness.attack()() (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x10000)
+	 => [call] Reenterer.amount()() (addr=0x1375317AA980daaBF22f990a378ECCaD9B40dc0, value=<nil>, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [return (1)]
+	 => [call] Reenterer.attack()() (addr=0x1375317AA980daaBF22f990a378ECCaD9B40dc0, value=0, sender=0xA647ff3c36cFab592509E13860ab8c4F28781a66)
+		 => [call] VulnerableVault.withdrawCredit()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=0, sender=0x1375317AA980daaBF22f990a378ECCaD9B40dc0)
+			 => [call] Reenterer.<unresolved method>(msg_data=) (addr=0x1375317AA980daaBF22f990a378ECCaD9B40dc0, value=1, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+				 => [call] VulnerableVault.withdrawCredit()() (addr=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA, value=0, sender=0x1375317AA980daaBF22f990a378ECCaD9B40dc0)
+					 => [call] Reenterer.<unresolved method>(msg_data=) (addr=0x1375317AA980daaBF22f990a378ECCaD9B40dc0, value=1, sender=0x54919A19522Ce7c842E25735a9cFEcef1c0a06dA)
+						 => [return]
+					 => [return ()]
+				 => [return]
+			 => [return ()]
+		 => [return ()]
+	 => [panic: assertion failed]
+
+
+⇾ Test summary: 4 test(s) passed, 1 test(s) failed
+⇾ html report(s) saved to: crytic-export/coverage/coverage_report.html
+⇾ lcov report(s) saved to: crytic-export/coverage/lcov.info

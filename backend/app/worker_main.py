@@ -9,9 +9,11 @@ Hosting (2026-10-20 split, Jay's order): the worker runs as its OWN
 Render free web service (recon-anything-worker) so scan load can never
 slow or wedge the UI/API service Jay uses. Render free web services
 must bind an HTTP port, so this process also serves a trivial health
-endpoint on $PORT (default 10000). A keepalive ping every 10 minutes
-stops the free instance from spinning down, and the API pings the
-worker URL whenever a new run is created (RECON_WORKER_URL).
+endpoint on $PORT (default 10000). A keepalive ping every ~4 min
+(RECON_KEEPALIVE_S, app/keepalive.py) hits this worker's own URL and
+the UI/API service (RECON_API_PUBLIC_URL), so neither free instance
+spins down; the API pings back the same way and also wakes the worker
+whenever a new run is created (RECON_WORKER_URL).
 
 Start command (service root = backend/):
     python -m app.worker_main
@@ -59,6 +61,10 @@ def main() -> None:
     from .runner import queue_worker_loop, reset_stale_queue_jobs
 
     threading.Thread(target=_serve_health, daemon=True).start()
+    # Pings itself AND the UI/API service so neither free instance
+    # spins down (see app/keepalive.py).
+    from . import keepalive
+    keepalive.start(keepalive.worker_targets())
     check_db()
     init_db()
     n = reset_stale_queue_jobs()

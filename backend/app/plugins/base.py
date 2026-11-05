@@ -368,6 +368,10 @@ class Ctx:
     keys: Dict[str, str]  # decrypted API keys by name
     limiter: Any = None  # rate limiter
     emit: Any = None  # optional async callback(event dict)
+    # Async event bus (app/eventbus.py), attached per run by the
+    # runner. publish() mirrors discoveries onto it so subscribed
+    # consumers react immediately instead of waiting for phase 2.
+    event_bus: Any = None
     module_overrides: Dict[str, str] = field(default_factory=dict)
     evidence_dir: str = "./evidence"
     # Source type of the run: "website" | "bank" | "atm".
@@ -388,6 +392,20 @@ class Ctx:
                 bucket.append(item)
         else:
             bucket.append(item)
+        # Mirror onto the async event bus when one is attached:
+        # consumers subscribed to EVENT_TARGET_DISCOVERED /
+        # SUBDOMAIN_DISCOVERED / ENDPOINT_FOUND / FINDING_RECORDED
+        # process the asset NOW, in parallel, not after the phase.
+        # Non-blocking and never raises into the plugin.
+        if self.event_bus is not None:
+            try:
+                from ..eventbus import topics_for_kind
+                for topic in topics_for_kind(kind):
+                    self.event_bus.publish_nowait(
+                        topic, {"kind": kind, "item": item,
+                                "run_id": self.run_id})
+            except Exception:
+                pass
 
     def consume(self, kind: str) -> List[Any]:
         """Read everything published under a discovery kind."""
@@ -516,6 +534,15 @@ class Plugin(abc.ABC):
     # run after, consuming the discovery bus (ctx.shared) populated by
     # phase 1. Lets findings lead to more findings.
     phase: int = 1
+    # Execution lane: "fast" (default) plugins are capped at
+    # MAX_PLUGIN_TIMEOUT_S by the runner. A plugin declaring
+    # lane="heavy" (external-tool adapters whose runtimes are
+    # minutes: static analyzers, fuzzers, symbolic engines) is
+    # capped at config.HEAVY_TIMEOUT_S (RECON_HEAVY_TIMEOUT,
+    # default 1800s) instead. Heavy plugins must self-gate their
+    # expensive work behind an explicit worker/offline opt-in so
+    # the web request path never pays for it.
+    lane: str = "fast"
     # Aggressive: sends attack payloads or brute-forces paths/endpoints.
     # When the rate limiter has a host in WAF graceful mode, aggressive
     # plugins are suppressed for that host (ok with a note) so the scan

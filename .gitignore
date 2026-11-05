@@ -11,3 +11,8 @@ frontend/tsconfig.tsbuildinfo
 *.db*
 backend/app/breachwatch_emails.json
 backend/app/breachwatch_cache.json
+
+# local-run artifacts (local-run/make-env.sh)
+.local-env
+.local-access-code
+.venv/

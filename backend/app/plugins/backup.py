@@ -74,7 +74,37 @@ BASE_NAMES = [
     "passwd", "shadow", "mongodump",
 ]
 
-DIRECT_PATHS = [
+# 2026-10-27 detection expansion: more exposed config, database
+# dump, backup/archive and version-control paths, probed FIRST (the
+# highest hit rate). Findings carry only the path, HTTP status,
+# content-type and size, plus secret-marker NAMES (never file
+# contents and never a full secret value) - see sniff() below.
+EXPANDED_DIRECT_PATHS = [
+    # Version-control artefacts (beyond /.git/HEAD and /.git/config)
+    "/.git/logs/HEAD", "/.git/index", "/.git/COMMIT_EDITMSG",
+    "/.hg/hgrc", "/.hg/store/", "/.svn/wc.db",
+    "/.bzr/branch/branch.conf", "/CVS/Entries",
+    # Bare database dumps (not just *_backup.sql)
+    "/dump.sql", "/database.sql", "/db.sql", "/data.sql",
+    "/site.sql", "/wordpress.sql", "/mysql.sql",
+    "/dump.sql.gz", "/database.sql.gz", "/db_backup.tar.gz",
+    "/dump.tar.gz", "/dump.rar", "/db.rar",
+    # Backup / archive bundles under common names
+    "/site_backup.zip", "/website_backup.zip", "/db_backup.zip",
+    "/backup_2024.zip", "/backup_2025.zip", "/backup_2026.zip",
+    "/site_backup.tar.gz", "/website.tar.gz",
+    "/public_html_backup.zip", "/backup_full.zip", "/full_backup.zip",
+    "/latest.zip", "/archive.zip",
+    # Config / credential files not covered by BASE_NAMES x EXTENSIONS
+    "/secrets.yml", "/credentials.yml", "/config/secrets.yml",
+    "/.aws/credentials", "/appsettings.json",
+    "/appsettings.Production.json", "/local.settings.json",
+    "/application.yml", "/application.yaml",
+    # Logs that routinely leak paths, versions and tokens in markers
+    "/error.log", "/debug.log", "/app.log",
+]
+
+DIRECT_PATHS = EXPANDED_DIRECT_PATHS + [
     "/backup.zip", "/backup.tar.gz", "/backup.tgz", "/site.zip",
     "/www.zip", "/public_html.zip", "/db_backup.sql", "/backup_db.sql",
     "/website.bak", "/old.zip", "/bak.zip",

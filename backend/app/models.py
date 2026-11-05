@@ -401,6 +401,37 @@ class FindingReveal(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class PaymentWatch(Base):
+    """One row per BTC checkout order: the DIY payment watcher state.
+
+    A NEW table (create_all builds it on fresh DBs and on the live
+    Postgres at boot); the orders table is never altered. The payer
+    address is public on-chain data the buyer voluntarily provides.
+    No private key, seed, or wallet-connection data ever lands here:
+    only public addresses, public txids, and amounts.
+    Status flow: pending -> underpaid | confirmed | expired.
+    A txid is claimed by at most one watch (unique constraint) so one
+    payment can never unlock two purchases.
+    """
+    __tablename__ = "payment_watches"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String, ForeignKey("orders.id"), unique=True,
+                      index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    payer_address = Column(String, nullable=True)
+    expected_sats = Column(Integer)
+    threshold_sats = Column(Integer)
+    status = Column(String, default="pending", index=True)
+    txid = Column(String, unique=True, nullable=True, index=True)
+    tx_received_sats = Column(Integer, default=0)
+    confirmations = Column(Integer, default=0)
+    seen_sats = Column(Integer, default=0)
+    seen_txid = Column(String, nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    late_payment_note = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 if DATABASE_URL.startswith("sqlite"):
     # SQLite concurrency recipe (2026-10-23 speed pass): the worker now
@@ -442,12 +473,30 @@ else:
     # briefly at load/persist - now from executor threads - and never
     # hold one across plugin execution). Env-tunable per service if a
     # database plan's connection cap ever requires smaller pools.
+    #
+    # Dropped-connection fix (2026-10-29, "stop it losing connection when
+    # it runs"): Neon suspends idle compute after ~5 min and its pooler
+    # drops idle sockets, but the pool used to hold connections for 30
+    # min, so a long scan would hand out a dead socket and the query (or
+    # the live SSE feed) died mid-run. Now: TCP keepalives so the OS
+    # notices a dead socket in ~80s instead of hanging, a 10s connect
+    # timeout, and connections recycled every 4 min - before Neon's idle
+    # cutoff. pool_pre_ping still catches anything that slips through.
+    if "psycopg" in DATABASE_URL or DATABASE_URL.startswith("postgres"):
+        connect_args = {
+            "connect_timeout": int(os.environ.get("RECON_DB_CONNECT_TIMEOUT", "10")),
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        }
     engine = create_engine(
         DATABASE_URL, connect_args=connect_args,
         pool_pre_ping=True,
         pool_size=int(os.environ.get("RECON_DB_POOL_SIZE", "40")),
         max_overflow=int(os.environ.get("RECON_DB_MAX_OVERFLOW", "40")),
-        pool_timeout=10, pool_recycle=1800)
+        pool_timeout=10,
+        pool_recycle=int(os.environ.get("RECON_DB_POOL_RECYCLE_S", "240")))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 

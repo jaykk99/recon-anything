@@ -1,0 +1,1 @@
+[{"line":17,"column":5,"severity":"Warning","message":"Fallback function must be simple","ruleId":"no-complex-fallback","fix":null,"filePath":"Vulnerable.sol"},{"line":23,"column":17,"severity":"Warning","message":"Avoid to use tx.origin","ruleId":"avoid-tx-origin","fix":null,"filePath":"Vulnerable.sol"},{"conclusion":"2 problem/s (2 warning/s)"}]
