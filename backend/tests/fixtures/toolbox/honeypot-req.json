@@ -1,0 +1,21 @@
+{
+  "token": {
+    "name": "Request Token",
+    "symbol": "REQ"
+  },
+  "summary": {
+    "risk": "low",
+    "riskLevel": 1,
+    "flags": []
+  },
+  "honeypotResult": {
+    "isHoneypot": false
+  },
+  "simulationResult": {
+    "buyTax": 0,
+    "sellTax": 0,
+    "transferTax": 0,
+    "buyGas": "143312",
+    "sellGas": "103612"
+  }
+}

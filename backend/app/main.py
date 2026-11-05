@@ -26,6 +26,10 @@ Routes:
   GET  /api/hunters/resources   resource library catalog + cache status
   GET/POST /api/agentdata/...   agent data service (packs, known set,
                                 memory, dead ends, recent finds, library)
+  POST /mcp                     MCP server (streamable HTTP); own auth
+                                via RECON_SERVICE_KEY - see
+                                app/mcp_server.py. Also runnable
+                                standalone: python -m app.mcp_server
 
   Service API (Error Inbox black team agents only, app/service_auth.py):
   POST /api/service/scans       start a PASSIVE website scan (returns run_id)
@@ -435,6 +439,16 @@ async def _startup():
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "recon-anything"}
+
+
+# -- MCP server ------------------------------------------------------------
+# ReconAnything is also an MCP server (Model Context Protocol, streamable
+# HTTP) at /mcp for MCP clients (Claude, Error Inbox's black team). It has
+# its OWN auth - the RECON_SERVICE_KEY, not the web gate above - and wraps
+# the same engine internals as the REST routes. See app/mcp_server.py.
+from .mcp_server import mcp_router as _mcp_router  # noqa: E402
+
+app.include_router(_mcp_router, prefix="/mcp")
 
 
 # -- classify ------------------------------------------------------------
@@ -1106,7 +1120,32 @@ def api_vuln_test(run_id: str, request: Request):
         base = ""
         if targets:
             base = targets[0].normalized or targets[0].raw or ""
-        report = run_real_tests(base, candidates)
+        # Harvest the real endpoints and parameter names the scan discovered so
+        # injection probes hit the actual vulnerable handlers, not just "/".
+        import re as _re
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+        endpoints: List[str] = []
+        params: List[str] = []
+        _ep_keys = {"endpoint", "hidden_api", "api_route", "url", "login_endpoint"}
+        for r in rows:
+            url = r.get("source_url") or ""
+            if not (url.startswith("http://") or url.startswith("https://")):
+                # some plugins put the URL in the value
+                m = _re.search(r"https?://[^\s\"'<>]+", str(r.get("value") or ""))
+                url = m.group(0) if (m and r.get("key") in _ep_keys) else ""
+            if url:
+                if url not in endpoints:
+                    endpoints.append(url)
+                for pname in _parse_qs(_urlparse(url).query).keys():
+                    if pname not in params:
+                        params.append(pname)
+            if r.get("key") in ("param", "params"):
+                v = r.get("value")
+                for pname in ([v] if isinstance(v, str) else (v or [])):
+                    pn = str(pname).strip()
+                    if pn and pn not in params:
+                        params.append(pn)
+        report = run_real_tests(base, candidates, endpoints=endpoints[:25], params=params[:15])
         report["run_id"] = run_id
         return report
     finally:
