@@ -28,8 +28,11 @@ NODE_KIND = {
     "tech": "tech", "server_header": "tech", "tech_deep": "tech",
     "ga_id": "tracking_id", "gtm_id": "tracking_id", "adsense_id": "tracking_id",
     "favicon_mmh3": "favicon_hash",
-    "registrant_org": "org",
+    "registrant_org": "org", "whois_registrant_org": "org",
     "app_title": "app", "bundle_id": "app",
+    # ports + certificates (values are clean single tokens here)
+    "open_port": "port", "port_open": "port",
+    "tls_issuer": "cert", "tls_subject": "cert", "cert_san": "cert",
     # connection mapper node types
     "connected_domain": "domain",
     "connected_device": "device",
