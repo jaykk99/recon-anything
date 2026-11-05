@@ -39,7 +39,7 @@ def test_all_six_specs_registered():
     for spec_id in SPECS:
         assert spec_id in reg, spec_id
     assert "auto_validator" in reg
-    assert len(reg) == 859, f"registry size {len(reg)}, expected 859"  # + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak)
+    assert len(reg) == 860, f"registry size {len(reg)}, expected 860"  # + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77)
 
 
 def test_vulnerable_fixtures_fire_as_candidates():
