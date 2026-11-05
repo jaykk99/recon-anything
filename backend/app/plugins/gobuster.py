@@ -90,6 +90,33 @@ SOFT404_HINTS = ("not found", "page not found", "404", "does not exist",
                  "couldn't be found")
 
 
+DNS_WORDS = """www mail api dev staging stage test qa uat admin portal
+vpn remote gateway blog shop store app apps mobile m ftp ns1 ns2
+smtp imap pop webmail intranet internal corp backup cdn static
+media files docs support help status monitor git jenkins""".split()
+
+
+async def _dns_ips(name: str) -> set:
+    """Resolved IPs for a hostname (empty set when it does not
+    resolve). Never raises."""
+    import asyncio as _aio
+    import socket as _sock
+    try:
+        infos = await _aio.wait_for(
+            _aio.get_event_loop().getaddrinfo(
+                name, None, family=_sock.AF_UNSPEC,
+                type=_sock.SOCK_STREAM),
+            timeout=2.0)
+        return {info[4][0] for info in infos or []}
+    except Exception:
+        return set()
+
+
+async def _dns_resolves(name: str) -> bool:
+    """True when a hostname resolves (any family). Never raises."""
+    return bool(await _dns_ips(name))
+
+
 class GobusterPlugin(Plugin):
     id = "gobuster"
     label = "Gobuster"
@@ -100,7 +127,8 @@ class GobusterPlugin(Plugin):
     timeout_s = 30
     aggressive = True
     description = ("Fast directory/file brute force: 350+ entries x "
-                   "extensions, 404-baseline filtered. GET only.")
+                   "extensions, 404-baseline filtered. GET only. Plus "
+                   "DNS mode: subdomain wordlist resolution check.")
 
     async def _baseline(self, ctx: Ctx, base: str) -> Dict:
         import random
@@ -211,8 +239,61 @@ class GobusterPlugin(Plugin):
                 except Exception:
                     continue
 
+        # -- DNS mode: subdomain wordlist check against the target
+        # domain (resolution only - no zone transfer, no probing of
+        # the discovered names). Skipped for IP-literal targets.
+        dns_hits = 0
+        dns_note = ""
+        try:
+            import ipaddress
+            ipaddress.ip_address(domain)
+            is_ip = True
+        except Exception:
+            is_ip = False
+        if not is_ip and "." in domain:
+            import asyncio as _aio
+            import random as _random
+            import string as _string
+            # Wildcard guard: if a random nonexistent name resolves,
+            # the zone (or the resolver) answers everything - only
+            # names whose address set DIFFERS from the wildcard
+            # baseline are real, distinct hosts.
+            rand_name = "zz" + "".join(
+                _random.choices(_string.ascii_lowercase, k=12)) \
+                + f".{domain}"
+            wildcard_ips = await _dns_ips(rand_name)
+            names = [f"{w}.{domain}" for w in DNS_WORDS]
+            resolved = await _aio.gather(
+                *[_dns_ips(n) for n in names])
+            differing = [(n, ips) for n, ips in zip(names, resolved)
+                         if ips and not (wildcard_ips
+                                         and ips == wildcard_ips)]
+            # Fabricated-answer guard: a random name resolving AND
+            # most of the wordlist resolving means the zone/resolver
+            # answers everything (wildcard DNS or an intercepting
+            # resolver minting a fresh IP per name) - no single
+            # answer is evidence of a real host. Suppress DNS mode,
+            # like gobuster does on wildcard zones by default.
+            if wildcard_ips and len(differing) > len(names) // 2:
+                differing = []
+                dns_note = " (dns mode suppressed: wildcard answers)"
+            for name, ips in differing:
+                dns_hits += 1
+                findings.append(self._f(
+                    "dns", "gobuster_dns_subdomain",
+                    f"Subdomain resolves: {name}",
+                    "gobuster dns mode", confidence=85,
+                    evidence={"severity": "low",
+                              "remediation": "Review this subdomain. "
+                                             "Remove stale DNS entries "
+                                             "and confirm the host is "
+                                             "intended to be public."},
+                    passive=False))
+                ctx.publish("subdomains", name)
+
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
-                       f"probed {swept} paths, {len(findings)} hits")
+                       f"probed {swept} paths, {len(findings)} hits "
+                       f"({dns_hits} dns){dns_note}")
         res.duration_ms = dur
         return res

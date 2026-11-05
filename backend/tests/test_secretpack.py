@@ -89,7 +89,7 @@ def test_exactly_5_new_detectors_registered():
     sec = sorted(k for k in discover() if k.startswith("sec_"))
     assert sec == sorted(SEC_IDS)
     assert len(sec) == 5
-    assert len(discover()) == 870  # re-baselined at merge: 860 master + 10 Tier-1 OSINT plugins (PR #119)
+    assert len(discover()) == 878  # re-baselined at merge: 870 master + 8 Tier-2 Enumeration plugins (PR #124)
 
 
 def test_js_hardcoded_fires():
