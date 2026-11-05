@@ -160,6 +160,29 @@ contract PermitVaultVuln {
 
     constructor(string memory name) {
         DOMAIN_SEPARATOR = keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,address verifyingContract)"),
+            keccak256(bytes(name)),
+            address(this)
+        ));
+    }
+
+    function permit(address owner, uint256 amount, uint8 v, bytes32 r, bytes32 s) public {
+        bytes32 digest = keccak256(abi.encodePacked(
+            "\\x19\\x01", DOMAIN_SEPARATOR,
+            keccak256(abi.encode(PERMIT_TYPEHASH, owner, amount))));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == owner, "bad signature");
+    }
+}
+"""
+
+_SEPARATOR_DEPLOY_BOUND = """
+contract PermitVaultDeployBound {
+    bytes32 public immutable DOMAIN_SEPARATOR;
+    bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,uint256 amount)");
+
+    constructor(string memory name) {
+        DOMAIN_SEPARATOR = keccak256(abi.encode(
             keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)"),
             keccak256(bytes(name)),
             block.chainid,
@@ -581,6 +604,13 @@ VULN = {
 # slice); MUST also fire candidate under its own detector.
 VULN_EXTRA = {
     "erc20_missing_return_guard": _MISSING_RETURN_TOKEN_VULN,
+}
+
+# Deployment-chain-bound separator (FP elimination, 2026-11-05):
+# fires, but only as trigger-only at low severity - the shape
+# Dai / Uni / UniswapV2Pair ship in production.
+DEPLOY_BOUND = {
+    "eip712_separator_unbound": _SEPARATOR_DEPLOY_BOUND,
 }
 
 VARIANT = {

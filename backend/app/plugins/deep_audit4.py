@@ -284,14 +284,39 @@ def _proof_length_validated(text_all: str,
     return False
 
 
+_PROOF_SHAPED_RE = re.compile(
+    r"verify|proof|claim|bridge|message|merkle|witness", re.I)
+
+
+def _sig_proof_params(sig: str) -> List[str]:
+    return _PROOF_PARAM_RE.findall(sig)
+
+
 def _analyze_proof_length(src: str, spec: DetectorSpec,
                           compiler: str = "",
                           contract_name: str = ""
                           ) -> List[Dict[str, Any]]:
     scope, fns = _scope_fns(src, contract_name)
     text_all = scope.scoped_text
-    proof_params = sorted(set(_PROOF_PARAM_RE.findall(text_all)))
+    # Proof parameters are FUNCTION PARAMETERS named in a
+    # signature - never return values or locals. (A
+    # compilation-wide name scan matched Morpho VaultV2's
+    # adapter return value `bytes32[] memory ids` and
+    # reported its allocation functions as proof consumers.)
+    proof_params = sorted({
+        name for fn in fns
+        for name in _sig_proof_params(fn["signature"])})
     if not proof_params:
+        return []
+    # Engagement gate: at least one declaring function must
+    # be proof-shaped (verify / claim / bridge context, or
+    # the parameter itself is named like a proof).
+    shaped = any(
+        _PROOF_SHAPED_RE.search(fn["name"])
+        or any(_PROOF_SHAPED_RE.search(n)
+               for n in _sig_proof_params(fn["signature"]))
+        for fn in fns if _sig_proof_params(fn["signature"]))
+    if not shaped:
         return []
     if _proof_length_validated(text_all, proof_params):
         return []
@@ -299,12 +324,12 @@ def _analyze_proof_length(src: str, spec: DetectorSpec,
     verifiers: List[Dict[str, Any]] = []
     for fn in fns:
         text, sig = fn["text"], fn["signature"]
+        own = _sig_proof_params(sig)
         uses_proof = any(
-            re.search(r"\b" + re.escape(name) + r"\b", sig)
-            or re.search(r"\b" + re.escape(name) + r"\s*\[", text)
+            re.search(r"\b" + re.escape(name) + r"\s*\[", text)
             or re.search(r"\w*[Vv]erify\w*\s*\([^)]*\b"
                          + re.escape(name) + r"\b", text)
-            for name in proof_params)
+            for name in own)
         if not uses_proof:
             continue
         if _caller_gated(fn, scope):
