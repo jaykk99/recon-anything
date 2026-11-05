@@ -32,7 +32,10 @@ services:
       - key: RECON_WORKER_ENABLED
         value: "0" # UI/API only: the worker service runs the queue
       - key: RECON_WORKER_URL
-        sync: false # https://recon-anything-worker.onrender.com (wake ping)
+        # Public worker URL. The API wakes the worker here the instant a scan
+        # is created (app/main.py _wake_worker) and keeps it warm (keepalive);
+        # if this is blank the worker sleeps and queued scans never run.
+        value: https://recon-anything-worker.onrender.com
       - key: RECON_KEEPALIVE_S
         value: "240" # pings self + worker every ~4 min (app/keepalive.py)
       # Sellable-product layer (app/billing.py), all optional: unset =
@@ -58,7 +61,8 @@ services:
     healthCheckPath: /
     envVars:
       - key: RECON_API_PUBLIC_URL
-        sync: false # https://recon-anything.onrender.com (worker pings it awake)
+        # Public API URL the worker pings to keep the UI/API service awake.
+        value: https://recon-anything.onrender.com
       - key: RECON_KEEPALIVE_S
         value: "240" # pings self + API every ~4 min (app/keepalive.py)
       - key: DATABASE_URL
