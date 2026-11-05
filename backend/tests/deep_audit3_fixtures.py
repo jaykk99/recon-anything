@@ -112,6 +112,30 @@ contract LatchDeliveryFixed {
 }
 """
 
+# Method-style reset (OZ TransientSlot usage): the latch is
+# read via slot.tload() and cleared via slot.tstore(0) - a
+# real reset, so this shape must stay silent. Found 2026-11-04
+# on a live contract (MultiDepositorVault _getCallbackApprovals
+# clears via method-style tstore and was misread as unreset).
+_TRANSIENT_METHOD_RESET = _TOKEN_IFACE + """
+contract LatchDeliveryMethodReset {
+    IERC20Like public token;
+    bytes32 private constant CALLBACK_SLOT = bytes32(uint256(1));
+
+    constructor(address _token) {
+        token = IERC20Like(_token);
+    }
+
+    function deliver(address to, uint256 amount) external {
+        bytes32 slot = CALLBACK_SLOT;
+        bytes32 latch = slot.tload();
+        require(latch == bytes32(uint256(1)), "not delivered");
+        token.transfer(to, amount);
+        slot.tstore(0);
+    }
+}
+"""
+
 # ---------------------------------------------------------------------------
 # 2. v4_hook_shared_delta_take_pair
 # ---------------------------------------------------------------------------
@@ -531,5 +555,6 @@ VARIANT = {
 # separately in the test file).
 EXTRA_CLEAN = {
     "transient_latch_unconsumed_hash_bound": _TRANSIENT_HASH_BOUND,
+    "transient_latch_unconsumed_method_reset": _TRANSIENT_METHOD_RESET,
     "v4_hook_shared_delta_take_pair_delta": _V4_DELTA_CLEAN,
 }

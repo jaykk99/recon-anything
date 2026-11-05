@@ -6,7 +6,7 @@ candidate; the FIXED-recipient variant MUST fire trigger-only
 at low severity (never a candidate); every clean control MUST
 stay silent under ALL five detectors; every other plugin's
 vulnerable fixture MUST stay silent under this one (no
-cross-talk); the registry discovers exactly 842 plugins
+cross-talk); the registry discovers exactly 847 plugins
 including all five.
 """
 import os
@@ -37,8 +37,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_794():
     reg = discover()
-    assert len(reg) == 842, \
-        f"registry size {len(reg)}, expected 842"
+    assert len(reg) == 847, \
+        f"registry size {len(reg)}, expected 847"
 
 
 def test_vuln_fires_candidate_with_evidence():
@@ -119,6 +119,17 @@ def test_transient_names_the_deliver_function():
 def test_transient_hash_bound_latch_silent():
     hits = hits_for(
         fx.EXTRA_CLEAN["transient_latch_unconsumed_hash_bound"],
+        "transient_latch_unconsumed")
+    assert hits == []
+
+
+def test_transient_method_style_reset_silent():
+    # OZ TransientSlot method-style reset (slot.tstore(0)) is
+    # a real reset: silent, while the original vulnerable
+    # fixture still fires (covered by
+    # test_vuln_fires_candidate_with_evidence).
+    hits = hits_for(
+        fx.EXTRA_CLEAN["transient_latch_unconsumed_method_reset"],
         "transient_latch_unconsumed")
     assert hits == []
 

@@ -16,8 +16,9 @@ report_class, gate).
   back to zero after the check. The latch stays set, so the same
   proof authorizes the privileged effect again - the zkLink Nova
   Oct 2026 shape (~$743k). A tstore(slot, 0) reset after the
-  check, or a latch slot hashed over target+payload, is the
-  protected shape and stays silent.
+  check - free-function or method-style slot.tstore(0) (OZ
+  TransientSlot usage) - or a latch slot hashed over
+  target+payload, is the protected shape and stays silent.
 - v4_hook_shared_delta_take_pair: a Uniswap v4 hook
   (beforeSwap / afterSwap / beforeAddLiquidity / ...) that
   takes pool credit with PositionManager
@@ -328,6 +329,22 @@ def _skip_fn(fn: Dict[str, Any], scope) -> bool:
 
 _TLOAD_RE = re.compile(r"\btload\s*\(")
 _TSTORE_RE = re.compile(r"\btstore\s*\(")
+
+
+def _method_receiver(text: str, m) -> str:
+    """Identifier before `.method(` for a method-style call
+    (e.g. `slot` in `slot.tstore(0)` / `slot.tload()`), else
+    ''. OpenZeppelin TransientSlot is used this way
+    (`using TransientSlot for bytes32`), and a reset written
+    as `slot.tstore(0)` is a real reset - the free-function
+    `tstore(slot, 0)` shape is not the only one."""
+    i = m.start() - 1
+    if i < 0 or text[i] != ".":
+        return ""
+    j = i - 1
+    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+        j -= 1
+    return text[j + 1:i]
 _TLOAD_ASSIGN_RE = re.compile(
     r"([A-Za-z_]\w*)\s*(?::=|=)\s*[^;{]*?\btload\s*\(")
 _CHECK_RE = re.compile(r"\b(require|assert|if)\s*\(")
@@ -357,9 +374,15 @@ def _analyze_transient_latch(src, spec, compiler, contract_name):
                 r"([A-Za-z_]\w*)\s*=\s*[^;]*keccak256\s*\(",
                 text)}
         for m in tloads:
-            args = _call_args(text, m)
-            slot = re.sub(r"\s+", " ", args[0]).strip() \
-                if args else ""
+            recv = _method_receiver(text, m)
+            if recv:
+                # Method-style: slot.tload() - the receiver
+                # IS the slot.
+                slot = recv
+            else:
+                args = _call_args(text, m)
+                slot = re.sub(r"\s+", " ", args[0]).strip() \
+                    if args else ""
             slots.append((m.start(), slot))
             if "keccak256" in slot or \
                     slot in hashed_locals:
@@ -382,14 +405,23 @@ def _analyze_transient_latch(src, spec, compiler, contract_name):
                 break
         if check_pos is None:
             continue
-        # Reset: tstore(same slot, 0) anywhere in the function.
+        # Reset: tstore(same slot, 0) anywhere in the function
+        # - free-function tstore(slot, 0) or method-style
+        # slot.tstore(0).
         reset = False
+        slot_names = [s for _, s in slots]
         for m in _TSTORE_RE.finditer(text):
+            recv = _method_receiver(text, m)
             args = _call_args(text, m)
-            if len(args) >= 2:
+            if recv:
+                if args and recv in slot_names and \
+                        _ZERO_VALUE_RE.match(
+                            re.sub(r"\s+", "", args[0])):
+                    reset = True
+            elif len(args) >= 2:
                 slot = re.sub(r"\s+", " ", args[0]).strip()
                 val = re.sub(r"\s+", "", args[1])
-                if slot in [s for _, s in slots] and \
+                if slot in slot_names and \
                         _ZERO_VALUE_RE.match(val):
                     reset = True
         if reset:
