@@ -170,7 +170,7 @@ def test_every_clean_control_silent_under_all_100():
 def test_registry_discovers_761_with_all_100_new():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 847, f"registry size {len(reg)}, expected 847"  # + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 5 deep-audit batch-10 detectors (deep_audit10)
+    assert len(reg) == 853, f"registry size {len(reg)}, expected 853"  # + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 5 deep-audit batch-10 detectors (deep_audit10)
     missing = [pid for pid in EXPECTED_IDS if pid not in reg]
     assert missing == [], f"not registered: {missing}"
     for pid in EXPECTED_IDS:
