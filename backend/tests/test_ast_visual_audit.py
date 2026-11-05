@@ -254,4 +254,4 @@ def test_plugin_no_source_reports_not_produced(monkeypatch):
 def test_registry_count_includes_ast_visual_audit():
     reg = discover()
     assert "ast_visual_audit" in reg
-    assert len(reg) == 847  # master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10)
+    assert len(reg) == 855  # master 655 + 100 BSC/BNB detectors + 5 deep-audit detectors + this plugin + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10) + 8 Tier-2 enumeration plugins (naabu, masscan, nmap_nse, httpx_probe, tlsx, zmap, rustscan, dirsearch)
