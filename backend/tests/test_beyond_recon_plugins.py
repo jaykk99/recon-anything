@@ -102,7 +102,7 @@ def test_new_plugins_registered():
     reg = discover()
     for pid in NEW_IDS:
         assert pid in reg, pid
-    assert len(reg) == 894  # 884 master + 10 Tier-4 Vuln/CVE plugins (PR #125)
+    assert len(reg) == 904  # 904 master + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123)
 
 
 # ----------------------------------------------------------------------
