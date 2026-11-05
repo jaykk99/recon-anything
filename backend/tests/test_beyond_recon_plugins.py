@@ -102,7 +102,7 @@ def test_new_plugins_registered():
     reg = discover()
     for pid in NEW_IDS:
         assert pid in reg, pid
-    assert len(reg) == 860  # 859 master + 1 meta_orchestrator (PR #77)
+    assert len(reg) == 870  # 860 master + 10 Tier-1 OSINT plugins (PR #119)
 
 
 # ----------------------------------------------------------------------
