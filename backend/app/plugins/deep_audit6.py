@@ -461,12 +461,237 @@ def _local_stored_onward(local: str, tail: str,
     return False
 
 
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", "", s)
+
+
+_LOCAL_DEF_RE = re.compile(
+    r"(?:uint\w*|int\w*|address|bool|bytes\w*|var)?\s*"
+    r"([A-Za-z_]\w*)\s*=\s*([^;]+);")
+
+
+def _local_defs(text: str) -> Dict[str, str]:
+    """First defining expression per local variable name."""
+    out: Dict[str, str] = {}
+    for m in _LOCAL_DEF_RE.finditer(text):
+        out.setdefault(m.group(1), m.group(2).strip())
+    return out
+
+
+def _has_bound_check(flat_text: str, minuend_exprs: List[str],
+                     subtrahend: str) -> bool:
+    """True when the function visibly bounds a subtraction:
+    require/assert(EXPR >= SUB), require(SUB <= EXPR), or an
+    if (EXPR < SUB) revert / if (SUB > EXPR) revert guard, for
+    any candidate spelling of the minuend expression."""
+    sub = _norm_ws(subtrahend)
+    if not sub:
+        return False
+    for expr in minuend_exprs:
+        e = _norm_ws(expr)
+        if not e:
+            continue
+        pats = (
+            "require(" + e + ">=" + sub,
+            "require(" + sub + "<=" + e,
+            "assert(" + e + ">=" + sub,
+            "assert(" + sub + "<=" + e,
+            "if(" + e + "<" + sub + ")revert",
+            "if(" + e + "<" + sub + "){revert",
+            "if(" + sub + ">" + e + ")revert",
+            "if(" + sub + ">" + e + "){revert",
+        )
+        if any(p in flat_text for p in pats):
+            return True
+    return False
+
+
+_SUB_FORM_RE = re.compile(
+    r"^([A-Za-z_][\w\.\[\]]*)\s*-\s*(.+)$", re.S)
+_ADD_FORM_RE = re.compile(
+    r"^([A-Za-z_][\w\.\[\]]*)\s*\+\s*(.+)$", re.S)
+
+
+def _stmt_arith_form(lhs: str, op: str, rhs: str):
+    """Classify an assignment statement's arithmetic on the
+    parameter: ('sub', minuend_expr, subtrahend) or
+    ('add', addend) or None when the statement is not plain
+    value arithmetic (hashing, recovery, bare increments)."""
+    rhs = rhs.strip()
+    if "keccak256(" in rhs or "ecrecover(" in rhs or \
+            "sha256(" in rhs:
+        return None
+    if re.fullmatch(r"[A-Za-z_][\w\.\[\]]*(\+\+|--)", rhs) or \
+            re.fullmatch(r"(\+\+|--)[A-Za-z_][\w\.\[\]]*", rhs):
+        return None
+    if op == "-=":
+        return ("sub", lhs, rhs)
+    if op == "+=":
+        return ("add", rhs)
+    if op == "=":
+        m = _SUB_FORM_RE.match(rhs)
+        if m:
+            return ("sub", m.group(1), m.group(2))
+        m = _ADD_FORM_RE.match(rhs)
+        if m and (m.group(1) == lhs or
+                  m.group(1).split("[")[0] == lhs):
+            return ("add", m.group(2))
+    return ("other", rhs)
+
+
+def _fn_adds(text: str, hit_param: str):
+    """All addition statements on the parameter in a function:
+    (lhs_text) for `L += p` and `L = L + p` forms."""
+    out = []
+    hp = _norm_ws(hit_param)
+    for m in re.finditer(
+            r"([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*\+=\s*([^;]+)", text):
+        if hp in _norm_ws(m.group(2)):
+            out.append(m.group(1))
+    for m in re.finditer(
+            r"([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*=\s*"
+            r"([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*\+\s*([^;]+)", text):
+        if m.group(1).split("[")[0] == m.group(2).split("[")[0] \
+                and hp in _norm_ws(m.group(3)):
+            out.append(m.group(1))
+    return out
+
+
+def _bounded_suppressed(text: str, block: str, lhs: str,
+                        op: str, rhs: str, hit_param: str,
+                        defs: Dict[str, str],
+                        checked_default: bool = False,
+                        state: Optional[set] = None) -> bool:
+    """True when the fired statement's arithmetic on the
+    parameter is provably bounded, so the unchecked block is
+    the standard checked-ledger pattern rather than a hazard:
+
+    - a subtraction whose minuend is bound-checked against the
+      subtrahend in the same function (the OpenZeppelin ERC20
+      _update/_burn shape: load balance, revert if < amount,
+      then subtract inside unchecked);
+    - a credit (or supply move) paired in the same function
+      with such a bound-checked subtraction of the SAME
+      parameter (transfer/burn conservation: the credit cannot
+      exceed the checked debit);
+    - the canonical mint ledger pair inside one unchecked
+      block: totalSupply += p together with a balance-slot
+      += p (supply and balance move atomically; neither can
+      wrap short of a 2**256 total supply).
+    """
+    form = _stmt_arith_form(lhs, op, rhs)
+    if form is None:
+        return True  # not value arithmetic at all
+    flat = _norm_ws(text)
+    if form[0] == "sub":
+        minuend, sub = form[1], form[2]
+        exprs = [minuend]
+        base = minuend.split("[")[0].split(".")[0]
+        if base in defs:
+            exprs.append(defs[base])
+        if hit_param in _norm_ws(sub) or \
+                _norm_ws(sub) == _norm_ws(hit_param):
+            if _has_bound_check(flat, exprs, sub):
+                return True
+            # Supply-accounting subtraction: totalSupply can
+            # only fall by an amount some balance check in the
+            # same function already bounded (a balance is a
+            # component of the supply, so p <= balance <=
+            # totalSupply whenever any subtraction of p in the
+            # function is bound-checked).
+            if "totalsupply" in _norm_ws(lhs).lower():
+                for m in re.finditer(
+                        r"([A-Za-z_][\w\.\[\]]*)\s*-\s*([^;]+)",
+                        text):
+                    ex = [m.group(1)]
+                    b2 = m.group(1).split("[")[0].split(".")[0]
+                    if b2 in defs:
+                        ex.append(defs[b2])
+                    if _has_bound_check(flat, ex, m.group(2)) \
+                            and hit_param in _norm_ws(m.group(2)):
+                        return True
+                # Compiler-checked slot debit of the same
+                # parameter (solc >= 0.8, outside unchecked)
+                # bounds the supply fall the same way: a
+                # balance is a component of the supply.
+                if checked_default:
+                    spans = [(m.start(), m.end()) for m in
+                             _UNCHECKED_RE.finditer(text)]
+                    for m in re.finditer(
+                            r"([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*"
+                            r"(?:-=|=\s*[A-Za-z_][\w\.\[\]]*"
+                            r"\s*-)\s*([^;]+)", text):
+                        if hit_param not in _norm_ws(m.group(2)):
+                            continue
+                        if "[" not in m.group(1):
+                            continue
+                        if not any(s <= m.start() < e
+                                   for s, e in spans):
+                            return True
+            return False
+        return False
+    if form[0] == "add":
+        # The parameter that matters for pairing is the
+        # addend itself when it is a bare identifier (the
+        # index parameter of the credited slot is not the
+        # value being added).
+        addend = form[1].strip()
+        eff_param = addend if re.fullmatch(
+            r"[A-Za-z_]\w*", addend) else hit_param
+        # Any bound-checked subtraction of the same parameter
+        # in this function bounds this credit by conservation.
+        # On solc >= 0.8 a subtraction OUTSIDE an unchecked
+        # block is itself compiler-checked, so a checked debit
+        # beside the credit bounds it the same way.
+        spans = [(m.start(), m.end()) for m in
+                 _UNCHECKED_RE.finditer(text)]
+        for m in re.finditer(
+                r"([A-Za-z_][\w\.\[\]]*)\s*-\s*([^;]+)", text):
+            if eff_param not in _norm_ws(m.group(2)):
+                continue
+            exprs = [m.group(1)]
+            base = m.group(1).split("[")[0].split(".")[0]
+            if base in defs:
+                exprs.append(defs[base])
+            if _has_bound_check(flat, exprs, m.group(2)):
+                return True
+        if checked_default:
+            state = state or set()
+            # A compiler-checked debit of the same parameter
+            # from a storage slot outside every unchecked
+            # block bounds the credit by conservation.
+            for m in re.finditer(
+                    r"([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*(?:-=|"
+                    r"=\s*[A-Za-z_][\w\.\[\]]*\s*-)\s*([^;]+)",
+                    text):
+                if eff_param not in _norm_ws(m.group(2)):
+                    continue
+                if "[" not in m.group(1) and \
+                        m.group(1) not in state:
+                    continue
+                if not any(s <= m.start() < e for s, e in spans):
+                    return True
+        # Canonical mint ledger pair in the same function:
+        # totalSupply += p together with a balance-slot += p
+        # (in or out of the unchecked block; the supply side
+        # bounds the balance side by the ledger identity).
+        adds = _fn_adds(text, eff_param)
+        lhs_bases = {a.split("[")[0] for a in adds}
+        if any("totalsupply" in b.lower() for b in lhs_bases) \
+                and any("[" in a for a in adds):
+            return True
+        return False
+    return False
+
+
 def _analyze_unchecked_math(src: str, spec: DetectorSpec,
                             compiler: str = "",
                             contract_name: str = ""
                             ) -> List[Dict[str, Any]]:
     scope, fns = _scope_fns(src, contract_name)
     state = cl.state_variables(scope.scoped_text)
+    _ver = cl.solc_version(src, compiler)
+    checked_default = bool(_ver and _ver >= (0, 8, 0))
     out: List[Dict[str, Any]] = []
     for fn in fns:
         text = fn["text"]
@@ -478,6 +703,7 @@ def _analyze_unchecked_math(src: str, spec: DetectorSpec,
         param_re = [re.compile(r"\b" + re.escape(p) + r"\b")
                     for p in params]
         loop_vars = set(_FOR_INIT_RE.findall(text))
+        defs = _local_defs(text)
         fired = None
         for m in _UNCHECKED_RE.finditer(text):
             block, bend = _balanced_brace(text, m.end() - 1)
@@ -513,6 +739,18 @@ def _analyze_unchecked_math(src: str, spec: DetectorSpec,
                     onward = _local_stored_onward(
                         lhs, tail, state)
                 if not onward:
+                    continue
+                # Bounded-arithmetic suppression: the standard
+                # checked-ledger shapes (bound-checked
+                # subtraction, its paired credit, the mint
+                # ledger pair) and non-arithmetic statements
+                # (hashing, recovery, nonce increments) are not
+                # unchecked-math hazards.
+                if _stmt_arith_form(lhs, op, rhs) is None:
+                    continue
+                if _bounded_suppressed(text, block, lhs, op,
+                                       rhs, hit_param, defs,
+                                       checked_default, state):
                     continue
                 fired = (hit_param, lhs, stmt.strip()[:120])
                 break

@@ -766,3 +766,32 @@ def test_gate_protects_hunter_endpoints(client, monkeypatch):
         assert client.get("/api/agentdata/packs").status_code == 401
     finally:
         monkeypatch.setattr(config, "ACCESS_CODE", "")
+
+
+def test_expand_respects_run_depth_cap(session):
+    """Preset depth cap (run.summary queue_meta.max_depth): a Quick
+    Triage run (cap 0) still gets the depth-0 seed sweep, but the
+    depth-1 subdomain asset is NEVER expanded - no target is created
+    for it and no job lands on it. Lift the cap and the same seed
+    expands normally."""
+    run = _mk_run(session, "run-cap-1", "cap.test")
+    r = _finding("subdomain", "api.cap.test")
+    r.run_id = "run-cap-1"
+    session.add(r)
+    run.summary = {"queue_meta": {"max_depth": 0}}
+    session.commit()
+    engine.hunter_expand(session, run, engine.new_accum())
+    targets = session.query(TargetRow).filter_by(
+        run_id="run-cap-1").all()
+    assert [t.normalized for t in targets] == ["cap.test"]
+    seed_id = targets[0].id
+    jobs = session.query(PluginJob).filter_by(run_id="run-cap-1").all()
+    assert jobs and all(j.target_id == seed_id for j in jobs)
+    # Cap lifted: the depth-1 asset becomes a target with its own
+    # expansion jobs.
+    run.summary = {"queue_meta": {}}
+    session.commit()
+    assert engine.hunter_expand(session, run, engine.new_accum()) > 0
+    targets = session.query(TargetRow).filter_by(
+        run_id="run-cap-1").all()
+    assert any(t.normalized == "api.cap.test" for t in targets)
