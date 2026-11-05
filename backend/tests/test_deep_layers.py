@@ -547,4 +547,4 @@ def test_registry_discovers_deep_plugins():
     for pid in ("cross_contract_call_graph", "storage_state_analysis",
                 "bytecode_deep_analysis", "candidate_confirmation_queue"):
         assert pid in reg
-    assert len(reg) == 847  # 778 master + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10)
+    assert len(reg) == 855  # 778 master + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10) + 8 tier-6 detection plugins
