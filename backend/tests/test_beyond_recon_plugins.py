@@ -102,7 +102,7 @@ def test_new_plugins_registered():
     reg = discover()
     for pid in NEW_IDS:
         assert pid in reg, pid
-    assert len(reg) == 878  # 870 master + 8 Tier-2 Enumeration plugins (PR #124)
+    assert len(reg) == 884  # 878 master + 6 Tier-3 Fuzzing plugins (PR #121)
 
 
 # ----------------------------------------------------------------------

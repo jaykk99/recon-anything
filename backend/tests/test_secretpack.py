@@ -89,7 +89,7 @@ def test_exactly_5_new_detectors_registered():
     sec = sorted(k for k in discover() if k.startswith("sec_"))
     assert sec == sorted(SEC_IDS)
     assert len(sec) == 5
-    assert len(discover()) == 878  # re-baselined at merge: 870 master + 8 Tier-2 Enumeration plugins (PR #124)
+    assert len(discover()) == 884  # re-baselined at merge: 878 master + 6 Tier-3 Fuzzing plugins (PR #121)
 
 
 def test_js_hardcoded_fires():
