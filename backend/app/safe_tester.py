@@ -17,7 +17,7 @@ import base64
 import json
 import re
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -279,7 +279,7 @@ def probe_xss(base: str) -> Tuple[bool, str]:
             # Pull up to 3 real form input names from the page
             names = re.findall(r'name=["\']([A-Za-z0-9_\-]+)["\']', r.text)[:3]
         seen = set()
-        params = ["q", "search", "s", "keyword", "name"] + names
+        params = ["q", "search", "s", "keyword", "name"] + names + DISCOVERED_PARAMS
         tested = 0
         with _client() as c:
             for p in params:
@@ -302,7 +302,7 @@ def probe_xss(base: str) -> Tuple[bool, str]:
 def probe_open_redirect(base: str) -> Tuple[bool, str]:
     """GET with external URL in redirect-ish params - check for 3xx to evil host."""
     try:
-        params = ["next", "redirect", "url", "return", "dest", "target", "continue", "r"]
+        params = ["next", "redirect", "url", "return", "dest", "target", "continue", "r"] + DISCOVERED_PARAMS
         with _no_follow_client() as c:
             for p in params:
                 r = c.get(base, params={p: "https://example.com/"})
@@ -320,7 +320,7 @@ def probe_open_redirect(base: str) -> Tuple[bool, str]:
 def probe_ssrf(base: str) -> Tuple[bool, str]:
     """GET with cloud metadata IP in URL-ish params - check for internal fetch."""
     try:
-        params = ["url", "uri", "path", "file", "dest", "target", "redirect", "u"]
+        params = ["url", "uri", "path", "file", "dest", "target", "redirect", "u"] + DISCOVERED_PARAMS
         probe = "http://169.254.169.254/latest/meta-data/ami-id"
         with _client() as c:
             for p in params:
@@ -413,7 +413,7 @@ def probe_auth_bypass(base: str) -> Tuple[bool, str]:
 def probe_dir_traversal(base: str) -> Tuple[bool, str]:
     """GET with traversal payload in file-ish params - check for /etc/passwd leak (read-only)."""
     try:
-        params = ["file", "path", "page", "include", "template", "name", "f"]
+        params = ["file", "path", "page", "include", "template", "name", "f"] + DISCOVERED_PARAMS
         payload = "....//....//....//etc/passwd"
         with _client() as c:
             for p in params:
@@ -446,7 +446,7 @@ def probe_xxe(base: str) -> Tuple[bool, str]:
 def probe_ssti(base: str) -> Tuple[bool, str]:
     """GET with math payloads in template-ish params - check for evaluation."""
     try:
-        params = ["name", "q", "search", "template", "view"]
+        params = ["name", "q", "search", "template", "view"] + DISCOVERED_PARAMS
         tested = 0
         with _client() as c:
             base_body = c.get(base).text
@@ -471,7 +471,7 @@ def probe_ssti(base: str) -> Tuple[bool, str]:
 def probe_crlf(base: str) -> Tuple[bool, str]:
     """GET with CRLF payload - check if the injected header lands in the response (GET only)."""
     try:
-        params = ["next", "url", "redirect", "q"]
+        params = ["next", "url", "redirect", "q"] + DISCOVERED_PARAMS
         for p in params:
             # Literal %0d%0a passed in the raw URL so it is not double-encoded
             url = base + "/?" + p + "=test%0d%0aX-Injected-Probe9:%20yes"
@@ -876,10 +876,46 @@ def _reachable_base(base: str) -> str:
     return base
 
 
-def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
+# Candidates whose probe injects into a query parameter. For these, probing
+# only the homepage misses the real vulnerable handler, so we run them against
+# the actual endpoints the scan discovered (parameterized ones first).
+_INJECTION_IDS = {"sqli", "xss-reflected", "open-redirect", "ssrf", "idor",
+                  "dir-traversal", "ssti", "crlf", "host-header"}
+
+# Set per run from the scan's discovered parameters; param-probes append it to
+# their built-in name lists so real params get exercised. Reset each run.
+DISCOVERED_PARAMS: List[str] = []
+
+MAX_PROBE_BASES = 4  # cap endpoints tried per injection candidate (bounds requests)
+
+
+def _candidate_bases(base: str, endpoints: List[str]) -> List[str]:
+    """Ordered, deduped URLs to try for an injection probe: discovered
+    parameterized URLs first (best injection surface), then other discovered
+    URLs on the same host, then the base. Capped to bound request volume."""
+    host = base.split("://", 1)[-1].split("/")[0].lower()
+    parered, pathed = [], []
+    for u in endpoints or []:
+        if not isinstance(u, str) or "://" not in u:
+            continue
+        if u.split("://", 1)[-1].split("/")[0].lower() != host:
+            continue  # same-host only (SSRF-safe: no probing unrelated hosts)
+        (parered if "?" in u else pathed).append(u.rstrip("/"))
+    ordered = []
+    for u in parered + pathed + [base]:
+        if u and u not in ordered:
+            ordered.append(u)
+    return ordered[:MAX_PROBE_BASES]
+
+
+def run_real_tests(base_url: str, candidates: List[Dict],
+                   endpoints: Optional[List[str]] = None,
+                   params: Optional[List[str]] = None) -> Dict:
     """Run real (safe, non-destructive) detection probes against the target.
 
     Only GET/HEAD. Rate-limited. Returns which candidates were confirmed.
+    `endpoints`/`params` are the real URLs and parameter names the scan found;
+    injection probes run against those, not just the homepage.
     """
     base = (base_url or "").strip().rstrip("/")
     # Domain/IP targets normalize to a bare host (no scheme); httpx rejects a
@@ -890,6 +926,20 @@ def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
     base = base or "https://example.com"
     # Fall back to http:// if https doesn't connect, so HTTP-only hosts probe.
     base = _reachable_base(base)
+
+    # Publish discovered param names to the param-probes (deduped, capped).
+    global DISCOVERED_PARAMS
+    seen_p, clean_p = set(), []
+    for p in (params or []):
+        p = (p or "").strip()
+        if p and re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", p) and p not in seen_p:
+            seen_p.add(p)
+            clean_p.append(p)
+    DISCOVERED_PARAMS = clean_p[:15]
+
+    probe_bases = _candidate_bases(base, endpoints or [])
+    _CATCHALL_CACHE.clear()  # fresh soft-404 baseline per run
+
     results = []
     for c in candidates:
         fn = PROBE_MAP.get(c["id"])
@@ -906,7 +956,18 @@ def run_real_tests(base_url: str, candidates: List[Dict]) -> Dict:
             })
             continue
         try:
-            works, detail = fn(base, c)
+            if c["id"] in _INJECTION_IDS and len(probe_bases) > 1:
+                # Try each discovered endpoint until one confirms.
+                works, detail = False, ""
+                for b in probe_bases:
+                    works, detail = fn(b, c)
+                    if works:
+                        if b != base:
+                            detail += f" [endpoint: {b}]"
+                        break
+                    _sleep()
+            else:
+                works, detail = fn(base, c)
         except Exception as e:
             works, detail = False, f"Probe error: {str(e)[:120]}"
         results.append({
