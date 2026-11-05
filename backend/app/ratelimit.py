@@ -21,10 +21,12 @@ No extra code is needed for env-based proxying.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import os
 import random
 import time
+from collections import deque
 from typing import Dict, Literal, Optional
 
 import httpx
@@ -78,7 +80,11 @@ def parse_retry_after(value: object) -> Optional[float]:
 
 
 class RateLimiter:
-    def __init__(self, default_rps: float = 10.0) -> None:
+    def __init__(self, default_rps: float = 10.0, *,
+                 spike_window: int = 20, spike_min_samples: int = 8,
+                 spike_ratio: float = 0.4, backoff_base_s: float = 10.0,
+                 backoff_max_s: float = 120.0,
+                 global_concurrency: Optional[int] = None) -> None:
         self.default_rps = default_rps
         self._rps: Dict[str, float] = {}
         self._next: Dict[str, float] = {}
@@ -89,6 +95,35 @@ class RateLimiter:
         # consecutive connect failures, open-until timestamp, and a
         # half-open single-probe flag.
         self._breaker: Dict[str, Dict] = {}
+        # Token buckets per host (infra upgrade): refill at the host
+        # RPS, capacity = one second of burst. Steady-state rate is
+        # identical to the old fixed-interval pacing; short bursts
+        # no longer pay full spacing for every request.
+        self._buckets: Dict[str, Dict] = {}
+        # 429/503 spike backoff per host (infra upgrade): a sliding
+        # window of recent response classes; when throttled responses
+        # (429/503) reach spike_ratio of the window, the host backs
+        # off exponentially (base * 2^level, capped) until the
+        # window lifts; a clean streak resets the level.
+        self._throttle: Dict[str, Dict] = {}
+        self._spike_window = max(4, spike_window)
+        self._spike_min_samples = max(1, spike_min_samples)
+        self._spike_ratio = spike_ratio
+        self._backoff_base_s = backoff_base_s
+        self._backoff_max_s = backoff_max_s
+        # Global in-flight request cap shared by ALL consumers of
+        # this limiter (fetch_many's old semaphore was per-call, so
+        # parallel callers each got their own full allowance).
+        # RECON_GLOBAL_CONCURRENCY, default 256; <= 0 disables.
+        if global_concurrency is None:
+            try:
+                global_concurrency = int(
+                    os.environ.get("RECON_GLOBAL_CONCURRENCY", "256"))
+            except ValueError:
+                global_concurrency = 256
+        self._global_concurrency = global_concurrency
+        self._global_sem: Optional[asyncio.Semaphore] = None
+        self._global_sem_loop = None
 
     # -- per-host WAF state -------------------------------------------
     def _waf_state(self, host: str) -> Dict:
@@ -223,21 +258,46 @@ class RateLimiter:
         return self._locks[host]
 
     async def wait(self, host: str) -> None:
-        rps = self._rps.get(host, self.default_rps)
         protected = self._waf.get(host, {}).get("active", False)
         async with self._lock(host):
             now = time.monotonic()
             nxt = self._next.get(host, 0)
             if now < nxt:
+                # Retry-After floor (note_429): honored before any
+                # bucket math, exactly as the old pacing honored it.
                 await asyncio.sleep(nxt - now)
                 now = time.monotonic()
-            gap = 1.0 / max(rps, 0.1)
+            # 429/503 spike backoff: hold until the window lifts.
+            th = self._throttle.get(host)
+            if th and now < th["until"]:
+                await asyncio.sleep(th["until"] - now)
+                now = time.monotonic()
             if protected:
-                # Jitter the spacing on protected hosts so the request
-                # pattern doesn't look robotic. Non-WAF hosts keep the
-                # exact same deterministic pacing as before.
+                # WAF graceful mode keeps the exact old behavior:
+                # jittered fixed-interval spacing at the floor rate.
+                gap = 1.0 / max(self._rps.get(host, self.default_rps), 0.1)
                 gap *= random.uniform(0.8, 1.4)
-            self._next[host] = now + gap
+                self._next[host] = now + gap
+                return
+            # Token bucket: refill at the host RPS, capacity = one
+            # second of burst (min 1). Same steady-state rate as the
+            # old fixed-interval pacing, without charging full
+            # spacing for the first requests of a burst.
+            rps = max(self._rps.get(host, self.default_rps), 0.1)
+            b = self._buckets.get(host)
+            if b is None:
+                b = self._buckets[host] = {"tokens": max(1.0, rps),
+                                           "updated": now}
+            cap = max(1.0, rps)
+            b["tokens"] = min(cap, b["tokens"] + (now - b["updated"]) * rps)
+            b["updated"] = now
+            if b["tokens"] >= 1.0:
+                b["tokens"] -= 1.0
+                return
+            deficit = (1.0 - b["tokens"]) / rps
+            await asyncio.sleep(deficit)
+            b["tokens"] = 0.0
+            b["updated"] = now + deficit
 
     def note_429(self, host: str, retry_after: object = None) -> None:
         """Honor Retry-After (delay-seconds or HTTP-date), cap 120s."""
@@ -245,6 +305,79 @@ class RateLimiter:
         if wait is None:
             wait = 5.0
         self._next[host] = time.monotonic() + min(max(wait, 0.0), 120.0)
+
+    # -- 429/503 spike backoff -----------------------------------------
+    def _throttle_state(self, host: str) -> Dict:
+        return self._throttle.setdefault(host, {
+            "window": deque(maxlen=self._spike_window),
+            "level": 0, "until": 0.0, "clean": 0,
+        })
+
+    def note_status(self, host: str, status_code: int) -> None:
+        """Fold one response status into the host's spike window.
+
+        Per-response Retry-After (note_429) handles a single 429;
+        this handles the BURST case: when 429/503 responses reach
+        spike_ratio of the recent window (with enough samples), the
+        host's backoff level rises and wait() holds requests until
+        the backoff lifts. Ten consecutive clean responses reset
+        the level."""
+        st = self._throttle_state(host)
+        if status_code not in (429, 503):
+            st["window"].append(False)
+            st["clean"] += 1
+            if st["clean"] >= 10 and st["level"] > 0:
+                st["level"] = 0
+                st["until"] = 0.0
+                st["clean"] = 0
+            return
+        st["window"].append(True)
+        st["clean"] = 0
+        win = st["window"]
+        if len(win) < self._spike_min_samples:
+            return
+        if sum(win) / len(win) < self._spike_ratio:
+            return
+        now = time.monotonic()
+        if now < st["until"]:
+            return  # already backing off; don't stack levels mid-window
+        st["level"] = min(st["level"] + 1, 5)
+        st["until"] = now + min(
+            self._backoff_max_s,
+            self._backoff_base_s * (2 ** (st["level"] - 1)))
+        win.clear()
+
+    def throttle_state(self, host: str) -> Dict:
+        st = self._throttle.get(host)
+        if not st:
+            return {"host": host, "level": 0, "backoff_active": False,
+                    "backoff_until": 0.0, "window": 0}
+        return {"host": host, "level": st["level"],
+                "backoff_active": st["until"] > time.monotonic(),
+                "backoff_until": st["until"], "window": len(st["window"])}
+
+    # -- global in-flight cap -------------------------------------------
+    def _global_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._global_sem is None or self._global_sem_loop is not loop:
+            self._global_sem = asyncio.Semaphore(self._global_concurrency)
+            self._global_sem_loop = loop
+        return self._global_sem
+
+    @contextlib.asynccontextmanager
+    async def global_slot(self):
+        """One slot of the shared global in-flight request cap.
+        Every fetch() through this limiter takes a slot, so the cap
+        holds across all concurrent consumers, not per call site."""
+        if self._global_concurrency <= 0:
+            yield
+            return
+        sem = self._global_semaphore()
+        await sem.acquire()
+        try:
+            yield
+        finally:
+            sem.release()
 
 
 async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
@@ -298,7 +431,15 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
                 request=httpx.Request(method, url))
         await limiter.wait(host)
         try:
-            resp = await client.request(method, url, **kwargs)
+            # Shared global in-flight cap (duck-typed like the
+            # breaker hooks: limiter stand-ins without it keep the
+            # exact pre-existing behavior).
+            _slot = getattr(limiter, "global_slot", None)
+            if _slot is not None:
+                async with _slot():
+                    resp = await client.request(method, url, **kwargs)
+            else:
+                resp = await client.request(method, url, **kwargs)
             if _b_success is not None:
                 _b_success(host)
             # Classify every response: vendor attribution + block kinds
@@ -309,6 +450,14 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
                 limiter.note_result(host, verdict)
             except Exception:
                 pass
+            # 429/503 spike accounting: bursts raise the host's
+            # adaptive backoff level (see RateLimiter.note_status).
+            _ns = getattr(limiter, "note_status", None)
+            if _ns is not None:
+                try:
+                    _ns(host, resp.status_code)
+                except Exception:
+                    pass
             if resp.status_code == 429 or (
                     resp.status_code == 503 and verdict is not None
                     and verdict.kind == "rate-limit"):

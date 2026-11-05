@@ -33,7 +33,8 @@ from app.models import Finding, Run, get_session, init_db  # noqa: E402
 KEY = {"X-Recon-Service-Key": "test-service-key-123"}
 EXPECTED_TOOLS = {"recon_health", "recon_start_scan", "recon_list_runs",
                   "recon_run_status", "recon_get_findings",
-                  "recon_get_graph", "recon_list_plugins"}
+                  "recon_get_graph", "recon_list_plugins",
+                  "recon_query_knowledge", "recon_get_delta"}
 
 
 @pytest.fixture(scope="module")

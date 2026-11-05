@@ -1,0 +1,23 @@
+Severity:    HIGH
+Pattern:     Reentrancy
+Description: The pattern finds that a state variable is changed
+             after an external call.
+Type:        Violation
+Contract:    VulnerableVault
+Line:        19
+Source:
+>     function withdraw(uint256 amount) public {
+>         (bool ok, ) = msg.sender.call{value: amount}("");
+>         require(ok, "send failed");
+
+
+Severity:    MEDIUM
+Pattern:     Locked Ether
+Description: The pattern finds that a contract can receive ether
+             but cannot send it.
+Type:        Compliant
+Contract:    VulnerableVault
+Line:        1
+Source:
+> contract VulnerableVault {
+

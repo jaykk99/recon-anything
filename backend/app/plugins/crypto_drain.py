@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc
+from . import chain_data
 
 MAX_ADDRESSES = 4       # addresses analyzed per run
 MAX_CHAIN_PAIRS = 4     # (chain, address) pairs analyzed per run
@@ -165,9 +166,62 @@ def _caller_controlled(expr: str, params: List[str]) -> bool:
     return any(e.startswith(p + "[") for p in params)
 
 
+_SENDER_RE = r"(?:msg\.sender|_msgSender\(\))"
+
 _CMP_RE = re.compile(
-    r"msg\.sender\s*(==|!=)\s*([A-Za-z0-9_.\(\)\[\]]+)|"
-    r"([A-Za-z0-9_.\(\)\[\]]+)\s*(==|!=)\s*msg\.sender")
+    _SENDER_RE + r"\s*(==|!=)\s*([A-Za-z0-9_.\(\)\[\]]+)|"
+    r"([A-Za-z0-9_.\(\)\[\]]+)\s*(==|!=)\s*" + _SENDER_RE)
+
+# Boolean mapping lookup on the caller used AS the condition:
+# require(isMinter[msg.sender]), if (!isMinter[msg.sender]) revert.
+# A comparison after the bracket (balances[msg.sender] >= amount)
+# is a bounds check, not an identity gate, and does not match.
+_MAP_GATE_RE = re.compile(
+    r"(?:require\s*\(\s*!?|if\s*\(\s*!)\s*[A-Za-z_][A-Za-z0-9_]*\s*"
+    r"\[\s*" + _SENDER_RE + r"\s*\]\s*[,\)]")
+
+# Role/permission predicate call on the caller inside a require/if:
+# require(isMinter(msg.sender)), require(hasRole(ROLE, msg.sender)).
+_ROLE_CALL_RE = re.compile(
+    r"(?:require|if)\s*\([^;{]*?\b(?:is|has|can)[A-Z][A-Za-z0-9_]*\s*"
+    r"\([^;{]*?" + _SENDER_RE)
+
+# Registry-indirect gate: a storage struct fetched by caller key,
+# whose fields a require() then checks (L2DAO bridges[msg.sender]
+# + require(b.cap > 0)).
+_REGISTRY_LOCAL_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*"
+    r"\[\s*" + _SENDER_RE + r"\s*\]")
+
+_SIG_KEYWORDS = {
+    "external", "public", "internal", "private", "view", "pure",
+    "payable", "virtual", "override", "returns", "memory",
+    "calldata", "storage", "indexed", "nonreentrant", "noreenter",
+    "initializer", "reinitializer",
+}
+_GATE_TOKEN_RE = re.compile(
+    r"role|owner|admin|auth|minter|pauser|operator|manager|"
+    r"controller|whitelist|allowlist|guard|keeper|vault", re.I)
+
+
+def _signature_gate_modifier(signature: str) -> bool:
+    """A custom modifier in the signature whose NAME carries gate
+    semantics (hasMinterRole, onlyVault, isOwner, ...). The stock
+    only*/_GATE_RE checks miss has*/is* role modifiers (OREO's
+    `mint(...) external hasMinterRole` was a 2026-11-02 FP)."""
+    sig = re.sub(r"returns\s*\([^)]*\)", "", signature)
+    i = sig.find("(")
+    if i < 0:
+        return False
+    tail = sig[_matching(sig, i) + 1:]
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail):
+        if tok.lower() in _SIG_KEYWORDS:
+            continue
+        if _GATE_TOKEN_RE.search(tok):
+            return True
+        if re.match(r"(?i)(only|has|is|require|check)[A-Z_]", tok):
+            return True
+    return False
 
 
 def _is_gated(signature: str, text: str) -> bool:
@@ -180,6 +234,8 @@ def _is_gated(signature: str, text: str) -> bool:
         return True  # custom only* gate modifier (onlyRouter, ...)
     if re.search(r"\b(auth|adminOnly|onlyBy)\b", signature):
         return True
+    if _signature_gate_modifier(signature):
+        return True  # hasMinterRole / isOwner style modifiers
     if re.search(r"_checkOwner|_checkRole|hasRole\s*\(", text):
         return True
     for m in _CMP_RE.finditer(text):
@@ -189,6 +245,14 @@ def _is_gated(signature: str, text: str) -> bool:
             return True  # require(owner == msg.sender) and friends
         if op == "!=" and other not in ("address(0)", "0"):
             return True  # if (msg.sender != owner) throw; and kin
+    if _MAP_GATE_RE.search(text):
+        return True  # require(isMinter[msg.sender]) and kin
+    if _ROLE_CALL_RE.search(text):
+        return True  # require(isMinter(msg.sender)) and kin
+    for m in _REGISTRY_LOCAL_RE.finditer(text):
+        var = re.escape(m.group(1))
+        if re.search(r"require\s*\([^;]*?\b" + var + r"\b", text):
+            return True  # storage struct by caller + require on it
     low = text.lower()
     if "ecrecover" in low or "verifysig" in low:
         return True  # signature-verified (validator quorum etc.)
@@ -449,9 +513,10 @@ class CryptoDrainPlugin(Plugin):
                 pairs, got_source = 0, False
                 findings.append(self._f(
                     "web3", "crypto_drain_failed",
-                    f"MEDIUM: {addr}: drain analysis failed - chain "
-                    "data could not be retrieved (explorers/RPC "
-                    "unreachable). No conclusion drawn.",
+                    f"MEDIUM: {addr}: DEGRADED - drain analysis failed, "
+                    "chain data could not be retrieved "
+                    "(explorers/RPC unreachable). No conclusion "
+                    "drawn.",
                     source="crypto drain analyzer",
                     confidence=60, passive=True,
                     evidence={"severity": "medium", "address": addr,
@@ -472,7 +537,8 @@ class CryptoDrainPlugin(Plugin):
         res = self._ok(
             findings,
             f"drain-analyzed {analyzed} contract address(es) "
-            f"({unverified} without verified source, skipped), "
+            f"({unverified} without verified source - bytecode-only, "
+            f"not cleared), "
             f"{drains} unprotected drain(s) found")
         res.duration_ms = dur
         return res
@@ -533,7 +599,7 @@ class CryptoDrainPlugin(Plugin):
             if pairs >= MAX_CHAIN_PAIRS:
                 break
             chain = cc.CHAINS[cid]
-            code = await cc.rpc_get_code(ctx, chain, addr)
+            code = await chain_data.get_code(ctx, chain, addr)
             if code is None:
                 continue  # this chain's RPCs failed; try the next
             rpc_all_failed = False
@@ -548,9 +614,9 @@ class CryptoDrainPlugin(Plugin):
         if pairs == 0 and rpc_all_failed:
             findings.append(self._f(
                 "web3", "crypto_drain_failed",
-                f"MEDIUM: {addr}: every public RPC endpoint failed, "
-                "so no chain data could be retrieved. No conclusion "
-                "drawn.",
+                f"MEDIUM: {addr}: DEGRADED - every public RPC "
+                "endpoint failed, so no chain data could be "
+                "retrieved. No conclusion drawn.",
                 source="public JSON-RPC eth_getCode",
                 confidence=60, passive=True,
                 evidence={"severity": "medium", "address": addr,
@@ -570,11 +636,11 @@ class CryptoDrainPlugin(Plugin):
             "address": addr, "chain": chain.id,
             "is_contract": True, "verified": False, "name": ""})
 
-        src = await cc.fetch_verified_source(ctx, chain, addr, key)
+        src = await chain_data.get_source(ctx, chain, addr, key)
 
         res = {"implementation": "", "via": "", "beacon": ""}
         try:
-            res = await cc.resolve_implementation(
+            res = await chain_data.get_implementation(
                 ctx, chain, addr, code_hex,
                 {"implementation": (src or {}).get("implementation", "")})
         except Exception:
@@ -590,8 +656,8 @@ class CryptoDrainPlugin(Plugin):
         impl_code = None
         impl_src = None
         try:
-            impl_code = await cc.rpc_get_code(ctx, chain, impl)
-            impl_src = await cc.fetch_verified_source(
+            impl_code = await chain_data.get_code(ctx, chain, impl)
+            impl_src = await chain_data.get_source(
                 ctx, chain, impl, key)
         except Exception:
             impl_code, impl_src = None, None
