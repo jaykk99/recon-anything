@@ -41,6 +41,55 @@ def _sleep():
 
 
 # ---------------------------------------------------------------------------
+# Soft-404 / catch-all baseline. SPA and Next.js/Vercel apps answer EVERY
+# unknown path with a 200 HTML shell, which makes naive "path returned 200"
+# probes fire on files that don't exist. We fingerprint the catch-all once
+# per target so path-existence probes can tell a real hit from the shell.
+# ---------------------------------------------------------------------------
+
+_CATCHALL_CACHE: Dict[str, Dict] = {}
+
+
+def _catchall_sig(base: str) -> Dict:
+    """Fetch a known-nonexistent path once per base and fingerprint it."""
+    if base in _CATCHALL_CACHE:
+        return _CATCHALL_CACHE[base]
+    sig = {"status": None, "ctype": "", "len": 0, "prefix": ""}
+    try:
+        with _client() as c:
+            r = c.get(urljoin(base, "/no-such-path-9a7f2c3d4e5f0b1a"))
+        sig = {
+            "status": r.status_code,
+            "ctype": r.headers.get("content-type", "").split(";")[0].strip().lower(),
+            "len": len(r.content),
+            "prefix": (r.text or "")[:300],
+        }
+    except Exception:
+        pass
+    _CATCHALL_CACHE[base] = sig
+    return sig
+
+
+def _is_soft_404(base: str, r) -> bool:
+    """True if r looks like the target's catch-all page (a 200 shell served
+    for nonexistent paths), not a genuinely distinct resource."""
+    sig = _catchall_sig(base)
+    if sig.get("status") is None or sig["status"] >= 400:
+        # The probe path 404'd honestly (or we couldn't baseline): a 200 is
+        # then a real resource, so never treat it as a soft-404.
+        return False
+    try:
+        ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
+        if r.status_code != sig["status"] or ctype != sig["ctype"]:
+            return False
+        rl, sl = len(r.content), max(sig["len"], 1)
+        close_len = abs(rl - sl) <= 0.10 * sl
+        return close_len or (r.text or "")[:300] == sig["prefix"]
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Individual safe probes. Each returns (works: bool, detail: str).
 # ---------------------------------------------------------------------------
 
@@ -57,14 +106,21 @@ def probe_git_head(base: str) -> Tuple[bool, str]:
 
 
 def probe_env(base: str) -> Tuple[bool, str]:
-    """HEAD /.env - check if env file is served (read-only, no body read)."""
+    """GET /.env - check if a real env file is served (read-only). A 200 only
+    counts if the body looks like KEY=VALUE env content, not an HTML shell."""
     try:
         with _client() as c:
-            r = c.head(urljoin(base, "/.env"))
-        if r.status_code == 200:
-            ct = r.headers.get("content-type", "")
-            return True, f"Live test: /.env returned 200 ({ct}). Secrets may be exposed."
-        return False, f"Live test: /.env returned {r.status_code}."
+            r = c.get(urljoin(base, "/.env"))
+        if r.status_code != 200:
+            return False, f"Live test: /.env returned {r.status_code}."
+        if _is_soft_404(base, r):
+            return False, "Live test: /.env returned 200 but it is the site's catch-all page, not an env file."
+        ct = r.headers.get("content-type", "").lower()
+        body = (r.text or "")[:2000]
+        looks_env = bool(re.search(r"(?m)^\s*[A-Z][A-Z0-9_]{2,}=", body)) and "<html" not in body.lower()
+        if looks_env:
+            return True, f"Live test: /.env returned 200 ({ct or 'no ctype'}) with env-style KEY=VALUE content. Secrets exposed."
+        return False, "Live test: /.env returned 200 but body is not env content (HTML/other). Not exposed."
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
 
@@ -78,13 +134,19 @@ def probe_sqli(base: str, param: str = "id") -> Tuple[bool, str]:
             probed = c.get(base, params={param: "1'"})
         err_sigs = ["sql syntax", "mysql", "sqlite", "postgresql", "ora-",
                     "odbc", "jdbc", "unclosed quotation"]
+        base_body = baseline.text.lower()
         body = probed.text.lower()
-        hit = any(s in body for s in err_sigs)
-        if probed.status_code == 500 or hit:
-            return True, (f"Live test: quote probe on ?{param}= returned "
-                          f"{probed.status_code} with SQL error text. Injection likely.")
-        return False, (f"Live test: quote probe returned {probed.status_code}, "
-                        "no SQL error. Not injectable via this probe.")
+        # Only count an error signature the quote INTRODUCED: if the same word
+        # is already in the baseline page, it's page content, not a SQL error.
+        new_hit = [s for s in err_sigs if s in body and s not in base_body]
+        status_regressed = probed.status_code >= 500 and baseline.status_code < 500
+        if new_hit or status_regressed:
+            why = (f"new SQL error text '{new_hit[0]}'" if new_hit
+                   else f"status {probed.status_code} vs baseline {baseline.status_code}")
+            return True, (f"Live test: quote probe on ?{param}= triggered {why} "
+                          "(differs from baseline). Injection likely.")
+        return False, (f"Live test: quote probe returned {probed.status_code}, no "
+                        "new SQL error vs baseline. Not injectable via this probe.")
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
 
@@ -135,9 +197,13 @@ def probe_wordpress(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/wp-json/wp/v2/"))
-        if r.status_code == 200:
-            return True, "Live test: /wp-json/wp/v2/ returned 200. WP version disclosable."
-        return False, f"Live test: /wp-json/ returned {r.status_code}."
+        ct = r.headers.get("content-type", "").lower()
+        body = (r.text or "")[:800]
+        is_wp_api = ("json" in ct or '"namespace"' in body or '"routes"' in body
+                     or '"wp/v2"' in body)
+        if r.status_code == 200 and is_wp_api and not _is_soft_404(base, r):
+            return True, "Live test: /wp-json/wp/v2/ returned a WordPress REST API document. Version disclosable."
+        return False, f"Live test: /wp-json/ returned {r.status_code} with no WP REST payload."
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
 
@@ -151,11 +217,16 @@ def probe_bola(base: str) -> Tuple[bool, str]:
             r1 = c.get(urljoin(base, patterns[0]))
             _sleep()
             r2 = c.get(urljoin(base, patterns[1]))
-        if r1.status_code == 200 and r2.status_code == 200 and len(r1.text) > 50 and len(r2.text) > 50:
-            return True, (f"Live test: both {patterns[0]} and {patterns[1]} returned 200 "
-                          "with content. Possible BOLA - verify with authorized session.")
-        return False, (f"Live test: IDs returned {r1.status_code}/{r2.status_code}. "
-                        "No clear BOLA signal.")
+        ct1 = r1.headers.get("content-type", "").lower()
+        both_200 = r1.status_code == 200 and r2.status_code == 200
+        looks_api = "json" in ct1 or r1.text.lstrip()[:1] in "[{"
+        distinct = r1.text != r2.text  # two different objects, not one shared shell
+        if (both_200 and looks_api and distinct and len(r1.text) > 50
+                and not _is_soft_404(base, r1) and not _is_soft_404(base, r2)):
+            return True, (f"Live test: {patterns[0]} and {patterns[1]} each returned a distinct "
+                          "JSON object unauthenticated. Possible BOLA - verify with an authorized session.")
+        return False, (f"Live test: IDs returned {r1.status_code}/{r2.status_code} "
+                        "(not distinct API objects). No clear BOLA signal.")
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
 
@@ -315,16 +386,25 @@ def probe_auth_bypass(base: str) -> Tuple[bool, str]:
     try:
         paths = ["/admin", "/admin/", "/administrator", "/wp-admin", "/dashboard", "/manager/html"]
         login_markers = ['type="password"', 'name="password"', "sign in", "log in", "/login"]
+        admin_markers = ["admin", "dashboard", "manager", "logout", "settings", "users"]
         with _client() as c:
+            try:
+                home = (c.get(base).text or "")[:600]
+            except Exception:
+                home = ""
             for p in paths:
                 r = c.get(urljoin(base + "/", p.lstrip("/")))
                 _sleep()
-                if r.status_code == 200:
-                    low = r.text.lower()
-                    if not any(m in low for m in login_markers):
-                        return True, (f"Live test: {p} returned 200 with no login form markers. "
-                                       "Admin area may be reachable without auth.")
-        return False, (f"Live test: checked {len(paths)} admin paths, all gated or missing. "
+                if r.status_code != 200 or _is_soft_404(base, r):
+                    continue
+                low = r.text.lower()
+                gated = any(m in low for m in login_markers)
+                is_home_shell = (r.text or "")[:600] == home  # SPA served the same page
+                looks_admin = any(m in low for m in admin_markers)
+                if not gated and not is_home_shell and looks_admin:
+                    return True, (f"Live test: {p} returned a distinct admin page (200, no login markers). "
+                                   "Admin area may be reachable without auth - verify manually.")
+        return False, (f"Live test: checked {len(paths)} admin paths, all gated, missing, or just the app shell. "
                         "No bypass found.")
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
@@ -437,10 +517,14 @@ def probe_svn(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/.svn/entries"))
-        if r.status_code == 200 and ("dir" in r.text[:200].lower() or "svn" in r.text[:200].lower()):
-            return True, (f"Live test: /.svn/entries returned 200. SVN metadata exposed. "
+        body = (r.text or "")[:200]
+        # Real .svn/entries starts with a numeric format-version line; reject
+        # the HTML catch-all that merely happens to contain "dir" or "svn".
+        is_entries = bool(re.match(r"^\s*\d+\s", body)) and "<html" not in body.lower()
+        if r.status_code == 200 and is_entries and not _is_soft_404(base, r):
+            return True, (f"Live test: /.svn/entries returned a Subversion entries file. SVN metadata exposed. "
                            f"Proved with: curl -s {base}/.svn/entries | head -5")
-        return False, f"Live test: /.svn/entries returned {r.status_code}."
+        return False, f"Live test: /.svn/entries returned {r.status_code} (no SVN entries payload)."
     except Exception as e:
         return False, f"Live test failed: {str(e)[:100]}"
 
@@ -467,11 +551,19 @@ def probe_backup_files(base: str) -> Tuple[bool, str]:
             for n in names:
                 r = c.get(urljoin(base, n))
                 _sleep()
-                if r.status_code == 200 and len(r.content) > 100:
+                if r.status_code == 200 and len(r.content) > 100 and not _is_soft_404(base, r):
+                    ct = r.headers.get("content-type", "").lower()
                     is_zip = r.content[:2] == b"PK"
-                    is_sql = r.text[:200].lower().lstrip().startswith(("--", "insert", "create"))
-                    if is_zip or is_sql or "backup" in n:
-                        kind = "zip archive" if is_zip else ("SQL dump" if is_sql else "backup file")
+                    is_gzip = r.content[:2] == b"\x1f\x8b"
+                    is_sql = r.text[:200].lower().lstrip().startswith(
+                        ("-- ", "insert ", "create table", "drop table", "/*"))
+                    is_archive_ct = (any(x in ct for x in ("zip", "octet-stream", "x-sql",
+                                     "gzip", "x-tar", "download")) and "html" not in ct)
+                    # Only a real binary/dump signature counts - a 200 HTML page
+                    # whose name contains "backup" is not a downloadable backup.
+                    if is_zip or is_gzip or is_sql or is_archive_ct:
+                        kind = ("zip archive" if is_zip else "gzip archive" if is_gzip
+                                else "SQL dump" if is_sql else "binary archive")
                         return True, (f"Live test: {n} returned 200 ({kind}, "
                                        f"{len(r.content)} bytes). Downloadable backup. "
                                        f"Proved with: curl -sI {base}{n}")
@@ -485,7 +577,7 @@ def probe_phpinfo(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/phpinfo.php"))
-        if r.status_code == 200 and ("phpinfo()" in r.text or "PHP Version" in r.text):
+        if r.status_code == 200 and not _is_soft_404(base, r) and ("phpinfo()" in r.text or "PHP Version" in r.text):
             m = re.search(r"PHP Version ([\d.]+)", r.text)
             ver = m.group(1) if m else "unknown"
             return True, (f"Live test: /phpinfo.php returned 200 (PHP {ver}). "
@@ -501,7 +593,7 @@ def probe_server_status(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/server-status"))
-        if r.status_code == 200 and "Apache Status" in r.text:
+        if r.status_code == 200 and not _is_soft_404(base, r) and "Apache Status" in r.text:
             return True, (f"Live test: /server-status returned 200 with 'Apache Status'. "
                            f"Internal worker/request details visible. "
                            f"Proved with: curl -s {base}/server-status | head -10")
@@ -525,7 +617,7 @@ def probe_admin_panels(base: str) -> Tuple[bool, str]:
                 r = c.get(urljoin(base, path))
                 _sleep()
                 low = r.text.lower()
-                if r.status_code == 200 and (
+                if r.status_code == 200 and not _is_soft_404(base, r) and (
                         "phpmyadmin" in low or "adminer" in low or
                         'type="password"' in low or "wp-login" in low):
                     found.append(f"{label} ({path})")
@@ -603,7 +695,7 @@ def probe_debug_pprof(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/debug/pprof/"))
-        if r.status_code == 200 and ("pprof" in r.text.lower() or "profiles:" in r.text):
+        if r.status_code == 200 and not _is_soft_404(base, r) and ("pprof" in r.text.lower() or "profiles:" in r.text):
             return True, (f"Live test: /debug/pprof/ returned 200. Go runtime profiles "
                            f"exposed (goroutine stacks, heap). "
                            f"Proved with: curl -s {base}/debug/pprof/ | head -10")
@@ -617,7 +709,7 @@ def probe_actuator(base: str) -> Tuple[bool, str]:
     try:
         with _client() as c:
             r = c.get(urljoin(base, "/actuator/env"))
-        if r.status_code == 200 and ("propertySources" in r.text or "profiles" in r.text):
+        if r.status_code == 200 and not _is_soft_404(base, r) and ("propertySources" in r.text or "profiles" in r.text):
             return True, (f"Live test: /actuator/env returned 200 with propertySources. "
                            f"Spring environment (often secrets) disclosed. "
                            f"Proved with: curl -s {base}/actuator/env | head -c 300")
