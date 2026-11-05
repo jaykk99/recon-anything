@@ -344,18 +344,18 @@ per-plugin verdicts). Benchmark numbers are from the change's own
 before/after runs; the merged code and its test suites were
 re-verified on master.
 
-### Shipped plugins (841)
+### Shipped plugins (842)
 
 The registry auto-discovers every `Plugin` subclass in
 `backend/app/plugins/` - drop in a file, no central list to edit.
 The count is the live registry size, measured by loading the registry
-(`discover()` in `backend/app/plugins/registry.py`): **841 plugins**
-across 262 plugin modules on current master. The health gate
+(`discover()` in `backend/app/plugins/registry.py`): **842 plugins**
+across 263 plugin modules on current master. The health gate
 (`backend/tests/test_plugin_health.py`) enforces unique ids, valid
 groups, and metadata on all of them. Below are the core web plugins;
 the contract-analysis plugins are listed in the Smart contract
-analysis section above. Every plugin, all 841 of them, is listed
-in [All plugins](#all-plugins-841) below.
+analysis section above. Every plugin, all 842 of them, is listed
+in [All plugins](#all-plugins-842) below.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -376,7 +376,7 @@ With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
 
-## All plugins (841)
+## All plugins (842)
 
 Every plugin registered in the live registry, generated from
 `discover()` in `backend/app/plugins/registry.py` on current
@@ -384,7 +384,7 @@ master. Grouped by the plugin's `group` value (the same grouping
 the UI uses), alphabetical by plugin id within each group.
 No sampling: if it is registered, it is listed here.
 
-Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 458 · Financial 43 · Graph 8 · **Total 841**.
+Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 459 · Financial 43 · Graph 8 · **Total 842**.
 
 ### Network (33)
 
@@ -748,7 +748,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | typosquat | Typosquat Domains | typosquat | Generate typosquat variants and report which ones actually resolve (phishing risk / defensive holds). |
 | watchdog | Change Watchdog | watchdog | Continuous monitoring: new subdomains, new CVEs, surface drift. |
 
-### Web3 (458)
+### Web3 (459)
 
 | id | label | module | description |
 |----|-------|--------|-------------|
@@ -1201,6 +1201,7 @@ Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infr
 | twap_observe_window_short | Twap Observe Window Short | deep_audit6 | Deep-audit detector (batch 6) for twap observe window short: TWAP observation window too short: a Uniswap V3 observe() secondsAgo window (or the PERIOD / WINDOW constant feeding an observe / consult consumer) maxes below 1800 seconds. A sub-30-minute TWAP can be moved within a handful of blocks by a funded attacker and held long enough for the victim to read it, so the 'manipulation-resistant' price is manipulable at feasible capital. Static verified-source analysis, fast lane, detection only. |
 | two_step_ownership_missing | Two Step Ownership Missing | deep_audit5 | Deep-audit detector (batch 5) for two step ownership missing: Single-step ownership transfer: transferOwnership assigns the owner state variable directly in its body, and the contract has no pendingOwner-style record and no acceptOwnership function. One typo'd or uncontrolled address in a single call irreversibly hands over - or bricks - control of the contract. Static verified-source analysis, fast lane, detection only. |
 | unchecked_math_user_input | Unchecked Math User Input | deep_audit6 | Deep-audit detector (batch 6) for unchecked math user input: Unchecked arithmetic on caller-supplied input: an unchecked{} block performs arithmetic on an operand that is a parameter of the enclosing function and the result is assigned onward (a state variable, or a local that is stored, returned or passed on). Since Solidity 0.8 the compiler's overflow checks are the only thing standing between a crafted input and a wrapped balance / fee / share figure; inside unchecked{} that protection is explicitly switched off, and a caller-identity gate on the function does not bound the arithmetic for the callers who ARE allowed through (or for a compromised / relayer path). Static verified-source analysis, fast lane, detection only. |
+| unified_keyword_search | Unified Keyword Search | unified_keyword_search | One search, multiple keywords, all three ReconAnything lanes at once: the verified-source code index (FTS5), the continuous scanner's batches and queues, and the transition watcher's watchlist, snapshots and events. AND across keywords by default (OR mode and exact phrases supported), chain and minimum-value filters, one deduped result set tagged by lane with matched code lines. A match is a lead for the live-probe validator, never a verdict. Solana is not in the source index (no keyless verified-source corpus); it can still surface from the scanner and watch lanes. |
 | uups_authorize_upgrade_missing | Uups Authorize Upgrade Missing | deep_audit7 | Deep-audit detector (batch 7) for uups authorize upgrade missing: UUPS upgrade authorization missing or empty: in a UUPSUpgradeable context the _authorizeUpgrade override is defined with an EMPTY body (anyone who can reach upgradeTo upgrades the implementation), or no _authorizeUpgrade definition appears anywhere in the source at all. Static verified-source analysis, fast lane, detection only. |
 | v4_hook_shared_delta_take_pair | V4 Hook Shared Delta Take Pair | deep_audit3 | Deep-audit detector (batch 3) for v4 hook shared delta take pair: Uniswap v4 hook shared-delta take: the hook takes pool credit via PositionManager modifyLiquiditiesWithoutUnlock / take (TAKE_PAIR) without opening its own unlock and without asserting currencyDelta == 0 / delta isolation. The hook spends from the PoolManager's shared ledger without proving the delta it takes is its own - the GoldPesa GPXHooks shape. Opening the hook's own unlock, or asserting delta isolation before taking, is the protected shape. Static verified-source analysis, fast lane, detection only. |
 | vault_share_inflation | Vault Share Inflation | deep_audit | Deep-audit detector for vault share inflation: ERC-4626 share inflation (first-depositor / donation attack): totalAssets() is the vault's raw asset balance, so anyone can move it with a direct transfer, and the share conversion divides by that balance with no virtual-share offset, no dead-share bootstrap mint and no minimum-shares guard. The first depositor mints 1 share, donates a large sum directly to the vault, and later depositors are minted 0 (or dust) shares for real money, which the attacker then redeems against their deposits. Static verified-source analysis, fast lane, detection only. |
