@@ -102,7 +102,7 @@ def test_new_plugins_registered():
     reg = discover()
     for pid in NEW_IDS:
         assert pid in reg, pid
-    assert len(reg) == 858  # 853 master + 5 sec_* (secretpack, PR #44)
+    assert len(reg) == 859  # 858 master + 1 idorleak (PR #60)
 
 
 # ----------------------------------------------------------------------

@@ -89,7 +89,7 @@ def test_exactly_5_new_detectors_registered():
     sec = sorted(k for k in discover() if k.startswith("sec_"))
     assert sec == sorted(SEC_IDS)
     assert len(sec) == 5
-    assert len(discover()) == 858  # re-baselined at merge: 853 master (847 + 6 beyond-recon) + 5 sec_*
+    assert len(discover()) == 859  # re-baselined at merge: 858 master + 1 idorleak (PR #60)
 
 
 def test_js_hardcoded_fires():
