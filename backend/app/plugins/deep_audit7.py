@@ -412,7 +412,7 @@ _BINDING_RES = (
         r"srcChain|sourceChain|originChain|fromChain", re.I)),
     ("origin sender", re.compile(
         r"originSender|srcSender|messageSender|originator|"
-        r"\bsender\b", re.I)),
+        r"\bsender\b|\bsigner\b|\bfrom\b", re.I)),
     ("nonce / message id", re.compile(
         r"nonce|sequence|messageId|msgId", re.I)),
 )
@@ -436,6 +436,14 @@ def _digest_inputs(text: str) -> List[str]:
     return out
 
 
+_EIP712_WRAP_RE = re.compile(
+    r"\\x19\\x01|\x19\x01|domainSeparator|DOMAIN_SEPARATOR",
+    re.I)
+_BRIDGE_VOCAB_RE = re.compile(
+    r"bridge|message|relay|deliver|process|crosschain|"
+    r"srcChain|destinationChain|dstChain", re.I)
+
+
 def _analyze_digest_no_dest(src: str, spec: DetectorSpec,
                             compiler: str = "",
                             contract_name: str = ""
@@ -445,6 +453,21 @@ def _analyze_digest_no_dest(src: str, spec: DetectorSpec,
     for fn in fns:
         text = fn["text"]
         if "keccak256" not in text:
+            continue
+        # EIP-712 composition: the chain binding of a typed
+        # data digest lives in its domain separator, which
+        # the separator lane (eip712_separator_unbound)
+        # owns. A permit / typed-data function is not a
+        # bridge digest.
+        if _EIP712_WRAP_RE.search(text):
+            continue
+        # Bridge scope: this detector prices cross-chain
+        # replay. Same-chain signed actions (permits,
+        # forwarder requests, admin signatures) carry no
+        # destination-chain concept at all; only engage
+        # where bridge / message vocabulary or an explicit
+        # source-chain term shows cross-chain intent.
+        if not _BRIDGE_VOCAB_RE.search(fn["name"] + " " + text):
             continue
         inputs = _digest_inputs(text)
         if not inputs:
@@ -478,7 +501,31 @@ def _analyze_digest_no_dest(src: str, spec: DetectorSpec,
             f"or chain-id term.")
         item = _hit(spec, fn["name"], cc._snip(text), detail,
                     gate)
-        out.append(_finish_recipient(spec, item, text))
+        item = _finish_recipient(spec, item, text)
+        if "source chain" in bindings and re.search(
+                r"require\s*\([^)]*(srcChain|sourceChain|"
+                r"originChain|chainid)[^)]*==", text, re.I):
+            # The route is pinned at the other end: the
+            # digest binds the source chain and the function
+            # hard-requires that exact source, so the message
+            # can only ever travel source -> this deployment.
+            # The residual is a twin deployment elsewhere -
+            # trigger-only, not a candidate.
+            item["report_class"] = "trigger_only"
+            item["severity"] = "low"
+            item["detail"] += (
+                " Route analysis: the digest binds the "
+                "source chain and the function hard-requires "
+                "that source, pinning the route to this "
+                "deployment; the residual is a twin "
+                "deployment on another destination chain - "
+                "classified TRIGGER-ONLY (route pinned).")
+            item["gate_analysis"] = (
+                "source chain bound in the digest and "
+                "hard-required in the function; destination "
+                "is this deployment by construction, "
+                "reported trigger-only")
+        out.append(item)
     return out
 
 
@@ -626,6 +673,11 @@ _VERIFY_OR_EXEC_RE = re.compile(
     re.I)
 
 
+_SIG_AUTH_RE = re.compile(
+    r"(ecrecover|recoverSigner|ECDSA\.recover|"
+    r"SignatureChecker)")
+
+
 def _analyze_receiver_sender(src: str, spec: DetectorSpec,
                              compiler: str = "",
                              contract_name: str = ""
@@ -641,6 +693,18 @@ def _analyze_receiver_sender(src: str, spec: DetectorSpec,
         if _IDENTITY_GATE_RE.search(text) or \
                 _caller_gated(fn, scope):
             continue  # msg.sender is checked somewhere
+        # Signature-authenticated handlers: when execution
+        # requires a signature recovered to an authorized
+        # signer (or a validator quorum), the signature IS
+        # the identity gate and msg.sender is intentionally
+        # free - anyone may relay, only authorized messages
+        # execute. A bare proof verify does NOT qualify:
+        # proofs are bearer instruments, so the endpoint
+        # check still matters there.
+        if _SIG_AUTH_RE.search(text) and re.search(
+                r"require\s*\([^)]*(\bsigner\b|\brecovered)",
+                text):
+            continue
         detail = spec.detail + (
             f" Observed: '{fn['name']}' verifies or executes "
             f"a cross-chain message and no msg.sender "

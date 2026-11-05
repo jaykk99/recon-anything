@@ -571,6 +571,38 @@ _VERIFYISH_RE = re.compile(
     re.I)
 
 
+_CHAIN_TERM_RE = re.compile(
+    r"block\.chainid|getChainId\s*\(|chainid\s*\(\s*\)|"
+    r"\bchainId\w*\b|\b\w*[Cc]hainID\w*\b")
+_CHAIN_READ_RE = re.compile(
+    r"block\.chainid|chainid\s*\(\s*\)", re.I)
+
+
+def _chain_bound_at_deploy(text_all: str, fns) -> bool:
+    """True when a separator construction anywhere in scope
+    carries a chain term (block.chainid, getChainId(), or a
+    chainId value fed into the EIP712Domain encoding). Such a
+    separator is bound to the deployment chain: cross-chain
+    replay is impossible and the only residual is same-chain
+    fork replay, an accepted ecosystem-wide design (Dai, Uni,
+    UniswapV2Pair all ship it). The chain term may sit in a
+    helper (_chainID() / _getChainID()) called from the
+    separator builder or constructor."""
+    helpers = {fn["name"] for fn in fns
+               if fn["name"] != "constructor"
+               and _CHAIN_READ_RE.search(fn["text"])}
+    for fn in fns:
+        t = fn["text"]
+        if not (_SEP_USE_RE.search(t) or "EIP712Domain" in t):
+            continue
+        if _CHAIN_TERM_RE.search(t):
+            return True
+        if any(re.search(r"\b" + re.escape(h) + r"\s*\(", t)
+               for h in helpers):
+            return True
+    return False
+
+
 def _analyze_separator(src: str, spec: DetectorSpec,
                        compiler: str = "",
                        contract_name: str = ""
@@ -618,6 +650,7 @@ def _analyze_separator(src: str, spec: DetectorSpec,
             inline_unbound = True
     if not (cached or constructed_unbound or inline_unbound):
         return []
+    deploy_bound = _chain_bound_at_deploy(text_all, fns)
     out: List[Dict[str, Any]] = []
     for fn in fns:
         if fn["name"] == "constructor":
@@ -637,7 +670,28 @@ def _analyze_separator(src: str, spec: DetectorSpec,
             "no function recomputes the separator from "
             "block.chainid at call time; the separator the "
             "verify path uses is fixed / chain-unbound")
-        out.append(_finish_recipient(spec, item, fn["text"]))
+        item = _finish_recipient(spec, item, fn["text"])
+        if deploy_bound:
+            # Deployment-chain-bound separator: not a
+            # stranger-actionable candidate. Report the
+            # fork-replay residual as trigger-only, the same
+            # downgrade the receive rule applies to
+            # non-receivable findings.
+            item["report_class"] = "trigger_only"
+            item["severity"] = "low"
+            item["detail"] += (
+                " Separator analysis: the separator "
+                "construction carries a chain term, so it "
+                "is bound to the deployment chain; the "
+                "residual is same-chain fork replay only - "
+                "classified TRIGGER-ONLY (deployment-bound "
+                "separator).")
+            item["gate_analysis"] = (
+                "separator is bound to the deployment chain "
+                "(chain term in its construction); only the "
+                "fork-replay residual remains, reported "
+                "trigger-only")
+        out.append(item)
     return out
 
 
@@ -914,7 +968,55 @@ def _nonce_written(var: str, text_all: str) -> bool:
         re.search(r"\b" + v + r"\s*(\[[^\]]*\])?\s*"
                   r"(\+\+|--|\+=|-=|=[^=])", text_all)
         or re.search(r"\+\+\s*" + v + r"\b", text_all)
-        or re.search(r"\bdelete\s+" + v + r"\b", text_all))
+        or re.search(r"\bdelete\s+" + v + r"\b", text_all)
+        # OpenZeppelin Counters consumption:
+        # _nonces[owner].increment() / .decrement() / .reset()
+        or re.search(r"\b" + v + r"\s*(\[[^\]]*\])?\s*\.\s*"
+                     r"(increment|decrement|reset)\s*\(",
+                     text_all))
+
+
+_NONCE_CONSUMER_RE = re.compile(
+    r"\b_?use(?:Checked)?Nonce\s*\(|\bconsumeNonce\s*\(")
+
+
+_STRING_LIT_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+
+
+def _nonce_state_idents(fn_text: str, text_all: str,
+                        params: List[str]) -> List[str]:
+    """Nonce STATE identifiers read by a verify function.
+    Excludes function parameters (an input named `nonce` is
+    not state), helper-call names (a call like
+    `_useNonce(owner)` is a consumption, not a read), idents
+    that only occur inside string literals (the EIP-712
+    typehash string names every field) and struct members
+    (approval.batchNonce is payload data; the state is the
+    usedNonce mapping beside it). An identifier counts as
+    state when it is read through an index (nonces[owner])
+    or declared as a state variable."""
+    bare = _STRING_LIT_RE.sub('""', fn_text)
+    bare_all = _STRING_LIT_RE.sub('""', text_all)
+    out = []
+    for v in sorted(set(_NONCE_IDENT_RE.findall(bare))):
+        if v in params:
+            continue
+        if re.search(r"\b" + re.escape(v) + r"\s*\(", bare):
+            continue  # call target, not a state read
+        occ = [m.start() for m in re.finditer(
+            r"\b" + re.escape(v) + r"\b", bare)]
+        if occ and all(bare[i - 1] == "." for i in occ if i > 0):
+            continue  # struct member access only
+        if re.search(r"\b" + re.escape(v) + r"\s*\[", bare):
+            out.append(v)
+            continue
+        if re.search(
+                r"(?:mapping\s*\([^)]*\)|uint\w+|bytes32|address)"
+                r"\s+(?:public\s+|private\s+|internal\s+|"
+                r"constant\s+|immutable\s+)*" + re.escape(v) +
+                r"\b", bare_all):
+            out.append(v)
+    return out
 
 
 def _analyze_nonce_unconsumed(src: str, spec: DetectorSpec,
@@ -924,11 +1026,15 @@ def _analyze_nonce_unconsumed(src: str, spec: DetectorSpec,
     scope, fns = _scope_fns(src, contract_name)
     text_all = scope.scoped_text
     out: List[Dict[str, Any]] = []
+    helper_consumes = bool(_NONCE_CONSUMER_RE.search(text_all))
     for fn in fns:
         text = fn["text"]
         if not _RECOVER_RE.search(text):
             continue
-        read_vars = sorted(set(_NONCE_IDENT_RE.findall(text)))
+        params = _param_names(fn)
+        read_vars = _nonce_state_idents(text, text_all, params)
+        if helper_consumes:
+            continue  # a nonce-consuming helper is wired in
         unconsumed = [v for v in read_vars
                       if not _nonce_written(v, text_all)]
         if not unconsumed:
