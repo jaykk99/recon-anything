@@ -9,10 +9,12 @@ for the bus-driven plugins and the one real-registry execution
 path (headers). Per plugin: fires on the VULN fixture, silent on
 the CLEAN fixture, no crash on malformed input.
 
-Base: origin/master bed5824, discover() 847 -> 857 with this tier.
-PR #118's lifecycle_orchestrator is NOT on master; these plugins
-are built distinct from it (execution / config / sharding /
-tracking, not bus scoring + live probing) and never dispatch it.
+Base: built against origin/master bed5824, discover() 847 -> 857
+with this tier; then merged onto master dee4763 after PR #118
+landed (master 853, incl. lifecycle_orchestrator), for a final
+registry of 863. These plugins are built distinct from
+lifecycle_orchestrator (execution / config / sharding / tracking,
+not bus scoring + live probing) and never dispatch it.
 """
 import asyncio
 import os
@@ -153,9 +155,9 @@ def keys_of(res):
 # Registry
 # ---------------------------------------------------------------------------
 
-def test_all_ten_registered_and_count_857():
+def test_all_ten_registered_and_count_863():
     reg = discover()
-    assert len(reg) == 857, f"registry size {len(reg)}, expected 857"
+    assert len(reg) == 863, f"registry size {len(reg)}, expected 863"
     for pid in IDS:
         assert pid in reg, f"{pid} missing from registry"
 
