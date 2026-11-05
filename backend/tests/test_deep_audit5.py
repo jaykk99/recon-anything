@@ -131,3 +131,39 @@ def test_no_cross_talk_between_detectors():
             assert hits == [], (
                 f"{other}: fired on {pid}'s extra vulnerable "
                 f"fixture: {hits}")
+
+
+def test_separator_deploy_bound_is_trigger_only():
+    # FP elimination (2026-11-05): a separator whose
+    # construction carries a chain term is bound to the
+    # deployment chain (Dai / Uni / UniswapV2Pair shape) -
+    # it must fire, but never as a candidate.
+    for pid, src in fx.DEPLOY_BOUND.items():
+        hits = hits_for(src, pid)
+        assert hits, f"{pid}: deploy-bound shape went silent"
+        for h in hits:
+            assert h["report_class"] == "trigger_only"
+            assert h["severity"] == "low"
+
+
+def test_nonce_helper_consumption_stays_silent():
+    # OZ ERC20Permit shape: the verify function reads the
+    # nonce through _useNonce(); the state write lives in
+    # the helper. Must not fire signature_nonce_unconsumed.
+    src = """
+contract OzPermitShape {
+    mapping(address => uint256) private _nonces;
+    function _useNonce(address owner) internal returns (uint256) {
+        return _nonces[owner]++;
+    }
+    function nonces(address owner) public view returns (uint256) {
+        return _nonces[owner];
+    }
+    function permit(address owner, uint8 v, bytes32 r, bytes32 s) public {
+        bytes32 digest = keccak256(abi.encodePacked(owner, _useNonce(owner)));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == owner, "bad signature");
+    }
+}
+"""
+    assert hits_for(src, "signature_nonce_unconsumed") == []

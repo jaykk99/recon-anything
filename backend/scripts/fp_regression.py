@@ -96,6 +96,71 @@ def candidate_grade(findings, function, kind, logic_kind=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Clean-corpus section (FP elimination, 2026-11-05)
+#
+# Synthetic contracts under tests/fixtures/fp_clean/, each one
+# isolating a false-positive shape that used to produce
+# candidate-grade findings on clean code (ERC4626 mint,
+# AMM pair mint, registry-OR-gated mint, governance
+# delegation + schedule mint, Dai-schema PERMIT_TYPEHASH,
+# MasterChef record-debit withdraw, wrapper burn unwrap,
+# proof/signature-backed claims, comptroller-gated mint,
+# ERC-1271 release, fee-collecting minter application).
+# Every source analyzer must produce ZERO candidate-grade
+# findings (severity high/critical with
+# report_class="candidate") on every fixture.
+# ---------------------------------------------------------------------------
+
+def _clean_corpus_stats() -> dict:
+    from app.plugins import recipient_first
+    deep_mods = []
+    for i in range(1, 11):
+        mod_name = "deep_audit" if i == 1 else f"deep_audit{i}"
+        fn_name = ("analyze_deep_source" if i == 1
+                   else f"analyze_deep{i}_source")
+        mod = __import__(f"app.plugins.{mod_name}",
+                         fromlist=[fn_name])
+        deep_mods.append((mod_name, getattr(mod, fn_name),
+                          mod.SPECS))
+    stats = {"PASS": 0, "FAIL": 0}
+    fix_dir = (pathlib.Path(__file__).resolve().parent.parent
+               / "tests" / "fixtures" / "fp_clean")
+    manifest = json.loads((fix_dir / "manifest.json")
+                          .read_text())
+    for entry in manifest:
+        src = (fix_dir / entry["file"]).read_text()
+        cname = entry["contract_name"]
+        bad = []
+
+        def _scan(detector, findings):
+            for f in findings:
+                if str(f.get("severity", "")).lower() in \
+                        ("high", "critical") and \
+                        f.get("report_class") == "candidate":
+                    bad.append(
+                        f"{detector}:"
+                        f"{f.get('kind') or f.get('id') or ''}"
+                        f":{f.get('function', '')}")
+
+        _scan("contract_logic",
+              analyze_logic_source(src, "", cname))
+        for mod_name, fn, specs in deep_mods:
+            for spec in specs:
+                _scan(mod_name,
+                      fn(src, spec, "", cname))
+        for spec_id in recipient_first.ANALYZERS:
+            _scan(spec_id,
+                  recipient_first.analyze_recipient_source(
+                      src, spec_id, "", cname))
+        ok = not bad
+        stats["PASS" if ok else "FAIL"] += 1
+        print(f"{'PASS' if ok else 'FAIL'} clean-corpus "
+              f"{entry['file']} ({cname})"
+              + (f" -> {bad}" if bad else ""))
+    return stats
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workspace",
@@ -145,6 +210,9 @@ def main() -> int:
             print(f"{'PASS' if ok else 'FAIL'} {r['verdict']:15s} "
                   f"{chain} {r['symbol'] or addr[:10]} "
                   f"{r['function']} {r['finding']} (target={cname})")
+    clean_stats = _clean_corpus_stats()
+    stats["PASS"] += clean_stats["PASS"]
+    stats["FAIL"] += clean_stats["FAIL"]
     print(f"\ncontract_logic rows scored: "
           f"{stats['PASS'] + stats['FAIL']} "
           f"(PASS {stats['PASS']}, FAIL {stats['FAIL']})")
