@@ -529,6 +529,20 @@ def test_dirsearch_fires_on_fixture_backups_by_name_only():
     assert any("backup" in f.value or ".env" in f.value for f in hits)
 
 
+def test_dirsearch_spa_fallback_fingerprint_filtered():
+    plugin = dirsearch_mod.DirsearchPlugin()
+    # SPA/catch-all baseline: random name -> 200, text/html, no size
+    baseline = {"status": 200, "length": -1, "ctype": "text/html"}
+    assert not plugin._is_hit(200, -1, baseline, "text/html")
+    # a real archive has a different type fingerprint -> hit
+    assert plugin._is_hit(200, -1, baseline, "application/zip")
+    assert plugin._is_hit(200, 4096, baseline, "text/html")
+    # classic soft-404 with matching size -> filtered
+    sized = {"status": 200, "length": 512, "ctype": "text/html"}
+    assert not plugin._is_hit(200, 512, sized, "text/html")
+    assert not plugin._is_hit(404, -1, baseline, "text/html")
+
+
 def test_dirsearch_silent_on_all_404_site():
     res = _run(dirsearch_mod.DirsearchPlugin().run(
         url_target(), _notfound_ctx()))

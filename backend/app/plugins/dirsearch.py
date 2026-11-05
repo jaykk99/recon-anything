@@ -79,23 +79,33 @@ class DirsearchPlugin(Plugin):
                 ctx.http, ctx.limiter, "HEAD", probe, timeout=8,
                 follow_redirects=False, max_retries=0), 10)
             if r is None:
-                return {"status": 0, "length": -1}
+                return {"status": 0, "length": -1, "ctype": ""}
             try:
                 length = int(r.headers.get("content-length", -1))
             except Exception:
                 length = -1
-            return {"status": r.status_code, "length": length}
+            return {"status": r.status_code, "length": length,
+                    "ctype": (r.headers.get("content-type", "")
+                              .split(";")[0].strip().lower())}
         except Exception:
-            return {"status": 0, "length": -1}
+            return {"status": 0, "length": -1, "ctype": ""}
 
-    def _is_hit(self, status: int, length: int, baseline: Dict) -> bool:
+    def _is_hit(self, status: int, length: int, baseline: Dict,
+                ctype: str = "") -> bool:
         if status not in HIT_STATUSES:
             return False
-        # wildcard / soft-404: same status AND same size as the
-        # random-name baseline means the server answers everything.
-        if status == baseline.get("status") and length >= 0 \
-                and length == baseline.get("length"):
-            return False
+        # wildcard / soft-404 fingerprint: same status AND (same size
+        # OR same content-type with no size to compare) as the
+        # random-name baseline means the server answers everything
+        # the same way (SPA fallback / catch-all) - not a real file.
+        # Size alone is not enough: SPA fallbacks serve 200 text/html
+        # with no Content-Length for every path.
+        if status == baseline.get("status"):
+            if length >= 0 and length == baseline.get("length"):
+                return False
+            if length < 0 and baseline.get("length", -1) < 0 \
+                    and ctype and ctype == baseline.get("ctype"):
+                return False
         return True
 
     async def run(self, target: Target, ctx: Ctx) -> PluginResult:
@@ -123,7 +133,9 @@ class DirsearchPlugin(Plugin):
                 length = int(r.headers.get("content-length", -1))
             except Exception:
                 length = -1
-            if not self._is_hit(r.status_code, length, baseline):
+            ctype = (r.headers.get("content-type", "")
+                     .split(";")[0].strip().lower())
+            if not self._is_hit(r.status_code, length, baseline, ctype):
                 continue
             is_backup = any(path.endswith(s) for s in
                             (".zip", ".tar.gz", ".tgz", ".sql", ".bak",
