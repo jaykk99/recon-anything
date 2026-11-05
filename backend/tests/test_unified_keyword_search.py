@@ -260,4 +260,4 @@ def test_plugin_runs_search(tmp_path, monkeypatch):
 def test_registry_count_includes_unified_search():
     reg = discover()
     assert "unified_keyword_search" in reg
-    assert len(reg) == 855  # 841 + this plugin + 5 deep-audit batch-10 detectors (deep_audit10) + 8 tier-6 detection plugins
+    assert len(reg) == 861  # 841 + this plugin + 5 deep-audit batch-10 detectors (deep_audit10) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 8 tier-6 detection plugins
