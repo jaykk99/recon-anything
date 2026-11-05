@@ -681,12 +681,47 @@ def _analyze_guard_sibling(src: str, spec: DetectorSpec,
             if re.search(r"\b" + re.escape(v) + r"\b",
                          fn["text"]):
                 guarded_vars.add(v)
+    # Reachability discipline (FP elimination, 2026-11-05):
+    # a reentrancy finding needs a stranger-reachable entry.
+    # Caller-gated functions are not stranger-reachable, and
+    # an internal/private function inherits the protection
+    # of its in-scope callers: Compound's *Fresh internals
+    # sit behind guarded *Internal entries, Uniswap's _mint
+    # behind the lock-guarded mint/burn. Flagging the
+    # internal helper itself is a phantom.
+    callers = {}
+    for fn in fns:
+        for other in fns:
+            if other is fn:
+                continue
+            if re.search(r"\b" + re.escape(fn["name"]) +
+                         r"\s*\(", other["text"]):
+                callers.setdefault(fn["name"], set()).add(
+                    id(other))
+    by_id = {id(f): f for f in fns}
+
+    def _protected(fn, seen=frozenset()):
+        if _is_guarded(fn, scope) or _caller_gated(fn, scope):
+            return True
+        if id(fn) in seen:
+            return False
+        if not re.search(r"\b(internal|private)\b",
+                         fn["signature"]):
+            return False  # an entry point, unguarded
+        cs = callers.get(fn["name"], set())
+        if not cs:
+            return False  # no in-scope caller: cannot prove
+        return all(_protected(by_id[c], seen | {id(fn)})
+                   for c in cs)
+
     out: List[Dict[str, Any]] = []
     for fn in fns:
         if fn in guarded or _is_view_pure(fn):
             continue
         if fn["name"] in ("constructor", "receive",
                           "fallback", ""):
+            continue
+        if _protected(fn):
             continue
         text = fn["text"]
         calls = _external_call_positions(text, state)
@@ -704,7 +739,29 @@ def _analyze_guard_sibling(src: str, spec: DetectorSpec,
                    if re.search(r"\b" + re.escape(v) + r"\b",
                                 text)}
         shared = bool(fn_vars & guarded_vars)
-        if not (value_moving or shared):
+        # Shared-state-only branch (no value move in this
+        # function) additionally needs a control-yielding
+        # call: a low-level call, or a call on a non-state
+        # object (parameter / local / caller-supplied).
+        # Calls that only read through governance-set
+        # protocol singletons stored in state (Compound's
+        # accrueInterest reading its interest-rate model /
+        # comptroller) do not hand control to
+        # stranger-chosen code.
+        yielding = bool(re.search(r"\.call\s*[\{\(]", text))
+        if not yielding:
+            for m in _EXT_CALL_RE.finditer(text):
+                tok = m.group(0)
+                if tok.startswith("."):
+                    yielding = True
+                    break
+                obj = tok.split(".")[0]
+                if obj in _NON_EXTERNAL_OBJ:
+                    continue
+                if obj not in state:
+                    yielding = True
+                    break
+        if not (value_moving or (shared and yielding)):
             continue
         detail = spec.detail + (
             f" Observed: guarded sibling(s) "
@@ -1117,22 +1174,16 @@ def _analyze_ecdsa_recover(src: str, spec: DetectorSpec,
                         "authorization comparison with no "
                         "zero-address check")
         else:  # plain recover
-            compared = False
-            if recovered:
-                compared = bool(re.search(
-                    r"\b" + re.escape(recovered) +
-                    r"\b\s*(==|!=)|(==|!=)\s*\b" +
-                    re.escape(recovered) + r"\b", text))
-            else:
-                compared = bool(re.search(
-                    r"ECDSA\s*\.\s*recover\s*\([^;]*\)\s*"
-                    r"(==|!=)|(==|!=)\s*ECDSA\s*\.\s*recover",
-                    text))
-            if compared and not (
-                    recovered and _has_zero_check(text, recovered)):
-                fired, why = True, (
-                    "recovered address feeds an authorization "
-                    "comparison with no zero-address check")
+            # OpenZeppelin ECDSA.recover is the THROWING
+            # variant: it reverts on every recovery error,
+            # so a zero / invalid signer can never be
+            # returned and there is nothing to zero-check.
+            # (The zero-returns live in tryRecover, handled
+            # above, and in raw ecrecover, owned by
+            # ecrecover_zero_signer.) Firing here was the
+            # MetaMorpho / 1inch permit false positive:
+            # never fire on the plain-recover branch.
+            fired, why = False, ""
         if not fired:
             continue
         detail = spec.detail + (
@@ -1270,6 +1321,9 @@ _HASH_CONST_RE = re.compile(
 _PERMIT_STR = ("Permit(address owner,address spender,"
                "uint256 value,uint256 nonce,"
                "uint256 deadline)")
+_PERMIT_STR_DAI = ("Permit(address holder,address spender,"
+                   "uint256 nonce,uint256 expiry,"
+                   "bool allowed)")
 _DOMAIN_STR = ("EIP712Domain(string name,string version,"
                "uint256 chainId,address verifyingContract)")
 
@@ -1284,6 +1338,24 @@ def _canonical_for(name: str) -> Optional[str]:
     return None
 
 
+def _canonical_set(name: str) -> List[str]:
+    """Every canonical preimage a constant name legitimately
+    carries in the wild. PERMIT_TYPEHASH has TWO deployed
+    canonical schemas: the ERC-2612 string and the original
+    Dai permit string (mainnet Dai's literal is exactly
+    keccak256 of the Dai string - flagging it was a false
+    positive, FP elimination 2026-11-05). A literal matching
+    ANY known schema for its name is consistent; only a
+    literal matching none is a mismatch."""
+    base = _canonical_for(name)
+    if base is None:
+        return []
+    out = [base]
+    if name == "PERMIT_TYPEHASH":
+        out.append(_PERMIT_STR_DAI)
+    return out
+
+
 def _analyze_hash_constant(src: str, spec: DetectorSpec,
                            compiler: str = "",
                            contract_name: str = ""
@@ -1295,12 +1367,14 @@ def _analyze_hash_constant(src: str, spec: DetectorSpec,
     out: List[Dict[str, Any]] = []
     for m in _HASH_CONST_RE.finditer(level):
         name, literal = m.group(1), m.group(2).lower()
-        canonical = _canonical_for(name)
-        if canonical is None:
+        canonicals = _canonical_set(name)
+        if not canonicals:
             continue
+        canonical = canonicals[0]
         expected = keccak_hex(canonical.encode())
-        if literal == expected:
-            continue  # matches: silent
+        if any(literal == keccak_hex(c.encode())
+               for c in canonicals):
+            continue  # matches a known schema: silent
         detail = spec.detail + (
             f" Observed: constant {name} = 0x{literal} but "
             f"keccak256(\"{canonical}\") = 0x{expected}.")
@@ -1365,6 +1439,91 @@ def _analyze_weak_randomness(src: str, spec: DetectorSpec,
                        "%" in text and ".length" in text)
         if not (moves or selects):
             continue
+        # Flow discipline (FP elimination, 2026-11-05): the
+        # block-derived value must actually REACH the value
+        # move or the selection. Governance-token mints
+        # (Uni / Dydx lineage) store `block.timestamp` into
+        # a minting-schedule variable and mint a
+        # caller-supplied amount - the block source decides
+        # WHEN, never WHAT or WHO. That is not a randomness
+        # outcome.
+        derived_vars = set()
+        for m in re.finditer(
+                r"(\w+)\s*=[^;]*?(block\.timestamp|"
+                r"block\.prevrandao|block\.difficulty|"
+                r"blockhash\s*\()", text):
+            derived_vars.add(m.group(1))
+        for m in re.finditer(r"keccak256\s*\(", text):
+            inner, _ = _balanced(text, m.end() - 1)
+            if not _BLOCK_SRC_RE.search(inner):
+                continue
+            head = text[:m.start()].rsplit(";", 1)[-1]
+            tm = re.search(r"(\w+)\s*=\s*[^=]*$", head)
+            if tm:
+                derived_vars.add(tm.group(1))
+        flows = False
+        for var in derived_vars:
+            vre = r"\b" + re.escape(var) + r"\b"
+            # used as / inside a selection index or modulo
+            if re.search(r"\[\s*[^\]]*" + vre, text) or \
+                    re.search(vre + r"[^;]*%", text) or \
+                    re.search(r"%[^;]*" + vre, text):
+                flows = True
+                break
+            # used inside a value-moving call's arguments
+            # (body only - the function's own signature
+            # header also matches the move pattern, and its
+            # "segment" would swallow the whole prologue)
+            body_at = text.find("{")
+            for m in _VALUE_MOVE_RE.finditer(text):
+                if m.start() < body_at:
+                    continue
+                paren = text.find("(", m.start())
+                if paren >= 0:
+                    args, _ = _balanced(text, paren)
+                    seg = args
+                else:
+                    seg_end = text.find(";", m.start())
+                    seg = text[m.start():seg_end if seg_end >= 0
+                               else len(text)]
+                if re.search(vre, seg):
+                    flows = True
+                    break
+            if flows:
+                break
+            # returned as the outcome
+            if re.search(r"\breturn\b[^;]*" + vre, text):
+                flows = True
+                break
+        if not flows and derived_vars:
+            continue
+        if not flows and not derived_vars:
+            # Direct derivation with no named intermediate:
+            # the block source itself must sit inside the
+            # value move / selection statement.
+            direct = False
+            body_at = text.find("{")
+            for m in _VALUE_MOVE_RE.finditer(text):
+                if m.start() < body_at:
+                    continue
+                paren = text.find("(", m.start())
+                if paren >= 0:
+                    seg, _ = _balanced(text, paren)
+                else:
+                    seg_end = text.find(";", m.start())
+                    seg = text[m.start():seg_end if seg_end >= 0
+                               else len(text)]
+                if _BLOCK_SRC_RE.search(seg):
+                    direct = True
+                    break
+            if not direct and selects:
+                for stmt in text.split(";"):
+                    if "%" in stmt and ".length" in stmt and \
+                            _BLOCK_SRC_RE.search(stmt):
+                        direct = True
+                        break
+            if not direct:
+                continue
         detail = spec.detail + (
             f" Observed: '{fn['name']}' derives from a block "
             f"source and "
@@ -1391,7 +1550,13 @@ _EMPTY_ACCEPT_RE = re.compile(
     r"return\s+true")
 _SPLIT_RE = re.compile(
     r"mload\s*\(\s*add\s*\(|splitSignature|"
-    r"\bassembly\b|SignatureLib\.split|\.slice\s*\(")
+    r"SignatureLib\.split|\.slice\s*\(")
+# NOTE (FP elimination, 2026-11-05): a bare `assembly` block
+# is NOT signature splitting - Dai's permit builds its
+# digest in assembly while taking v / r / s as scalar
+# parameters, and fired here. A split requires an actual
+# mload(add(sig, ...)) / split helper over a bytes
+# signature.
 _LENGTH_OK_RE = re.compile(
     r"\.length\s*(==|>=|<=)\s*(65|64)\b|\.length\s*>\s*0\b.*"
     r"ecrecover", re.S)
