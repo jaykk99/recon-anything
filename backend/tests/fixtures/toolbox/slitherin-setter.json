@@ -1,0 +1,136 @@
+{
+  "success": true,
+  "error": null,
+  "results": {
+    "detectors": [
+      {
+        "elements": [
+          {
+            "type": "function",
+            "name": "setOwner",
+            "source_mapping": {
+              "start": 179,
+              "length": 76,
+              "filename_relative": "Setter.sol",
+              "filename_absolute": "/tmp/slitherin-fix/Setter.sol",
+              "filename_short": "Setter.sol",
+              "is_dependency": false,
+              "lines": [
+                10,
+                11,
+                12
+              ],
+              "starting_column": 5,
+              "ending_column": 6
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "contract",
+                "name": "SetterVault",
+                "source_mapping": {
+                  "start": 58,
+                  "length": 273,
+                  "filename_relative": "Setter.sol",
+                  "filename_absolute": "/tmp/slitherin-fix/Setter.sol",
+                  "filename_short": "Setter.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17
+                  ],
+                  "starting_column": 1,
+                  "ending_column": 2
+                }
+              },
+              "signature": "setOwner(address)"
+            }
+          }
+        ],
+        "description": "Function SetterVault.setOwner(address) (Setter.sol#10-12) is a non-protected setter owner is written\n",
+        "markdown": "Function [SetterVault.setOwner(address)](Setter.sol#L10-L12) is a non-protected setter owner is written\n",
+        "first_markdown_element": "Setter.sol#L10-L12",
+        "id": "39d4a1542d5ad645eb1a7a35c3bad8be7c7045b0c98de524c7b8aa8dcd62cb30",
+        "check": "pess-unprotected-setter",
+        "impact": "High",
+        "confidence": "Medium",
+        "reference": "https://github.com/pessimistic-io/slitherin/blob/master/docs/unprotected_setter.md"
+      },
+      {
+        "elements": [
+          {
+            "type": "function",
+            "name": "setFee",
+            "source_mapping": {
+              "start": 261,
+              "length": 68,
+              "filename_relative": "Setter.sol",
+              "filename_absolute": "/tmp/slitherin-fix/Setter.sol",
+              "filename_short": "Setter.sol",
+              "is_dependency": false,
+              "lines": [
+                14,
+                15,
+                16
+              ],
+              "starting_column": 5,
+              "ending_column": 6
+            },
+            "type_specific_fields": {
+              "parent": {
+                "type": "contract",
+                "name": "SetterVault",
+                "source_mapping": {
+                  "start": 58,
+                  "length": 273,
+                  "filename_relative": "Setter.sol",
+                  "filename_absolute": "/tmp/slitherin-fix/Setter.sol",
+                  "filename_short": "Setter.sol",
+                  "is_dependency": false,
+                  "lines": [
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17
+                  ],
+                  "starting_column": 1,
+                  "ending_column": 2
+                }
+              },
+              "signature": "setFee(uint256)"
+            }
+          }
+        ],
+        "description": "Function SetterVault.setFee(uint256) (Setter.sol#14-16) is a non-protected setter fee is written\n",
+        "markdown": "Function [SetterVault.setFee(uint256)](Setter.sol#L14-L16) is a non-protected setter fee is written\n",
+        "first_markdown_element": "Setter.sol#L14-L16",
+        "id": "eaa88269c36b26546e31334bb21049385f095e88c61fbd6487f3358b4f5ca6a3",
+        "check": "pess-unprotected-setter",
+        "impact": "High",
+        "confidence": "Medium",
+        "reference": "https://github.com/pessimistic-io/slitherin/blob/master/docs/unprotected_setter.md"
+      }
+    ]
+  }
+}

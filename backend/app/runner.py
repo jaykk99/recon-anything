@@ -262,6 +262,43 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
 # Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
 DEFAULT_PLUGIN_TIMEOUT_S = 60
 MAX_PLUGIN_TIMEOUT_S = 120
+HEAVY_TIMEOUT_HARD_CAP_S = 300
+
+
+def _heavy_lane_context(plugin, ctx: Ctx) -> bool:
+    """Whether a heavy-declaring plugin is running in the heavy lane.
+
+    A context is heavy only when it was explicitly marked that way:
+    a dedicated/heavy worker may set ``execution_lane``/``heavy_lane``
+    on the context or shared bus, and an API caller may opt one
+    plugin in with ``module_overrides={<plugin_id>: "heavy"}``.
+    The ordinary request path (bounded by config.DEFAULT_TIMEOUT,
+    RECON_TIMEOUT=20s by default) sets none of these markers, so a
+    heavy plugin invoked there can refuse immediately instead of
+    trying to squeeze expensive work into the fast path.
+    """
+    if not getattr(plugin, "heavy_lane", False):
+        return False
+    if getattr(ctx, "execution_lane", "") == "heavy":
+        return True
+    shared = getattr(ctx, "shared", {}) or {}
+    if shared.get("heavy_lane") is True \
+            or shared.get("execution_lane") == "heavy" \
+            or shared.get("lane") == "heavy":
+        return True
+    overrides = getattr(ctx, "module_overrides", {}) or {}
+    return overrides.get(getattr(plugin, "id", "")) == "heavy"
+
+
+def _heavy_timeout_s() -> float:
+    """The configured heavy-lane budget, clamped to the hard cap."""
+    raw = os.environ.get("RECON_HEAVY_TIMEOUT")
+    try:
+        value = float(raw) if raw not in (None, "") \
+            else float(config.HEAVY_TIMEOUT)
+    except (TypeError, ValueError):
+        value = 120.0
+    return min(max(value, 1.0), float(HEAVY_TIMEOUT_HARD_CAP_S))
 
 # Global scan time budget (seconds). Was a HARD 80s ceiling (2026-10-18
 # speed-first order) - with 170+ plugins at 16-way concurrency that was
@@ -335,8 +372,22 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     t0 = time.monotonic()
     # Per-plugin timeout ceiling from the plugin itself,
     # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
-    timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
-                  or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+    # Heavy-lane exceptions (two mechanisms, both opt-in, neither ever
+    # touches the default RECON_TIMEOUT request-path budget):
+    # - a plugin declaring heavy_lane (contract simulation) gets the
+    #   RECON_HEAVY_TIMEOUT budget (default 120s, hard cap 300s) only
+    #   inside an explicitly marked heavy context;
+    # - a plugin declaring lane="heavy" (external audit tools) is
+    #   clamped to config.HEAVY_TIMEOUT_S (default 1800s) and
+    #   self-gates behind a worker/offline opt-in.
+    if _heavy_lane_context(plugin, ctx):
+        timeout = _heavy_timeout_s()
+    else:
+        _cap = MAX_PLUGIN_TIMEOUT_S
+        if getattr(plugin, "lane", "fast") == "heavy":
+            _cap = max(_cap, int(config.HEAVY_TIMEOUT_S))
+        timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
+                      or DEFAULT_PLUGIN_TIMEOUT_S, _cap)
     if deadline is not None:
         # Never let an in-flight plugin push the scan past its budget.
         timeout = min(timeout, max(deadline - time.monotonic(), 2))
@@ -994,6 +1045,15 @@ def _get_run_ctx(run_id: str) -> Ctx:
             session.close()
         except Exception:
             pass
+    # Async discovery event bus for this run (app/eventbus.py):
+    # Ctx.publish mirrors discoveries onto it, so subscribed
+    # consumers process assets during the producing phase instead
+    # of waiting for phase 2 to read ctx.shared.
+    try:
+        from .eventbus import EventBus
+        ctx.event_bus = EventBus()
+    except Exception:
+        pass
     _run_ctxs[run_id] = ctx
     return ctx
 
@@ -1129,6 +1189,34 @@ def _persist_job(job_id: int, run_id: str, target_id, result):
             pass
 
 
+def _result_from_checkpoint(rec, plugin_id: str) -> PluginResult:
+    """Rebuild a PluginResult from a done checkpoint's stored
+    payload (app/checkpoints.py), so a resumed scan replays the
+    unit's findings through the normal persist path instead of
+    re-executing the unit."""
+    from .plugins.base import Finding as _Finding, PluginStatus as _PS
+    payload = rec.get("result") or {}
+    fields = {"plugin_id", "category", "key", "value", "source",
+              "source_url", "confidence", "evidence", "first_seen",
+              "raw", "passive", "bounty_value"}
+    findings = []
+    for f in payload.get("findings", []):
+        try:
+            findings.append(_Finding(
+                **{k: v for k, v in f.items() if k in fields}))
+        except Exception:
+            continue
+    try:
+        status = _PS(payload.get("status", "ok"))
+    except Exception:
+        status = _PS.OK
+    return PluginResult(
+        plugin_id=plugin_id, status=status,
+        reason="checkpoint resume: unit completed in an earlier run, "
+               "stored findings replayed",
+        findings=findings, duration_ms=0)
+
+
 # Per-run timestamp of the last "progress" event emitted by _run_one_job.
 _progress_marks: Dict[str, float] = {}
 
@@ -1153,11 +1241,38 @@ async def _run_one_job(job_id: int) -> None:
     # Phase 2: run the plugin with no DB connection held.
     plugin = plugin_cls()
     ctx = _get_run_ctx(run_id)
+    # Checkpoint consult (app/checkpoints.py): a unit - this plugin
+    # over this target with this run's mode/source_type args - that
+    # already completed in an earlier run is NOT re-executed; its
+    # stored findings replay through the normal persist path below.
+    # That is what makes re-running an interrupted scan resume
+    # instead of restart. RECON_CHECKPOINTS=0 disables.
+    _cp_store = None
+    _cp_key = None
+    _cp_hit = None
+    try:
+        from .checkpoints import (checkpoints_enabled, get_default_store,
+                                  unit_key)
+        if checkpoints_enabled():
+            _cp_args = {"mode": ctx.mode, "source_type": ctx.source_type}
+            _cp_store = get_default_store()
+            _cp_key = unit_key(target.normalized, plugin_id, _cp_args)
+            _rec = _cp_store.lookup(_cp_key)
+            if _rec and _rec.get("status") == "done" and _rec.get("result"):
+                _cp_hit = _rec
+            else:
+                _cp_store.begin(_cp_key, target.normalized, plugin_id,
+                                _cp_args)
+    except Exception:
+        _cp_store = None
+        _cp_key = None
     clock = _run_clocks.get(run_id, time.monotonic())
     deadline = clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
     ran_plugin = False
     try:
-        if plugin.accepts and target.type not in plugin.accepts:
+        if _cp_hit is not None:
+            result = _result_from_checkpoint(_cp_hit, plugin_id)
+        elif plugin.accepts and target.type not in plugin.accepts:
             result = plugin._skipped(
                 f"not applicable to target type '{target.type}'")
             result.duration_ms = 0
@@ -1170,6 +1285,12 @@ async def _run_one_job(job_id: int) -> None:
             result = await _run_plugin(plugin, target, ctx,
                                        deadline=deadline)
     except Exception as e:
+        if _cp_store is not None and _cp_key is not None and _cp_hit is None:
+            try:
+                _cp_store.fail(_cp_key,
+                               f"{type(e).__name__}: {str(e)[:150]}")
+            except Exception:
+                pass
         await asyncio.to_thread(
             _mark_job_failed, job_id,
             f"worker error: {type(e).__name__}: {str(e)[:150]}")
@@ -1179,6 +1300,19 @@ async def _run_one_job(job_id: int) -> None:
     # (in a thread), then fan out the per-finding events.
     row_ids, counts, st = await asyncio.to_thread(
         _persist_job, job_id, run_id, target.id, result)
+    # Checkpoint record: done units become skippable on a resume;
+    # failed units stay retryable. Best-effort, never breaks a job.
+    if _cp_store is not None and _cp_key is not None and _cp_hit is None:
+        try:
+            import dataclasses as _dc
+            if st in ("ok", "skipped"):
+                _cp_store.complete(_cp_key, {
+                    "status": st, "reason": result.reason,
+                    "findings": [_dc.asdict(f) for f in result.findings]})
+            else:
+                _cp_store.fail(_cp_key, result.reason or st)
+        except Exception:
+            pass
     for f, rid in zip(result.findings, row_ids):
         try:
             ctx.publish("poc_findings", {
@@ -1554,6 +1688,17 @@ async def _finalize_run(run_id: str) -> bool:
             return False
         from .graph import build_graph
         n_nodes, n_edges = build_graph(session, run_id)
+        # Cross-run knowledge store ingest (app/knowledge_store.py):
+        # assets / observations / findings land in the SQLite store
+        # the delta engine and MCP knowledge tools read. Best-effort
+        # like the Mongo archive below; idempotent across the
+        # re-finalizes the hunter reopen path can cause.
+        _ks_stats = None
+        try:
+            from .knowledge_store import ingest_run as _ks_ingest
+            _ks_stats = _ks_ingest(session, run_id)
+        except Exception:
+            pass
         # WAF blocks seen by ANY plugin become findings (not silent zeros).
         try:
             _record_waf_blocks(session, run_id, _run_ctxs.get(run_id))
@@ -1675,6 +1820,8 @@ async def _finalize_run(run_id: str) -> bool:
             pass
         if hunter_section:
             summary["hunters"] = hunter_section
+        if _ks_stats:
+            summary["knowledge_store"] = _ks_stats
         if skipped_budget:
             summary["skipped_time_budget"] = skipped_budget
             summary["note"] = (f"{skipped_budget} low-priority plugins "

@@ -1,0 +1,132 @@
+{
+  "results": {
+    "detectors": [
+      {
+        "check": "arbitrary-send-eth",
+        "impact": "High",
+        "confidence": "Medium",
+        "description": "VulnerableVault.withdraw() (Vulnerable.sol#22-25) sends eth to arbitrary user\n\tDangerous calls:\n\t- address(msg.sender).transfer(address(this).balance) (Vulnerable.sol#24)\n",
+        "elements": [
+          {
+            "type": "function",
+            "name": "withdraw",
+            "source_mapping": {
+              "lines": [
+                22,
+                23,
+                24,
+                25
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      },
+      {
+        "check": "reentrancy-eth",
+        "impact": "High",
+        "confidence": "Medium",
+        "description": "Reentrancy in VulnerableVault.withdrawCredit() (Vulnerable.sol#27-32):\n\tExternal calls:\n\t- (ok,None) = msg.sender.call{value: amount}() (Vulnerable.sol#29)\n\tState variables written after the call(s):\n\t- contributions[msg.sender] = 0 (Vulnerable.sol#31)\n\tVulnerableVault.contributions (Vulnerable.sol#6) can be used in cross function reentrancies:\n\t- VulnerableVault.contribute() (Vulnerable.sol#10-15)\n\t- VulnerableVault.contributions (Vulnerable.sol#6)\n\t- VulnerableVault.mint(address,uint256) (Vulnerable.sol#34-36)\n\t- VulnerableVault.withdrawCredit() (Vulnerable.sol#27-32)\n",
+        "elements": [
+          {
+            "type": "function",
+            "name": "withdrawCredit",
+            "source_mapping": {
+              "lines": [
+                27,
+                28,
+                29,
+                30,
+                31,
+                32
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      },
+      {
+        "check": "suicidal",
+        "impact": "High",
+        "confidence": "High",
+        "description": "VulnerableVault.kill() (Vulnerable.sol#38-40) allows anyone to destruct the contract\n",
+        "elements": [
+          {
+            "type": "function",
+            "name": "kill",
+            "source_mapping": {
+              "lines": [
+                38,
+                39,
+                40
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      },
+      {
+        "check": "tx-origin",
+        "impact": "Medium",
+        "confidence": "Medium",
+        "description": "VulnerableVault.withdraw() (Vulnerable.sol#22-25) uses tx.origin for authorization: require(bool)(tx.origin == owner) (Vulnerable.sol#23)\n",
+        "elements": [
+          {
+            "type": "function",
+            "name": "withdraw",
+            "source_mapping": {
+              "lines": [
+                22,
+                23,
+                24,
+                25
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      },
+      {
+        "check": "solc-version",
+        "impact": "Informational",
+        "confidence": "High",
+        "description": "Version constraint ^0.8.20 contains known severe issues (https://solidity.readthedocs.io/en/latest/bugs.html)\n\t- VerbatimInvalidDeduplication\n\t- FullInlinerNonExpressionSplitArgumentEvaluationOrder\n\t- MissingSideEffectsOnSelectorAccess.\nIt is used by:\n\t- ^0.8.20 (Vulnerable.sol#2)\n",
+        "elements": [
+          {
+            "type": "pragma",
+            "name": "^0.8.20",
+            "source_mapping": {
+              "lines": [
+                2
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      },
+      {
+        "check": "low-level-calls",
+        "impact": "Informational",
+        "confidence": "High",
+        "description": "Low level call in VulnerableVault.withdrawCredit() (Vulnerable.sol#27-32):\n\t- (ok,None) = msg.sender.call{value: amount}() (Vulnerable.sol#29)\n",
+        "elements": [
+          {
+            "type": "function",
+            "name": "withdrawCredit",
+            "source_mapping": {
+              "lines": [
+                27,
+                28,
+                29,
+                30,
+                31,
+                32
+              ],
+              "filename_relative": "Vulnerable.sol"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
