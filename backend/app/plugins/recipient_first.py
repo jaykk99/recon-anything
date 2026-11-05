@@ -297,6 +297,11 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
             continue
         if cl._gated_deep(fn, scope):
             continue
+        if "balanceOf(address(this))" in fn["text"]:
+            continue  # AMM pair mint: liquidity is metered
+            # by the pair's own balance deltas against
+            # reserves, i.e. by what the caller already
+            # transferred in - not unbacked printing
         recipient, rdetail = _recipient(fn["text"])
         if recipient == "HOLDER-SELF" and not re.search(
                 r"(require|assert)\s*\([^;]*(balanceOf|balances|"
@@ -315,6 +320,56 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
                  f"recipient classified {recipient} ({rdetail}).")
         out.extend(_finish(spec_id, fn, extra, recipient))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Shared boundedness / backing recognition (FP elimination,
+# 2026-11-05): shapes where the payout is metered by the
+# caller's own recorded position or authorized by a verified
+# proof / signature, so it is not a stranger-reachable drain.
+# ---------------------------------------------------------------------------
+
+_BURN_CALLER_RE = re.compile(
+    r"_burn\s*\(\s*(msg\.sender|_msgSender\(\s*\))")
+_PTR_CALLER_RE = re.compile(
+    r"(\w+)\s+storage\s+(\w+)\s*=\s*[^;]*"
+    r"\[\s*msg\.sender\s*\]")
+_PROOF_VERIFY_COND_RE = re.compile(
+    r"(?:require|if)\s*\([^;]*?(?:verify|Verify|"
+    r"isValidSignature|processProof|MerkleProof)")
+
+
+def _burn_bounded(text: str) -> bool:
+    """The function burns the caller's own tokens / shares:
+    the payout cannot exceed what the caller holds (the
+    burn reverts otherwise). ERC20Wrapper unwrap and
+    share-burning vault withdraws live here."""
+    return bool(_BURN_CALLER_RE.search(text))
+
+
+def _record_debit_bounded(text: str) -> bool:
+    """A storage pointer bound to the caller's own record
+    (userInfo[pid][msg.sender] and kin) has a field debited
+    or zeroed in the function: the payout is metered by
+    the caller's recorded balance (MasterChef shape)."""
+    for m in _PTR_CALLER_RE.finditer(text):
+        ptr = re.escape(m.group(2))
+        if re.search(r"\b" + ptr + r"\.\w+\s*(-=|=\s*0\b)",
+                     text):
+            return True
+    return False
+
+
+def _proof_or_sig_backed(text: str) -> bool:
+    """The payout is authorized by evidence the caller must
+    present: a proof / signature verification inside a
+    require or if condition, or a recovered signer compared
+    against a stored authority. A signature that is merely
+    recovered and zero-checked - never compared to any
+    authority - authorizes nothing and does NOT count."""
+    if _PROOF_VERIFY_COND_RE.search(text):
+        return True
+    return bool(_STORED_SIGNER_CMP_RE.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +398,8 @@ def _analyze_claim(src, spec_id, compiler, contract_name):
         # checks) still suppress.
         if _access_gated(fn, scope):
             continue
+        if _proof_or_sig_backed(fn["text"]):
+            continue  # proof / authority-signed entitlement
         reads = _caller_indexed_reads(fn["text"])
         if reads and _caller_indexed_write(fn["text"], reads):
             continue  # entitlement read AND consumed: entitled
@@ -388,6 +445,13 @@ def _analyze_overdraw(src, spec_id, compiler, contract_name):
         if _amount_bounded(fn["text"], ["balanceOf", "_balances",
                                         "balances"]):
             continue
+        if _burn_bounded(fn["text"]) or \
+                _record_debit_bounded(fn["text"]):
+            continue  # payout metered by the caller's own
+            # burned shares / debited recorded balance
+        if _PROOF_VERIFY_COND_RE.search(fn["text"]):
+            continue  # release authorized by a verified
+            # proof / signature (ERC-1271 release shape)
         recipient, rdetail = _recipient(fn["text"])
         extra = (f"Observed: '{fn['name']}' pays out with no bound "
                  "against the caller's own recorded balance and no "
@@ -418,6 +482,10 @@ def _analyze_rescue(src, spec_id, compiler, contract_name):
             continue
         if cl._gated_deep(fn, scope):
             continue
+        if _burn_bounded(fn["text"]) or \
+                _record_debit_bounded(fn["text"]):
+            continue  # caller collecting their own recorded
+            # position (emergencyWithdraw shape), not a rescue
         recipient, rdetail = _recipient(fn["text"])
         extra = (f"Observed: '{fn['name']}' moves contract value "
                  f"with no gate; destination classified "
@@ -488,8 +556,11 @@ _SIG_MATERIAL_RE = re.compile(
     re.I)
 _STORED_SIGNER_CMP_RE = re.compile(
     r"(recovered|signer|recoveredAddress|_signer)\w*\s*(==|!=)\s*"
-    r"(owner|authority|signer|_signer|admin|treasury)\b|"
-    r"(owner|authority)\w*\s*(==|!=)\s*(recovered|signer)", re.I)
+    r"(owner|authority|signer|_signer|admin|treasury|validator|"
+    r"verifyingSigner|authorizedSigner|trustedSigner|feeSigner|"
+    r"signerAddress)\b|"
+    r"(owner|authority|validator)\w*\s*(==|!=)\s*"
+    r"(recovered|signer)", re.I)
 
 
 def _sig_gated(fn: Dict[str, Any], scope) -> bool:
