@@ -110,6 +110,63 @@ else
   fail "medusa" "download/extract failed"
 fi
 
+# ------------------------------------------------------- Meta engines
+# Amass + Nuclei + SpiderFoot for the meta_orchestrator plugin. Same
+# rules as the toolbox above: installed OUTSIDE the app image, the
+# plugin detects the binaries at runtime (audit bin dir first, then
+# PATH) and skips silently when they are absent. Go installs are
+# used for Amass/Nuclei (both are Go projects); if no Go toolchain
+# is on PATH these two steps fail soft and the others still run.
+export GOBIN="$BIN_DIR"
+if command -v go >/dev/null 2>&1; then
+  if go install github.com/owasp-amass/amass/v4/cmd/amass@latest \
+       >/dev/null 2>&1 && [ -x "$BIN_DIR/amass" ]; then
+    ok "amass ($("$BIN_DIR/amass" --version 2>/dev/null | head -1))"
+  else
+    fail "amass" "go install failed"
+  fi
+  if go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
+       >/dev/null 2>&1 && [ -x "$BIN_DIR/nuclei" ]; then
+    # Templates are Nuclei's data pack; fetch them once so the
+    # first scan does not depend on the network.
+    "$BIN_DIR/nuclei" -update-templates >/dev/null 2>&1 || true
+    ok "nuclei ($("$BIN_DIR/nuclei" --version 2>&1 | head -1))"
+  else
+    fail "nuclei" "go install failed"
+  fi
+else
+  fail "amass/nuclei" "no go toolchain on PATH (skipped, best-effort)"
+fi
+
+# SpiderFoot: source checkout + its own venv + a bin wrapper the
+# adapter resolves as "spiderfoot".
+if git clone --depth 1 https://github.com/smicallef/spiderfoot \
+     "$AUDIT_DIR/spiderfoot" >/dev/null 2>&1 || \
+   [ -f "$AUDIT_DIR/spiderfoot/sf.py" ]; then
+  if python3 -m venv "$AUDIT_DIR/venv-spiderfoot" 2>/dev/null; then
+    V="$AUDIT_DIR/venv-spiderfoot/bin"
+    if "$V/pip" install --quiet --no-input \
+         -r "$AUDIT_DIR/spiderfoot/requirements.txt"; then
+      cat > "$BIN_DIR/spiderfoot" <<EOF
+#!/usr/bin/env bash
+exec "$V/python" "$AUDIT_DIR/spiderfoot/sf.py" "\$@"
+EOF
+      chmod +x "$BIN_DIR/spiderfoot"
+      ok "spiderfoot (venv-spiderfoot)"
+    else
+      fail "spiderfoot" "pip install failed"
+    fi
+  else
+    fail "spiderfoot" "could not create venv"
+  fi
+else
+  fail "spiderfoot" "clone failed"
+fi
+
+echo "The audit_toolbox and meta_orchestrator plugins pick these up"
+echo "automatically (no keys, no image changes). Heavy tools run"
+echo "only with RECON_HEAVY_LANE=1."
+
 # ------------------------------------------------------- Round 2 (Nov 3)
 # Mythril promotion, Wake, Securify 2.0, Slitherin, node tools
 # (Solhint / Surya / Scribble / SmartCheck), Foundry.

@@ -1,0 +1,46 @@
+[
+ {
+  "file": "erc4626_mint.sol",
+  "contract_name": "FpCleanVault4626"
+ },
+ {
+  "file": "amm_pair.sol",
+  "contract_name": "FpCleanPair"
+ },
+ {
+  "file": "registry_gated_token.sol",
+  "contract_name": "FpCleanRegistryToken"
+ },
+ {
+  "file": "governance_votes.sol",
+  "contract_name": "FpCleanVotes"
+ },
+ {
+  "file": "permit_token.sol",
+  "contract_name": "FpCleanPermit"
+ },
+ {
+  "file": "chef.sol",
+  "contract_name": "FpCleanChef"
+ },
+ {
+  "file": "wrapper.sol",
+  "contract_name": "FpCleanWrapper"
+ },
+ {
+  "file": "claims.sol",
+  "contract_name": "FpCleanClaims"
+ },
+ {
+  "file": "comptroller_market.sol",
+  "contract_name": "FpCleanMarket"
+ },
+ {
+  "file": "release_1271.sol",
+  "contract_name": "FpCleanRelease1271"
+ },
+ {
+  "file": "minter_application.sol",
+  "contract_name": "FpCleanMinterFlow"
+ }
+]
