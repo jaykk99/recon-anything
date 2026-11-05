@@ -18,14 +18,23 @@ export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  // Auth fix (connection-lost loop, 2026-10-27): EventSource cannot set
+  // headers, and the old code forwarded ONLY the retired ?code= value to
+  // the backend. In GitHub sign-in mode the backend ignores that code
+  // and requires the recon_session cookie, so every signed-in stream
+  // got a 401 while the browser's EventSource auto-retried forever.
+  // Forward the incoming session cookie first; the code header is kept
+  // only as a fallback-mode fallback, and only when one was supplied.
   const code = req.nextUrl.searchParams.get("code") || "";
+  const cookie = req.headers.get("cookie") || "";
   const upstream = `${API_BASE}/api/runs/${params.id}/stream`;
 
   let res: Response;
   try {
     res = await fetch(upstream, {
       headers: {
-        "X-Access-Code": code,
+        ...(cookie ? { Cookie: cookie } : {}),
+        ...(code ? { "X-Access-Code": code } : {}),
         Accept: "text/event-stream",
       },
       cache: "no-store",

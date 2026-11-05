@@ -28,19 +28,28 @@ ATM_MGMT_PORTS: List[Tuple[int, str]] = [
 ATM_SUBDOMAINS = (
     "atm", "atms", "atm-locator", "atmlocator", "atm-finder", "atmfinder",
     "cash", "cash-locator", "cashlocator", "locations",
+    "atm-mgmt", "atmmanagement", "atm-monitor", "atmmonitor", "terminal",
+    "terminals", "selfservice", "self-service", "fleet", "switch",
+    "ejournal", "ej", "nmc", "tms", "remote", "atmgw", "atm-gw",
 )
 
 # ATM portal / locator paths probed on the target domain (GET only).
 ATM_PORTAL_PATHS = (
     "/atm", "/atms", "/atm-locator", "/atm-locations", "/atm-finder",
-    "/cash", "/cash-locator", "/locations/atm",
+    "/cash", "/cash-locator", "/locations/atm", "/find-atm", "/find-an-atm",
+    "/atm-near-me", "/atms-near-me", "/cash-machines", "/cashpoint",
+    "/cashpoints", "/locations/atms", "/en/atm", "/personal/atm",
 )
 
-# Paths that smell like ATM remote-management interfaces (GET only,
-# never submit credentials or attempt login).
+# Paths that smell like ATM remote-management / self-service interfaces
+# (GET only, never submit credentials or attempt login).
 ATM_MGMT_PATHS = (
     "/atm/admin", "/atm/manage", "/atm/remote", "/terminal",
     "/remote", "/xfs", "/aptra", "/opteva", "/selfserv",
+    "/atm/monitor", "/atm/status", "/atm-management", "/terminal-manager",
+    "/tms", "/nmc", "/ejournal", "/journal", "/xfs-gateway", "/cen-xfs",
+    "/vynamic", "/kalignite", "/agilis", "/procash", "/selfservice",
+    "/device/manage", "/fleet/status", "/switch/admin",
 )
 
 # Verified public ATM CVEs (vendor keyword -> list of CVEs).
@@ -72,8 +81,11 @@ ATM_CVES: Dict[str, List[Dict[str, str]]] = {
 }
 
 # Vendor keywords matched against page content / banners.
-VENDOR_HINTS = ("diebold", "wincor", "ncr", "hyosung", "aptra", "opteva",
-                "pro cash", "procash", "selfserv", "triton", "grg", "atm")
+VENDOR_HINTS = ("diebold", "wincor", "ncr", "hyosung", "nautilus", "aptra",
+                "opteva", "pro cash", "procash", "cineo", "selfserv",
+                "triton", "grg", "fujitsu", "oki", "genmega", "hantle",
+                "euronet", "cardtronics", "allpoint", "kal", "auriga",
+                "vynamic", "agilis", "atm")
 
 # Keyword -> canonical vendor key (ATM_CVES is keyed by these) and the
 # display name used in findings. "aptra"/"selfserv" are NCR product
@@ -81,15 +93,24 @@ VENDOR_HINTS = ("diebold", "wincor", "ncr", "hyosung", "aptra", "opteva",
 # matching missed those mappings entirely, so detected NCR APTRA tech
 # never matched the NCR CVEs.
 HINT_TO_VENDOR = {
-    "diebold": "diebold", "opteva": "diebold",
+    "diebold": "diebold", "opteva": "diebold", "agilis": "diebold",
+    "vynamic": "diebold",
     "wincor": "wincor", "procash": "wincor", "pro cash": "wincor",
-    "ncr": "ncr", "aptra": "ncr", "selfserv": "ncr",
-    "hyosung": "hyosung", "triton": "triton", "grg": "grg",
+    "cineo": "wincor",
+    "ncr": "ncr", "aptra": "ncr", "selfserv": "ncr", "kal": "ncr",
+    "hyosung": "hyosung", "nautilus": "hyosung",
+    "triton": "triton", "grg": "grg",
+    "fujitsu": "fujitsu", "oki": "oki",
+    "genmega": "genmega", "hantle": "hantle",
+    "euronet": "euronet", "cardtronics": "cardtronics",
+    "allpoint": "cardtronics", "auriga": "auriga",
 }
 VENDOR_NAMES = {
     "diebold": "Diebold Nixdorf", "wincor": "Diebold Nixdorf (Wincor)",
-    "ncr": "NCR", "hyosung": "Hyosung", "triton": "Triton",
-    "grg": "GRG Banking",
+    "ncr": "NCR", "hyosung": "Nautilus Hyosung", "triton": "Triton",
+    "grg": "GRG Banking", "fujitsu": "Fujitsu", "oki": "OKI",
+    "genmega": "Genmega", "hantle": "Hantle", "euronet": "Euronet",
+    "cardtronics": "Cardtronics / Allpoint", "auriga": "Auriga",
 }
 
 # Wireless-ish service banners flagged from scan data (best effort).

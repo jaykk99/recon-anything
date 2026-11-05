@@ -610,6 +610,20 @@ class PackPlugin(Plugin):
                         self.CATEGORY, key, display,
                         source=f"{self.label}", source_url=url,
                         confidence=conf, passive=True, evidence=ev))
+                    # Feed the enrichment bus. Every checksum-verified
+                    # address detector publishes its hit to crypto_addresses
+                    # with a chain tag (derived from the key prefix) so the
+                    # multi-chain enrichment plugin can look up balance,
+                    # activity and labels. Was missing: only ETH contracts
+                    # reached the bus, so BTC/LTC/DOGE/XRP/... addresses were
+                    # detected but never enriched. Skip redacted secrets and
+                    # bad-checksum non-addresses.
+                    if ("address" in key and "bad_checksum" not in key
+                            and not self.SECRET):
+                        chain = key.split("_", 1)[0]
+                        ctx.publish("crypto_addresses",
+                                    {"address": value, "chain": chain,
+                                     "key": key})
                     if len(findings) >= self.MAX_FINDINGS:
                         break
                 if len(findings) >= self.MAX_FINDINGS:

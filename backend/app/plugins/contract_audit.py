@@ -6,12 +6,14 @@ Works with ZERO API keys:
   (broader coverage) when configured.
 
 For contract addresses with VERIFIED source, pulls the public source and
-runs static checks: reentrancy patterns (external call before state
-update), missing access controls (public state-changing functions with no
-guard), tx.origin usage, unchecked external calls, and integer overflow
-risk on pre-0.8.0 Solidity. Static analysis only: it never sends
-transactions, calls contracts, or touches the chain beyond reading
-published source.
+runs static checks. Fund-draining patterns are rated CRITICAL: an
+unguarded public function that moves value out (transfer/send/call{value}/
+selfdestruct), reentrancy (external value call before the state update),
+delegatecall to an untrusted target, and an unprotected proxy initializer.
+Also flags missing access controls, tx.origin usage, unchecked external
+calls, and integer overflow risk on pre-0.8.0 Solidity. Static analysis
+only: it never sends transactions, calls contracts, or touches the chain
+beyond reading published source.
 """
 from __future__ import annotations
 
@@ -69,6 +71,20 @@ def _split_functions(src: str) -> List[Tuple[str, str]]:
             j += 1
         out.append((name, src[start:j + 1]))
     return out
+
+
+# Value-out sinks: ways a function moves ETH/tokens out of the contract or
+# destroys it (force-draining the balance). A public, unguarded function that
+# contains any of these can be called by anyone to drain or redirect funds.
+_FUND_SINK_RE = re.compile(
+    r"\.transfer\s*\(|\.send\s*\(|\.call\s*\{[^}]*\bvalue\b|\.call\.value\s*\(|"
+    r"\btransferFrom\s*\(|\bselfdestruct\s*\(|\bsuicide\s*\(")
+
+
+def _fund_sink(body: str) -> Optional[str]:
+    """Return the matched value-out sink token in `body`, or None."""
+    m = _FUND_SINK_RE.search(body)
+    return m.group(0).strip() if m else None
 
 
 def _modifiers(sig: str) -> List[str]:
@@ -132,7 +148,7 @@ def audit_source(src: str) -> List[Dict[str, str]]:
     # --- 3. selfdestruct / suicide: can brick or drain the contract ---
     for sm in re.finditer(r"\bselfdestruct\s*\(|\bsuicide\s*\(", clean):
         ctx_line = clean[max(0, sm.start() - 80):sm.end() + 40].replace("\n", " ").strip()
-        findings.append({"check": "selfdestruct", "severity": "medium",
+        findings.append({"check": "selfdestruct", "severity": "high",
                          "function": "",
                          "detail": f"selfdestruct/suicide present: ...{ctx_line[:140]}... "
                                    "Can brick the contract or force-drain ETH to an "
@@ -161,12 +177,14 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                                      " Also missing a nonReentrant guard on this "
                                      "value-transfer function.")
                     findings.append({
-                        "check": "reentrancy", "severity": "high",
+                        "check": "reentrancy", "severity": "critical",
                         "function": name,
-                        "detail": (f"Function '{name}' makes an external value call "
-                                   f"({call_kind}) and writes state AFTER it. Classic "
-                                   "reentrancy shape: apply checks-effects-interactions "
-                                   f"or ReentrancyGuard.{no_guard_note}")})
+                        "detail": (f"FUND DRAIN: function '{name}' makes an external value "
+                                   f"call ({call_kind}) and writes state AFTER it. Classic "
+                                   "reentrancy shape (the attack that drained The DAO): an "
+                                   "attacker re-enters before the balance update and "
+                                   "withdraws repeatedly, draining the contract. Apply "
+                                   f"checks-effects-interactions or ReentrancyGuard.{no_guard_note}")})
                     break
 
         # --- 3b. delegatecall to a non-hardcoded (untrusted) target ---
@@ -194,9 +212,9 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                         break
             if not trusted:
                 findings.append({
-                    "check": "delegatecall_untrusted", "severity": "high",
+                    "check": "delegatecall_untrusted", "severity": "critical",
                     "function": name,
-                    "detail": (f"Function '{name}' delegatecalls to a non-hardcoded "
+                    "detail": (f"FUND DRAIN: function '{name}' delegatecalls to a non-hardcoded "
                                f"target ({receiver[:60] or 'dynamic'}). If the target "
                                "address is attacker-controllable the contract's "
                                "logic can be hijacked (storage lives in the "
@@ -216,14 +234,37 @@ def audit_source(src: str) -> List[Dict[str, str]]:
         if name.lower() == "initialize" and is_public and not guarded:
             if not re.search(r"require\s*\(\s*!?_?initialized", body, re.I):
                 findings.append({
-                    "check": "unprotected_initializer", "severity": "high",
+                    "check": "unprotected_initializer", "severity": "critical",
                     "function": name,
-                    "detail": (f"Public initialize() in '{name}' has no guard. "
+                    "detail": (f"FUND DRAIN: public initialize() in '{name}' has no guard. "
                                "On upgradeable proxies anyone can front-run the "
-                               "initialization and seize ownership/admin rights.")})
+                               "initialization and seize ownership/admin rights, then "
+                               "drain or brick the contract.")})
+
+        # --- 1b. unprotected fund transfer: a public, unguarded function that
+        #     moves value out of the contract (transfer/send/call{value}/
+        #     selfdestruct/transferFrom). Anyone can call it to drain or
+        #     redirect funds. This is the direct "fund draining" case and is
+        #     caught even when the function writes no state (so a bare
+        #     `to.transfer(...)` / `to.send(...)` sweeper is never missed). ---
+        fund_flagged = False
+        if is_public and name not in ("constructor",) and not guarded:
+            sink = _fund_sink(body)
+            if sink:
+                fund_flagged = True
+                findings.append({
+                    "check": "fund_drain", "severity": "critical",
+                    "function": name,
+                    "exploitability": "weaponized",
+                    "detail": (f"FUND DRAIN: public/external function '{name}' moves value "
+                               f"out of the contract ({sink}) with no access control "
+                               "(no onlyOwner/onlyRole/require(msg.sender) and no guard "
+                               "modifier). Anyone can call it directly to drain or "
+                               "redirect the contract's funds.")})
 
         # --- 2. missing access control on public state-changing fns ---
-        if is_public and name not in ("constructor",) and _state_writes(body) and not guarded:
+        if (is_public and name not in ("constructor",) and _state_writes(body)
+                and not guarded and not fund_flagged):
             findings.append({
                 "check": "missing_access_control", "severity": "medium",
                 "function": name,
@@ -306,6 +347,12 @@ REMEDIATION = {
     "flashloan_callback": "Restrict the callback to the lending pool: "
                           "require(msg.sender == address(POOL)). Aave-style "
                           "callbacks must never be callable by arbitrary users.",
+    "fund_drain": "Gate every function that moves ETH or tokens out of the "
+                  "contract behind access control (onlyOwner/AccessControl or "
+                  "require(msg.sender == <authorized>)). Never leave a "
+                  "transfer/send/call{value}/selfdestruct reachable by an "
+                  "unauthenticated caller; prefer pull-over-push withdrawals "
+                  "scoped to the caller's own balance.",
     "unprotected_initializer": "Call _disableInitializers() in the implementation "
                                 "constructor, or guard initialize() so it runs "
                                 "exactly once (OpenZeppelin Initializable).",
@@ -322,6 +369,7 @@ EXPL = {
     "frontrunning": "theoretical",
     "flashloan_callback": "public_poc",
     "unprotected_initializer": "weaponized",
+    "fund_drain": "weaponized",
 }
 
 
@@ -380,8 +428,8 @@ class ContractAuditPlugin(Plugin):
                     findings.append(self._f(
                         "web3", "contract_audit_clean",
                         f"{addr}: verified source scanned; no flagged patterns "
-                        "(reentrancy, delegatecall, selfdestruct, tx.origin, "
-                        "access control, unchecked calls, overflow, "
+                        "(fund drain, reentrancy, delegatecall, selfdestruct, "
+                        "tx.origin, access control, unchecked calls, overflow, "
                         "front-running, flash-loan callbacks, initializers). "
                         "Not a proof of safety.",
                         source="Etherscan/Sourcify static audit",
@@ -402,7 +450,8 @@ class ContractAuditPlugin(Plugin):
                         evidence={
                             "severity": iss["severity"], "address": addr,
                             "check": iss["check"], "function": iss["function"],
-                            "exploitability": EXPL.get(iss["check"], "unknown"),
+                            "exploitability": iss.get("exploitability")
+                            or EXPL.get(iss["check"], "unknown"),
                             "remediation": REMEDIATION.get(iss["check"], ""),
                             "scope_note": ("Static analysis of published source only. "
                                            "Never interacted with the contract.")}))

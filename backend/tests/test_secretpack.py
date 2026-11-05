@@ -89,7 +89,7 @@ def test_exactly_5_new_detectors_registered():
     sec = sorted(k for k in discover() if k.startswith("sec_"))
     assert sec == sorted(SEC_IDS)
     assert len(sec) == 5
-    assert len(discover()) == 607  # 602 before this pack
+    assert len(discover()) == 852  # re-baselined at merge: 847 master + 5 sec_*
 
 
 def test_js_hardcoded_fires():

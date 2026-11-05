@@ -205,9 +205,26 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
     # Follow live: poll for new rows. 1s granularity is plenty "live"
     # for the UI and is correct across processes.
     idle = 0
+    db_errors = 0
     while True:
         await asyncio.sleep(1)
-        rows = await asyncio.to_thread(_fetch_events_sync, run_id, last_seq)
+        # A transient DB error (Neon waking up, a recycled socket) used
+        # to end the whole stream, so the browser saw "connection lost"
+        # mid-scan and reconnected from event 0. Now the stream stays
+        # open: keep the client alive with a heartbeat and retry from
+        # the same last_seq with a short backoff. Only after ~2 min of
+        # straight failures do we give up and let the outer
+        # self-heal path take over.
+        try:
+            rows = await asyncio.to_thread(_fetch_events_sync, run_id, last_seq)
+            db_errors = 0
+        except Exception:
+            db_errors += 1
+            if db_errors > 30:
+                raise
+            yield ": ping\n\n"
+            await asyncio.sleep(min(2 * db_errors, 10))
+            continue
         if rows:
             idle = 0
             for seq, event, data in rows:
@@ -217,7 +234,10 @@ async def _subscribe_db(run_id: str) -> AsyncIterator[str]:
                     return
         else:
             idle += 1
-            if idle >= 15:
+            # Heartbeat every ~10s of silence so no proxy hop (Render,
+            # the Next.js /live proxy, mobile networks) treats the
+            # stream as idle and cuts it during a quiet stretch.
+            if idle >= 10:
                 idle = 0
                 yield ": ping\n\n"
 
@@ -242,6 +262,43 @@ def _row_to_finding(f, run_id: str, target_id: str) -> FindingRow:
 # Enforced in _run_plugin via MAX_PLUGIN_TIMEOUT_S.
 DEFAULT_PLUGIN_TIMEOUT_S = 60
 MAX_PLUGIN_TIMEOUT_S = 120
+HEAVY_TIMEOUT_HARD_CAP_S = 300
+
+
+def _heavy_lane_context(plugin, ctx: Ctx) -> bool:
+    """Whether a heavy-declaring plugin is running in the heavy lane.
+
+    A context is heavy only when it was explicitly marked that way:
+    a dedicated/heavy worker may set ``execution_lane``/``heavy_lane``
+    on the context or shared bus, and an API caller may opt one
+    plugin in with ``module_overrides={<plugin_id>: "heavy"}``.
+    The ordinary request path (bounded by config.DEFAULT_TIMEOUT,
+    RECON_TIMEOUT=20s by default) sets none of these markers, so a
+    heavy plugin invoked there can refuse immediately instead of
+    trying to squeeze expensive work into the fast path.
+    """
+    if not getattr(plugin, "heavy_lane", False):
+        return False
+    if getattr(ctx, "execution_lane", "") == "heavy":
+        return True
+    shared = getattr(ctx, "shared", {}) or {}
+    if shared.get("heavy_lane") is True \
+            or shared.get("execution_lane") == "heavy" \
+            or shared.get("lane") == "heavy":
+        return True
+    overrides = getattr(ctx, "module_overrides", {}) or {}
+    return overrides.get(getattr(plugin, "id", "")) == "heavy"
+
+
+def _heavy_timeout_s() -> float:
+    """The configured heavy-lane budget, clamped to the hard cap."""
+    raw = os.environ.get("RECON_HEAVY_TIMEOUT")
+    try:
+        value = float(raw) if raw not in (None, "") \
+            else float(config.HEAVY_TIMEOUT)
+    except (TypeError, ValueError):
+        value = 120.0
+    return min(max(value, 1.0), float(HEAVY_TIMEOUT_HARD_CAP_S))
 
 # Global scan time budget (seconds). Was a HARD 80s ceiling (2026-10-18
 # speed-first order) - with 170+ plugins at 16-way concurrency that was
@@ -315,8 +372,22 @@ async def _run_plugin(plugin, target: Target, ctx: Ctx,
     t0 = time.monotonic()
     # Per-plugin timeout ceiling from the plugin itself,
     # clamped to MAX_PLUGIN_TIMEOUT_S no matter what a plugin asks for.
-    timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
-                  or DEFAULT_PLUGIN_TIMEOUT_S, MAX_PLUGIN_TIMEOUT_S)
+    # Heavy-lane exceptions (two mechanisms, both opt-in, neither ever
+    # touches the default RECON_TIMEOUT request-path budget):
+    # - a plugin declaring heavy_lane (contract simulation) gets the
+    #   RECON_HEAVY_TIMEOUT budget (default 120s, hard cap 300s) only
+    #   inside an explicitly marked heavy context;
+    # - a plugin declaring lane="heavy" (external audit tools) is
+    #   clamped to config.HEAVY_TIMEOUT_S (default 1800s) and
+    #   self-gates behind a worker/offline opt-in.
+    if _heavy_lane_context(plugin, ctx):
+        timeout = _heavy_timeout_s()
+    else:
+        _cap = MAX_PLUGIN_TIMEOUT_S
+        if getattr(plugin, "lane", "fast") == "heavy":
+            _cap = max(_cap, int(config.HEAVY_TIMEOUT_S))
+        timeout = min(getattr(plugin, "timeout_s", DEFAULT_PLUGIN_TIMEOUT_S)
+                      or DEFAULT_PLUGIN_TIMEOUT_S, _cap)
     if deadline is not None:
         # Never let an in-flight plugin push the scan past its budget.
         timeout = min(timeout, max(deadline - time.monotonic(), 2))
@@ -457,7 +528,10 @@ MAX_JOB_ATTEMPTS = 3
 # abandons + cancels such tasks (same attempts semantics as the
 # stale-claim reset) and re-runs the stale sweep periodically, so a
 # wedged job costs minutes, not the whole scan.
-JOB_WATCHDOG_S = int(_os.environ.get("RECON_JOB_WATCHDOG_S", "300"))
+# 2026-10-26 (faster, no lost findings): 300s -> 180s. No legit plugin
+# runs past its 120s cap, so 180s still leaves 60s of headroom for
+# cleanup while freeing a wedged slot 2 minutes sooner.
+JOB_WATCHDOG_S = int(_os.environ.get("RECON_JOB_WATCHDOG_S", "180"))
 STALE_SWEEP_INTERVAL_S = 60.0
 
 _queue_worker_task = None
@@ -971,6 +1045,15 @@ def _get_run_ctx(run_id: str) -> Ctx:
             session.close()
         except Exception:
             pass
+    # Async discovery event bus for this run (app/eventbus.py):
+    # Ctx.publish mirrors discoveries onto it, so subscribed
+    # consumers process assets during the producing phase instead
+    # of waiting for phase 2 to read ctx.shared.
+    try:
+        from .eventbus import EventBus
+        ctx.event_bus = EventBus()
+    except Exception:
+        pass
     _run_ctxs[run_id] = ctx
     return ctx
 
@@ -1106,6 +1189,34 @@ def _persist_job(job_id: int, run_id: str, target_id, result):
             pass
 
 
+def _result_from_checkpoint(rec, plugin_id: str) -> PluginResult:
+    """Rebuild a PluginResult from a done checkpoint's stored
+    payload (app/checkpoints.py), so a resumed scan replays the
+    unit's findings through the normal persist path instead of
+    re-executing the unit."""
+    from .plugins.base import Finding as _Finding, PluginStatus as _PS
+    payload = rec.get("result") or {}
+    fields = {"plugin_id", "category", "key", "value", "source",
+              "source_url", "confidence", "evidence", "first_seen",
+              "raw", "passive", "bounty_value"}
+    findings = []
+    for f in payload.get("findings", []):
+        try:
+            findings.append(_Finding(
+                **{k: v for k, v in f.items() if k in fields}))
+        except Exception:
+            continue
+    try:
+        status = _PS(payload.get("status", "ok"))
+    except Exception:
+        status = _PS.OK
+    return PluginResult(
+        plugin_id=plugin_id, status=status,
+        reason="checkpoint resume: unit completed in an earlier run, "
+               "stored findings replayed",
+        findings=findings, duration_ms=0)
+
+
 # Per-run timestamp of the last "progress" event emitted by _run_one_job.
 _progress_marks: Dict[str, float] = {}
 
@@ -1130,11 +1241,38 @@ async def _run_one_job(job_id: int) -> None:
     # Phase 2: run the plugin with no DB connection held.
     plugin = plugin_cls()
     ctx = _get_run_ctx(run_id)
+    # Checkpoint consult (app/checkpoints.py): a unit - this plugin
+    # over this target with this run's mode/source_type args - that
+    # already completed in an earlier run is NOT re-executed; its
+    # stored findings replay through the normal persist path below.
+    # That is what makes re-running an interrupted scan resume
+    # instead of restart. RECON_CHECKPOINTS=0 disables.
+    _cp_store = None
+    _cp_key = None
+    _cp_hit = None
+    try:
+        from .checkpoints import (checkpoints_enabled, get_default_store,
+                                  unit_key)
+        if checkpoints_enabled():
+            _cp_args = {"mode": ctx.mode, "source_type": ctx.source_type}
+            _cp_store = get_default_store()
+            _cp_key = unit_key(target.normalized, plugin_id, _cp_args)
+            _rec = _cp_store.lookup(_cp_key)
+            if _rec and _rec.get("status") == "done" and _rec.get("result"):
+                _cp_hit = _rec
+            else:
+                _cp_store.begin(_cp_key, target.normalized, plugin_id,
+                                _cp_args)
+    except Exception:
+        _cp_store = None
+        _cp_key = None
     clock = _run_clocks.get(run_id, time.monotonic())
     deadline = clock + SCAN_BUDGET_S - SCAN_TAIL_RESERVE_S
     ran_plugin = False
     try:
-        if plugin.accepts and target.type not in plugin.accepts:
+        if _cp_hit is not None:
+            result = _result_from_checkpoint(_cp_hit, plugin_id)
+        elif plugin.accepts and target.type not in plugin.accepts:
             result = plugin._skipped(
                 f"not applicable to target type '{target.type}'")
             result.duration_ms = 0
@@ -1147,6 +1285,12 @@ async def _run_one_job(job_id: int) -> None:
             result = await _run_plugin(plugin, target, ctx,
                                        deadline=deadline)
     except Exception as e:
+        if _cp_store is not None and _cp_key is not None and _cp_hit is None:
+            try:
+                _cp_store.fail(_cp_key,
+                               f"{type(e).__name__}: {str(e)[:150]}")
+            except Exception:
+                pass
         await asyncio.to_thread(
             _mark_job_failed, job_id,
             f"worker error: {type(e).__name__}: {str(e)[:150]}")
@@ -1156,6 +1300,19 @@ async def _run_one_job(job_id: int) -> None:
     # (in a thread), then fan out the per-finding events.
     row_ids, counts, st = await asyncio.to_thread(
         _persist_job, job_id, run_id, target.id, result)
+    # Checkpoint record: done units become skippable on a resume;
+    # failed units stay retryable. Best-effort, never breaks a job.
+    if _cp_store is not None and _cp_key is not None and _cp_hit is None:
+        try:
+            import dataclasses as _dc
+            if st in ("ok", "skipped"):
+                _cp_store.complete(_cp_key, {
+                    "status": st, "reason": result.reason,
+                    "findings": [_dc.asdict(f) for f in result.findings]})
+            else:
+                _cp_store.fail(_cp_key, result.reason or st)
+        except Exception:
+            pass
     for f, rid in zip(result.findings, row_ids):
         try:
             ctx.publish("poc_findings", {
@@ -1448,6 +1605,70 @@ def _record_waf_blocks(session, run_id: str, ctx) -> int:
     return added
 
 
+def _correlate_run(session, run_id: str):
+    """Cross-finding correlation: synthesize attack paths + exposure score.
+
+    Runs once at finalize, after every plugin and hunter pass has settled,
+    over the whole finding set. Produces composite "attack path" findings
+    no single plugin could (persisted as plugin_id="correlation") plus a
+    run-level exposure score for the summary. Detection/analysis only.
+
+    Idempotent across re-finalizes: deletes prior correlation rows before
+    re-inserting, and the engine itself ignores correlation rows when
+    reading, so a hunter-triggered reopen never double-counts or feeds its
+    own output back in. Best-effort: any failure returns an empty block and
+    never breaks finalize.
+    """
+    try:
+        from .correlate import correlate
+    except Exception:
+        return [], {}
+    try:
+        # Drop any correlation rows from a previous finalize of this run so
+        # the pass is idempotent (hunter expansion can reopen a run).
+        (session.query(FindingRow)
+         .filter_by(run_id=run_id, plugin_id="correlation").delete())
+        rows = session.query(FindingRow).filter_by(run_id=run_id).all()
+        as_dicts = [{
+            "id": r.id, "plugin": r.plugin_id, "category": r.category,
+            "key": r.key, "value": r.value, "source": r.source,
+            "source_url": r.source_url, "confidence": r.confidence,
+            "evidence": r.evidence, "bounty_value": r.bounty_value,
+        } for r in rows]
+        # Attach correlation findings to the run's first target (they are
+        # run-level, but FindingRow requires a target_id). Its normalized
+        # value is also the host hint for verification commands.
+        first_target = session.query(TargetRow).filter_by(
+            run_id=run_id).first()
+        tid = first_target.id if first_target else run_id
+        host_hint = first_target.normalized if first_target else None
+        paths, exposure = correlate(as_dicts, host_hint=host_hint)
+        now = dt.datetime.now(dt.timezone.utc)
+        for p in paths:
+            session.add(FindingRow(
+                run_id=run_id, target_id=tid, plugin_id="correlation",
+                category=p["category"], key=p["key"], value=p["value"],
+                source=p["source"], source_url=p.get("source_url"),
+                confidence=p["confidence"], evidence=p["evidence"],
+                passive=p.get("passive", True), first_seen=now,
+                raw=None, bounty_value=p["bounty_value"]))
+        if paths:
+            session.flush()
+        # Compact summary block (full detail lives on the findings).
+        compact = [{
+            "name": p["evidence"]["path_name"],
+            "path_id": p["evidence"]["path_id"],
+            "severity": p["evidence"]["severity"],
+            "exploitability": p["evidence"]["exploitability"],
+            "component_count": p["evidence"]["component_count"],
+            "tags": p["evidence"].get("tags", []),
+        } for p in paths]
+        return compact, exposure
+    except Exception:
+        session.rollback()
+        return [], {}
+
+
 async def _finalize_run(run_id: str) -> bool:
     """Finalize a run whose jobs are all settled. Atomic claim so only one
     worker finalizes. Returns True if this worker did it."""
@@ -1467,6 +1688,17 @@ async def _finalize_run(run_id: str) -> bool:
             return False
         from .graph import build_graph
         n_nodes, n_edges = build_graph(session, run_id)
+        # Cross-run knowledge store ingest (app/knowledge_store.py):
+        # assets / observations / findings land in the SQLite store
+        # the delta engine and MCP knowledge tools read. Best-effort
+        # like the Mongo archive below; idempotent across the
+        # re-finalizes the hunter reopen path can cause.
+        _ks_stats = None
+        try:
+            from .knowledge_store import ingest_run as _ks_ingest
+            _ks_stats = _ks_ingest(session, run_id)
+        except Exception:
+            pass
         # WAF blocks seen by ANY plugin become findings (not silent zeros).
         try:
             _record_waf_blocks(session, run_id, _run_ctxs.get(run_id))
@@ -1550,10 +1782,22 @@ async def _finalize_run(run_id: str) -> bool:
                     hunter_section = finalize_hunt(session, _hrun, _accum)
         except Exception:
             hunter_section = None
+        # Cross-finding correlation pass (attack paths + exposure score).
+        # Runs here, once, after the hunter loop has fully settled (the
+        # reopen paths above all return before this point), over the whole
+        # finding set. Recompute `total` so the finding count includes the
+        # synthesized paths.
+        attack_paths, exposure = _correlate_run(session, run_id)
+        if attack_paths:
+            total = session.query(FindingRow).filter_by(run_id=run_id).count()
         run = session.query(Run).filter_by(id=run_id).first()
         summary: Dict = {"findings": total, "nodes": n_nodes,
                          "edges": n_edges, "targets": n_targets,
                          "plugins": plugin_statuses}
+        if exposure:
+            summary["exposure"] = exposure
+        if attack_paths:
+            summary["attack_paths"] = attack_paths
         # Bank/ATM mode: keep the mode's own record (input, locations,
         # resolved domains) in the final summary - it is the run's
         # headline, set at enqueue time and preserved here like
@@ -1562,10 +1806,22 @@ async def _finalize_run(run_id: str) -> bool:
             _prev = session.query(Run).filter_by(id=run_id).first()
             if _prev and (_prev.summary or {}).get("bankatm"):
                 summary["bankatm"] = _prev.summary["bankatm"]
+            # Service-created runs (Error Inbox black team): the service
+            # read endpoint only serves runs tagged service=true, so the
+            # tag must survive finalize — otherwise a finished service
+            # run 404s on its own read endpoint (canary-caught: the run
+            # finished done with 1,226 findings, then its status read
+            # 404d because the fresh summary dropped the tag).
+            if _prev and (_prev.summary or {}).get("service"):
+                summary["service"] = True
+                if (_prev.summary or {}).get("service_host"):
+                    summary["service_host"] = _prev.summary["service_host"]
         except Exception:
             pass
         if hunter_section:
             summary["hunters"] = hunter_section
+        if _ks_stats:
+            summary["knowledge_store"] = _ks_stats
         if skipped_budget:
             summary["skipped_time_budget"] = skipped_budget
             summary["note"] = (f"{skipped_budget} low-priority plugins "
@@ -1631,6 +1887,17 @@ async def _sweep_finalize(force: bool = False) -> None:
                    .filter(Run.status == "running").all()]
         for rid in run_ids:
             if _pending_count(session, rid) == 0:
+                # A run still carrying a pending_enqueue intent has not
+                # finished enqueueing yet (intent is cleared by
+                # execute_run only after jobs are queued). Finalizing
+                # it here would end the scan with 0 findings and orphan
+                # the jobs that land a moment later — canary-caught on
+                # a service scan: finalized 3s after creation, then all
+                # 600 jobs skipped as "run no longer active".
+                _row = session.query(Run).filter_by(id=rid).first()
+                if _row and (_row.summary or {}).get(
+                        "pending_enqueue") is not None:
+                    continue
                 await _finalize_run(rid)
         # Orphaned runs: no jobs at all, still "running", older than 10 min.
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
@@ -2373,6 +2640,25 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         except Exception:
             pass
     finally:
+        # Clear the durable enqueue intent (see api_start_run): normal
+        # completion - jobs queued, or a terminal failed/done outcome
+        # that already rewrote the summary - needs no recovery. A
+        # process killed mid-enqueue never reaches this block, so its
+        # intent survives for boot-time replay. Fresh session on
+        # purpose: the branches above close/replace `session`.
+        try:
+            _s2 = get_session()
+            try:
+                _r = _s2.query(Run).filter_by(id=run_id).first()
+                if _r and (_r.summary or {}).get("pending_enqueue") is not None:
+                    _s = dict(_r.summary or {})
+                    _s.pop("pending_enqueue", None)
+                    _r.summary = _s
+                    _s2.commit()
+            finally:
+                _s2.close()
+        except Exception:
+            pass
         try:
             session.close()
         except Exception:
