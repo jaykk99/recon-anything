@@ -2397,3 +2397,10 @@ once your payment reaches 2 confirmations. {checkout}</p>
 <p><a href="/api/auth/github">{signin}</a></p>
 <main>{''.join(cards)}</main></body></html>"""
     return HTMLResponse(html)
+
+
+# --- agent section (cyber-agent fold): owner-gated; the gate is attached
+# here at include time so agent/routes.py never imports main, which
+# would be a circular import. -------------------------------------------
+from .agent.routes import router as _agent_router
+app.include_router(_agent_router, dependencies=[Depends(gate)])
