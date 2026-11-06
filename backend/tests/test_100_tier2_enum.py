@@ -562,4 +562,4 @@ def test_tier2_plugins_registered():
     for pid in ("naabu", "masscan", "nmap_nse", "httpx_probe", "tlsx",
                 "zmap", "rustscan", "feroxbuster", "gobuster", "dirsearch"):
         assert pid in reg, pid
-    assert len(reg) == 934  # + 22 Cat-1 (300-expansion) plugins
+    assert len(reg) == 967

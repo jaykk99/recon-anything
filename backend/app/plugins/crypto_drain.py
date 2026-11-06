@@ -229,6 +229,106 @@ def _signature_gate_modifier(signature: str) -> bool:
     return False
 
 
+def _registry_gate_evidence(text: str) -> str:
+    """Evidence of a registry-indirect access gate, or "".
+
+    A caller-keyed storage struct fetched into a local is an
+    access gate only when a require/if then checks a FIELD of
+    that struct (L2DAO: `Supply storage b = bridges[msg.sender];
+    require(b.cap > 0)`) or the local is a boolean membership
+    flag. A caller-keyed UINT read compared directly
+    (`uint256 amt = entitlement[msg.sender]; require(amt > 0)`)
+    is an ENTITLEMENT check - it meters how much the caller is
+    owed, it does not identify who may call - and is NOT a gate
+    (depth fix 2, 2026-11-05).
+    """
+    local_re = re.compile(
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*"
+        r"(?:\[[^\]]*\]\s*)*\[\s*" + _SENDER_RE + r"\s*\]")
+    for m in local_re.finditer(text):
+        var = re.escape(m.group(1))
+        fm = re.search(
+            r"(?:require|assert|if)\s*\([^;{]*?\b" + var +
+            r"\s*\.\s*[A-Za-z_]", text)
+        if fm:
+            return fm.group(0)
+    # Inline field read: require(bridges[msg.sender].cap > 0).
+    fm = re.search(
+        r"(?:require|assert|if)\s*\([^;{]*?[A-Za-z_][A-Za-z0-9_]*"
+        r"\s*(?:\[[^\]]*\]\s*)*\[\s*" + _SENDER_RE +
+        r"\s*\]\s*\.\s*[A-Za-z_]", text)
+    if fm:
+        return fm.group(0)
+    # Boolean membership local: bool ok = allowed[msg.sender];
+    # require(ok) - the local itself is the condition.
+    for m in re.finditer(
+            r"\bbool\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            r"[A-Za-z_][A-Za-z0-9_]*\s*(?:\[[^\]]*\]\s*)*\[\s*" +
+            _SENDER_RE + r"\s*\]", text):
+        var = re.escape(m.group(1))
+        if re.search(r"(?:require|if)\s*\(\s*!?\s*" + var +
+                     r"\s*[,\)]", text):
+            return m.group(0)
+    return ""
+
+
+_RECOVER_ASSIGN_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*?"
+    r"(?:ecrecover|\.recover)\s*\(")
+
+
+def _authority_operand(operand: str, params: set) -> bool:
+    """True when a comparison operand names a STORED authority:
+    a bare identifier (or member/index chain / nullary getter
+    over one) that is not a function parameter, not address(0),
+    and not the caller. A caller-supplied parameter does not
+    count - the caller picks both sides of that comparison."""
+    op = _unwrap((operand or "").strip().rstrip(")"))
+    if op in ("address(0)", "0"):
+        return False
+    base = _base_ident(op)
+    if not base or base in params:
+        return False
+    if base in ("address", "msg", "tx", "block", "this"):
+        return False
+    return True
+
+
+def _signature_gate_evidence(text: str, signature: str = "") -> str:
+    """Evidence of a signature gate, or "".
+
+    Bare ecrecover / ECDSA.recover presence is NOT a gate: the
+    recovered signer must be COMPARED against a stored authority
+    (a state variable / immutable / owner-like identifier, not a
+    caller-supplied parameter). `signer != address(0)` alone only
+    proves some signature existed - anyone can produce one over
+    their own address (depth fix 2, 2026-11-05; mirrors
+    recipient_first._STORED_SIGNER_CMP_RE's discipline).
+    """
+    params = set(_param_names(signature)) if signature else set()
+    recovered = set(_RECOVER_ASSIGN_RE.findall(text))
+    for var in recovered:
+        v = re.escape(var)
+        for m in re.finditer(
+                r"\b" + v + r"\b\s*(?:==|!=)\s*([^\s,;\)]+)|"
+                r"([^\s,;\(]+)\s*(?:==|!=)\s*\b" + v + r"\b", text):
+            operand = m.group(1) or m.group(2) or ""
+            if _authority_operand(operand, params):
+                return m.group(0)
+    # Inline: require(ecrecover(h, v, r, s) == owner).
+    for m in re.finditer(r"ecrecover\s*\(", text):
+        close = _matching(text, m.end() - 1)
+        tail = text[close + 1:close + 80]
+        tm = re.match(r"\s*(?:==|!=)\s*([^\s,;\)]+)", tail)
+        if tm and _authority_operand(tm.group(1), params):
+            return text[m.start():close + 1] + tm.group(0)
+        head = text[max(0, m.start() - 80):m.start()]
+        hm = re.search(r"([^\s,;\(]+)\s*(?:==|!=)\s*$", head)
+        if hm and _authority_operand(hm.group(1), params):
+            return hm.group(0) + text[m.start():close + 1]
+    return ""
+
+
 def _is_gated(signature: str, text: str) -> bool:
     """True when the function shows any access gate, including the
     shapes contract_chain._GATE_RE misses (bridge-watch discipline).
@@ -254,12 +354,11 @@ def _is_gated(signature: str, text: str) -> bool:
         return True  # require(isMinter[msg.sender]) and kin
     if _ROLE_CALL_RE.search(text):
         return True  # require(isMinter(msg.sender)) and kin
-    for m in _REGISTRY_LOCAL_RE.finditer(text):
-        var = re.escape(m.group(1))
-        if re.search(r"require\s*\([^;]*?\b" + var + r"\b", text):
-            return True  # storage struct by caller + require on it
-    low = text.lower()
-    if "ecrecover" in low or "verifysig" in low:
+    if _registry_gate_evidence(text):
+        return True  # storage struct by caller + field check on it
+    if _signature_gate_evidence(text, signature):
+        return True  # recovered signer compared to stored authority
+    if "verifysig" in text.lower():
         return True  # signature-verified (validator quorum etc.)
     return False
 
@@ -391,6 +490,22 @@ def analyze_drain_source(src: str,
     """
     clean = cc._strip_comments(src)
     out: List[Dict[str, Any]] = []
+    # Depth fix 2: a gate may live in a modifier DEFINITION or an
+    # internal helper the function calls (_authorize() and kin) -
+    # invisible to this module's per-function gate read. Prove
+    # gated-ness over contract_logic's scope (modifier bodies +
+    # helper call path) before flagging. Lazy import: contract_
+    # logic imports this module, so the dependency cannot run
+    # the other way at module load.
+    cl_scope = None
+    cl_mod = None
+    try:
+        from . import contract_logic as _cl
+        cl_scope = _cl._Scope(src, (meta or {}).get(
+            "contract_name", ""))
+        cl_mod = _cl
+    except Exception:
+        cl_scope = None
     for fn in cc.extract_functions(clean):
         name = fn["name"]
         if not name or name in ("constructor", "fallback", "receive"):
@@ -398,6 +513,10 @@ def analyze_drain_source(src: str,
         sig, text = fn["signature"], fn["text"]
         if _is_skippable(sig, text) or _is_gated(sig, text):
             continue
+        if cl_scope is not None and cl_mod._gated_deep(
+                {"name": name, "signature": sig, "text": text},
+                cl_scope):
+            continue  # gate enforced by a modifier def or helper
         params = _param_names(sig)
         # A function that reads the caller's own credited balance
         # (balances[msg.sender] and kin) is paying out what the
