@@ -204,6 +204,20 @@ def _recipient(fn_text: str) -> Tuple[str, str]:
     return cl.classify_recipient(fn_text)
 
 
+def _path(scope, fn: Dict[str, Any]) -> Tuple[str, str, str]:
+    """(path_text, recipient, detail) over the argument-bound
+    internal call path of fn: payout detection and recipient
+    classification run over the bound path, so an entry whose
+    helper performs the transfer (withdraw -> _payout ->
+    msg.sender) is read from the actual call path, not from
+    the entry body alone."""
+    recipient, detail, text = cl.classify_recipient_path(scope, fn)
+    return text, recipient, detail
+
+
+
+
+
 def _caller_indexed_reads(fn_text: str) -> List[str]:
     """State mappings / balance views read keyed by the caller."""
     out = []
@@ -293,19 +307,19 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
             continue
         if not re.search(r"mint", fn["name"], re.I):
             continue
-        if not _MINT_CALL_RE.search(fn["text"]):
+        path_text, recipient, rdetail = _path(scope, fn)
+        if not _MINT_CALL_RE.search(path_text):
             continue
         if cl._gated_deep(fn, scope):
             continue
-        if "balanceOf(address(this))" in fn["text"]:
+        if "balanceOf(address(this))" in path_text:
             continue  # AMM pair mint: liquidity is metered
             # by the pair's own balance deltas against
             # reserves, i.e. by what the caller already
             # transferred in - not unbacked printing
-        recipient, rdetail = _recipient(fn["text"])
         if recipient == "HOLDER-SELF" and not re.search(
                 r"(require|assert)\s*\([^;]*(balanceOf|balances|"
-                r"shares)\s*\[\s*msg\.sender", fn["text"]):
+                r"shares)\s*\[\s*msg\.sender", path_text):
             # The generic classifier reads a mint CREDIT to the
             # caller's balance as self-metering. A mint is not the
             # caller's own money coming back: it is new value
@@ -316,6 +330,20 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
             rdetail += ("; mint credit reclassified: minted "
                         "value is new value to the caller, not "
                         "the caller's own balance returned")
+        if recipient in ("CALLER", "CALLER-SUPPLIED"):
+            # Canonical public-surface shapes (the contract_
+            # logic FP-elimination read): an ERC4626 mint whose
+            # path pulls the caller's own assets in first, a
+            # mint authorized by a state-held external contract
+            # (Comptroller.mintAllowed), or a mint metered by
+            # the contract's own balance deltas is bought /
+            # authorized issuance, not unbacked printing.
+            reason = cl._fp_downgrade_reason(
+                path_text, scope,
+                cl.state_variables(scope.scoped_text))
+            if reason:
+                recipient = "HOLDER-SELF"
+                rdetail += f"; downgraded: {reason}"
         extra = (f"Observed: '{fn['name']}' mints with no gate; "
                  f"recipient classified {recipient} ({rdetail}).")
         out.extend(_finish(spec_id, fn, extra, recipient))
@@ -388,7 +416,8 @@ def _analyze_claim(src, spec_id, compiler, contract_name):
             continue
         if not _CLAIM_NAME_RE.search(fn["name"]):
             continue
-        if not _pays_out(fn["text"]):
+        path_text, recipient, rdetail = _path(scope, fn)
+        if not _pays_out(path_text):
             continue
         # NOT _gated_deep here: the shared gate read treats an
         # entitlement read + a require on it as a gate, but an
@@ -398,12 +427,11 @@ def _analyze_claim(src, spec_id, compiler, contract_name):
         # checks) still suppress.
         if _access_gated(fn, scope):
             continue
-        if _proof_or_sig_backed(fn["text"]):
+        if _proof_or_sig_backed(path_text):
             continue  # proof / authority-signed entitlement
-        reads = _caller_indexed_reads(fn["text"])
-        if reads and _caller_indexed_write(fn["text"], reads):
+        reads = _caller_indexed_reads(path_text)
+        if reads and _caller_indexed_write(path_text, reads):
             continue  # entitlement read AND consumed: entitled
-        recipient, rdetail = _recipient(fn["text"])
         if reads:
             extra = (f"Observed: '{fn['name']}' reads the caller's "
                      f"entitlement ({', '.join(sorted(set(reads)))})"
@@ -433,26 +461,26 @@ def _analyze_overdraw(src, spec_id, compiler, contract_name):
             continue
         if not _WITHDRAW_NAME_RE.search(fn["name"]):
             continue
-        if not _pays_out(fn["text"]):
+        path_text, recipient, rdetail = _path(scope, fn)
+        if not _pays_out(path_text):
             continue
         if cl._gated_deep(fn, scope):
             continue
-        reads = _caller_indexed_reads(fn["text"])
-        if reads and _amount_bounded(fn["text"], reads):
+        reads = _caller_indexed_reads(path_text)
+        if reads and _amount_bounded(path_text, reads):
             continue  # entitled withdraw / holder-self unwrap
         # A debit of the caller's own balance by name-less internal
         # balance vars (balanceOf-keyed) also bounds the payout.
-        if _amount_bounded(fn["text"], ["balanceOf", "_balances",
-                                        "balances"]):
+        if _amount_bounded(path_text, ["balanceOf", "_balances",
+                                       "balances"]):
             continue
-        if _burn_bounded(fn["text"]) or \
-                _record_debit_bounded(fn["text"]):
+        if _burn_bounded(path_text) or \
+                _record_debit_bounded(path_text):
             continue  # payout metered by the caller's own
             # burned shares / debited recorded balance
-        if _PROOF_VERIFY_COND_RE.search(fn["text"]):
+        if _PROOF_VERIFY_COND_RE.search(path_text):
             continue  # release authorized by a verified
             # proof / signature (ERC-1271 release shape)
-        recipient, rdetail = _recipient(fn["text"])
         extra = (f"Observed: '{fn['name']}' pays out with no bound "
                  "against the caller's own recorded balance and no "
                  "debit of it. "
@@ -477,16 +505,16 @@ def _analyze_rescue(src, spec_id, compiler, contract_name):
             continue
         if not _RESCUE_NAME_RE.search(fn["name"]):
             continue
-        if not _pays_out(fn["text"]) and "selfdestruct" not in \
-                fn["text"]:
+        path_text, recipient, rdetail = _path(scope, fn)
+        if not _pays_out(path_text) and "selfdestruct" not in \
+                path_text:
             continue
         if cl._gated_deep(fn, scope):
             continue
-        if _burn_bounded(fn["text"]) or \
-                _record_debit_bounded(fn["text"]):
+        if _burn_bounded(path_text) or \
+                _record_debit_bounded(path_text):
             continue  # caller collecting their own recorded
             # position (emergencyWithdraw shape), not a rescue
-        recipient, rdetail = _recipient(fn["text"])
         extra = (f"Observed: '{fn['name']}' moves contract value "
                  f"with no gate; destination classified "
                  f"{recipient} ({rdetail}).")
@@ -520,23 +548,18 @@ def _analyze_bridge(src, spec_id, compiler, contract_name):
             continue
         if not _BRIDGE_FN_RE.search(fn["name"]):
             continue
-        if not _pays_out(fn["text"]):
+        path, recipient, rdetail = _path(scope, fn)
+        if not _pays_out(path):
             continue
         if cl._gated_deep(fn, scope):
             continue
         if not bridge_ctx:
             continue
-        # Proof verified anywhere in the call path suppresses:
-        # the function itself or a helper it calls checks a proof
-        # or consumes a message id.
-        path = fn["text"]
-        for name, helper in scope.helpers.items():
-            if re.search(r"\b" + re.escape(name) + r"\s*\(",
-                         fn["text"]):
-                path += "\n" + helper["text"]
+        # Proof verified anywhere in the (bound) call path
+        # suppresses: the function itself or a helper it calls
+        # checks a proof or consumes a message id.
         if _PROOF_RE.search(path) or _NONCE_CONSUME_RE.search(path):
             continue
-        recipient, rdetail = _recipient(fn["text"])
         extra = (f"Observed: '{fn['name']}' releases escrowed "
                  "value with no proof verification and no nonce "
                  "consumption in its call path. "
@@ -618,7 +641,8 @@ def _analyze_sig(src, spec_id, compiler, contract_name):
             continue
         if not _SIG_MATERIAL_RE.search(fn["text"]):
             continue
-        if not _pays_out(fn["text"]):
+        path_text, path_recipient, path_rdetail = _path(scope, fn)
+        if not _pays_out(path_text):
             continue
         if _sig_gated(fn, scope):
             continue
@@ -662,7 +686,7 @@ def _analyze_sig(src, spec_id, compiler, contract_name):
             continue  # stored comparison exists; the zero-signer
             # class (deep_audit ecrecover_zero_signer) covers the
             # remaining stored-signer-no-zero-check shape.
-        recipient, rdetail = _recipient(fn["text"])
+        recipient, rdetail = path_recipient, path_rdetail
         extra += f"Recipient classified {recipient} ({rdetail})."
         out.extend(_finish(spec_id, fn, extra, recipient))
     return out
