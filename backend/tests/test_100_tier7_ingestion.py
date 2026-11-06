@@ -216,7 +216,7 @@ def keys_of(res):
 
 def test_registry_count_tier7():
     reg = discover()
-    assert len(reg) == 927, f"registry size {len(reg)}, expected 927"
+    assert len(reg) == 957, f"registry size {len(reg)}, expected 957"  # + 30 Cat-10 (300-expansion) plugins
     for pid in NEW_IDS:
         assert pid in reg, f"{pid} missing"
 
