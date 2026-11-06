@@ -61,11 +61,17 @@ positives out of 103 hand-validated candidates across the
    TRIGGER-ONLY at low severity, never as a candidate-grade flaw.
 
 Bytecode lane (key "bytecode_opcode_risk"): when no verified
-source exists, the runtime bytecode is disassembled through
-contract_chain.analyze_bytecode and the presence of SELFDESTRUCT
-/ DELEGATECALL / CALLCODE is reported at LOW severity and LOW
-confidence, explicitly labeled a bytecode-only heuristic - never
-as a confirmed logic flaw.
+source exists, the runtime bytecode is analyzed per selector by
+bytecode_paths: an EIP-1167 minimal proxy surfaces its
+implementation address; a recognized solc dispatcher yields one
+finding per selector whose walked path reaches a sensitive
+opcode (SELFDESTRUCT / DELEGATECALL paths at medium, CALL-only
+at low), with the path opcodes, storage slots, and an inert
+eth_call probe sketch for the validator; with no dispatcher
+recognized, the legacy aggregate SELFDESTRUCT / DELEGATECALL /
+CALLCODE presence finding is emitted unchanged. Everything in
+this lane is explicitly labeled a bytecode-only heuristic -
+never a confirmed logic flaw.
 
 Detection only. Never sends a transaction, never calls the
 contract; the deepest access is eth_getCode and public explorer
@@ -82,6 +88,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc
+from . import bytecode_paths as bp
 from . import chain_data
 from . import crypto_drain as cd
 
@@ -1711,14 +1718,60 @@ def analyze_logic_source(src: str, compiler: str = "",
     return out
 
 
-def analyze_logic_bytecode(code_hex: str) -> List[Dict[str, Any]]:
-    """Bytecode-only heuristic lane: risky opcode presence.
+# The unfunded stranger used in every probe sketch: read-only
+# eth_call reachability is judged from an address that holds
+# nothing and controls nothing, exactly like the live validator.
+_STRANGER = "0x00000000000000000000000000000000deaDBeef"
 
-    Returns at most one finding dict, explicitly labeled a
-    heuristic - opcode presence says a capability exists in the
-    bytecode, never that a logic flaw is confirmed.
-    """
-    info = cc.analyze_bytecode(code_hex)
+_MEDIUM_OPCODES = ("SELFDESTRUCT", "DELEGATECALL", "CALLCODE")
+
+
+def _signature_arg_count(signature: Optional[str]) -> Optional[int]:
+    """Number of top-level arguments in a known signature, or
+    None when the signature is unknown / unparseable."""
+    if not signature or "(" not in signature or \
+            not signature.endswith(")"):
+        return None
+    inner = signature[signature.index("(") + 1:-1].strip()
+    if not inner:
+        return 0
+    depth = 0
+    count = 1
+    for ch in inner:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            count += 1
+    return count
+
+
+def _probe_sketch(selector: str, signature: Optional[str]
+                  ) -> Dict[str, Any]:
+    """An inert eth_call probe sketch (DATA only - this plugin
+    never executes it): the selector plus one zero-filled 32-byte
+    word per known argument, from the unfunded stranger."""
+    argc = _signature_arg_count(signature)
+    data = "0x" + selector[2:]
+    if argc:
+        data += "00" * 32 * argc
+    return {
+        "selector": selector,
+        "signature": signature,
+        "from_address": _STRANGER,
+        "data": data,
+        "purpose": (
+            "read-only eth_call reachability probe for the "
+            "validator - never executed by this plugin"),
+    }
+
+
+def _legacy_bytecode_finding(info: Dict[str, Any]
+                             ) -> List[Dict[str, Any]]:
+    """The original aggregate opcode-presence finding, unchanged:
+    used when no dispatcher is recognized, so existing consumers
+    see exactly the legacy shape."""
     opcodes = info.get("opcodes") or {}
     risky = {k: v for k, v in opcodes.items()
              if k in ("SELFDESTRUCT", "DELEGATECALL", "CALLCODE")}
@@ -1737,6 +1790,112 @@ def analyze_logic_bytecode(code_hex: str) -> List[Dict[str, Any]]:
             "shows the capability exists; it does NOT confirm a "
             "logic flaw - the source is needed for that."),
     }]
+
+
+def analyze_logic_bytecode(code_hex: str) -> List[Dict[str, Any]]:
+    """Bytecode-only heuristic lane, v2: per-selector attribution.
+
+    - EIP-1167 minimal proxy: one finding carrying the
+      implementation address and a probe sketch directing
+      analysis at the IMPLEMENTATION (the proxy has no logic).
+    - solc dispatcher recognized: ONE finding per selector whose
+      walked path reaches a sensitive opcode (CALL / CALLCODE /
+      DELEGATECALL / SELFDESTRUCT / CREATE / CREATE2), with the
+      path opcodes, storage slots, and an inert eth_call probe
+      sketch. Selectors reaching nothing sensitive stay silent.
+    - No dispatcher recognized: the legacy aggregate
+      opcode-presence finding, unchanged.
+    - No sensitive opcode on any path and none globally: [].
+
+    Every finding is explicitly a bytecode heuristic: a
+    capability on a statically reachable path, NOT a confirmed
+    flaw.
+    """
+    info = cc.analyze_bytecode(code_hex)
+
+    impl = info.get("minimal_proxy_impl")
+    if impl:
+        return [{
+            "kind": "bytecode_opcode_risk",
+            "logic_kind": "bytecode_minimal_proxy",
+            "severity": "low",
+            "function": "",
+            "code": "",
+            "minimal_proxy_impl": impl,
+            "selector_paths": [],
+            "probe_sketches": [{
+                "selector": None,
+                "signature": None,
+                "from_address": _STRANGER,
+                "data": "0x",
+                "target": impl,
+                "minimal_proxy_impl": impl,
+                "purpose": (
+                    "this address is an EIP-1167 minimal proxy "
+                    "with no logic of its own: direct read-only "
+                    "eth_call analysis at the IMPLEMENTATION "
+                    f"address {impl}, not the proxy shell - "
+                    "never executed by this plugin"),
+            }],
+            "detail": (
+                f"bytecode heuristic (no verified source): this "
+                f"contract is an EIP-1167 minimal proxy - it has "
+                f"no logic of its own and delegatecalls every "
+                f"call to its implementation {impl}. Analyze the "
+                f"IMPLEMENTATION contract; the proxy shell alone "
+                f"proves nothing about the logic behind it."),
+        }]
+
+    paths = bp.analyze(code_hex)
+    if paths.get("dispatcher_found"):
+        findings: List[Dict[str, Any]] = []
+        for entry in paths.get("selectors") or []:
+            sensitive = entry.get("sensitive_opcodes") or []
+            if not sensitive:
+                continue
+            selector = entry["selector"]
+            signature = entry.get("signature")
+            severity = "medium" if any(
+                op in sensitive for op in _MEDIUM_OPCODES) \
+                else "low"
+            findings.append({
+                "kind": "bytecode_opcode_risk",
+                "logic_kind": "bytecode_selector_capability",
+                "severity": severity,
+                "function": signature or selector,
+                "code": "",
+                "selector": selector,
+                "signature": signature,
+                "opcodes": entry.get("opcodes") or [],
+                "sensitive_opcodes": list(sensitive),
+                "storage_reads": entry.get("storage_reads") or [],
+                "storage_writes": entry.get("storage_writes") or [],
+                "selector_paths": [entry],
+                "probe_sketches": [
+                    _probe_sketch(selector, signature)],
+                "detail": (
+                    f"bytecode heuristic (no verified source): "
+                    f"selector {selector}"
+                    + (f" ({signature})" if signature else "")
+                    + f" reaches {', '.join(sensitive)} on a "
+                    f"statically walked bytecode path. This is a "
+                    f"capability on a reachable path, NOT a "
+                    f"confirmed flaw - reachability says nothing "
+                    f"about gates or call context the bytecode "
+                    f"walk cannot see; the probe sketch is for "
+                    f"the validator to test read-only."),
+            })
+        if findings:
+            return findings
+        # Dispatcher found but no selector path reaches a
+        # sensitive opcode: fall through - silence when nothing
+        # sensitive exists globally, else the legacy aggregate.
+        global_ops = (info.get("opcodes") or {})
+        if not any(name in global_ops for name in (
+                "SELFDESTRUCT", "DELEGATECALL", "CALLCODE",
+                "CALL", "CREATE", "CREATE2")):
+            return []
+    return _legacy_bytecode_finding(info)
 
 
 # ---------------------------------------------------------------------------
@@ -1983,9 +2142,23 @@ class ContractLogicPlugin(Plugin):
                     "bytecode_only": True,
                     "remediation": _REMEDIATIONS[item["kind"]],
                 })
+                # Bytecode lane v2 fields: per-selector
+                # attribution, walked-path opcodes, storage
+                # slots, inert probe sketches, and the EIP-1167
+                # implementation when the target is a minimal
+                # proxy. Legacy aggregate findings carry none of
+                # these and keep their exact old evidence shape.
+                for field in ("function", "selector", "signature",
+                              "opcodes", "sensitive_opcodes",
+                              "storage_reads", "storage_writes",
+                              "selector_paths", "probe_sketches",
+                              "minimal_proxy_impl"):
+                    if field in item:
+                        ev[field] = item[field]
                 findings.append(self._f(
                     "web3", item["kind"],
-                    f"LOW: Bytecode heuristic: contract {addr} on "
+                    f"{item['severity'].upper()}: Bytecode "
+                    f"heuristic: contract {addr} on "
                     f"{chain.name} has risky opcodes and no "
                     f"verified source to audit{tag}\n\n"
                     f"{item['detail']}",
