@@ -64,6 +64,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from . import bytecode_paths as bp
 from . import contract_chain as cc
 from . import contract_logic as cl
 from . import contract_sim as sim
@@ -458,6 +459,218 @@ def _token_value_evidence(candidate: Dict[str, Any],
     return None
 
 
+def _bytecode_recipient_read(findings: Any,
+                             flagged_selector: Any) -> Optional[str]:
+    """Coarse recipient read from contract_logic.
+    analyze_logic_bytecode output for the flagged selector.
+
+    Deliberately narrow: only a value CALL whose walked path
+    loads calldata (the CALL target comes from the caller's
+    own arguments) classifies CALLER-SUPPLIED, and a value
+    CALL on a path that reads the CALLER opcode classifies
+    CALLER. Anything else - no matching selector entry, no
+    CALL, a target the walk cannot attribute - returns None
+    and the caller keeps the named bytecode blocker. When in
+    doubt, no classification."""
+    if not isinstance(findings, list):
+        return None
+    sel = str(flagged_selector or "").lower()
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        fsel = str(f.get("selector") or "").lower()
+        if sel:
+            if fsel != sel:
+                continue
+        elif len(findings) != 1:
+            continue  # cannot attribute an unnamed selector
+        explicit = f.get("recipient") or f.get("recipient_class")
+        if explicit in ("CALLER", "CALLER-SUPPLIED"):
+            return str(explicit)
+        ops = set(f.get("opcodes") or []) | \
+            set(f.get("sensitive_opcodes") or [])
+        if "CALL" not in ops:
+            return None
+        if "CALLDATALOAD" in ops:
+            return "CALLER-SUPPLIED"
+        if "CALLER" in ops:
+            return "CALLER"
+        return None
+    return None
+
+
+def _validate_bytecode_only(candidate: Dict[str, Any],
+                            out: Dict[str, Any],
+                            be: Dict[str, Any]) -> Dict[str, Any]:
+    """Verdict flow for a bytecode-only contract (no verified
+    source, no recipient_override) carrying bytecode evidence.
+
+    Honesty rules mirror the sibling-source logic: a flagged
+    selector ABSENT from the deployed bytecode is dead at live
+    state (FALSE_POSITIVE); a present selector with a coarse
+    calldata/caller recipient read runs the normal measured-
+    proof flow (simulation / stranger probe / value evidence,
+    denomination unknown); a present-but-unclassifiable
+    selector stays UNVERIFIED with exactly one named missing
+    piece - the bytecode recipient blocker - unless a
+    reverting live probe settles it first."""
+    probe = candidate.get("probe") or {}
+    simulation = candidate.get("simulation") or {}
+    balances = candidate.get("balances") or {}
+    out["evidence"]["bytecode_evidence"] = {
+        "flagged_selector": be.get("flagged_selector"),
+        "selector_present": be.get("selector_present"),
+        "minimal_proxy_impl": be.get("minimal_proxy_impl"),
+        "deployed_selectors": be.get("deployed_selectors")}
+    if balances:
+        out["evidence"]["balances"] = balances
+    if probe:
+        out["evidence"]["probe"] = {
+            "status": probe.get("status"),
+            "via": probe.get("via", ""),
+            "detail": str(probe.get("detail", ""))[:200]}
+    sel = be.get("flagged_selector") or "(unknown selector)"
+    if be.get("selector_present") is False:
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            f"flagged function selector {sel} absent from "
+            "deployed bytecode: the flagged function is not "
+            "part of the deployed contract (bytecode-only, no "
+            "verified source), so the flagged path is dead at "
+            "live state")
+        if probe.get("status"):
+            out["reason"] += (
+                f"; live stranger probe status: "
+                f"{probe.get('status')}")
+        return out
+    if be.get("selector_present") is True:
+        recipient = _bytecode_recipient_read(
+            candidate.get("bytecode_findings"),
+            be.get("flagged_selector"))
+        if recipient in ("CALLER", "CALLER-SUPPLIED"):
+            out["recipient"] = recipient
+            out["evidence"]["bytecode_recipient"] = recipient
+            return _finish_bytecode_proven(candidate, out, probe,
+                                           simulation, balances)
+        if probe.get("status") == "revert":
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "flagged selector is present in the deployed "
+                "bytecode, but the live read-only probe from "
+                "the unfunded stranger reverts "
+                f"({str(probe.get('detail', ''))[:160]}); the "
+                "path is dead at live state")
+            return out
+    out["missing"] = [
+        "recipient destination (bytecode-only contract, "
+        "no verified source)"]
+    out["reason"] = (
+        "no verified source available, and the bytecode "
+        "evidence for the flagged selector does not determine "
+        "the value destination; the gate and the recipient "
+        "cannot be read from bytecode alone")
+    if be.get("minimal_proxy_impl"):
+        out["reason"] += (
+            f"; the contract is an EIP-1167 minimal proxy - "
+            f"analyze the implementation "
+            f"{be['minimal_proxy_impl']} instead")
+    return out
+
+
+def _finish_bytecode_proven(candidate: Dict[str, Any],
+                            out: Dict[str, Any],
+                            probe: Dict[str, Any],
+                            simulation: Dict[str, Any],
+                            balances: Dict[str, Any]
+                            ) -> Dict[str, Any]:
+    """Measured-proof flow for a bytecode-only candidate whose
+    recipient WAS classified from bytecode evidence. Mirrors
+    the source flow's unknown-denomination branch: a
+    simulation or a successful stranger probe plus positive
+    value evidence verifies; measured zeros kill; nothing
+    measured stays UNVERIFIED with the gap named."""
+    recipient = out.get("recipient")
+    if simulation.get("ran"):
+        received = simulation.get("stranger_received")
+        out["evidence"]["simulation"] = simulation.get("detail", "")
+        if received is not None and float(received) > 0:
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = (f"{received} "
+                            f"{simulation.get('unit', '')}".strip())
+            out["reason"] = (
+                "fork/local simulation proves a stranger "
+                f"receives {out['value']}; bytecode recipient "
+                f"read {recipient} (bytecode-only contract, no "
+                "verified source)")
+            return out
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            "fork/local simulation ran and the stranger "
+            "received 0 - the payout does not reach a stranger "
+            "in practice")
+        return out
+    if probe.get("status") == "revert":
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            "live read-only probe from the unfunded stranger "
+            f"reverts ({str(probe.get('detail', ''))[:160]}); "
+            "the bytecode-level path is dead at live state")
+        return out
+    if probe.get("status") == "success":
+        positives: List[str] = []
+        native = balances.get("native_wei")
+        token_self = balances.get("token_self_wei")
+        if native is not None and int(native) > 0:
+            positives.append(
+                f"contract native balance {native} wei")
+        if token_self is not None and int(token_self) > 0:
+            positives.append(
+                f"contract own-token balance {token_self} "
+                "base units")
+        for key in ("amm_reserves", "token_pair_reserves"):
+            total = _reserves_value(balances, key)
+            if total:
+                positives.append(
+                    f"live reserves ({key}, sum {total} "
+                    "base units)")
+        if positives:
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = "; ".join(positives)
+            out["reason"] = (
+                "read-only probe from the unfunded stranger "
+                "succeeds and the bytecode recipient read is "
+                f"{recipient} (bytecode-only contract, no "
+                "verified source); positive value evidence: "
+                + "; ".join(positives))
+            return out
+        if native is not None or token_self is not None or \
+                _reserves_value(balances, "amm_reserves") \
+                is not None or \
+                _reserves_value(balances, "token_pair_reserves") \
+                is not None:
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "stranger probe succeeds but there is no "
+                "positive value evidence: the contract holds "
+                f"{native} wei native and {token_self} of its "
+                "own token, with no live reserves")
+            return out
+        out["missing"] = ["positive value evidence (contract "
+                          "balances / reserves)"]
+        out["reason"] = (
+            "stranger probe succeeds and the bytecode "
+            f"recipient read is {recipient}, but no balance "
+            "or reserve evidence was measured, so there is "
+            "no proof anything payable exists")
+        return out
+    out["missing"] = ["stranger probe or fork/local simulation"]
+    out["reason"] = (
+        "bytecode recipient read is candidate-grade "
+        f"({recipient}) but no probe or simulation has run, "
+        "so the payout is unproven")
+    return out
+
+
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Machine verdict for one candidate finding.
 
@@ -514,6 +727,9 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     balances = candidate.get("balances") or {}
 
     if not source and not candidate.get("recipient_override"):
+        be = candidate.get("bytecode_evidence")
+        if isinstance(be, dict) and be:
+            return _validate_bytecode_only(candidate, out, be)
         out["missing"] = ["verified source"]
         out["reason"] = ("no verified source available (fetch "
                          "failed or contract unverified); cannot "
@@ -1026,6 +1242,50 @@ async def _pair_reserves(ctx: Ctx, chain: cc.ChainConfig,
             "source": res.get("via", "eth_call (live)")}
 
 
+async def _attach_bytecode_evidence(ctx: Ctx, chain: cc.ChainConfig,
+                                    addr: str,
+                                    candidate: Dict[str, Any]
+                                    ) -> None:
+    """Populate candidate["bytecode_evidence"] (+ the raw
+    analyze_logic_bytecode findings) from deployed bytecode
+    when verified source could not be fetched. Read-only
+    eth_getCode only; any failure leaves the candidate
+    untouched and the verdict engine names the source gap."""
+    try:
+        code = await cc.rpc_get_code(ctx, chain, addr)
+    except Exception:
+        return
+    if not code or code == "0x":
+        return
+    try:
+        paths = bp.analyze(code)
+        findings = cl.analyze_logic_bytecode(code)
+    except Exception:
+        return
+    candidate["bytecode_findings"] = findings
+    deployed = [s["selector"] for s in paths.get("selectors") or []
+                if s.get("selector")]
+    flagged = candidate.get("flagged_selector") or ""
+    if not flagged and candidate.get("function"):
+        for sel_hex, sig in cc.SELECTOR_TABLE.items():
+            if sig and sig.split("(")[0] == candidate["function"]:
+                flagged = sel_hex if sel_hex.startswith("0x") \
+                    else "0x" + sel_hex
+                break
+    present: Optional[bool] = None
+    if flagged and paths.get("dispatcher_found") and \
+            not paths.get("minimal_proxy_impl"):
+        # Only a recognized dispatcher settles presence; a
+        # minimal proxy delegatecalls everything, so absence
+        # from its (empty) dispatch table proves nothing.
+        present = flagged.lower() in {d.lower() for d in deployed}
+    candidate["bytecode_evidence"] = {
+        "flagged_selector": flagged or None,
+        "deployed_selectors": deployed,
+        "selector_present": present,
+        "minimal_proxy_impl": paths.get("minimal_proxy_impl")}
+
+
 async def gather_and_validate(ctx: Ctx, key: Optional[str],
                               candidate: Dict[str, Any]
                               ) -> Dict[str, Any]:
@@ -1045,6 +1305,8 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
     if src:
         candidate["source"] = src["source"]
         candidate["contract_name"] = src.get("contract_name", "")
+    if not src and not candidate.get("bytecode_evidence"):
+        await _attach_bytecode_evidence(ctx, chain, addr, candidate)
     fn_name = candidate.get("function", "")
     if src and fn_name:
         scope, fn = _find_fn(src["source"], fn_name,
