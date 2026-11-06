@@ -404,6 +404,7 @@ class _Scope:
                               if s["start"] <= fn["start"] < s["end"]),
                              None)
                 if owner is not None and id(owner) in kept_ids:
+                    fn["contract"] = owner["name"]
                     self.functions.append(fn)
                     if re.search(r"\b(internal|private)\b",
                                  fn["signature"]):
@@ -611,6 +612,49 @@ def _recip_class_expr(expr: str, params: List[str],
     return "UNRESOLVED"
 
 
+_LEDGER_CREDIT_RE = re.compile(
+    r"\b(balanceOf|balances|_balances)\s*\[\s*([^\]]+?)\s*\]\s*"
+    r"(?:\+=|=(?!=))")
+_SUPPLY_UP_RE = re.compile(
+    r"\b_?totalSupply\s*(?:\+=|=\s*_?totalSupply\s*\+)")
+
+
+_SELF_CREDIT_RE = re.compile(
+    r"\b(?:balanceOf|balances|_balances)\s*\[\s*msg\.sender\s*\]"
+    r"\s*(?:\+=|=(?!=))")
+
+
+def _self_metered(code: str) -> bool:
+    """The payout to the caller is metered by the caller's own
+    recorded position (a balance/entitlement READ keyed by
+    msg.sender). A ledger CREDIT write to the caller's own
+    entry (balanceOf[msg.sender] += amount) is not a meter -
+    it is the issuance itself, and on an argument-bound call
+    path every helper credit to a caller-bound parameter
+    lands in exactly that shape - so credit writes are
+    stripped before the meter search."""
+    return bool(_RECIP_SELF_METER.search(
+        _SELF_CREDIT_RE.sub("", code)))
+
+
+def _ledger_credit_exprs(code: str) -> List[str]:
+    """Token-ledger CREDIT destinations of a mint-shaped
+    function. A mint that writes the ledger directly
+    (balanceOf[to] += amount, _balances[to] = ...) performs no
+    transfer / _mint call for _recip_destinations to see, so the
+    credited key expression IS the value destination. Only
+    fires when the function is mint-named or itself increases
+    totalSupply - the shapes where a ledger credit is newly
+    issued value rather than bookkeeping."""
+    sig = code.split("{", 1)[0]
+    m = re.search(r"function\s+([A-Za-z_]\w*)", sig)
+    name = m.group(1) if m else ""
+    if "mint" not in name.lower() and not _SUPPLY_UP_RE.search(code):
+        return []
+    return [m.group(2).strip()
+            for m in _LEDGER_CREDIT_RE.finditer(code)]
+
+
 def classify_recipient(code: str) -> Tuple[str, str]:
     """-> (recipient, detail). Recipient in CALLER,
     CALLER-SUPPLIED, FIXED, HOLDER-SELF, UNRESOLVED."""
@@ -631,6 +675,7 @@ def classify_recipient(code: str) -> Tuple[str, str]:
     locals_ = _recip_locals(body)
     all_params = _recip_all_params(code)
     dests = _recip_destinations(code)
+    dests += _ledger_credit_exprs(code)
     if not dests:
         return "UNRESOLVED", "no value destination found in function"
     classes = []
@@ -638,7 +683,7 @@ def classify_recipient(code: str) -> Tuple[str, str]:
         c = _recip_class_expr(d, params, addr_params, locals_,
                               all_params)
         if c == "SENDER":
-            c = "HOLDER-SELF" if _RECIP_SELF_METER.search(code) \
+            c = "HOLDER-SELF" if _self_metered(code) \
                 else "CALLER"
         classes.append(c)
     for want in ("CALLER-SUPPLIED", "CALLER", "FIXED",
@@ -664,6 +709,114 @@ def _recipient_reclassify(item: Dict[str, Any], fn_text: str) -> None:
             "TRIGGER-ONLY under the receive rule.")
     else:
         item["report_class"] = "candidate"
+
+
+# ---------------------------------------------------------------------------
+# Bound call-path recipient classification (depth fix 1): the
+# destination a function pays is routinely decided one or two
+# internal hops down (withdraw() -> _payout(amount), and the
+# helper transfers to msg.sender). Concatenating helper text and
+# classifying parameter NAMES guesses wrong whenever the entry
+# passes something other than the helper's own parameter name;
+# expanding WITH argument binding writes each helper body in
+# the caller's frame, so the classification reads the actual
+# call path.
+# ---------------------------------------------------------------------------
+
+def _positional_params(signature: str) -> List[Optional[str]]:
+    """Parameter names in declaration order (None for unnamed
+    parameters, which no call site can bind by name)."""
+    i = signature.find("(")
+    if i < 0:
+        return []
+    inner = signature[i + 1:cd._matching(signature, i)]
+    out: List[Optional[str]] = []
+    for part in cd._split_top(inner):
+        toks = [t for t in part.split() if t not in cd._PARAM_ATTRS]
+        name = None
+        if len(toks) >= 2 and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*", toks[-1]):
+            name = toks[-1]
+        out.append(name)
+    return out
+
+
+_SIMPLE_EXPR_RE = re.compile(
+    r"(?:[A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_]\w*)*"
+    r"(?:\s*\[[^\]]*\])?|0x[0-9a-fA-F]{40}|\d+"
+    r"|msg\.sender|_msgSender\(\s*\)|address\(this\))$")
+
+
+def _bind_substitute(text: str, bindings: Dict[str, str]) -> str:
+    """Replace bound parameter names in `text` with the actual
+    argument expressions from the call site, in ONE simultaneous
+    pass (sequential passes corrupt swaps like (x, y) -> (y, x)).
+    Simple atoms substitute bare; complex expressions are
+    parenthesized so the result stays one expression."""
+    if not bindings:
+        return text
+
+    def rep(m: "re.Match") -> str:
+        e = bindings[m.group(1)].strip()
+        return e if _SIMPLE_EXPR_RE.fullmatch(e) else f"({e})"
+
+    names = sorted(bindings, key=len, reverse=True)
+    pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in names)
+                     + r")\b")
+    return pat.sub(rep, text)
+
+
+def _call_args(text: str, open_paren: int) -> List[str]:
+    inner = text[open_paren + 1:cd._matching(text, open_paren)]
+    return [a.strip() for a in cd._split_top(inner)]
+
+
+def bound_path_text(scope: _Scope, fn: Dict[str, Any],
+                    max_depth: int = 3) -> str:
+    """The flagged function's text plus the bodies of the
+    internal helpers it calls, transitively (depth <= 3), WITH
+    argument binding: at every call site the helper's parameters
+    are replaced by the actual argument expressions, so each
+    appended helper body is written in its caller's frame."""
+    parts = [fn["text"]]
+    seen = {fn["name"]}
+
+    def expand(text: str, depth: int) -> None:
+        if depth > max_depth:
+            return
+        for name, helper in scope.helpers.items():
+            if name in seen:
+                continue
+            cm = re.search(r"\b" + re.escape(name) + r"\s*\(", text)
+            if not cm:
+                continue
+            seen.add(name)
+            args = _call_args(text, cm.end() - 1)
+            params = _positional_params(helper["signature"])
+            child = {p: args[i] for i, p in enumerate(params)
+                     if p is not None and i < len(args)}
+            htext = helper["text"]
+            brace = htext.find("{")
+            if brace >= 0 and child:
+                # Substitute in the BODY only: the signature
+                # keeps the helper's own parameter names, which
+                # the classifier's parameter bookkeeping expects.
+                htext = htext[:brace + 1] + _bind_substitute(
+                    htext[brace + 1:], child)
+            parts.append(htext)
+            expand(htext, depth + 1)
+
+    expand(fn["text"], 1)
+    return "\n".join(parts)
+
+
+def classify_recipient_path(scope: _Scope, fn: Dict[str, Any]
+                            ) -> Tuple[str, str, str]:
+    """classify_recipient over the argument-bound internal call
+    path of `fn`. Returns (recipient, detail, path_text)."""
+    text = bound_path_text(scope, fn)
+    recipient, detail = classify_recipient(text)
+    return recipient, detail, text
 
 
 _SELF_FUNDED_RE = re.compile(r"msg\.value\s*==|==\s*msg\.value")
