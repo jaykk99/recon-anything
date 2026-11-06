@@ -88,6 +88,7 @@ from . import billing
 from . import config
 from . import net
 from . import paywatch
+from . import search as search_index
 from . import service_auth
 from .classifier import classify, classify_batch
 from .diff import diff_runs
@@ -2427,7 +2428,96 @@ midnight). Scans still run in full; the rest are shown as locked
 counts. Paid plans are paid in BTC only and activate automatically
 once your payment reaches 2 confirmations. {checkout}</p>
 <p><a href="/api/auth/github">{signin}</a></p>
+<p><a href="/search">Search every contract ReconAnything has
+collected</a> — any keyword, any filter, results in under a second.</p>
 <main>{''.join(cards)}</main></body></html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/api/search", dependencies=[Depends(gate)])
+def search_api(q: str = "", chain: str = "", plugin: str = "",
+               verdict: str = "", recipient: str = "",
+               min_value_usd: Optional[float] = None,
+               has_source: bool = False, limit: int = 100):
+    """One fast search over everything ReconAnything has collected
+    (kwindex verified source, continuous scanner, real-hunt verdicts,
+    FP audit, transition watch — one deduped corpus, app/search.py).
+    Keywords are ANDed; up to 100 ranked results."""
+    try:
+        return search_index.search(
+            q=q, chain=chain, plugin=plugin, verdict=verdict,
+            recipient=recipient, min_value_usd=min_value_usd,
+            has_source=True if has_source else None, limit=limit)
+    except FileNotFoundError:
+        raise HTTPException(503, "search corpus not built yet")
+    except Exception as e:  # index build failure must not 500 the app
+        raise HTTPException(503, f"search unavailable: {e}")
+
+
+@app.get("/search", include_in_schema=False)
+def search_page():
+    """Server-rendered search UI (same style as /pricing). The data
+    itself sits behind the sign-in gate: the page calls /api/search
+    and shows a sign-in prompt on 401."""
+    html = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>ReconAnything search</title><style>
+body{background:#0b1220;color:#e2e8f0;font-family:system-ui,sans-serif;
+margin:0;padding:2rem}h1{color:#7dd3fc}a{color:#7dd3fc}
+input,select{background:#0f172a;color:#e2e8f0;border:1px solid #1e293b;
+border-radius:6px;padding:.5rem;margin:.2rem}
+button{background:#0369a1;color:#fff;border:0;border-radius:6px;
+padding:.55rem 1.1rem;cursor:pointer}
+.card{border:1px solid #1e293b;border-radius:8px;padding:.8rem 1rem;
+margin:.5rem 0}.addr{font-family:ui-monospace,monospace;font-size:.85em;
+color:#94a3b8}.verdict{font-weight:700}.snip{color:#cbd5e1}
+.meta{color:#94a3b8;font-size:.9em}</style></head><body>
+<h1>Search the collection</h1>
+<p>Every contract ReconAnything has collected: verified-source index,
+continuous scanner, hunt verdicts, FP audit, transition watch — one
+deduped set. Keywords are ANDed; an exact address works too.</p>
+<form id="f">
+<input id="q" size="42" placeholder="keywords, function name, or 0x address">
+<select id="chain"><option value="">any chain</option>
+<option>ethereum</option><option>bsc</option><option>polygon</option>
+<option>arbitrum</option><option>base</option><option>optimism</option>
+<option>solana</option></select>
+<select id="verdict"><option value="">any verdict</option>
+<option>VERIFIED_REAL</option><option>UNVERIFIED</option>
+<option>TRIGGER_ONLY</option><option>FALSE_POSITIVE</option></select>
+<input id="plugin" size="18" placeholder="plugin id">
+<input id="recipient" size="16" placeholder="recipient class">
+<input id="minv" size="10" placeholder="min USD" type="number" min="0">
+<label><input type="checkbox" id="hs"> has source</label>
+<button type="submit">Search</button></form>
+<p id="status" class="meta"></p><div id="out"></div>
+<script>
+const $=id=>document.getElementById(id);
+async function run(ev){ev&&ev.preventDefault();
+ const p=new URLSearchParams({q:$('q').value,chain:$('chain').value,
+  verdict:$('verdict').value,plugin:$('plugin').value,
+  recipient:$('recipient').value,limit:100});
+ const mv=$('minv').value; if(mv)p.set('min_value_usd',mv);
+ if($('hs').checked)p.set('has_source','true');
+ $('status').textContent='searching...';
+ const r=await fetch('/api/search?'+p.toString());
+ if(r.status===401){$('status').innerHTML=
+  'Sign in first: <a href="/api/auth/github">Sign in with GitHub</a>';
+  $('out').innerHTML='';return;}
+ const d=await r.json();
+ $('status').textContent=d.count+' matches in '+d.took_ms+' ms'+
+  ' (index: '+d.index.contracts+' contracts, built '+d.index.built_at+')';
+ $('out').innerHTML=d.results.map(x=>{
+  const v=x.value_usd==null?'':'$'+Math.round(x.value_usd).toLocaleString();
+  return '<div class="card"><span class="verdict">'+
+   (x.name||x.symbol||'contract')+'</span> <span class="meta">'+
+   x.chain+' · '+v+'</span><br><span class="addr">'+x.address+
+   '</span><br><span class="snip">'+(x.snippet||'')+'</span><br>'+
+   '<span class="meta">verdict: '+(x.verdict||'none')+
+   ' · recipients: '+(x.recipients.join(', ')||'-')+
+   ' · plugins: '+x.plugins.length+' · sources: '+
+   x.sources.join(', ')+'</span></div>';}).join('');}
+$('f').addEventListener('submit',run);
+</script></body></html>"""
     return HTMLResponse(html)
 
 
