@@ -246,6 +246,118 @@ def pair_reserves(chain, address):
     return None
 
 
+# Canonical UniswapV2-style DEX deployments per chain:
+# (factory, wrapped native token). The Ethereum WETH address is
+# the repo's own constant (app/plugins/_tier10_common.WETH);
+# the rest are the DEXes' canonical, publicly documented
+# deployment addresses. getPair(tokenA, tokenB) on the factory
+# plus getReserves() on the pair is a read-only eth_call.
+DEX_PAIRS = {
+    "ethereum": [
+        ("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+         "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),  # Uniswap V2
+        ("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",
+         "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),  # SushiSwap
+    ],
+    "bsc": [
+        ("0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+         "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # PancakeSwap V2
+    ],
+    "polygon": [
+        ("0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32",
+         "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"),  # QuickSwap
+        ("0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+         "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"),  # SushiSwap
+    ],
+    "arbitrum": [
+        ("0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+         "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),  # SushiSwap
+    ],
+    "base": [
+        ("0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+         "0x4200000000000000000000000000000000000006"),  # Uniswap V2
+    ],
+    "optimism": [
+        ("0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+         "0x4200000000000000000000000000000000000006"),  # SushiSwap
+    ],
+}
+_CHAIN_ALIASES = {"bnb": "bsc"}
+_ZERO_ADDRESS = "0x" + "0" * 40
+
+
+def _call_address(chain, address, signature, args=()):
+    """One read-only cast call returning an address, or None.
+
+    Mirrors _call_uint's discipline: a revert is a definitive
+    contract-level answer (returned as the zero address, NOT
+    retried on other RPCs); only transport failures fall
+    through to the next route."""
+    cfg = cc.CHAINS.get(chain)
+    if cfg is None:
+        return None
+    for rpc in cfg.rpc_urls:
+        out, err = _cast(["call", "--from", STRANGER,
+                          "--rpc-url", rpc, address, signature,
+                          *args], timeout=15)
+        if out is None:
+            continue
+        s = out.strip()
+        if "revert" in s.lower():
+            return _ZERO_ADDRESS
+        m = re.search(r"0x[0-9a-fA-F]{40,}", s)
+        if m:
+            return "0x" + m.group(0)[-40:].lower()
+    return None
+
+
+def token_pair_reserves(chain, token_address):
+    """Live reserves of the token's pair against the chain's
+    wrapped native token, across the chain's known DEX
+    factories. Returns {"reserve0", "reserve1", "pair",
+    "factory", "observed_at", "source"} or None when no
+    factory has a pair for the token (or every route failed).
+
+    This is the evidence validate_candidate consumes as
+    balances["token_pair_reserves"] for the mint-value gate:
+    pair_reserves() alone only answers when the contract IS a
+    pair; a mintable token usually is not - its pair is a
+    different contract that the factory registry names."""
+    chain = _CHAIN_ALIASES.get(chain, chain)
+    dexes = DEX_PAIRS.get(chain)
+    if not dexes or not token_address:
+        return None
+    import datetime as _dt
+    for factory, wrapped in dexes:
+        if token_address.lower() == wrapped.lower():
+            continue
+        pair = None
+        for a, b in ((token_address, wrapped),
+                     (wrapped, token_address)):
+            got = _call_address(
+                chain, factory, "getPair(address,address)(address)",
+                (a, b))
+            if got is None:
+                break  # transport failure on this factory
+            if got != _ZERO_ADDRESS:
+                pair = got
+                break
+        if not pair:
+            continue  # not on this factory; try the next
+        reserves = pair_reserves(chain, pair)
+        if reserves is None:
+            continue
+        return {"reserve0": reserves["reserve0"],
+                "reserve1": reserves["reserve1"],
+                "pair": pair,
+                "factory": factory,
+                "observed_at": reserves.get(
+                    "observed_at") or _dt.datetime.now(
+                        _dt.timezone.utc).isoformat(),
+                "source": reserves.get("source", "")}
+    return None
+
+
 # Default arguments per parameter type, built from the canonical
 # types sim._param_types extracts (arrays/tuples included).
 # Returns None only when _param_types returns None (a named
@@ -438,6 +550,12 @@ def main():
             reserves = pair_reserves(cand["chain"], cand["address"])
             if reserves is not None:
                 cand["balances"]["amm_reserves"] = reserves
+            else:
+                pair_res = token_pair_reserves(cand["chain"],
+                                               cand["address"])
+                if pair_res is not None:
+                    cand["balances"]["token_pair_reserves"] = \
+                        pair_res
         verdict = validate_candidate(cand)
         verdict["symbol"] = row.get("symbol", "")
         verdict["source_origin"] = cand.get("source_origin", "")

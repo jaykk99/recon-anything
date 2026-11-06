@@ -779,13 +779,64 @@ _RECIP_SELF_METER = re.compile(
 _RECIP_CALLS = re.compile(
     r"(?P<recv>[A-Za-z_][\w]*(?:\s*\([^()]*\))?(?:\s*\.\s*[A-Za-z_]\w*"
     r"(?:\s*\([^()]*\))?)*)\s*\.\s*"
-    r"(?P<method>transferFrom|safeTransferFrom|transfer|send|call)\s*"
+    r"(?P<method>transferFrom|safeTransferFrom|transfer|send|call|"
+    r"withdrawTo|withdraw|redeemFor|redeem|claimFor|releaseTo|"
+    r"payoutTo|disperse|harvestTo|unstakeTo|collectTo)\s*"
     r"(?P<brace>\{[^}]*\})?\s*\(")
 _RECIP_DIRECT = re.compile(r"(?P<fn>selfdestruct|_mint|mint|safeTransfer)\s*\(")
+
+# External methods whose NAME declares a recipient argument
+# (the To/For argument pays a third party). The destination is
+# extracted only when exactly one argument is unambiguously an
+# address expression - see _recip_pick_address_arg.
+_RECIP_NAMED_METHODS = frozenset({
+    "withdrawTo", "redeemFor", "claimFor", "releaseTo",
+    "payoutTo", "disperse", "harvestTo", "unstakeTo",
+    "collectTo"})
+
+
+def _recip_addr_param_names(code: str) -> set:
+    """Address-typed parameter names across every function
+    signature in `code` (entry + helpers on a bound path)."""
+    names = set()
+    for m in re.finditer(r"function\s+\w+\s*\(([^)]*)\)", code):
+        for p in m.group(1).split(","):
+            toks = [t for t in p.strip().split()
+                    if t not in cd._PARAM_ATTRS]
+            if len(toks) >= 2 and "address" in p:
+                names.add(toks[-1])
+    return names
+
+
+def _recip_pick_address_arg(args: List[str], addr_names: set
+                            ) -> Optional[str]:
+    """The recipient argument of a named-recipient external
+    call, or None when no position is unambiguous.
+
+    An argument qualifies when it is a sender expression, an
+    address literal, a cast expression, a member/index
+    expression, or a bare identifier that is an address-typed
+    parameter in scope. Exactly one qualifying argument is a
+    classification; zero or several is a guess, and this
+    classifier does not guess."""
+    hits = []
+    for a in args:
+        e = a.strip()
+        if _RECIP_SENDER.search(e) or \
+                re.fullmatch(r"0x[0-9a-fA-F]{40}", e) or \
+                re.match(r"(?:payable|address)\s*\(", e) or \
+                "[" in e or "." in e:
+            hits.append(e)
+            continue
+        base = re.split(r"[.\[(]", e)[0].strip()
+        if re.fullmatch(r"[A-Za-z_]\w*", e) and base in addr_names:
+            hits.append(e)
+    return hits[0] if len(hits) == 1 else None
 
 
 def _recip_destinations(code: str) -> List[str]:
     dests: List[str] = []
+    addr_names = _recip_addr_param_names(code)
     for m in _RECIP_CALLS.finditer(code):
         recv, method = m.group("recv").strip(), m.group("method")
         paren = m.end() - 1
@@ -794,6 +845,17 @@ def _recip_destinations(code: str) -> List[str]:
             dests.append(args[0] if len(args) >= 2 else recv)
         elif method == "call":
             dests.append(recv)
+        elif method in ("withdraw", "redeem"):
+            # ERC4626: withdraw(assets, receiver, owner) /
+            # redeem(shares, receiver, owner) - the receiver
+            # is args[1]. Shorter arities are not the 4626
+            # shape and are not guessed at.
+            if len(args) >= 3:
+                dests.append(args[1])
+        elif method in _RECIP_NAMED_METHODS:
+            pick = _recip_pick_address_arg(args, addr_names)
+            if pick is not None:
+                dests.append(pick)
         elif len(args) >= 2:  # transferFrom / safeTransferFrom
             dests.append(args[1])
     for m in _RECIP_DIRECT.finditer(code):
@@ -826,33 +888,124 @@ def _recip_all_params(code: str) -> set:
     return names
 
 
+_RECIP_CASTS = ("payable", "address", "uint160", "uint128",
+                "uint96", "uint64", "uint32", "uint", "int160",
+                "int", "bytes32")
+
+
+def _recip_unwrap_cast(e: str) -> str:
+    """Unwrap whole-expression casts: payable(X), address(X),
+    address(uint160(X)), uint160(X), ... classify the inner
+    expression (payable(operator) is the FIXED project wallet,
+    address(uint160(to)) is the caller's address parameter)."""
+    e = (e or "").strip()
+    for _ in range(8):
+        m = re.match(r"([A-Za-z_]\w*)\s*\(", e)
+        if not m or m.group(1) not in _RECIP_CASTS:
+            return e
+        open_paren = m.end() - 1
+        if cd._matching(e, open_paren) != len(e) - 1:
+            return e
+        e = e[open_paren + 1:-1].strip()
+    return e
+
+
+def _recip_split_ternary(e: str):
+    """Split a top-level `cond ? a : b` expression into (a, b),
+    or None. Only the branches carry the destination; the
+    condition never does."""
+    depth = 0
+    qpos = None
+    nested = 0
+    for i, ch in enumerate(e):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and ch == "?":
+            if qpos is None:
+                qpos = i
+            else:
+                nested += 1
+        elif depth == 0 and ch == ":" and qpos is not None:
+            if nested == 0:
+                return e[qpos + 1:i].strip(), e[i + 1:].strip()
+            nested -= 1
+    return None
+
+
+def _recip_combine(classes: List[str]) -> str:
+    """Combine branch classes of a ternary destination:
+    caller-controlled beats fixed (CALLER-SUPPLIED beats
+    CALLER/SENDER beats FIXED); an unresolved branch keeps
+    the whole expression unresolved unless a caller-controlled
+    branch already settles it."""
+    if "CALLER-SUPPLIED" in classes:
+        return "CALLER-SUPPLIED"
+    if "SENDER" in classes:
+        return "SENDER"
+    if classes and all(c == "FIXED" for c in classes):
+        return "FIXED"
+    return "UNRESOLVED"
+
+
 def _recip_class_expr(expr: str, params: List[str],
                       addr_params: List[str], locals_: Dict[str, str],
-                      all_params: set) -> str:
-    e = cd._unwrap(expr)
-    # payable(X) is just a cast of X: classify the inner
-    # expression (payable(operator) is the FIXED project wallet,
-    # payable(to) is the helper's address parameter).
-    pm = re.fullmatch(r"payable\s*\((.*)\)", e, re.S)
-    if pm:
-        return _recip_class_expr(pm.group(1), params, addr_params,
-                                 locals_, all_params)
+                      all_params: set, _depth: int = 0) -> str:
+    if _depth > 8:
+        return "UNRESOLVED"
+    e = _recip_unwrap_cast(cd._unwrap(expr))
+    # Ternary destination: classify both branches and combine.
+    tern = _recip_split_ternary(e)
+    if tern is not None:
+        return _recip_combine([
+            _recip_class_expr(b, params, addr_params, locals_,
+                              all_params, _depth + 1)
+            for b in tern])
+    if re.fullmatch(r"msg\.sender|_msgSender\(\)|caller\(\)|"
+                    r"tx\.origin", e):
+        return "SENDER"
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", e):
+        return "FIXED"
     # A nullary getter call (owner(), treasury(), ...) resolves to
     # whatever the contract stored - a fixed destination, never
     # caller-controlled.
     m = re.fullmatch(r"([A-Za-z_]\w*)\(\)", e)
     if m:
         e = m.group(1)
+    # Member / index destinations (users[x].wallet, payees[i],
+    # info[to].addr): the value lands at an address READ THROUGH
+    # the base, so resolve the BASE - a caller-supplied base is
+    # caller-controlled, a msg.sender-derived base is the
+    # caller, a state-variable base is a stored (fixed) address,
+    # and a local base recurses into its definition.
+    if "[" in e or "." in e:
+        bm = re.match(r"([A-Za-z_]\w*)", e)
+        if bm:
+            base = bm.group(1)
+            rest = e[bm.end():].lstrip()
+            if base in ("msg", "tx") or _RECIP_SENDER.search(
+                    e.split("[", 1)[0].split(".", 1)[0]):
+                return "SENDER"
+            if rest.startswith("("):
+                return "FIXED"  # call result's member: stored
+            if base in addr_params or base in params:
+                return "CALLER-SUPPLIED"
+            if base in locals_:
+                return _recip_class_expr(
+                    locals_[base], params, addr_params, locals_,
+                    all_params, _depth + 1)
+            if base in all_params:
+                return "SENDER"
+            return "FIXED"  # state struct / array / mapping
     if _RECIP_SENDER.search(e):
         return "SENDER"
-    if re.fullmatch(r"0x[0-9a-fA-F]{40}", e):
-        return "FIXED"
     base = re.split(r"[.\[(]", e)[0].strip()
     if base in addr_params or base in params:
         return "CALLER-SUPPLIED"
     if base in locals_:
         return _recip_class_expr(locals_[base], params, addr_params,
-                                 locals_, all_params)
+                                 locals_, all_params, _depth + 1)
     if base in all_params:
         # an internal helper's address parameter that entry
         # functions feed - fed msg.sender at the call site in the
@@ -900,11 +1053,16 @@ def _ledger_credit_exprs(code: str) -> List[str]:
     credited key expression IS the value destination. Only
     fires when the function is mint-named or itself increases
     totalSupply - the shapes where a ledger credit is newly
-    issued value rather than bookkeeping."""
-    sig = code.split("{", 1)[0]
-    m = re.search(r"function\s+([A-Za-z_]\w*)", sig)
-    name = m.group(1) if m else ""
-    if "mint" not in name.lower() and not _SUPPLY_UP_RE.search(code):
+    issued value rather than bookkeeping. The `code` seen here
+    is the whole bound call path on the path-classification
+    route (entry + helpers), so the gate scans EVERY function
+    signature in it: a mint-named helper, or a supply increase
+    anywhere on the path, enables the credit read just as a
+    mint-named entry does."""
+    mint_named = any(
+        "mint" in m.group(1).lower()
+        for m in re.finditer(r"function\s+([A-Za-z_]\w*)", code))
+    if not mint_named and not _SUPPLY_UP_RE.search(code):
         return []
     return [m.group(2).strip()
             for m in _LEDGER_CREDIT_RE.finditer(code)]
