@@ -1006,6 +1006,6 @@ def test_live_rpcbind_dump():
 def test_registry_count_and_ids():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 948  # 922 base + 26 Cat-9 (300-expansion) plugins
+    assert len(reg) == 1191  # 1165 master + 26 Cat-9 (300-expansion) plugins
     for pid in IDS:
         assert pid in reg, pid
