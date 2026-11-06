@@ -61,6 +61,11 @@ Gate (two modes, flipped by configuration - billing.signin_mode):
   - Fallback mode (OAuth not configured): if RECON_ACCESS_CODE is
     set, every /api route except /api/health requires header
     X-Access-Code (a GitHub session is also accepted, as before).
+    If NEITHER is configured, the ungated "open" state is local-dev
+    only: on a hosted deploy (RENDER env present) the gate fails
+    closed with 401 "sign in with GitHub required" - a hosted service
+    that loses its auth configuration must never serve scan data to
+    anonymous callers (2026-11-05 incident).
 """
 from __future__ import annotations
 
@@ -167,6 +172,17 @@ def _session_user(request: Request):
         return None
 
 
+def _hosted_deploy() -> bool:
+    """True when this process is a hosted deploy, not a local run.
+
+    Render sets RENDER=true and RENDER_EXTERNAL_URL in every service
+    (keepalive.py already keys off RENDER_EXTERNAL_URL). Read at call
+    time, like billing.github_enabled().
+    """
+    return bool(os.environ.get("RENDER")
+                or os.environ.get("RENDER_EXTERNAL_URL"))
+
+
 def resolve_actor(request: Request, provided_code: Optional[str] = None):
     """Who is calling: {"kind": "owner"|"user"|"open"|"anon",
     "user": User|None}.
@@ -175,8 +191,9 @@ def resolve_actor(request: Request, provided_code: Optional[str] = None):
       fallback mode only, the access code matched. Full access, never
       any payment UI or plan gate.
     - user:  a signed-in customer; plan gating applies.
-    - open:  fallback mode with no access code configured (local dev)
-      - treated as owner.
+    - open:  fallback mode with no access code configured, LOCAL DEV
+      ONLY - treated as owner. A hosted deploy in that state fails
+      closed as "anon" instead (see below).
     - anon:  nobody the gate accepts; gated routes answer 401.
 
     In sign-in mode (billing.signin_mode) the access code is retired:
@@ -199,6 +216,17 @@ def resolve_actor(request: Request, provided_code: Optional[str] = None):
             return {"kind": "owner", "user": user}
         return {"kind": "user", "user": user}
     if not config.ACCESS_CODE:
+        if _hosted_deploy():
+            # Hosted deploy with NO auth configured at all: the
+            # local-dev "open" state must never apply here. This is
+            # the 2026-11-05 incident state - the live service lost
+            # its GitHub OAuth env vars and every gated route
+            # (/api/runs included) served scan data to anonymous
+            # callers. Fail closed; the gate answers 401.
+            log.warning(
+                "hosted deploy with no auth configured (no GitHub "
+                "OAuth env, no access code): failing closed")
+            return {"kind": "anon", "user": None}
         return {"kind": "open", "user": None}
     return {"kind": "anon", "user": None}
 
@@ -214,7 +242,11 @@ def gate(request: Request,
     provided = x_access_code or code
     actor = resolve_actor(request, provided)
     if actor["kind"] == "anon":
-        if billing.signin_mode():
+        if billing.signin_mode() or (_hosted_deploy()
+                                     and not config.ACCESS_CODE):
+            # Sign-in mode - or a hosted deploy whose auth config was
+            # lost (resolve_actor failed closed above): the hosted
+            # app's only door is GitHub sign-in, so say so.
             raise HTTPException(status_code=401,
                                 detail="sign in with GitHub required")
         raise HTTPException(status_code=401, detail="bad access code")
