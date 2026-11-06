@@ -216,7 +216,7 @@ def keys_of(res):
 
 def test_registry_count_tier7():
     reg = discover()
-    assert len(reg) == 952, f"registry size {len(reg)}, expected 952"
+    assert len(reg) == 1106, f"registry size {len(reg)}, expected 1106"
     for pid in NEW_IDS:
         assert pid in reg, f"{pid} missing"
 
