@@ -9,7 +9,7 @@ classes - report_class "trigger_only" with recipient "NONE"
 classes; candidate would be dishonest); every clean control
 MUST stay silent under ALL eight detectors; every other
 plugin's vulnerable fixture MUST stay silent under this one
-(no cross-talk); the registry discovers exactly 957 plugins
+(no cross-talk); the registry discovers exactly 1221 plugins
 including all eight.
 """
 import os
@@ -51,8 +51,8 @@ def test_eight_plugins_registered():
 
 def test_registry_count_794():
     reg = discover()
-    assert len(reg) == 957, \
-        f"registry size {len(reg)}, expected 957"  # + 30 Cat-10 (300-expansion) plugins
+    assert len(reg) == 1221, \
+        f"registry size {len(reg)}, expected 1221"
 
 
 def test_vuln_fires_trigger_only_with_evidence():
