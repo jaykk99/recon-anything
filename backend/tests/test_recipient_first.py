@@ -39,7 +39,7 @@ def test_all_six_specs_registered():
     for spec_id in SPECS:
         assert spec_id in reg, spec_id
     assert "auto_validator" in reg
-    assert len(reg) == 912, f"registry size {len(reg)}, expected 912"  # + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126)
+    assert len(reg) == 934, f"registry size {len(reg)}, expected 934"  # + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 22 Cat-1 (300-expansion) plugins
 
 
 def test_vulnerable_fixtures_fire_as_candidates():
