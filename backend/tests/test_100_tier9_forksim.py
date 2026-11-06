@@ -456,7 +456,7 @@ def test_registry_tier9():
     ids = discover()
     for pid in NEW_IDS:
         assert pid in ids, pid
-    assert len(ids) == 861  # 853 master + 8 tier9 (2 duplicates ship none)
+    assert len(ids) == 935  # 927 master + 8 tier9 (2 duplicates ship none)
 
 
 def test_every_tier9_finding_is_unverified_sim_derived(monkeypatch):
