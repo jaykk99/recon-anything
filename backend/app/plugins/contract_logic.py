@@ -411,6 +411,7 @@ class _Scope:
                               if s["start"] <= fn["start"] < s["end"]),
                              None)
                 if owner is not None and id(owner) in kept_ids:
+                    fn["contract"] = owner["name"]
                     self.functions.append(fn)
                     if re.search(r"\b(internal|private)\b",
                                  fn["signature"]):
@@ -440,6 +441,254 @@ def _gated_deep(fn: Dict[str, Any], scope: _Scope) -> bool:
                 cd._is_gated(helper["signature"], helper["text"]):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Depth fix 2 (2026-11-05): guard-aware path tracing.
+#
+# path_trace walks the actual execution path of an entry function
+# (entry -> modifiers -> internal helper calls -> first value
+# transfer) and guard_inventory lists every guard found on that
+# path with its evidence, so a finding can say WHICH guard closes
+# a path instead of a flat gated=True/False. The reentrancy lane
+# additionally recognizes hand-rolled storage locks, and looks
+# through internal helper calls for CEI violations split across
+# the entry/helper boundary.
+# ---------------------------------------------------------------------------
+
+def _modifier_names(fn: Dict[str, Any]) -> List[str]:
+    """Modifier tokens named on a function signature, in order."""
+    sig = re.sub(r"returns\s*\([^)]*\)", "", fn["signature"])
+    i = sig.find("(")
+    if i < 0:
+        return []
+    tail = sig[cd._matching(sig, i) + 1:]
+    return [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail)
+            if t not in cd._SIG_KEYWORDS]
+
+
+def _ordered_helpers(text: str, scope: _Scope, entry_name: str,
+                     max_depth: int = 2) -> List[Dict[str, Any]]:
+    """Internal helpers called from `text`, in call order, each
+    {name, fn, depth, via, entry_pos} - entry_pos is the offset
+    of the (depth-1) call site in the ENTRY text, so state
+    writes can be ordered against the call point."""
+    order: List[Dict[str, Any]] = []
+    seen = set()
+
+    def walk(t: str, owner: str, depth: int, entry_pos: int):
+        if depth >= max_depth:
+            return
+        sites = []
+        for hname, helper in scope.helpers.items():
+            if hname == entry_name:
+                continue
+            for m in re.finditer(r"\b" + re.escape(hname) +
+                                 r"\s*\(", t):
+                sites.append((m.start(), hname, helper))
+        for pos, hname, helper in sorted(sites):
+            if hname in seen:
+                continue
+            seen.add(hname)
+            here = pos if depth == 0 else entry_pos
+            order.append({"name": hname, "fn": helper,
+                          "depth": depth + 1, "via": owner,
+                          "entry_pos": here})
+            walk(helper["text"], hname, depth + 1, here)
+
+    walk(text, entry_name, 0, 0)
+    return order
+
+
+def path_trace(scope: _Scope, fn: Dict[str, Any]
+               ) -> List[Dict[str, Any]]:
+    """Ordered steps of the function's execution path: entry,
+    its modifiers, the internal helpers it calls (depth <= 2,
+    call order), and the first value-transfer site on the path
+    (in the entry, or in the first helper that makes one)."""
+    steps: List[Dict[str, Any]] = [{
+        "kind": "entry", "function": fn["name"],
+        "signature": fn["signature"][:200]}]
+    for tok in _modifier_names(fn):
+        steps.append({"kind": "modifier", "function": fn["name"],
+                      "name": tok})
+    helpers = _ordered_helpers(fn["text"], scope, fn["name"])
+    for h in helpers:
+        steps.append({"kind": "internal_call",
+                      "function": h["name"], "via": h["via"],
+                      "depth": h["depth"]})
+    calls = _external_calls(fn["text"])
+    owner, first = fn["name"], (calls[0] if calls else None)
+    if first is None:
+        for h in helpers:
+            hc = _external_calls(h["fn"]["text"])
+            if hc:
+                owner, first = h["name"], hc[0]
+                break
+    if first is not None:
+        steps.append({"kind": "value_transfer", "function": owner,
+                      "call_kind": first["kind"],
+                      "receiver": str(first.get("receiver", ""))[:120]})
+    return steps
+
+
+def _guards_in_text(text: str, signature: str, where: str,
+                    add) -> None:
+    """Enumerate the guards visible in one body of text (an
+    entry function, a modifier definition, or a helper)."""
+    for m in cd._CMP_RE.finditer(text):
+        op = m.group(1) or m.group(4)
+        other = (m.group(2) or m.group(3) or "").strip()
+        if op == "==" or (op == "!=" and
+                          other not in ("address(0)", "0")):
+            add("sender_comparison", where, m.group(0))
+    if cd._MAP_GATE_RE.search(text):
+        add("membership_check", where,
+            cd._MAP_GATE_RE.search(text).group(0))
+    if cd._ROLE_CALL_RE.search(text):
+        add("role_check", where,
+            cd._ROLE_CALL_RE.search(text).group(0))
+    m = re.search(r"_checkOwner|_checkRole|hasRole\s*\([^)]*\)",
+                  text)
+    if m:
+        add("role_check", where, m.group(0))
+    reg = cd._registry_gate_evidence(text)
+    if reg:
+        add("registry_gate", where, reg)
+    sig_ev = cd._signature_gate_evidence(text, signature)
+    if sig_ev:
+        add("signature_gate", where, sig_ev)
+
+
+def _reentrancy_lock_var(text: str, state: set,
+                         call_pos: Optional[int] = None
+                         ) -> Optional[str]:
+    """Name of a hand-rolled reentrancy lock variable, or None.
+
+    The shape: a state variable require-checked at function
+    start (its unlocked value), assigned a locked value BEFORE
+    the external call (or the given call point), and restored
+    to a different value after it - the same standing as the
+    nonReentrant modifier, without the keyword."""
+    if call_pos is None:
+        calls = _external_calls(text)
+        if not calls:
+            return None
+        call_pos = calls[0]["pos"]
+    head, tail = text[:call_pos], text[call_pos:]
+    assign = r"(?:\[[^\]]*\])?\s*=(?!=)\s*([^;]+);"
+    for var in sorted(state):
+        v = re.escape(var)
+        if not re.search(r"(?:require|assert)\s*\(\s*!?\s*" + v +
+                         r"\b|if\s*\(\s*!?\s*" + v + r"\b", head):
+            continue
+        sets = re.findall(v + assign, head)
+        if not sets:
+            continue
+        locked = sets[-1].strip()
+        restores = [r for r in re.findall(v + assign, tail)
+                    if r.strip() != locked]
+        if restores:
+            return var
+    return None
+
+
+def guard_inventory(scope: _Scope, fn: Dict[str, Any]
+                    ) -> List[Dict[str, Any]]:
+    """Every guard on the function's execution path, as
+    {kind, where, evidence} dicts. Kinds: modifier_gate,
+    sender_comparison, membership_check, role_check,
+    registry_gate, signature_gate, helper_gate,
+    reentrancy_lock."""
+    guards: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add(kind: str, where: str, evidence: str) -> None:
+        ev = " ".join(str(evidence).split())[:200]
+        key = (kind, where, ev)
+        if key in seen:
+            return
+        seen.add(key)
+        guards.append({"kind": kind, "where": where,
+                       "evidence": ev})
+
+    for tok in _modifier_names(fn):
+        if tok == "nonReentrant":
+            add("reentrancy_lock", f"modifier:{tok}",
+                "nonReentrant modifier")
+        body = scope.modifiers.get(tok)
+        if body and cd._is_gated("", body):
+            add("modifier_gate", f"modifier:{tok}",
+                f"modifier {tok} definition enforces a gate")
+            _guards_in_text(body, "", f"modifier:{tok}", add)
+    _guards_in_text(fn["text"], fn["signature"], "entry", add)
+    if "nonReentrant" in fn["signature"] or \
+            "nonReentrant" in fn["text"]:
+        add("reentrancy_lock", "entry", "nonReentrant")
+    state = state_variables(scope.scoped_text)
+    lock = _reentrancy_lock_var(fn["text"], state)
+    if lock:
+        add("reentrancy_lock", "entry",
+            f"hand-rolled storage lock on '{lock}': checked at "
+            "entry, set before the external call, restored after")
+    for h in _ordered_helpers(fn["text"], scope, fn["name"]):
+        helper = h["fn"]
+        if cd._is_gated(helper["signature"], helper["text"]):
+            add("helper_gate", f"helper:{h['name']}",
+                f"{h['name']}() enforces a gate on the call path")
+        _guards_in_text(helper["text"], helper["signature"],
+                        f"helper:{h['name']}", add)
+        hlock = _reentrancy_lock_var(helper["text"], state)
+        if hlock:
+            add("reentrancy_lock", f"helper:{h['name']}",
+                f"hand-rolled storage lock on '{hlock}' in "
+                f"helper {h['name']}")
+    return guards
+
+
+def _helper_split_cei(fn: Dict[str, Any], scope: _Scope,
+                      state: set) -> Optional[Dict[str, Any]]:
+    """CEI violation split across the entry/helper boundary:
+    the external call sits in an internal helper the entry
+    calls, and state is written after that call point (in the
+    entry, or in a helper called later). Returns {var, helper,
+    call_kind, lock} or None."""
+    text = fn["text"]
+    helpers = _ordered_helpers(text, scope, fn["name"])
+    if not helpers:
+        return None
+    writes = _state_writes(text, state)
+    for idx, h in enumerate(helpers):
+        hcalls = _external_calls(h["fn"]["text"])
+        if not hcalls:
+            continue
+        call_point = h["entry_pos"]
+        written_before = {v for p, v in writes if p < call_point}
+        late = [(p, v) for p, v in writes
+                if p > call_point and v not in written_before]
+        for later in helpers[idx + 1:]:
+            for _p, v in _state_writes(later["fn"]["text"], state):
+                if v not in written_before:
+                    late.append((call_point + 1, v))
+        if not late:
+            continue
+        lock = _reentrancy_lock_var(text, state,
+                                    call_pos=call_point) or \
+            _reentrancy_lock_var(h["fn"]["text"], state)
+        first = hcalls[0]
+        for _pos, var in late:
+            before = text[:call_point]
+            if _reads_var(before, var) or \
+                    _reads_var(h["fn"]["text"][:first["pos"]],
+                               var) or \
+                    first["kind"] in ("call", "send",
+                                      "safe_transfer", "hook",
+                                      "delegatecall", "callcode"):
+                return {"var": var, "helper": h["name"],
+                        "call_kind": first["kind"],
+                        "receiver": str(first.get("receiver", "")),
+                        "lock": lock}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +867,49 @@ def _recip_class_expr(expr: str, params: List[str],
     return "UNRESOLVED"
 
 
+_LEDGER_CREDIT_RE = re.compile(
+    r"\b(balanceOf|balances|_balances)\s*\[\s*([^\]]+?)\s*\]\s*"
+    r"(?:\+=|=(?!=))")
+_SUPPLY_UP_RE = re.compile(
+    r"\b_?totalSupply\s*(?:\+=|=\s*_?totalSupply\s*\+)")
+
+
+_SELF_CREDIT_RE = re.compile(
+    r"\b(?:balanceOf|balances|_balances)\s*\[\s*msg\.sender\s*\]"
+    r"\s*(?:\+=|=(?!=))")
+
+
+def _self_metered(code: str) -> bool:
+    """The payout to the caller is metered by the caller's own
+    recorded position (a balance/entitlement READ keyed by
+    msg.sender). A ledger CREDIT write to the caller's own
+    entry (balanceOf[msg.sender] += amount) is not a meter -
+    it is the issuance itself, and on an argument-bound call
+    path every helper credit to a caller-bound parameter
+    lands in exactly that shape - so credit writes are
+    stripped before the meter search."""
+    return bool(_RECIP_SELF_METER.search(
+        _SELF_CREDIT_RE.sub("", code)))
+
+
+def _ledger_credit_exprs(code: str) -> List[str]:
+    """Token-ledger CREDIT destinations of a mint-shaped
+    function. A mint that writes the ledger directly
+    (balanceOf[to] += amount, _balances[to] = ...) performs no
+    transfer / _mint call for _recip_destinations to see, so the
+    credited key expression IS the value destination. Only
+    fires when the function is mint-named or itself increases
+    totalSupply - the shapes where a ledger credit is newly
+    issued value rather than bookkeeping."""
+    sig = code.split("{", 1)[0]
+    m = re.search(r"function\s+([A-Za-z_]\w*)", sig)
+    name = m.group(1) if m else ""
+    if "mint" not in name.lower() and not _SUPPLY_UP_RE.search(code):
+        return []
+    return [m.group(2).strip()
+            for m in _LEDGER_CREDIT_RE.finditer(code)]
+
+
 def classify_recipient(code: str) -> Tuple[str, str]:
     """-> (recipient, detail). Recipient in CALLER,
     CALLER-SUPPLIED, FIXED, HOLDER-SELF, UNRESOLVED."""
@@ -638,6 +930,7 @@ def classify_recipient(code: str) -> Tuple[str, str]:
     locals_ = _recip_locals(body)
     all_params = _recip_all_params(code)
     dests = _recip_destinations(code)
+    dests += _ledger_credit_exprs(code)
     if not dests:
         return "UNRESOLVED", "no value destination found in function"
     classes = []
@@ -645,7 +938,7 @@ def classify_recipient(code: str) -> Tuple[str, str]:
         c = _recip_class_expr(d, params, addr_params, locals_,
                               all_params)
         if c == "SENDER":
-            c = "HOLDER-SELF" if _RECIP_SELF_METER.search(code) \
+            c = "HOLDER-SELF" if _self_metered(code) \
                 else "CALLER"
         classes.append(c)
     for want in ("CALLER-SUPPLIED", "CALLER", "FIXED",
@@ -671,6 +964,114 @@ def _recipient_reclassify(item: Dict[str, Any], fn_text: str) -> None:
             "TRIGGER-ONLY under the receive rule.")
     else:
         item["report_class"] = "candidate"
+
+
+# ---------------------------------------------------------------------------
+# Bound call-path recipient classification (depth fix 1): the
+# destination a function pays is routinely decided one or two
+# internal hops down (withdraw() -> _payout(amount), and the
+# helper transfers to msg.sender). Concatenating helper text and
+# classifying parameter NAMES guesses wrong whenever the entry
+# passes something other than the helper's own parameter name;
+# expanding WITH argument binding writes each helper body in
+# the caller's frame, so the classification reads the actual
+# call path.
+# ---------------------------------------------------------------------------
+
+def _positional_params(signature: str) -> List[Optional[str]]:
+    """Parameter names in declaration order (None for unnamed
+    parameters, which no call site can bind by name)."""
+    i = signature.find("(")
+    if i < 0:
+        return []
+    inner = signature[i + 1:cd._matching(signature, i)]
+    out: List[Optional[str]] = []
+    for part in cd._split_top(inner):
+        toks = [t for t in part.split() if t not in cd._PARAM_ATTRS]
+        name = None
+        if len(toks) >= 2 and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*", toks[-1]):
+            name = toks[-1]
+        out.append(name)
+    return out
+
+
+_SIMPLE_EXPR_RE = re.compile(
+    r"(?:[A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_]\w*)*"
+    r"(?:\s*\[[^\]]*\])?|0x[0-9a-fA-F]{40}|\d+"
+    r"|msg\.sender|_msgSender\(\s*\)|address\(this\))$")
+
+
+def _bind_substitute(text: str, bindings: Dict[str, str]) -> str:
+    """Replace bound parameter names in `text` with the actual
+    argument expressions from the call site, in ONE simultaneous
+    pass (sequential passes corrupt swaps like (x, y) -> (y, x)).
+    Simple atoms substitute bare; complex expressions are
+    parenthesized so the result stays one expression."""
+    if not bindings:
+        return text
+
+    def rep(m: "re.Match") -> str:
+        e = bindings[m.group(1)].strip()
+        return e if _SIMPLE_EXPR_RE.fullmatch(e) else f"({e})"
+
+    names = sorted(bindings, key=len, reverse=True)
+    pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in names)
+                     + r")\b")
+    return pat.sub(rep, text)
+
+
+def _call_args(text: str, open_paren: int) -> List[str]:
+    inner = text[open_paren + 1:cd._matching(text, open_paren)]
+    return [a.strip() for a in cd._split_top(inner)]
+
+
+def bound_path_text(scope: _Scope, fn: Dict[str, Any],
+                    max_depth: int = 3) -> str:
+    """The flagged function's text plus the bodies of the
+    internal helpers it calls, transitively (depth <= 3), WITH
+    argument binding: at every call site the helper's parameters
+    are replaced by the actual argument expressions, so each
+    appended helper body is written in its caller's frame."""
+    parts = [fn["text"]]
+    seen = {fn["name"]}
+
+    def expand(text: str, depth: int) -> None:
+        if depth > max_depth:
+            return
+        for name, helper in scope.helpers.items():
+            if name in seen:
+                continue
+            cm = re.search(r"\b" + re.escape(name) + r"\s*\(", text)
+            if not cm:
+                continue
+            seen.add(name)
+            args = _call_args(text, cm.end() - 1)
+            params = _positional_params(helper["signature"])
+            child = {p: args[i] for i, p in enumerate(params)
+                     if p is not None and i < len(args)}
+            htext = helper["text"]
+            brace = htext.find("{")
+            if brace >= 0 and child:
+                # Substitute in the BODY only: the signature
+                # keeps the helper's own parameter names, which
+                # the classifier's parameter bookkeeping expects.
+                htext = htext[:brace + 1] + _bind_substitute(
+                    htext[brace + 1:], child)
+            parts.append(htext)
+            expand(htext, depth + 1)
+
+    expand(fn["text"], 1)
+    return "\n".join(parts)
+
+
+def classify_recipient_path(scope: _Scope, fn: Dict[str, Any]
+                            ) -> Tuple[str, str, str]:
+    """classify_recipient over the argument-bound internal call
+    path of `fn`. Returns (recipient, detail, path_text)."""
+    text = bound_path_text(scope, fn)
+    recipient, detail = classify_recipient(text)
+    return recipient, detail, text
 
 
 _SELF_FUNDED_RE = re.compile(r"msg\.value\s*==|==\s*msg\.value")
@@ -946,6 +1347,8 @@ def analyze_logic_source(src: str, compiler: str = "",
         params = cd._param_names(sig)
         gated = _gated_deep(fn, scope)
         guarded = "nonReentrant" in sig or "nonReentrant" in text
+        fn_path = path_trace(scope, fn)
+        fn_guards = guard_inventory(scope, fn)
 
         # ---- tx.origin authorization (any function) ---------------
         if re.search(r"tx\.origin\s*(==|!=)|(==|!=)\s*tx\.origin",
@@ -956,6 +1359,8 @@ def analyze_logic_source(src: str, compiler: str = "",
                 "severity": "high",
                 "function": name,
                 "code": cc._snip(text),
+                "path": fn_path,
+                "guards": fn_guards,
                 "detail": (
                     "authorization compares tx.origin; any "
                     "contract the owner is tricked into calling "
@@ -966,6 +1371,9 @@ def analyze_logic_source(src: str, compiler: str = "",
         # ---- reentrancy: external call before state update --------
         calls = _external_calls(text)
         writes = _state_writes(text, state)
+        cei_fired = False
+        lock_var = _reentrancy_lock_var(text, state) if calls \
+            else None
         if calls and writes and not gated and not guarded:
             first_call = calls[0]
             # A variable already written BEFORE the call and
@@ -988,24 +1396,110 @@ def analyze_logic_source(src: str, compiler: str = "",
                                                "hook",
                                                "delegatecall",
                                                "callcode"):
+                    if lock_var:
+                        # Depth fix 2: the path IS guarded - by
+                        # a hand-rolled storage lock, not the
+                        # nonReentrant keyword. Trigger-only at
+                        # low, naming the closing guard.
+                        out.append({
+                            "kind": "reentrancy",
+                            "logic_kind": "cei_violation",
+                            "severity": "low",
+                            "report_class": "trigger_only",
+                            "function": name,
+                            "code": cc._snip(text),
+                            "path": fn_path,
+                            "guards": fn_guards,
+                            "detail": (
+                                f"external call "
+                                f"({first_call['kind']} to "
+                                f"{first_call['receiver']}) precedes "
+                                f"the update of state variable "
+                                f"'{var}', but the path is closed "
+                                f"by a hand-rolled reentrancy lock "
+                                f"on '{lock_var}' (checked at "
+                                "entry, set before the call, "
+                                "restored after) - TRIGGER-ONLY. "
+                                f"signature: {sig[:200]}"),
+                        })
+                    else:
+                        out.append({
+                            "kind": "reentrancy",
+                            "logic_kind": "cei_violation",
+                            "severity": "high",
+                            "function": name,
+                            "code": cc._snip(text),
+                            "path": fn_path,
+                            "guards": fn_guards,
+                            "detail": (
+                                f"external call ({first_call['kind']} "
+                                f"to {first_call['receiver']}) executes "
+                                f"before state variable '{var}' is "
+                                "updated later in the same function "
+                                "(checks-effects-interactions violated); "
+                                f"gated=False ({_UNGATED_BASIS}); "
+                                "reentrancy guard absent. signature: "
+                                f"{sig[:200]}"),
+                        })
+                        writes_after_call.setdefault(
+                            var, []).append(name)
+                    cei_fired = True
+                    break
+
+        # ---- reentrancy split across a helper call ----------------
+        # The external call lives in an internal helper; the
+        # state write sits in the entry after the helper call
+        # (depth fix 2). CEI-correct-through-helper and locked
+        # paths stay non-candidate.
+        if not cei_fired and not gated and not guarded:
+            split = _helper_split_cei(fn, scope, state)
+            if split:
+                if split["lock"]:
+                    out.append({
+                        "kind": "reentrancy",
+                        "logic_kind": "cei_violation",
+                        "severity": "low",
+                        "report_class": "trigger_only",
+                        "function": name,
+                        "code": cc._snip(text),
+                        "path": fn_path,
+                        "guards": fn_guards,
+                        "detail": (
+                            f"external call ({split['call_kind']}) "
+                            f"inside internal helper "
+                            f"{split['helper']}() precedes the "
+                            f"update of state variable "
+                            f"'{split['var']}', but the path is "
+                            f"closed by a hand-rolled reentrancy "
+                            f"lock on '{split['lock']}' - "
+                            f"TRIGGER-ONLY. signature: "
+                            f"{sig[:200]}"),
+                    })
+                else:
                     out.append({
                         "kind": "reentrancy",
                         "logic_kind": "cei_violation",
                         "severity": "high",
                         "function": name,
                         "code": cc._snip(text),
+                        "path": fn_path,
+                        "guards": fn_guards,
                         "detail": (
-                            f"external call ({first_call['kind']} "
-                            f"to {first_call['receiver']}) executes "
-                            f"before state variable '{var}' is "
-                            "updated later in the same function "
-                            "(checks-effects-interactions violated); "
+                            f"external call ({split['call_kind']} "
+                            f"to {split['receiver']}) inside "
+                            f"internal helper {split['helper']}() "
+                            f"executes before state variable "
+                            f"'{split['var']}' is updated after "
+                            "the helper call returns "
+                            "(checks-effects-interactions "
+                            "violated across the helper boundary; "
+                            f"path: {name} -> {split['helper']}); "
                             f"gated=False ({_UNGATED_BASIS}); "
-                            "reentrancy guard absent. signature: "
-                            f"{sig[:200]}"),
+                            "reentrancy guard absent on the "
+                            f"path. signature: {sig[:200]}"),
                     })
-                    writes_after_call.setdefault(var, []).append(name)
-                    break
+                    writes_after_call.setdefault(
+                        split["var"], []).append(name)
 
         # ---- integer overflow / underflow --------------------------
         # Gated functions are skipped here too (2026-11-02 live
@@ -1103,6 +1597,8 @@ def analyze_logic_source(src: str, compiler: str = "",
                     "severity": "high",
                     "function": name,
                     "code": cc._snip(text),
+                    "path": fn_path,
+                    "guards": fn_guards,
                     "detail": (
                         "public initialize() with no initializer "
                         "modifier sets state: anyone can call it "
@@ -1122,6 +1618,8 @@ def analyze_logic_source(src: str, compiler: str = "",
                     "severity": "high",
                     "function": name,
                     "code": cc._snip(text),
+                    "path": fn_path,
+                    "guards": fn_guards,
                     "detail": (
                         f"delegatecall target '{recv}' is "
                         "caller-supplied and the function has no "
@@ -1160,6 +1658,8 @@ def analyze_logic_source(src: str, compiler: str = "",
                 "severity": "high",
                 "function": name,
                 "code": cc._snip(text),
+                "path": fn_path,
+                "guards": fn_guards,
                 "detail": (
                     f"sensitive function '{name}' performs its "
                     "action with NO access gate (gated=False; "
@@ -1203,6 +1703,8 @@ def analyze_logic_source(src: str, compiler: str = "",
                         "severity": "medium",
                         "function": name,
                         "code": cc._snip(text),
+                        "path": path_trace(scope, fn),
+                        "guards": guard_inventory(scope, fn),
                         "detail": (
                             f"reads state variable '{var}' before "
                             f"its own external call, while "
@@ -1694,6 +2196,10 @@ class ContractLogicPlugin(Plugin):
                 # low severity and are NOT candidate-grade.
                 ev["report_class"] = item["report_class"]
                 ev["recipient"] = item.get("recipient", "")
+            if item.get("path"):
+                ev["path"] = item["path"]
+            if item.get("guards") is not None:
+                ev["guards"] = item["guards"]
             findings.append(self._f(
                 "web3", item["kind"],
                 f"{sev_word}: {item['logic_kind'].replace('_', ' ')}"
