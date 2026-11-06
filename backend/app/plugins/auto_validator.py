@@ -138,6 +138,19 @@ def _beneficiary_metered(fn: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _issuance_shape(fn: Dict[str, Any]) -> bool:
+    """The flagged function ISSUES new units (mint-named, or it
+    increases totalSupply itself). A beneficiary-keyed ledger
+    write inside an issuance is the credit being created, not
+    a pre-existing entitlement being consumed, so the
+    beneficiary-metered reclassification must not apply: the
+    recipient of a mint is whoever the caller names, with
+    value that did not exist before the call."""
+    if "mint" in fn["name"].lower():
+        return True
+    return bool(cl._SUPPLY_UP_RE.search(fn["text"]))
+
+
 def _find_fn(source: str, name: str, contract_name: str = ""):
     scope = cl._Scope(source, contract_name)
     matches = [fn for fn in scope.functions
@@ -152,6 +165,54 @@ def _find_fn(source: str, name: str, contract_name: str = ""):
         if not re.search(r"\b(internal|private)\b", fn["signature"]):
             return scope, fn
     return scope, matches[0]
+
+
+def _deployable_contract_names(source: str) -> set:
+    """Names of deployable contracts in the compilation:
+    kind == "contract" only (libraries and interfaces are not
+    deployed surfaces), excluding test/mock files."""
+    names = set()
+    for path, raw in cl._split_units(source):
+        if cl._TEST_SEGMENT_RE.search(path):
+            continue
+        clean = cc._strip_comments(raw)
+        for s in cl._contract_spans(clean):
+            if s["kind"] == "contract" and s["name"]:
+                names.add(s["name"])
+    return names
+
+
+def _proxy_attribution(source: str, function: str,
+                       contract_name: str):
+    """Re-scope a flagged function to the bundled implementation
+    behind a proxy target. Returns (scope, fn) or None.
+
+    All of these must hold: the target scope was resolved; the
+    target is a proxy shell (its fallback performs a
+    delegatecall to an implementation variable or address);
+    and the flagged function exists in exactly ONE other
+    deployable contract in the bundle. Anything less specific
+    (zero or several candidate owners, a non-proxy target) is
+    the sibling case, not attribution."""
+    target = cl._Scope(source, contract_name)
+    if not target.target_found:
+        return None
+    shell = target.scoped_text
+    if "delegatecall" not in shell or \
+            not re.search(r"\bfallback\s*\(", shell):
+        return None
+    full = cl._Scope(source, "")
+    owners = {f.get("contract") for f in full.functions
+              if f["name"] == function and "{" in f["text"]}
+    owners.discard(contract_name)
+    owners.discard(None)
+    owners &= _deployable_contract_names(source)
+    if len(owners) != 1:
+        return None
+    scope, fn = _find_fn(source, function, next(iter(owners)))
+    if fn is None:
+        return None
+    return scope, fn
 
 
 def _expanded_fn_text(fn: Dict[str, Any], scope: cl._Scope,
@@ -465,7 +526,36 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         scope, fn = _find_fn(source, candidate["function"],
                              candidate.get("contract_name", ""))
         if fn is None:
-            if candidate.get("function_out_of_scope"):
+            # Proxy attribution: the function is absent from the
+            # target's scope, but the target is a proxy shell and
+            # the function lives in exactly one bundled
+            # implementation contract - that implementation IS
+            # the deployed surface behind the proxy, so the
+            # normal verdict flow runs on it.
+            attributed = _proxy_attribution(
+                source, candidate["function"],
+                candidate.get("contract_name", ""))
+            if attributed is not None:
+                scope, fn = attributed
+                out["evidence"]["attributed_to"] = \
+                    fn.get("contract", "")
+                out["evidence"]["attribution"] = (
+                    "bundled implementation surface behind "
+                    "proxy target")
+        if fn is None:
+            out_of_scope = bool(
+                candidate.get("function_out_of_scope"))
+            if not out_of_scope:
+                # Automatic sibling detection: the function
+                # exists in the verified compilation, just not
+                # in the deployed contract or its ancestors.
+                # The backlog lane never set the manual flag;
+                # the verdict shape is the same either way.
+                full = cl._Scope(source, "")
+                out_of_scope = any(
+                    f["name"] == candidate["function"] and
+                    "{" in f["text"] for f in full.functions)
+            if out_of_scope:
                 # The detector flagged a function that exists
                 # in the verified compilation but NOT in the
                 # deployed contract or its ancestors (a bundled
@@ -519,18 +609,23 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
             "detail": str(probe.get("detail", ""))[:200]}
 
     # 2. Recipient classification over the value flow: the
-    # flagged function PLUS the internal helpers it calls
-    # (value routinely moves one or two hops down).
+    # flagged function PLUS the internal helpers it calls, with
+    # argument binding (value routinely moves one or two hops
+    # down, and the destination is decided by what the entry
+    # actually passes to the helper).
     flow_text = fn["text"] if fn is not None else ""
     recipient = candidate.get("recipient_override")
     if recipient is None and fn is not None:
-        flow_text, helpers = _expanded_fn_text(fn, scope)
+        _expanded, helpers = _expanded_fn_text(fn, scope)
         if helpers:
             out["evidence"]["value_flow_helpers"] = helpers
-        recipient, rdetail = cl.classify_recipient(flow_text)
+        recipient, rdetail, flow_text = \
+            cl.classify_recipient_path(scope, fn)
         out["evidence"]["recipient_detail"] = rdetail
         if recipient == "CALLER-SUPPLIED":
             metered = _beneficiary_metered(fn)
+            if metered and _issuance_shape(fn):
+                metered = None
             if metered:
                 # The destination is a caller-supplied address,
                 # but the payout is metered by THAT address's
