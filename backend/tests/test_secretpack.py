@@ -89,7 +89,7 @@ def test_exactly_5_new_detectors_registered():
     sec = sorted(k for k in discover() if k.startswith("sec_"))
     assert sec == sorted(SEC_IDS)
     assert len(sec) == 5
-    assert len(discover()) == 922  # re-baselined at merge: 912 master + 10 Tier-7 Blockchain Ingestion plugins (PR #127)
+    assert len(discover()) == 945  # re-baselined at merge: 927 master + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130)
 
 
 def test_js_hardcoded_fires():
