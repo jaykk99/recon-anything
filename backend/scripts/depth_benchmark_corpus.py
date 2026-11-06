@@ -175,6 +175,40 @@ contract VulnOracleBorrow {
 }
 """
 
+VULN_SPOT_ORACLE_MINT = """
+interface IPair { function getReserves() external view returns (uint112 r0, uint112 r1, uint32 ts); }
+contract VulnSpotMint {
+    IPair public pair;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    constructor(address _pair) { pair = IPair(_pair); }
+    function mint(uint256 collateralTokens) public {
+        (uint112 r0, uint112 r1, ) = pair.getReserves();
+        uint256 price = (uint256(r1) * 1e18) / uint256(r0);
+        uint256 amount = (collateralTokens * price) / 1e18;
+        totalSupply += amount;
+        balanceOf[msg.sender] += amount;
+    }
+}
+"""
+
+VULN_SPOT_ORACLE_REDEEM = """
+interface IPair { function getReserves() external view returns (uint112 r0, uint112 r1, uint32 ts); }
+contract VulnSpotRedeem {
+    IPair public pair;
+    mapping(address => uint256) public shares;
+    constructor(address _pair) { pair = IPair(_pair); }
+    function redeem(uint256 shareAmount, address to) public {
+        (uint112 r0, uint112 r1, ) = pair.getReserves();
+        uint256 price = (uint256(r1) * 1e18) / uint256(r0);
+        uint256 amount = (shareAmount * price) / 1e18;
+        shares[msg.sender] -= shareAmount;
+        payable(to).transfer(amount);
+    }
+    receive() external payable {}
+}
+"""
+
 VULN_HELPER_RECIPIENT = """
 contract VulnHelperPay {
     function withdraw(uint256 amount) public {
@@ -383,6 +417,40 @@ contract CleanTwapBorrow {
 }
 """
 
+CLEAN_ORACLE_CHAINLINK = """
+interface AggregatorV3Interface { function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound); }
+contract CleanChainlinkBorrow {
+    AggregatorV3Interface public feed;
+    mapping(address => uint256) public borrowed;
+    constructor(address _feed) { feed = AggregatorV3Interface(_feed); }
+    function borrow(uint256 collateralTokens) public {
+        (, int256 answer, , uint256 updatedAt, ) = feed.latestRoundData();
+        require(answer > 0, "bad price");
+        require(block.timestamp - updatedAt < 3600, "stale price");
+        uint256 price = uint256(answer);
+        uint256 amount = (collateralTokens * price) / 1e8;
+        borrowed[msg.sender] += amount;
+        payable(msg.sender).transfer(amount);
+    }
+    receive() external payable {}
+}
+"""
+
+CLEAN_SPOT_DISPLAY = """
+interface IPair { function getReserves() external view returns (uint112 r0, uint112 r1, uint32 ts); }
+contract CleanSpotDisplay {
+    IPair public pair;
+    constructor(address _pair) { pair = IPair(_pair); }
+    function spotPrice() public view returns (uint256) {
+        (uint112 r0, uint112 r1, ) = pair.getReserves();
+        return (uint256(r1) * 1e18) / uint256(r0);
+    }
+    function quote(uint256 collateralTokens) public view returns (uint256) {
+        return (collateralTokens * spotPrice()) / 1e18;
+    }
+}
+"""
+
 CLEAN_MINT_ROLE = """
 contract CleanRoleMint {
     address public owner;
@@ -568,6 +636,13 @@ SOURCE_CASES = [
     V("vuln_spot_oracle", VULN_SPOT_ORACLE, "VulnOracleBorrow",
       "borrow", function_match="any",
       note="payout priced off pair.getReserves() spot"),
+    V("vuln_spot_oracle_mint", VULN_SPOT_ORACLE_MINT,
+      "VulnSpotMint", "mint", recipient="CALLER",
+      note="mint amount priced off pair.getReserves() spot"),
+    V("vuln_spot_oracle_redeem", VULN_SPOT_ORACLE_REDEEM,
+      "VulnSpotRedeem", "redeem", recipient="CALLER-SUPPLIED",
+      note="redeem payout to a caller-supplied address, priced "
+           "off pair.getReserves() spot"),
     V("vuln_helper_recipient", VULN_HELPER_RECIPIENT,
       "VulnHelperPay", "withdraw", recipient="CALLER",
       validator="VERIFIED_REAL", balances=_NATIVE, gap=1,
@@ -606,6 +681,14 @@ SOURCE_CASES = [
       "deposit", function_match="any"),
     C("clean_oracle_twap", CLEAN_ORACLE_TWAP, "CleanTwapBorrow",
       "borrow", function_match="any"),
+    C("clean_oracle_chainlink", CLEAN_ORACLE_CHAINLINK,
+      "CleanChainlinkBorrow", "borrow", function_match="any",
+      note="payout priced off a Chainlink latestRoundData feed "
+           "with a staleness check, not off spot reserves"),
+    C("clean_spot_display", CLEAN_SPOT_DISPLAY, "CleanSpotDisplay",
+      "spotPrice", function_match="any",
+      note="spot reserves read only for a display/quote getter; "
+           "no value-out is sized from the price"),
     C("clean_mint_role", CLEAN_MINT_ROLE, "CleanRoleMint", "mint"),
     C("clean_claim_consumed", CLEAN_CLAIM_CONSUMED, "CleanClaim",
       "claim", recipient="HOLDER-SELF"),
