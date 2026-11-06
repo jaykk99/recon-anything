@@ -217,6 +217,8 @@ BOUNTY_KEY_TIERS = {
     # HIGH ($1k-5k)
     "idor_candidate": "high",
     "idor_confirmed": "high",
+    "idor_error_leak_path": "critical",
+    "error_response_disclosure": "high",
     "sourcemap_secret": "high",
     "s3_public_read": "high",
     "exposed_env": "high",

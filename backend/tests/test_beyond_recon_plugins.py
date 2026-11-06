@@ -102,7 +102,7 @@ def test_new_plugins_registered():
     reg = discover()
     for pid in NEW_IDS:
         assert pid in reg, pid
-    assert len(reg) == 858
+    assert len(reg) == 927  # 927 master + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129)
 
 
 # ----------------------------------------------------------------------
