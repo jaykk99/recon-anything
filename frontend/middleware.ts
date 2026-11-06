@@ -29,7 +29,7 @@ const SESSION_COOKIE = "recon_session";
 // server-side gate card; "/pricing" is public by design.
 const PROTECTED = [
   /^\/keys($|\/)/, /^\/settings($|\/)/, /^\/runs($|\/)/, /^\/run\//,
-  /^\/hunters($|\/)/, /^\/checkout($|\/)/, /^\/admin\//,
+  /^\/hunters($|\/)/, /^\/checkout($|\/)/, /^\/admin\//, /^\/search($|\/)/,
 ];
 
 // The auth mode only changes when the server env changes (a
