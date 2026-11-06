@@ -668,6 +668,6 @@ def test_run_end_to_end_sample():
 def test_registry_count_and_ids():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 1221
+    assert len(reg) == 1226
     for pid in IDS:
         assert pid in reg, pid
