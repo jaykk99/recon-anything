@@ -157,7 +157,7 @@ def keys_of(res):
 
 def test_all_ten_registered_and_count_863():
     reg = discover()
-    assert len(reg) == 996, f"registry size {len(reg)}, expected 996"
+    assert len(reg) == 1026, f"registry size {len(reg)}, expected 1026"
     for pid in IDS:
         assert pid in reg, f"{pid} missing from registry"
 
