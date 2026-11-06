@@ -49,7 +49,7 @@ def _candidate_grade(f, family):
 
 
 def run_source_case(case, mods):
-    cl, cd, rf, deeps, av = mods
+    cl, cd, rf, deeps, av, so = mods
     src, cname, fn = case["source"], case["contract_name"], \
         case["function"]
     hits = {}   # analyzer id -> [finding summaries]
@@ -87,6 +87,8 @@ def run_source_case(case, mods):
             sid = spec["id"] if isinstance(spec, dict) else spec.id
             record(f"{mod_name}:{sid}", "deep",
                    analyze(src, spec, "", cname))
+    record("spot_oracle", "deep",
+           so.analyze_spot_oracle_source(src, "", cname))
 
     detector_hit = bool(hits)
     verdict = None
@@ -179,6 +181,7 @@ def main():
     from app.plugins import crypto_drain as cd
     from app.plugins import recipient_first as rf
     from app.plugins import auto_validator as av
+    from app.plugins import spot_oracle as so
     from app.plugins.cryptopack_util import keccak256
     corpus.BYTECODE_CASES = corpus.build_bytecode_cases(keccak256)
     deeps = []
@@ -188,7 +191,7 @@ def main():
             f"analyze_deep{i}_source"
         mod = importlib.import_module(f"app.plugins.{mod_name}")
         deeps.append((mod_name, fn_name, mod.SPECS, mod))
-    mods = (cl, cd, rf, deeps, av)
+    mods = (cl, cd, rf, deeps, av, so)
 
     results = {"label": args.label, "backend": args.backend,
                "source_cases": [], "bytecode_cases": []}
