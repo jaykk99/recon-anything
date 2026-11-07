@@ -71,7 +71,8 @@ def _install_fake_fetch(monkeypatch):
     # patched too (same approach as tests/test_new_plugins._patch_http).
     for pid in ("hsts", "csp_audit", "cookie_security", "cdn_detect",
                 "rate_limit_audit", "sri_audit", "mixed_content",
-                "html_comments", "trackers", "exposed_debug"):
+                "html_comments", "trackers", "exposed_debug",
+                "cache_control_audit"):
         mod = sys.modules[registry[pid].__module__]
         if hasattr(mod, "fetch"):
             monkeypatch.setattr(mod, "fetch", fake_fetch)
@@ -117,7 +118,8 @@ def test_previously_crashing_plugins_run_clean(monkeypatch):
                     normalized="example.com")
     for pid in ("hsts", "csp_audit", "cookie_security", "cdn_detect",
                 "rate_limit_audit", "sri_audit", "mixed_content",
-                "html_comments", "trackers", "exposed_debug"):
+                "html_comments", "trackers", "exposed_debug",
+                "cache_control_audit"):
         ctx = _real_ctx()
         res = asyncio.run(registry[pid]().run(target, ctx))
         assert res.status.value != "error", (

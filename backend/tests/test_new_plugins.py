@@ -910,3 +910,77 @@ def test_fastmode_cookie_csp_hsts(monkeypatch):
     assert "fast_cookie_flags" in keys
     assert "fast_csp_unsafe_inline" in keys
     assert "fast_hsts_weak" in keys
+
+
+# ---------------------------------------------------------------------------
+# cache_control_audit
+# ---------------------------------------------------------------------------
+
+def test_cache_control_public_with_cookie():
+    pages = {"https://example.com/": _resp(
+        "https://example.com/",
+        headers={"cache-control": "public, max-age=3600",
+                 "set-cookie": "sess=abc; Path=/",
+                 "content-type": "text/html; charset=utf-8"},
+        text="<html></html>")}
+    res = _run("cache_control_audit", _url_target(), CtxStub(pages))
+    keys = _keys(res)
+    assert "cache_control_public_with_cookie" in keys
+    assert "cache_control_session_cacheable" in keys
+    assert "cache_control_no_vary_cookie" in keys
+    pub = [f for f in res.findings
+           if f.key == "cache_control_public_with_cookie"][0]
+    assert (pub.evidence or {}).get("severity") == "high"
+
+
+def test_cache_control_private_ok():
+    pages = {"https://example.com/": _resp(
+        "https://example.com/",
+        headers={"cache-control": "private, no-store",
+                 "set-cookie": "sess=abc; Path=/",
+                 "content-type": "text/html"},
+        text="<html></html>")}
+    res = _run("cache_control_audit", _url_target(), CtxStub(pages))
+    assert not res.findings
+
+
+def test_cache_control_long_max_age_html():
+    pages = {"https://example.com/": _resp(
+        "https://example.com/",
+        headers={"cache-control": "public, max-age=604800",
+                 "content-type": "text/html"},
+        text="<html></html>")}
+    res = _run("cache_control_audit", _url_target(), CtxStub(pages))
+    assert "cache_control_long_max_age_html" in _keys(res)
+    assert "cache_control_public_with_cookie" not in _keys(res)
+
+
+def test_cache_control_conflict_and_unknown():
+    pages = {"https://example.com/": _resp(
+        "https://example.com/",
+        headers={"cache-control": "no-store, public, bogus-directive",
+                 "content-type": "text/html"},
+        text="<html></html>")}
+    res = _run("cache_control_audit", _url_target(), CtxStub(pages))
+    keys = _keys(res)
+    assert "cache_control_conflicting_directives" in keys
+    assert "cache_control_unknown_directive" in keys
+
+
+def test_cache_control_missing_skipped():
+    pages = {"https://example.com/": _resp("https://example.com/",
+                                           text="<html></html>")}
+    res = _run("cache_control_audit", _url_target(), CtxStub(pages))
+    assert not res.findings  # headers.py owns the missing-header finding
+
+
+def test_cache_control_parse_unit():
+    from app.plugins.cache_control_audit import (
+        _grade_cache_control, _parse_cache_control)
+    d = _parse_cache_control("private, max-age=60, s-maxage=120")
+    assert d == {"private": True, "max-age": "60", "s-maxage": "120"}
+    weak = _grade_cache_control(d, False, "", True)
+    assert [w for w in weak
+            if w["key"] == "cache_control_s_maxage_exceeds_max_age"]
+    assert not _grade_cache_control({"private": True, "max-age": "60"},
+                                    True, "Cookie", True)

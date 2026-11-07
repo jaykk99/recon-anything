@@ -480,6 +480,7 @@ PLUGIN_TIME_ESTIMATES = {
     "redirect_chain": 10, "dns_infra": 20, "ipv6_check": 10,
     "ip_reputation": 15, "smtp_tls": 20, "cdn_detect": 8,
     "typosquat": 45, "tls_config": 15, "caa_audit": 8,
+    "cache_control_audit": 8,
 }
 DEFAULT_PLUGIN_ESTIMATE_S = 12
 RUN_TIMEOUT_S = 600  # 10 min hard cap (was 30 min)
