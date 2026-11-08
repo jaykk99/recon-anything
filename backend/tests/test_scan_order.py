@@ -181,7 +181,8 @@ def test_new_plugins_have_estimates():
                "web_manifest", "sri_audit", "html_comments", "trackers",
                "well_known_audit", "redirect_chain", "dns_infra",
                "ipv6_check", "ip_reputation", "smtp_tls", "cdn_detect",
-               "typosquat", "tls_config", "caa_audit"]
+               "typosquat", "tls_config", "caa_audit",
+               "cache_control_audit"]
     missing = [pid for pid in new_ids if pid not in PLUGIN_TIME_ESTIMATES]
     assert not missing, f"plugins missing time estimates: {missing}"
 
