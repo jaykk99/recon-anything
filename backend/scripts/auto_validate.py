@@ -39,7 +39,7 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.plugins.auto_validator import STRANGER, \
-    validate_candidate  # noqa: E402
+    _caller_metered, validate_candidate  # noqa: E402
 from app.plugins import contract_chain as cc  # noqa: E402
 from app.plugins import contract_sim as sim  # noqa: E402
 
@@ -211,6 +211,57 @@ def token_self_balance(chain, address):
     not an ERC20 or unreachable."""
     return _call_uint(chain, address, "balanceOf(address)(uint256)",
                       (address,))
+
+
+def decisive_probe(chain, address, signature, balances):
+    """The measured-receipt probe (mirror of the plugin lane):
+    one read-only cast call per integer amount slot at a
+    NONZERO amount the stranger provably cannot self-fund -
+    one more than the largest funding balance measured for
+    the stranger (native + the contract's own token), capped
+    at the contract's measured bound. A caller-funded path
+    cannot complete that call; a contract-funded payout can,
+    which proves the payout at that amount is payable to the
+    stranger. Returns the decisive record or None when no
+    decisive case can be constructed."""
+    types = sim._param_types(signature)
+    if types is None:
+        return None
+    slots = [i for i, t in enumerate(types)
+             if t.startswith(("uint", "int"))
+             and "[" not in t and "(" not in t]
+    if not slots:
+        return None
+    funding = [balances[k] for k in
+               ("stranger_native_wei", "stranger_token_self_wei")
+               if balances.get(k) is not None]
+    if not funding:
+        return None
+    bounds = [balances[k] for k in
+              ("native_wei", "token_self_wei")
+              if balances.get(k) is not None]
+    bound = max(bounds) if bounds else 0
+    if bound <= 0:
+        return None
+    amount = min(max(funding) + 1, bound)
+    base = default_args(signature, address)
+    if base is None:
+        return None
+    result = {"status": "transport_error",
+              "detail": "no decisive case ran", "amount": amount}
+    for i in slots:
+        pargs = list(base)
+        pargs[i] = str(amount)
+        res = probe_function(chain, address, signature, pargs)
+        if res.get("status") == "success":
+            return {"status": "success", "amount": amount,
+                    "slot": i, "via": res.get("via", ""),
+                    "detail": res.get("detail", "")[:120]}
+        if res.get("status") == "revert":
+            result = {"status": "revert", "amount": amount,
+                      "slot": i, "via": res.get("via", ""),
+                      "detail": res.get("detail", "")[:120]}
+    return result
 
 
 def pair_reserves(chain, address):
@@ -534,6 +585,30 @@ def main():
                 cand["function_out_of_scope"] = True
             sig, _fn = signature_of(src["source"], cand["function"],
                                     cand["contract_name"])
+            cand["balances"] = native_balance(cand["chain"],
+                                              cand["address"])
+            cand["balances"]["token_self_wei"] = \
+                token_self_balance(cand["chain"], cand["address"])
+            # The stranger's own measured funding: the funding
+            # bound for the decisive probe, and the basis for a
+            # caller-metered payout.
+            cand["balances"]["stranger_native_wei"] = \
+                native_balance(cand["chain"],
+                               STRANGER)["native_wei"]
+            cand["balances"]["stranger_token_self_wei"] = \
+                _call_uint(cand["chain"], cand["address"],
+                           "balanceOf(address)(uint256)",
+                           (STRANGER,))
+            if _fn is not None:
+                metered = _caller_metered(_fn)
+                if metered and metered["basis"] == "mapping":
+                    name = str(metered.get("name"))
+                    cand["balances"][
+                        "stranger_mapping_" + name + "_wei"] = \
+                        _call_uint(
+                            cand["chain"], cand["address"],
+                            name + "(address)(uint256)",
+                            (STRANGER,))
             if sig:
                 pargs = default_args(sig, cand["address"])
                 if pargs is not None:
@@ -543,10 +618,13 @@ def main():
                     cand["probe_note"] = (
                         "probe arguments not encodable by the "
                         "runner (non-static parameter types)")
-            cand["balances"] = native_balance(cand["chain"],
-                                              cand["address"])
-            cand["balances"]["token_self_wei"] = \
-                token_self_balance(cand["chain"], cand["address"])
+                if cand.get("probe", {}).get("status") == \
+                        "success":
+                    decisive = decisive_probe(
+                        cand["chain"], cand["address"], sig,
+                        cand["balances"])
+                    if decisive is not None:
+                        cand["decisive_probe"] = decisive
             reserves = pair_reserves(cand["chain"], cand["address"])
             if reserves is not None:
                 cand["balances"]["amm_reserves"] = reserves

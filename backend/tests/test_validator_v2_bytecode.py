@@ -74,10 +74,14 @@ def test_selector_present_calldata_recipient_verifies():
     # Bytecode finding for the flagged selector: the walked
     # path CALLDATALOADs (target from caller arguments) and
     # CALLs with value - a coarse CALLER-SUPPLIED read. With a
-    # successful stranger probe and a positive balance the
-    # normal terminal flow verifies it.
+    # successful stranger probe, a positive balance, and the
+    # decisive-probe measurement (nonzero amount the stranger
+    # cannot self-fund) the normal terminal flow verifies it.
     v = av.validate_candidate(_cand(
-        bytecode_evidence=_be(True), probe=PROBE_OK, balances=BAL,
+        bytecode_evidence=_be(True), probe=PROBE_OK,
+        balances=dict(BAL, stranger_native_wei=0),
+        decisive_probe={"status": "success", "amount": 1,
+                        "via": "test"},
         bytecode_findings=[{
             "selector": SEL,
             "opcodes": ["CALLDATALOAD", "CALL", "STOP"],

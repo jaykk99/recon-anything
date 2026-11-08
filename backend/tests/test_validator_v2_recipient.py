@@ -31,6 +31,15 @@ cr = cl.classify_recipient
 PROBE_OK = {"status": "success", "via": "test", "detail": ""}
 BAL = {"native_wei": 10 ** 18,
        "observed_at": "2026-11-06T00:00:00Z", "source": "test"}
+# Measured-receipt evidence as the fixed gather lanes record
+# it: stranger funding measured at 0, decisive probe amounts
+# per amount slot.
+BALM = dict(BAL, stranger_native_wei=0, stranger_token_self_wei=0)
+
+
+def _decisive(slot):
+    return {"status": "success", "amount": 1, "slot": slot,
+            "via": "test"}
 
 
 def _path_recipient(src, contract, fn_name):
@@ -222,7 +231,8 @@ contract Payees {
         "address": "0xabc", "chain": "ethereum",
         "function": "payout", "kind": "unprotected_drain",
         "source": src, "contract_name": "Payees",
-        "probe": PROBE_OK, "balances": BAL})
+        "probe": PROBE_OK, "balances": BALM,
+        "decisive_probe": _decisive(2)})
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["recipient"] == "CALLER-SUPPLIED"
 
@@ -277,7 +287,8 @@ contract Exit {
         "address": "0xabc", "chain": "ethereum",
         "function": "exit", "kind": "unprotected_drain",
         "source": src, "contract_name": "Exit",
-        "probe": PROBE_OK, "balances": BAL})
+        "probe": PROBE_OK, "balances": BALM,
+        "decisive_probe": _decisive(0)})
     assert v["recipient"] == "CALLER-SUPPLIED"
     assert v["verdict"] == "VERIFIED_REAL"
 
@@ -292,9 +303,12 @@ def test_validator_mint_helper_path_verifies_with_pair_reserves():
         "source": src, "contract_name": "PathMint",
         "probe": PROBE_OK,
         "balances": {"native_wei": 0,
+                     "stranger_native_wei": 0,
+                     "stranger_token_self_wei": 0,
                      "token_pair_reserves": {
                          "reserve0": 10 ** 20,
-                         "reserve1": 10 ** 18}}})
+                         "reserve1": 10 ** 18}},
+        "decisive_probe": _decisive(0)})
     assert v["recipient"] == "CALLER"
     assert v["verdict"] == "VERIFIED_REAL"
 
