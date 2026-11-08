@@ -456,7 +456,7 @@ def test_registry_tier9():
     ids = discover()
     for pid in NEW_IDS:
         assert pid in ids, pid
-    assert len(ids) == 1227  # 927 master + 8 tier9 (2 duplicates ship none) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
+    assert len(ids) == 1232  # 927 master + 8 tier9 (2 duplicates ship none) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
 
 
 def test_every_tier9_finding_is_unverified_sim_derived(monkeypatch):
