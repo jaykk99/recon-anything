@@ -29,6 +29,19 @@ BAL = {"native_wei": 10**18, "observed_at": "2026-11-03T00:00:00Z",
 BAL0 = {"native_wei": 0, "observed_at": "2026-11-03T00:00:00Z",
         "source": "test"}
 
+# Measured-receipt evidence as the fixed gather lanes record it:
+# a decisive probe at a nonzero amount (slot 0) the stranger
+# cannot self-fund, against stranger funding measured at 0.
+DECISIVE_OK = {"status": "success", "amount": 1, "slot": 0,
+               "via": "test"}
+
+
+def _bal_with_stranger(bal):
+    b = dict(bal)
+    b["stranger_native_wei"] = 0
+    b["stranger_token_self_wei"] = 0
+    return b
+
 AXL_SRC = """
 contract BurnableMintableCappedERC20 {
     function destroy(address etherDestination) external {
@@ -227,11 +240,16 @@ def test_vuln_fixture_verified_real_via_simulation():
 
 
 def test_vuln_fixture_verified_real_via_probe():
+    # Verified via the DECISIVE probe (the measured-receipt
+    # lane): a boundary probe success plus a balance bound no
+    # longer verifies on its own (see the regression file).
     v = av.validate_candidate({
         "function": "withdraw",
         "kind": "recipient_overdraw_withdraw",
         "source": fx.VULN["recipient_overdraw_withdraw"],
-        "probe": STRANGER_PROBE_OK, "balances": BAL})
+        "probe": STRANGER_PROBE_OK,
+        "balances": _bal_with_stranger(BAL),
+        "decisive_probe": DECISIVE_OK})
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["recipient"] == "CALLER"
 
@@ -284,7 +302,8 @@ def test_value_flow_through_internal_helper_is_classified():
     v = av.validate_candidate({
         "function": "withdraw", "kind": "unprotected_drain",
         "source": HELPER_FLOW_SRC, "probe": STRANGER_PROBE_OK,
-        "balances": BAL})
+        "balances": _bal_with_stranger(BAL),
+        "decisive_probe": DECISIVE_OK})
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["recipient"] == "CALLER"
     assert v["evidence"].get("value_flow_helpers") == ["_payout"]
@@ -313,10 +332,13 @@ def test_token_mint_with_value_evidence_is_verified_real():
                                   "reserve1": 3 * 10**18,
                                   "observed_at": "2026-11-04T00:00:00Z",
                                   "source": "test"}
+    bal["stranger_native_wei"] = 0
+    bal["stranger_token_self_wei"] = 0
     v = av.validate_candidate({
         "function": "mint", "kind": "unprotected_mint",
         "source": fx.VULN["recipient_mint_to_caller"],
-        "probe": STRANGER_PROBE_OK, "balances": bal})
+        "probe": STRANGER_PROBE_OK, "balances": bal,
+        "decisive_probe": DECISIVE_OK})
     assert v["verdict"] == "VERIFIED_REAL"
     assert "token value evidence" in v["value"]
 
@@ -511,13 +533,19 @@ def test_unknown_denomination_with_no_value_anywhere_is_fp():
     assert "no positive value evidence" in v["reason"]
 
 
-def test_unknown_denomination_with_positive_balance_is_vr():
+def test_unknown_denomination_with_positive_balance_is_unverified():
+    # withdrawTo(address) has no amount slot, so no decisive
+    # probe can measure a receipt, and its helper's call
+    # carries no value at all: a positive contract balance is
+    # an upper bound, not a receipt. Under the measured-
+    # receipt invariant this parks at UNVERIFIED (it was
+    # VERIFIED_REAL in the upper-bound era - the aeWETH bug).
     v = av.validate_candidate({
         "function": "withdrawTo", "kind": "unprotected_drain",
         "source": UNKNOWN_DENOM_SRC, "probe": STRANGER_PROBE_OK,
         "balances": BAL})
-    assert v["verdict"] == "VERIFIED_REAL"
-    assert "positive value evidence" in v["reason"]
+    assert v["verdict"] == "UNVERIFIED"
+    assert "measured receipt" in " ".join(v["missing"])
 
 
 def test_token_payout_without_token_balance_evidence_is_unverified():
@@ -617,11 +645,14 @@ def test_balances_and_reserves_ride_along_in_evidence():
     bal["amm_reserves"] = {"reserve0": 100, "reserve1": 200,
                            "observed_at": "2026-11-04T00:00:00Z",
                            "source": "test"}
+    bal["stranger_native_wei"] = 0
+    bal["stranger_token_self_wei"] = 0
     v = av.validate_candidate({
         "function": "withdraw",
         "kind": "recipient_overdraw_withdraw",
         "source": fx.VULN["recipient_overdraw_withdraw"],
-        "probe": STRANGER_PROBE_OK, "balances": bal})
+        "probe": STRANGER_PROBE_OK, "balances": bal,
+        "decisive_probe": DECISIVE_OK})
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["evidence"]["balances"]["amm_reserves"]["reserve0"] \
         == 100

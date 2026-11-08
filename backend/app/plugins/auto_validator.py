@@ -10,16 +10,21 @@ This module is the machine replacement. validate_candidate() takes
 a candidate finding plus whatever evidence lanes could gather and
 returns exactly one verdict:
 
-- VERIFIED_REAL: stranger receives, and a read-only stranger probe
-  or a fork/local simulation PROVES it, with POSITIVE value
-  evidence attached: a nonzero balance bound in the payout
-  denomination, a probe that returns a nonzero payout amount, or
-  live reserve / pair evidence. A probe that merely succeeds is
-  never enough on its own (zero-amount boundary calls succeed on
-  standard contracts by design), and a mint payout additionally
-  requires evidence the issued token has value (a live pair or
-  reserves); without it the candidate stays UNVERIFIED with the
-  missing piece named.
+- VERIFIED_REAL: stranger receives, and the receipt is MEASURED:
+  a fork/local simulation that records a positive
+  stranger_received, a probe whose return data measures a
+  nonzero payout amount, or a DECISIVE read-only probe - a call
+  at a nonzero amount the stranger provably cannot self-fund
+  (the amount exceeds every measured stranger funding balance)
+  that succeeds against live state, proving the payout at that
+  amount is contract-funded and payable. A probe that merely
+  succeeds is never enough on its own (zero-amount boundary
+  calls succeed on standard contracts by design), and a
+  contract balance is an upper bound on a payout, never a
+  receipt: a positive balance alone no longer verifies. A mint
+  payout additionally requires evidence the issued token has
+  value (a live pair or reserves); without it the candidate
+  stays UNVERIFIED with the missing piece named.
 - TRIGGER_ONLY: the code is real and ungated, but the value lands
   at a FIXED or HOLDER-SELF destination - a stranger can trigger
   it and receives $0. Token-authority findings (a mint/freeze
@@ -64,6 +69,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from . import bytecode_paths as bp
 from . import contract_chain as cc
 from . import contract_logic as cl
 from . import contract_sim as sim
@@ -267,6 +273,8 @@ _TOKEN_MARKERS = (
 
 _CALLER_EXPRS = {"msg.sender", "_msgSender()", "caller"}
 _TF_CALL_RE = re.compile(r"(safeTransferFrom|transferFrom)\s*\(")
+_BURN_CALLER_RE = re.compile(
+    r"\b_?burn(?:From)?\s*\(\s*(?:msg\.sender|_msgSender\(\))\s*[,\)]")
 
 
 def _split_call_args(text: str, open_paren: int) -> List[str]:
@@ -306,12 +314,20 @@ def _self_funded(text: str) -> bool:
     Shapes: ERC4626 deposits pulling the underlying from the
     caller - token.transferFrom(caller, ...),
     SafeERC20.safeTransferFrom(token, caller, ...) (the caller
-    is the SECOND argument in the library form) - and WETH
-    wraps where the credited amount is the caller's msg.value.
+    is the SECOND argument in the library form) - WETH wraps
+    where the credited amount is the caller's msg.value, and
+    burn-funded withdrawals where the payout amount is burned
+    out of the caller's own token balance first
+    (_burn(msg.sender, amount) funding the native payout - the
+    aeWETH withdrawTo shape: the stranger 'receives' exactly
+    their own burned stake back, and an unfunded stranger's
+    burn of 0 pays out 0).
     """
     if re.search(r"_mint\s*\([^,]+,\s*msg\.value\s*\)", text) or \
             re.search(r"\[\s*msg\.sender\s*\]\s*\+=\s*msg\.value",
                       text):
+        return True
+    if _BURN_CALLER_RE.search(text):
         return True
     for m in _TF_CALL_RE.finditer(text):
         args = _split_call_args(text, m.end() - 1)
@@ -340,6 +356,361 @@ def _payout_denominations(text: str) -> str:
     if token:
         return "token"
     return "unknown"
+
+
+def _payout_amount_exprs(text: str) -> List[str]:
+    """Amount expressions of every payout call in a function
+    body: native (.call{value: X}, 1-arg .transfer/.send),
+    token (2-arg .transfer/.safeTransfer, last arg of
+    transferFrom shapes), and issuance (last arg of _mint /
+    mint). Empty when the body pays nothing out."""
+    exprs: List[str] = []
+    for m in re.finditer(r"\.call\s*\{\s*value\s*:\s*([^}]+)\}",
+                         text):
+        exprs.append(m.group(1).strip())
+    for m in re.finditer(
+            r"\.(transfer|send|safeTransfer|transferFrom|"
+            r"safeTransferFrom)\s*\(", text):
+        args = _split_call_args(text, m.end() - 1)
+        if not args:
+            continue
+        name = m.group(1)
+        if name in ("transfer", "send"):
+            exprs.append(args[0] if len(args) == 1 else args[1])
+        elif name == "safeTransfer":
+            if len(args) >= 2:
+                exprs.append(args[1])
+        else:
+            exprs.append(args[-1])
+    for m in re.finditer(r"(?<![\w.])_?mint\s*\(", text):
+        args = _split_call_args(text, m.end() - 1)
+        if args:
+            exprs.append(args[-1])
+    return exprs
+
+
+_ASSIGN_RE = re.compile(
+    r"([A-Za-z_]\w*)\s*(?<![=!<>+\-*/%&|^])=(?![=>])\s*([^;]+);")
+
+
+def _fn_assignments(text: str) -> Dict[str, str]:
+    """Simple `name = expr;` assignments in a function body
+    (declarations included; compound assignments and
+    comparisons excluded). Later assignments win."""
+    out: Dict[str, str] = {}
+    for m in _ASSIGN_RE.finditer(text):
+        out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+_BASIS_BALANCE_RE = re.compile(
+    r"balanceOf\s*\(\s*(?:msg\.sender|_msgSender\(\))\s*\)")
+_CALLER_KEYED_RE = re.compile(
+    r"([A-Za-z_]\w*)\s*\[\s*(?:msg\.sender|_msgSender\(\))\s*\]")
+
+
+def _ztokenize(s: str):
+    toks = []
+    i = 0
+    while i < len(s):
+        if s[i].isspace():
+            i += 1
+            continue
+        m = re.match(r"0[xX][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?",
+                     s[i:])
+        if m:
+            toks.append(("num", m.group(0)))
+            i += m.end()
+            continue
+        m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", s[i:])
+        if m:
+            toks.append(("ident", m.group(0)))
+            i += m.end()
+            continue
+        if s[i] in "+-*/%()[],.?:!":
+            toks.append(("op", s[i]))
+            i += 1
+            continue
+        return None
+    return toks
+
+
+class _ZFail(Exception):
+    pass
+
+
+class _ZParser:
+    """Zero-at-basis evaluator over one amount expression.
+
+    parse_* returns (z, raw): z is True when the subexpression
+    provably evaluates to 0 whenever the chosen caller-keyed
+    basis reads 0, treating every other read as opaque (able
+    to be nonzero); raw is the consumed source text, used to
+    recognize caller reads inside call arguments. Anything the
+    grammar cannot parse raises _ZFail and the caller treats
+    the expression as opaque - the conservative direction.
+    """
+
+    def __init__(self, toks, basis, assigns, depth=0):
+        self.toks = toks
+        self.i = 0
+        self.basis = basis  # None | ("token_self", None) |
+        #                     ("mapping", name)
+        self.assigns = assigns
+        self.depth = depth
+
+    def peek(self, k=0):
+        j = self.i + k
+        return self.toks[j] if j < len(self.toks) else (None, None)
+
+    def take(self):
+        t = self.peek()
+        self.i += 1
+        return t
+
+    def parse_expr(self):
+        z, raw = self.parse_addsub()
+        if self.peek() == ("op", "?"):
+            self.take()
+            zt, rt = self.parse_expr()
+            if self.take() != ("op", ":"):
+                raise _ZFail()
+            zf, rf = self.parse_expr()
+            return (zt and zf), raw + "?" + rt + ":" + rf
+        return z, raw
+
+    def parse_addsub(self):
+        z, raw = self.parse_muldiv()
+        while self.peek() in (("op", "+"), ("op", "-")):
+            op = self.take()[1]
+            z2, raw2 = self.parse_muldiv()
+            z = z and z2
+            raw += op + raw2
+        return z, raw
+
+    def parse_muldiv(self):
+        z, raw = self.parse_unary()
+        while self.peek() in (("op", "*"), ("op", "/"),
+                              ("op", "%")):
+            op = self.take()[1]
+            z2, raw2 = self.parse_unary()
+            if op == "*":
+                z = z or z2
+            # / and %: zero numerator stays zero
+            raw += op + raw2
+        return z, raw
+
+    def parse_unary(self):
+        if self.peek() in (("op", "-"), ("op", "+")):
+            self.take()
+            return self.parse_unary()
+        if self.peek() == ("op", "!"):
+            raise _ZFail()
+        return self.parse_postfix()
+
+    def parse_args(self):
+        # Current token is "(". Returns [(z, raw), ...].
+        self.take()
+        args = []
+        if self.peek() == ("op", ")"):
+            self.take()
+            return args
+        while True:
+            args.append(self.parse_expr())
+            t = self.take()
+            if t == ("op", ")"):
+                return args
+            if t != ("op", ","):
+                raise _ZFail()
+
+    def parse_postfix(self):
+        z, raw = self.parse_primary()
+        while self.peek() == ("op", "."):
+            nxt = self.peek(1)
+            after = self.peek(2)
+            if nxt[0] != "ident" or after == ("op", "("):
+                # A method call .name(...) - or a member the
+                # primary already folded into its atom.
+                if nxt[0] != "ident":
+                    raise _ZFail()
+                self.take()
+                meth = self.take()[1]
+                args = self.parse_args()
+                a0 = args[0][0] if args else False
+                if meth == "mul":
+                    z = z or a0
+                elif meth == "div":
+                    pass  # zero numerator stays zero
+                elif meth in ("add", "sub"):
+                    z = z and a0
+                else:
+                    z = False
+                raw += "." + meth + "(...)"
+            else:
+                # Dotted member of a non-call atom the primary
+                # did not claim (defensive; primaries fold
+                # msg.sender themselves).
+                self.take()
+                raw += "." + self.take()[1]
+                z = False
+        return z, raw
+
+    def parse_primary(self):
+        kind, val = self.take()
+        if kind == "num":
+            try:
+                z = float(val.replace("_", "")) == 0
+            except ValueError:
+                z = False
+            return z, val
+        if (kind, val) == ("op", "("):
+            z, raw = self.parse_expr()
+            if self.take() != ("op", ")"):
+                raise _ZFail()
+            return z, "(" + raw + ")"
+        if kind != "ident":
+            raise _ZFail()
+        name = val
+        raw = name
+        # Fold a dotted atom (msg.sender) when the segment
+        # after the dot is not a method call.
+        while self.peek() == ("op", ".") and \
+                self.peek(1)[0] == "ident" and \
+                self.peek(2) != ("op", "("):
+            self.take()
+            raw += "." + self.take()[1]
+        if self.peek() == ("op", "["):
+            self.take()
+            _iz, iraw = self.parse_expr()
+            if self.take() != ("op", "]"):
+                raise _ZFail()
+            caller_keyed = iraw.strip() in (
+                "msg.sender", "_msgSender()")
+            if caller_keyed and self.basis is not None and \
+                    self.basis[0] == "mapping" and \
+                    self.basis[1] == name:
+                return True, raw + "[" + iraw + "]"
+            return False, raw + "[" + iraw + "]"
+        if self.peek() == ("op", "("):
+            args = self.parse_args()
+            if name == "balanceOf" and args and \
+                    args[0][1].strip() in (
+                        "msg.sender", "_msgSender()"):
+                return (self.basis is not None and
+                        self.basis[0] == "token_self"), \
+                    raw + "(caller)"
+            return False, raw + "(...)"
+        if name in self.assigns and self.depth < 8:
+            toks = _ztokenize(self.assigns[name])
+            if toks is None:
+                return False, raw
+            sub = _ZParser(toks, self.basis, self.assigns,
+                           self.depth + 1)
+            z, _r = sub.parse_expr()
+            if sub.i < len(toks):
+                raise _ZFail()
+            return z, raw
+        return False, raw
+
+
+def _zero_at(expr: str, basis, assigns) -> bool:
+    """True when `expr` provably evaluates to 0 whenever the
+    basis reads 0 (basis None = every caller read opaque, so
+    only an unconditionally-zero expression qualifies)."""
+    toks = _ztokenize(expr)
+    if toks is None:
+        return False
+    p = _ZParser(toks, basis, assigns, 0)
+    try:
+        z, _raw = p.parse_expr()
+    except _ZFail:
+        return False
+    return bool(z) and p.i >= len(toks)
+
+
+def _caller_metered(fn: Optional[Dict[str, Any]]):
+    """Is every payout of the flagged function metered by the
+    CALLER's own recorded position - their token balance
+    (balanceOf(msg.sender)) or a caller-keyed mapping entry -
+    so that a caller whose measured basis is 0 provably
+    receives 0?
+
+    The MVK claimReward shape: userShare = balanceOf(caller)
+    * remainPool / totalSupply, paid only out of the caller's
+    own pro-rata share. Recognized by symbolic evaluation:
+    every payout amount expression is zero-at-basis (zero
+    whenever the basis read is zero) yet not zero regardless
+    of the basis. Conservative: anything unparseable, any
+    payout with a basis-independent component, and functions
+    with no payout at all return None.
+
+    Returns {"basis": "token_self"} or {"basis": "mapping",
+    "name": <mapping>} or None."""
+    if fn is None:
+        return None
+    text = fn["text"]
+    exprs = _payout_amount_exprs(text)
+    if not exprs:
+        return None
+    assigns = _fn_assignments(text)
+    bases = []
+    if _BASIS_BALANCE_RE.search(text):
+        bases.append(("token_self", None))
+    seen = set()
+    for m in _CALLER_KEYED_RE.finditer(text):
+        if m.group(1) not in seen:
+            seen.add(m.group(1))
+            bases.append(("mapping", m.group(1)))
+    for basis in bases:
+        try:
+            if all(_zero_at(e, basis, assigns) for e in exprs) \
+                    and any(not _zero_at(e, None, assigns)
+                            for e in exprs):
+                return {"basis": basis[0], "name": basis[1]}
+        except Exception:
+            continue
+    return None
+
+
+def _decisive_measured(candidate: Dict[str, Any],
+                       balances: Dict[str, Any]):
+    """(amount, funding_max) when the candidate carries a
+    decisive-probe record proving a nonzero payout the
+    stranger cannot self-fund, else None.
+
+    A decisive probe is a read-only call from the unfunded
+    stranger at a NONZERO amount (in the flagged function's
+    amount slot) that exceeds every funding balance measured
+    for the stranger (native + the contract's own token). Its
+    success against live state proves the payout at that
+    amount is contract-funded and payable to the recipient -
+    a measured receipt, where a contract balance is only an
+    upper bound. The engine re-checks the amount against the
+    recorded stranger funding so a lane cannot stamp receipts
+    it did not measure."""
+    dp = candidate.get("decisive_probe") or {}
+    if dp.get("status") != "success":
+        return None
+    try:
+        amt = int(dp.get("amount") or 0)
+    except (TypeError, ValueError):
+        return None
+    if amt <= 0:
+        return None
+    funding = []
+    for k in ("stranger_native_wei", "stranger_token_self_wei"):
+        v = balances.get(k)
+        if v is not None:
+            try:
+                funding.append(int(v))
+            except (TypeError, ValueError):
+                pass
+    if not funding:
+        return None
+    fmax = max(funding)
+    if amt > fmax:
+        return (amt, fmax)
+    return None
 
 
 _ERC20_SELF_SURFACE = {"transfer", "transferFrom"}
@@ -458,6 +829,239 @@ def _token_value_evidence(candidate: Dict[str, Any],
     return None
 
 
+def _bytecode_recipient_read(findings: Any,
+                             flagged_selector: Any) -> Optional[str]:
+    """Coarse recipient read from contract_logic.
+    analyze_logic_bytecode output for the flagged selector.
+
+    Deliberately narrow: only a value CALL whose walked path
+    loads calldata (the CALL target comes from the caller's
+    own arguments) classifies CALLER-SUPPLIED, and a value
+    CALL on a path that reads the CALLER opcode classifies
+    CALLER. Anything else - no matching selector entry, no
+    CALL, a target the walk cannot attribute - returns None
+    and the caller keeps the named bytecode blocker. When in
+    doubt, no classification."""
+    if not isinstance(findings, list):
+        return None
+    sel = str(flagged_selector or "").lower()
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        fsel = str(f.get("selector") or "").lower()
+        if sel:
+            if fsel != sel:
+                continue
+        elif len(findings) != 1:
+            continue  # cannot attribute an unnamed selector
+        explicit = f.get("recipient") or f.get("recipient_class")
+        if explicit in ("CALLER", "CALLER-SUPPLIED"):
+            return str(explicit)
+        ops = set(f.get("opcodes") or []) | \
+            set(f.get("sensitive_opcodes") or [])
+        if "CALL" not in ops:
+            return None
+        if "CALLDATALOAD" in ops:
+            return "CALLER-SUPPLIED"
+        if "CALLER" in ops:
+            return "CALLER"
+        return None
+    return None
+
+
+def _validate_bytecode_only(candidate: Dict[str, Any],
+                            out: Dict[str, Any],
+                            be: Dict[str, Any]) -> Dict[str, Any]:
+    """Verdict flow for a bytecode-only contract (no verified
+    source, no recipient_override) carrying bytecode evidence.
+
+    Honesty rules mirror the sibling-source logic: a flagged
+    selector ABSENT from the deployed bytecode is dead at live
+    state (FALSE_POSITIVE); a present selector with a coarse
+    calldata/caller recipient read runs the normal measured-
+    proof flow (simulation / stranger probe / value evidence,
+    denomination unknown); a present-but-unclassifiable
+    selector stays UNVERIFIED with exactly one named missing
+    piece - the bytecode recipient blocker - unless a
+    reverting live probe settles it first."""
+    probe = candidate.get("probe") or {}
+    simulation = candidate.get("simulation") or {}
+    balances = candidate.get("balances") or {}
+    out["evidence"]["bytecode_evidence"] = {
+        "flagged_selector": be.get("flagged_selector"),
+        "selector_present": be.get("selector_present"),
+        "minimal_proxy_impl": be.get("minimal_proxy_impl"),
+        "deployed_selectors": be.get("deployed_selectors")}
+    if balances:
+        out["evidence"]["balances"] = balances
+    if probe:
+        out["evidence"]["probe"] = {
+            "status": probe.get("status"),
+            "via": probe.get("via", ""),
+            "detail": str(probe.get("detail", ""))[:200]}
+    sel = be.get("flagged_selector") or "(unknown selector)"
+    if be.get("selector_present") is False:
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            f"flagged function selector {sel} absent from "
+            "deployed bytecode: the flagged function is not "
+            "part of the deployed contract (bytecode-only, no "
+            "verified source), so the flagged path is dead at "
+            "live state")
+        if probe.get("status"):
+            out["reason"] += (
+                f"; live stranger probe status: "
+                f"{probe.get('status')}")
+        return out
+    if be.get("selector_present") is True:
+        recipient = _bytecode_recipient_read(
+            candidate.get("bytecode_findings"),
+            be.get("flagged_selector"))
+        if recipient in ("CALLER", "CALLER-SUPPLIED"):
+            out["recipient"] = recipient
+            out["evidence"]["bytecode_recipient"] = recipient
+            return _finish_bytecode_proven(candidate, out, probe,
+                                           simulation, balances)
+        if probe.get("status") == "revert":
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "flagged selector is present in the deployed "
+                "bytecode, but the live read-only probe from "
+                "the unfunded stranger reverts "
+                f"({str(probe.get('detail', ''))[:160]}); the "
+                "path is dead at live state")
+            return out
+    out["missing"] = [
+        "recipient destination (bytecode-only contract, "
+        "no verified source)"]
+    out["reason"] = (
+        "no verified source available, and the bytecode "
+        "evidence for the flagged selector does not determine "
+        "the value destination; the gate and the recipient "
+        "cannot be read from bytecode alone")
+    if be.get("minimal_proxy_impl"):
+        out["reason"] += (
+            f"; the contract is an EIP-1167 minimal proxy - "
+            f"analyze the implementation "
+            f"{be['minimal_proxy_impl']} instead")
+    return out
+
+
+def _finish_bytecode_proven(candidate: Dict[str, Any],
+                            out: Dict[str, Any],
+                            probe: Dict[str, Any],
+                            simulation: Dict[str, Any],
+                            balances: Dict[str, Any]
+                            ) -> Dict[str, Any]:
+    """Measured-proof flow for a bytecode-only candidate whose
+    recipient WAS classified from bytecode evidence. Mirrors
+    the source flow's unknown-denomination branch: a
+    simulation or a successful stranger probe plus positive
+    value evidence verifies; measured zeros kill; nothing
+    measured stays UNVERIFIED with the gap named."""
+    recipient = out.get("recipient")
+    if simulation.get("ran"):
+        received = simulation.get("stranger_received")
+        out["evidence"]["simulation"] = simulation.get("detail", "")
+        if received is not None and float(received) > 0:
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = (f"{received} "
+                            f"{simulation.get('unit', '')}".strip())
+            out["reason"] = (
+                "fork/local simulation proves a stranger "
+                f"receives {out['value']}; bytecode recipient "
+                f"read {recipient} (bytecode-only contract, no "
+                "verified source)")
+            return out
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            "fork/local simulation ran and the stranger "
+            "received 0 - the payout does not reach a stranger "
+            "in practice")
+        return out
+    if probe.get("status") == "revert":
+        out["verdict"] = "FALSE_POSITIVE"
+        out["reason"] = (
+            "live read-only probe from the unfunded stranger "
+            f"reverts ({str(probe.get('detail', ''))[:160]}); "
+            "the bytecode-level path is dead at live state")
+        return out
+    if probe.get("status") == "success":
+        positives: List[str] = []
+        native = balances.get("native_wei")
+        token_self = balances.get("token_self_wei")
+        if native is not None and int(native) > 0:
+            positives.append(
+                f"contract native balance {native} wei")
+        if token_self is not None and int(token_self) > 0:
+            positives.append(
+                f"contract own-token balance {token_self} "
+                "base units")
+        for key in ("amm_reserves", "token_pair_reserves"):
+            total = _reserves_value(balances, key)
+            if total:
+                positives.append(
+                    f"live reserves ({key}, sum {total} "
+                    "base units)")
+        measured = _decisive_measured(candidate, balances)
+        if candidate.get("decisive_probe"):
+            out["evidence"]["decisive_probe"] = \
+                candidate["decisive_probe"]
+        if positives and measured is not None:
+            amt, fmax = measured
+            out["verdict"] = "VERIFIED_REAL"
+            out["value"] = (
+                f"decisive probe proved {amt} payable; "
+                + "; ".join(positives))
+            out["reason"] = (
+                "decisive read-only probe from the unfunded "
+                f"stranger at a nonzero amount ({amt}) "
+                f"exceeding the stranger's measured funding "
+                f"(max {fmax}) succeeds and the bytecode "
+                f"recipient read is {recipient} (bytecode-only "
+                "contract, no verified source); positive value "
+                "evidence: " + "; ".join(positives))
+            return out
+        if positives:
+            out["missing"] = ["measured receipt (decisive "
+                              "nonzero probe or fork/local "
+                              "simulation)"]
+            out["reason"] = (
+                "stranger probe succeeds and the bytecode "
+                f"recipient read is {recipient}, but a balance "
+                "is an upper bound, not a receipt: no decisive "
+                "nonzero probe or simulation measured what a "
+                "stranger actually receives (positive value "
+                "evidence: " + "; ".join(positives) + ")")
+            return out
+        if native is not None or token_self is not None or \
+                _reserves_value(balances, "amm_reserves") \
+                is not None or \
+                _reserves_value(balances, "token_pair_reserves") \
+                is not None:
+            out["verdict"] = "FALSE_POSITIVE"
+            out["reason"] = (
+                "stranger probe succeeds but there is no "
+                "positive value evidence: the contract holds "
+                f"{native} wei native and {token_self} of its "
+                "own token, with no live reserves")
+            return out
+        out["missing"] = ["positive value evidence (contract "
+                          "balances / reserves)"]
+        out["reason"] = (
+            "stranger probe succeeds and the bytecode "
+            f"recipient read is {recipient}, but no balance "
+            "or reserve evidence was measured, so there is "
+            "no proof anything payable exists")
+        return out
+    out["missing"] = ["stranger probe or fork/local simulation"]
+    out["reason"] = (
+        "bytecode recipient read is candidate-grade "
+        f"({recipient}) but no probe or simulation has run, "
+        "so the payout is unproven")
+    return out
+
+
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Machine verdict for one candidate finding.
 
@@ -471,8 +1075,22 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         freeze / delegate authority held by a fixed principal),
       probe: {"status": "success"|"revert"|"transport_error",
               "detail": str, "via": str},
+      decisive_probe: {"status": "success"|"revert"|
+              "transport_error", "amount": int, "slot": int,
+              "via": str} - a read-only probe at a NONZERO amount
+              in the function's amount slot, chosen to exceed
+              every funding balance measured for the stranger;
+              its success is the measured-receipt evidence the
+              probe-success branch requires for VERIFIED_REAL,
       balances: {"native_wei": int|None, "observed_at": str,
-                 "source": str},
+                 "source": str,
+                 "stranger_native_wei": int|None - the stranger's
+                   own native balance (funding bound),
+                 "stranger_token_self_wei": int|None - the
+                   stranger's balanceOf on the target contract
+                   (funding bound AND the caller-metered basis),
+                 "stranger_mapping_<name>_wei": int|None - the
+                   stranger's entry in a caller-keyed mapping},
       simulation: {"ran": bool, "stranger_received": number|None,
                    "unit": str, "detail": str},
       entitlement_metered: bool - payout amount is metered by the
@@ -514,6 +1132,9 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     balances = candidate.get("balances") or {}
 
     if not source and not candidate.get("recipient_override"):
+        be = candidate.get("bytecode_evidence")
+        if isinstance(be, dict) and be:
+            return _validate_bytecode_only(candidate, out, be)
         out["missing"] = ["verified source"]
         out["reason"] = ("no verified source available (fetch "
                          "failed or contract unverified); cannot "
@@ -614,6 +1235,15 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     # down, and the destination is decided by what the entry
     # actually passes to the helper).
     flow_text = fn["text"] if fn is not None else ""
+    metered = _caller_metered(fn) if fn is not None else None
+    if metered:
+        # Every payout of the flagged function is metered by
+        # the caller's own recorded position (their token
+        # balance or a caller-keyed entitlement entry): the
+        # amount a caller receives scales with what they
+        # already hold. Measured in the probe branch against
+        # the stranger's own basis.
+        out["evidence"]["caller_metered"] = metered
     recipient = candidate.get("recipient_override")
     if recipient is None and fn is not None:
         _expanded, helpers = _expanded_fn_text(fn, scope)
@@ -761,18 +1391,25 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         denom = _payout_denominations(flow_text)
         out["evidence"]["payout_denomination"] = denom
         if _self_funded(flow_text):
-            # Deposit / wrap shape: the payout is funded by the
-            # caller (transferFrom from msg.sender, or the
-            # credited amount is the caller's own msg.value).
-            # A stranger receives only their own funds back;
-            # a successful probe proves no unbacked payout.
+            # Deposit / wrap / burn shape: the payout is funded
+            # by the caller (transferFrom from msg.sender, the
+            # credited amount is the caller's own msg.value, or
+            # the payout amount is burned out of the caller's
+            # own token balance first). A stranger receives
+            # only their own funds back; a successful probe
+            # proves no unbacked payout.
+            shape = ("burns the payout amount out of the "
+                     "caller's own token balance "
+                     "(_burn(msg.sender, ...)) before paying "
+                     "out" if _BURN_CALLER_RE.search(flow_text)
+                     else "pulls the value from the caller "
+                     "themselves (transferFrom from msg.sender, "
+                     "or the payout amount is the caller's own "
+                     "msg.value) before paying out")
             out["verdict"] = "FALSE_POSITIVE"
             out["reason"] = (
-                "self-funded path: the flagged function pulls "
-                "the value from the caller themselves "
-                "(transferFrom from msg.sender, or the payout "
-                "amount is the caller's own msg.value) before "
-                "paying out; a stranger receives only their own "
+                f"self-funded path: the flagged function "
+                f"{shape}; a stranger receives only their own "
                 "funds back, so the probe success proves no "
                 "unbacked receipt")
             return out
@@ -793,7 +1430,42 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                     "receipt for a stranger is 0, so the probe "
                     "proves no payable payout")
                 return out
-        if candidate.get("entitlement_metered"):
+        if metered or candidate.get("entitlement_metered"):
+            # The payout is metered by the caller's own
+            # recorded position. When the engine recognized the
+            # metering basis in the source AND the gathering
+            # lane measured the stranger's own basis, a zero
+            # basis is a MEASURED zero receipt (every payout
+            # amount is symbolically zero at a zero basis):
+            # the MVK claimReward shape - the function does not
+            # revert for a stranger, it simply pays them 0.
+            basis_val = None
+            basis_label = "caller entitlement"
+            if metered:
+                if metered["basis"] == "token_self":
+                    basis_val = balances.get(
+                        "stranger_token_self_wei")
+                    basis_label = "own-token balance"
+                else:
+                    basis_val = balances.get(
+                        "stranger_mapping_" +
+                        str(metered.get("name")) + "_wei")
+                    basis_label = (
+                        "entry in the caller-keyed mapping " +
+                        str(metered.get("name")))
+            if metered and basis_val is not None and \
+                    int(basis_val) == 0:
+                out["verdict"] = "FALSE_POSITIVE"
+                out["reason"] = (
+                    "caller-metered payout: every payout of "
+                    "the flagged function is metered by the "
+                    f"caller's own {basis_label}, and the "
+                    f"stranger's measured {basis_label} is 0, "
+                    "so the measured receipt for an unfunded "
+                    "stranger is 0 - the probe succeeds only "
+                    "because the function does not revert, not "
+                    "because it pays a stranger anything")
+                return out
             out["missing"] = ["fork/local simulation (an "
                               "eth_call cannot measure a payout "
                               "metered by caller entitlement)"]
@@ -803,12 +1475,22 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "entitlement, so the amount a stranger would "
                 "actually receive is unmeasured")
             return out
-        # POSITIVE VALUE EVIDENCE GATE. From here, VERIFIED_REAL
-        # requires at least one measured, nonzero value bound in
-        # the payout's denomination (or, for a mint, evidence
-        # the issued token has value). Zero-balance kills stay
+        # MEASURED-RECEIPT GATE. From here, VERIFIED_REAL
+        # requires a measured receipt: a decisive probe (a
+        # nonzero amount the stranger cannot self-fund,
+        # succeeding against live state) on top of positive
+        # value in the payout's denomination (or, for a mint,
+        # evidence the issued token has value). A contract
+        # balance is an upper bound, never a receipt - the
+        # aeWETH lesson: withdrawTo succeeded on a zero-amount
+        # probe against a positive native balance while paying
+        # a stranger exactly 0. Zero-balance kills stay
         # denomination-aware: 0 wei only kills a native payout;
         # a token payout is bounded by token state, not wei.
+        measured = _decisive_measured(candidate, balances)
+        if candidate.get("decisive_probe"):
+            out["evidence"]["decisive_probe"] = \
+                candidate["decisive_probe"]
         mint_payout = bool(re.search(r"(?<![\w.])_?mint\s*\(",
                                      flow_text))
         if denom == "native":
@@ -827,16 +1509,34 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                     "holds 0 native balance; there is nothing "
                     "for a stranger to receive")
                 return out
-            out["verdict"] = "VERIFIED_REAL"
-            out["value"] = (
-                f"contract native balance {native} wei (upper "
-                "bound on the native payout)")
+            if measured is not None:
+                amt, fmax = measured
+                out["verdict"] = "VERIFIED_REAL"
+                out["value"] = (
+                    f"decisive probe proved {amt} wei payable; "
+                    f"contract native balance {native} wei")
+                out["reason"] = (
+                    "decisive read-only probe from the "
+                    "unfunded stranger at a nonzero amount "
+                    f"({amt} wei) exceeding the stranger's "
+                    f"measured funding (max {fmax}) succeeds "
+                    "against live state, the function is "
+                    f"ungated, and the value destination is "
+                    f"{recipient}: the payout at that amount "
+                    "is contract-funded and payable to a "
+                    "stranger (measured receipt, not a balance "
+                    "bound)")
+                return out
+            out["missing"] = ["measured receipt (decisive "
+                              "nonzero probe or fork/local "
+                              "simulation)"]
             out["reason"] = (
-                "read-only probe from the unfunded stranger "
-                "succeeds, the function is ungated, the value "
-                f"destination is {recipient}, and the contract "
+                "stranger probe succeeds and the contract "
                 f"holds a positive native balance ({native} "
-                "wei) bounding the payout")
+                "wei), but a balance is an upper bound, not a "
+                "receipt: no decisive nonzero probe or "
+                "simulation measured what a stranger actually "
+                "receives")
             return out
         if denom == "token":
             if mint_payout:
@@ -853,16 +1553,33 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                         "of an untraded token is not a payable "
                         "payout")
                     return out
-                out["verdict"] = "VERIFIED_REAL"
-                out["value"] = (
-                    "token issuance to the caller-reachable "
-                    f"recipient (mint); token value evidence: "
-                    f"{tve}")
+                if measured is not None:
+                    amt, fmax = measured
+                    out["verdict"] = "VERIFIED_REAL"
+                    out["value"] = (
+                        "token issuance to the caller-reachable "
+                        f"recipient (mint): decisive probe "
+                        f"minted {amt} base units to the "
+                        f"stranger; token value evidence: {tve}")
+                    out["reason"] = (
+                        "decisive read-only probe from the "
+                        "unfunded stranger at a nonzero amount "
+                        f"({amt} base units) exceeding the "
+                        f"stranger's measured funding (max "
+                        f"{fmax}) succeeds against live state, "
+                        "the function is ungated, the value "
+                        f"destination is {recipient}, and the "
+                        f"minted token has value evidence: {tve}")
+                    return out
+                out["missing"] = ["measured receipt (decisive "
+                                  "nonzero probe or fork/local "
+                                  "simulation)"]
                 out["reason"] = (
-                    "read-only probe from the unfunded stranger "
-                    "succeeds, the function is ungated, the "
-                    f"value destination is {recipient}, and the "
-                    f"minted token has value evidence: {tve}")
+                    "stranger probe succeeds on an ungated "
+                    "mint path and the minted token has value "
+                    f"evidence ({tve}), but no decisive "
+                    "nonzero probe or simulation measured a "
+                    "stranger actually receiving the issuance")
                 return out
             if token_self is None:
                 out["missing"] = ["contract own-token balance "
@@ -880,16 +1597,35 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
                     "holds 0 of its own token; the token payout "
                     "has nothing to pay out")
                 return out
-            out["verdict"] = "VERIFIED_REAL"
-            out["value"] = (
-                f"contract own-token balance {token_self} "
-                "(base units, upper bound on the token payout)")
+            if measured is not None:
+                amt, fmax = measured
+                out["verdict"] = "VERIFIED_REAL"
+                out["value"] = (
+                    f"decisive probe proved {amt} base units "
+                    f"payable; contract own-token balance "
+                    f"{token_self} base units")
+                out["reason"] = (
+                    "decisive read-only probe from the "
+                    "unfunded stranger at a nonzero amount "
+                    f"({amt} base units) exceeding the "
+                    f"stranger's measured funding (max {fmax}) "
+                    "succeeds against live state, the function "
+                    f"is ungated, and the value destination is "
+                    f"{recipient}: the payout at that amount "
+                    "is contract-funded and payable to a "
+                    "stranger (measured receipt, not a balance "
+                    "bound)")
+                return out
+            out["missing"] = ["measured receipt (decisive "
+                              "nonzero probe or fork/local "
+                              "simulation)"]
             out["reason"] = (
-                "read-only probe from the unfunded stranger "
-                "succeeds, the function is ungated, the value "
-                f"destination is {recipient}, and the contract "
-                f"holds a positive own-token balance "
-                f"({token_self} base units) bounding the payout")
+                "stranger probe succeeds and the contract "
+                "holds a positive own-token balance "
+                f"({token_self} base units), but a balance is "
+                "an upper bound, not a receipt: no decisive "
+                "nonzero probe or simulation measured what a "
+                "stranger actually receives")
             return out
         # mixed / unknown denomination: any measured positive
         # bound counts; measured zeros across the board kill;
@@ -911,14 +1647,32 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
             tve = _token_value_evidence(candidate, balances)
             if tve is not None:
                 positives.append(f"mint value evidence: {tve}")
-        if positives:
+        if positives and measured is not None:
+            amt, fmax = measured
             out["verdict"] = "VERIFIED_REAL"
-            out["value"] = "; ".join(positives)
+            out["value"] = (
+                f"decisive probe proved {amt} payable; "
+                + "; ".join(positives))
             out["reason"] = (
-                "read-only probe from the unfunded stranger "
-                "succeeds, the function is ungated, and the "
-                f"value destination is {recipient}; positive "
-                "value evidence: " + "; ".join(positives))
+                "decisive read-only probe from the unfunded "
+                f"stranger at a nonzero amount ({amt}) "
+                f"exceeding the stranger's measured funding "
+                f"(max {fmax}) succeeds, the function is "
+                f"ungated, and the value destination is "
+                f"{recipient}; positive value evidence: "
+                + "; ".join(positives))
+            return out
+        if positives:
+            out["missing"] = ["measured receipt (decisive "
+                              "nonzero probe or fork/local "
+                              "simulation)"]
+            out["reason"] = (
+                "stranger probe succeeds and positive value "
+                "evidence exists (" + "; ".join(positives) +
+                "), but a balance or reserve is an upper "
+                "bound, not a receipt: no decisive nonzero "
+                "probe or simulation measured what a stranger "
+                "actually receives")
             return out
         if native is not None or token_self is not None \
                 or reserves_total is not None:
@@ -994,17 +1748,111 @@ def _word_at(result_hex: str, idx: int) -> Optional[int]:
         return None
 
 
+async def _token_balance_of(ctx: Ctx, chain: cc.ChainConfig,
+                            address: str,
+                            holder: str) -> Optional[int]:
+    """balanceOf(holder) read on the contract at `address`.
+    None when the contract is not an ERC20 or no route
+    answers."""
+    data = sim.function_selector("balanceOf(address)") + \
+        holder[2:].lower().rjust(64, "0")
+    res = await sim.eth_call(ctx, chain, address, data, STRANGER)
+    if res.get("status") != "success":
+        return None
+    return _word_at(res.get("result", ""), 0)
+
+
 async def _token_self_balance(ctx: Ctx, chain: cc.ChainConfig,
                               address: str) -> Optional[int]:
     """balanceOf(address) of the contract on ITSELF - the live
     bound for a payout denominated in the contract's own token.
     None when the contract is not an ERC20 or no route answers."""
-    data = sim.function_selector("balanceOf(address)") + \
-        address[2:].lower().rjust(64, "0")
+    return await _token_balance_of(ctx, chain, address, address)
+
+
+async def _mapping_entry(ctx: Ctx, chain: cc.ChainConfig,
+                         address: str, name: str,
+                         key: str) -> Optional[int]:
+    """<name>(key) through the public getter of a caller-keyed
+    mapping - the stranger's measured entitlement basis for a
+    mapping-metered payout. None when no such getter answers
+    (private mapping, or no route)."""
+    data = sim.function_selector(f"{name}(address)") + \
+        key[2:].lower().rjust(64, "0")
     res = await sim.eth_call(ctx, chain, address, data, STRANGER)
     if res.get("status") != "success":
         return None
     return _word_at(res.get("result", ""), 0)
+
+
+async def _decisive_probe(ctx: Ctx, chain: cc.ChainConfig,
+                          addr: str, fn_name: str,
+                          types: List[str],
+                          balances: Dict[str, Any]
+                          ) -> Optional[Dict[str, Any]]:
+    """The measured-receipt probe: one read-only call per
+    integer amount slot at a NONZERO amount the stranger
+    provably cannot self-fund - one more than the largest
+    funding balance measured for the stranger (native + the
+    contract's own token), capped at the contract's own
+    measured bound in the payout denominations.
+
+    A caller-funded path (burn / transferFrom / deposit
+    shapes) cannot complete that call: it would have to pull
+    more than the stranger holds. A contract-funded payout
+    completes it, which proves the payout at that amount is
+    payable to the stranger against live state. Zero-amount
+    boundary probes can never prove this - they succeed on
+    standard contracts by design (the aeWETH lesson).
+
+    Returns the decisive record, or None when no decisive
+    case can be constructed (no integer slot, stranger
+    funding unmeasured, or the contract bound is 0 - the
+    engine's zero-balance kills settle that case)."""
+    slots = [i for i, t in enumerate(types)
+             if t.startswith(("uint", "int"))
+             and "[" not in t and "(" not in t]
+    if not slots:
+        return None
+    funding = [int(balances[k]) for k in
+               ("stranger_native_wei", "stranger_token_self_wei")
+               if balances.get(k) is not None]
+    if not funding:
+        return None
+    bounds = [int(balances[k]) for k in
+              ("native_wei", "token_self_wei")
+              if balances.get(k) is not None]
+    bound = max(bounds) if bounds else 0
+    if bound <= 0:
+        return None
+    amount = min(max(funding) + 1, bound)
+    base: List[Any] = []
+    for t in types:
+        v = sim._default_value(t)
+        if t == "address":
+            v = STRANGER
+        base.append(v)
+    result: Dict[str, Any] = {
+        "status": "transport_error",
+        "detail": "no decisive case ran", "amount": amount}
+    for i in slots:
+        values = list(base)
+        values[i] = amount
+        enc = sim.encode_call_args(types, values)
+        if enc is None:
+            continue
+        data = sim.function_selector(
+            sim.canonical_signature(fn_name, types)) + enc
+        res = await sim.eth_call(ctx, chain, addr, data, STRANGER)
+        if res.get("status") == "success":
+            return {"status": "success", "amount": amount,
+                    "slot": i, "via": res.get("via", ""),
+                    "detail": str(res.get("detail", ""))[:120]}
+        if res.get("status") == "revert":
+            result = {"status": "revert", "amount": amount,
+                      "slot": i, "via": res.get("via", ""),
+                      "detail": str(res.get("detail", ""))[:120]}
+    return result
 
 
 async def _pair_reserves(ctx: Ctx, chain: cc.ChainConfig,
@@ -1026,6 +1874,50 @@ async def _pair_reserves(ctx: Ctx, chain: cc.ChainConfig,
             "source": res.get("via", "eth_call (live)")}
 
 
+async def _attach_bytecode_evidence(ctx: Ctx, chain: cc.ChainConfig,
+                                    addr: str,
+                                    candidate: Dict[str, Any]
+                                    ) -> None:
+    """Populate candidate["bytecode_evidence"] (+ the raw
+    analyze_logic_bytecode findings) from deployed bytecode
+    when verified source could not be fetched. Read-only
+    eth_getCode only; any failure leaves the candidate
+    untouched and the verdict engine names the source gap."""
+    try:
+        code = await cc.rpc_get_code(ctx, chain, addr)
+    except Exception:
+        return
+    if not code or code == "0x":
+        return
+    try:
+        paths = bp.analyze(code)
+        findings = cl.analyze_logic_bytecode(code)
+    except Exception:
+        return
+    candidate["bytecode_findings"] = findings
+    deployed = [s["selector"] for s in paths.get("selectors") or []
+                if s.get("selector")]
+    flagged = candidate.get("flagged_selector") or ""
+    if not flagged and candidate.get("function"):
+        for sel_hex, sig in cc.SELECTOR_TABLE.items():
+            if sig and sig.split("(")[0] == candidate["function"]:
+                flagged = sel_hex if sel_hex.startswith("0x") \
+                    else "0x" + sel_hex
+                break
+    present: Optional[bool] = None
+    if flagged and paths.get("dispatcher_found") and \
+            not paths.get("minimal_proxy_impl"):
+        # Only a recognized dispatcher settles presence; a
+        # minimal proxy delegatecalls everything, so absence
+        # from its (empty) dispatch table proves nothing.
+        present = flagged.lower() in {d.lower() for d in deployed}
+    candidate["bytecode_evidence"] = {
+        "flagged_selector": flagged or None,
+        "deployed_selectors": deployed,
+        "selector_present": present,
+        "minimal_proxy_impl": paths.get("minimal_proxy_impl")}
+
+
 async def gather_and_validate(ctx: Ctx, key: Optional[str],
                               candidate: Dict[str, Any]
                               ) -> Dict[str, Any]:
@@ -1045,7 +1937,11 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
     if src:
         candidate["source"] = src["source"]
         candidate["contract_name"] = src.get("contract_name", "")
+    if not src and not candidate.get("bytecode_evidence"):
+        await _attach_bytecode_evidence(ctx, chain, addr, candidate)
     fn_name = candidate.get("function", "")
+    fn = None
+    types = None
     if src and fn_name:
         scope, fn = _find_fn(src["source"], fn_name,
                              candidate.get("contract_name", ""))
@@ -1062,29 +1958,53 @@ async def gather_and_validate(ctx: Ctx, key: Optional[str],
                     break
         if fn is not None:
             types = sim._param_types(fn["signature"])
-            if types is not None:
-                cases = sim.boundary_cases(types, addr)
-                probe = {"status": "transport_error",
-                         "detail": "no probe case ran"}
-                for values, _label in cases[:3]:
-                    enc = sim.encode_call_args(types, values)
-                    if enc is None:
-                        continue
-                    data = sim.function_selector(
-                        sim.canonical_signature(fn_name, types)) + enc
-                    res = await sim.eth_call(ctx, chain, addr, data,
-                                             STRANGER)
-                    probe = res
-                    if res.get("status") in ("success", "revert"):
-                        break
-                candidate["probe"] = probe
+    # Balances first: the decisive probe's amount is built
+    # from the stranger's measured funding and the contract's
+    # measured bound.
     balances = await _native_balance(ctx, chain, addr)
     balances["token_self_wei"] = await _token_self_balance(
         ctx, chain, addr)
+    stranger_native = await _native_balance(ctx, chain, STRANGER)
+    balances["stranger_native_wei"] = stranger_native.get(
+        "native_wei")
+    balances["stranger_token_self_wei"] = await \
+        _token_balance_of(ctx, chain, addr, STRANGER)
     reserves = await _pair_reserves(ctx, chain, addr)
     if reserves is not None:
         balances["amm_reserves"] = reserves
     candidate["balances"] = balances
+    if fn is not None:
+        # Caller-metered payouts: measure the stranger's basis
+        # entry when the metering basis is a caller-keyed
+        # mapping with a public getter.
+        metered = _caller_metered(fn)
+        if metered and metered["basis"] == "mapping":
+            balances["stranger_mapping_" +
+                     str(metered.get("name")) + "_wei"] = \
+                await _mapping_entry(ctx, chain, addr,
+                                     str(metered.get("name")),
+                                     STRANGER)
+    if fn is not None and types is not None:
+        cases = sim.boundary_cases(types, addr)
+        probe = {"status": "transport_error",
+                 "detail": "no probe case ran"}
+        for values, _label in cases[:3]:
+            enc = sim.encode_call_args(types, values)
+            if enc is None:
+                continue
+            data = sim.function_selector(
+                sim.canonical_signature(fn_name, types)) + enc
+            res = await sim.eth_call(ctx, chain, addr, data,
+                                     STRANGER)
+            probe = res
+            if res.get("status") in ("success", "revert"):
+                break
+        candidate["probe"] = probe
+        if probe.get("status") == "success":
+            decisive = await _decisive_probe(
+                ctx, chain, addr, fn_name, types, balances)
+            if decisive is not None:
+                candidate["decisive_probe"] = decisive
     return validate_candidate(candidate)
 
 

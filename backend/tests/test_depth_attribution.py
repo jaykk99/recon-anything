@@ -231,10 +231,17 @@ def test_direct_write_mint_detector_candidate_and_validator():
             if f.get("report_class") == "candidate"
             and f["function"] == "mint"]
     assert cand and cand[0]["recipient"] == "CALLER-SUPPLIED"
-    v = validate_candidate(_candidate(
+    cand = _candidate(
         MINT_DIRECT, "VulnMint", "mint",
         balances={"token_pair_reserves":
-                  {"reserve0": 10 ** 20, "reserve1": 10 ** 18}}))
+                  {"reserve0": 10 ** 20, "reserve1": 10 ** 18},
+                  "stranger_native_wei": 0,
+                  "stranger_token_self_wei": 0})
+    # Measured receipt: decisive probe at a nonzero amount in
+    # the amount slot (slot 1) the stranger cannot self-fund.
+    cand["decisive_probe"] = {"status": "success", "amount": 1,
+                              "slot": 1, "via": "test"}
+    v = validate_candidate(cand)
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["recipient"] == "CALLER-SUPPLIED"
 
@@ -324,9 +331,16 @@ def test_validator_function_absent_everywhere_reason():
 # ---------------------------------------------------------------------------
 
 def test_validator_proxy_attribution_verified_real():
-    v = validate_candidate(_candidate(
+    cand = _candidate(
         BUNDLED_IMPL, "Proxy", "withdrawTo",
-        balances={"native_wei": 10 ** 18}))
+        balances={"native_wei": 10 ** 18,
+                  "stranger_native_wei": 0,
+                  "stranger_token_self_wei": 0})
+    # Measured receipt: decisive probe at a nonzero amount in
+    # the amount slot the stranger cannot self-fund.
+    cand["decisive_probe"] = {"status": "success", "amount": 1,
+                              "slot": 1, "via": "test"}
+    v = validate_candidate(cand)
     assert v["verdict"] == "VERIFIED_REAL"
     assert v["recipient"] == "CALLER-SUPPLIED"
     assert v["evidence"].get("attributed_to") == "Impl"
