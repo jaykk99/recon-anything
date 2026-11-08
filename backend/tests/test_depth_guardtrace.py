@@ -333,23 +333,44 @@ def test_drain_ungated_still_fires():
 # Validator gate read (the benchmark's BAD cases)
 # ---------------------------------------------------------------------------
 
-def _validate(src, cname, fn_name):
+def _validate(src, cname, fn_name, **extra):
     cand = {"address": "0x00000000000000000000000000000000000000aa",
             "chain": "ethereum", "function": fn_name,
             "kind": "access_control_flaw", "source": src,
             "contract_name": cname,
             "probe": {"status": "success", "via": "test"},
-            "balances": {"native_wei": 10 ** 18}}
+            "balances": {"native_wei": 10 ** 18,
+                         "stranger_native_wei": 0,
+                         "stranger_token_self_wei": 0}}
+    cand.update(extra)
     return av.validate_candidate(cand)
 
 
 def test_validator_claim_repeat_verified_real():
-    v = _validate(CLAIM_REPEAT, "VulnClaim", "claim")
+    # claim() has no amount slot, so no decisive probe can
+    # measure its receipt, and its payout is metered by the
+    # claimant's entitlement entry: the measured channel for
+    # the repeat-claim drain is the local simulation (the
+    # entitlement is never consumed, so repeat claims pay out
+    # until the contract is empty).
+    v = _validate(
+        CLAIM_REPEAT, "VulnClaim", "claim",
+        simulation={"ran": True, "stranger_received": 3.0,
+                    "unit": "ETH",
+                    "detail": "local fixture: a 1 ETH "
+                              "entitlement claimed 3 times "
+                              "without consumption, 3 ETH "
+                              "received"})
     assert v["gated"] is False
     assert v["verdict"] == "VERIFIED_REAL"
 
 
 def test_validator_sig_self_verified_real():
-    v = _validate(SIG_SELF, "VulnSigClaim", "claimWithSig")
+    # Measured receipt: decisive probe at a nonzero amount in
+    # the amount slot (slot 0) the stranger cannot self-fund.
+    v = _validate(
+        SIG_SELF, "VulnSigClaim", "claimWithSig",
+        decisive_probe={"status": "success", "amount": 1,
+                        "slot": 0, "via": "test"})
     assert v["gated"] is False
     assert v["verdict"] == "VERIFIED_REAL"

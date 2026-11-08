@@ -248,6 +248,11 @@ def test_gather_and_validate_probes_array_function(monkeypatch):
     assert captured, "no stranger probe was built"
     expected = sim.function_selector("bar(uint256[])") + \
         sim.encode_call_args(["uint256[]"], [[]])
-    assert captured[0][0] == expected
-    assert captured[0][1] == av.STRANGER
+    # The lane gathers balance evidence (balanceOf / reserves
+    # reads) BEFORE probing - the decisive probe's amount is
+    # built from those measurements - so the bar() probe is
+    # found by its selector, not by position.
+    probes = [c for c in captured if c[0] == expected]
+    assert probes, "no correctly-encoded bar() probe was built"
+    assert probes[0][1] == av.STRANGER
     assert out["address"] == ADDR
