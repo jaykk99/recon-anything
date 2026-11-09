@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .base import Plugin
 
-RULES = [('0x00000000000000000000000000000000000000(64|65|66|67|68|69|6a)\b[\s\S]{0,200}?\.call\s*\(', 'require\s*\(\s*success|if\s*\(\s*!success|\(\s*bool\s+success', 'bsc_precompile_unchecked_result', 'high', 'BNB Chain precompile is called and its success flag is never checked - a failed precompile call silently flows into a value/security decision', 'Capture and require the precompile call success flag and validate decoded output.'), ('(doubleSign|cometBFT|nativeStaking|blsPrecompile)[\s\S]{0,150}?\.call\s*\(', 'require\s*\(\s*success|if\s*\(\s*!success', 'bsc_named_precompile_unchecked', 'medium', 'Named BNB precompile helper is called without checking call success', 'Check the success flag on every precompile call.')]
+RULES = [('0x00000000000000000000000000000000000000(64|65|66|67|68|69|6a)\\b[\s\S]{0,200}?\.call\s*\(', 'require\s*\(\s*success|if\s*\(\s*!success|\(\s*bool\s+success', 'bsc_precompile_unchecked_result', 'high', 'BNB Chain precompile is called and its success flag is never checked - a failed precompile call silently flows into a value/security decision', 'Capture and require the precompile call success flag and validate decoded output.'), ('(doubleSign|cometBFT|nativeStaking|blsPrecompile)[\s\S]{0,150}?\.call\s*\(', 'require\s*\(\s*success|if\s*\(\s*!success', 'bsc_named_precompile_unchecked', 'medium', 'Named BNB precompile helper is called without checking call success', 'Check the success flag on every precompile call.')]
 RULES = [tuple(x.replace(chr(8), chr(92) + chr(98)) if isinstance(x, str) else x for x in r) for r in RULES]  # normalise word-boundary escapes
 
 def analyze_artifact(text):

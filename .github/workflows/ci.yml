@@ -1,0 +1,55 @@
+# Continuous integration: prove the plugin registry still loads its full
+# capability and that the fast, network-free gates pass, on every push and PR.
+#
+# The headline gate is the plugin-count floor (backend/app/plugins/registry.py
+# MIN_PLUGINS). Most plugins are discovered dynamically at import, so a file
+# or class count cannot see the real number - only loading the registry can.
+# If a category is deleted or a generator breaks, the count drops and this
+# fails loudly instead of the tool silently shipping with less.
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Plugin registry health gate (count floor + import failures)
+        run: python -m app.plugins.registry
+
+      - name: Plugin health tests (import, metadata, unique ids, floor)
+        run: pytest tests/test_plugin_health.py -q
+
+      - name: Plugin resilience tests (no plugin throws fatally, network-free)
+        run: pytest tests/test_plugin_resilience.py -q

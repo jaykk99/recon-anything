@@ -102,3 +102,30 @@ def test_every_plugin_instantiates(plugin_classes):
         except Exception as e:  # noqa: BLE001
             failures[pid] = f"{type(e).__name__}: {e}"
     assert not failures, f"plugins failed to instantiate: {failures}"
+
+
+def test_registered_plugin_count_floor():
+    """Regression guard for silent capability loss.
+
+    The registry is the runtime source of truth (it includes plugins
+    generated dynamically at import, which a file/class count misses).
+    If the registered count ever drops below the floor with no import
+    error, a whole category was deleted or a generator's spec list was
+    truncated - a bug that no other test here would catch.
+    """
+    from app.plugins.registry import discover, MIN_PLUGINS, IMPORT_FAILURES
+    count = len(discover())
+    assert not IMPORT_FAILURES, (
+        f"{len(IMPORT_FAILURES)} plugin module(s) failed to import, so "
+        f"capability was silently lost: {IMPORT_FAILURES}")
+    assert count >= MIN_PLUGINS, (
+        f"only {count} plugins registered, below floor {MIN_PLUGINS}; "
+        f"a category of plugins was likely removed or broken. If this "
+        f"removal was deliberate, lower MIN_PLUGINS in registry.py.")
+
+
+def test_registry_health_reports_healthy():
+    """The health() self-report must agree the registry is healthy."""
+    from app.plugins.registry import health
+    rep = health()
+    assert rep["healthy"], f"registry reports unhealthy: {rep}"

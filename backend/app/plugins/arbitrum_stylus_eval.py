@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .base import Plugin
 
-RULES = [('delegate_call|raw_call|call_contract|StaticCall', 'msg_sender|only_owner|check_owner', 'stylus_unchecked_external_call', 'high', 'Stylus contract makes an external / delegate-style call with no msg_sender or owner check in the contract', 'Verify the caller (msg_sender) before any external call that can move value.'), ('pub fn (transfer|withdraw|mint)\b', 'msg_sender|only_owner|owner', 'stylus_unguarded_value_function', 'high', 'Stylus value-moving function (transfer/withdraw/mint) has no owner/sender gating anywhere in the contract', 'Gate value-moving Stylus entrypoints on the contract owner.')]
+RULES = [('delegate_call|raw_call|call_contract|StaticCall', 'msg_sender|only_owner|check_owner', 'stylus_unchecked_external_call', 'high', 'Stylus contract makes an external / delegate-style call with no msg_sender or owner check in the contract', 'Verify the caller (msg_sender) before any external call that can move value.'), ('pub fn (transfer|withdraw|mint)\\b', 'msg_sender|only_owner|owner', 'stylus_unguarded_value_function', 'high', 'Stylus value-moving function (transfer/withdraw/mint) has no owner/sender gating anywhere in the contract', 'Gate value-moving Stylus entrypoints on the contract owner.')]
 
 def analyze_artifact(text):
     """Pure analysis: returns list of hit dicts. No I/O, never raises."""

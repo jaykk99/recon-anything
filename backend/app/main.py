@@ -471,7 +471,17 @@ async def _startup():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "recon-anything"}
+    # Lightweight registry self-report alongside liveness: the running
+    # service confirms it actually loaded its full plugin capability.
+    # discover() is cached after first call, so this stays cheap.
+    from .plugins.registry import health as _plugin_health
+    ph = _plugin_health()
+    return {
+        "ok": True,
+        "service": "recon-anything",
+        "plugins": ph["registered"],
+        "plugins_healthy": ph["healthy"],
+    }
 
 
 # -- MCP server ------------------------------------------------------------
@@ -508,7 +518,8 @@ def api_plugins():
     for p in plugins:
         p["key_status"] = {k: status.get(k, {"configured": False})
                            for k in p["requires_keys"]}
-    return {"plugins": plugins}
+    from .plugins.registry import health as _plugin_health
+    return {"plugins": plugins, "health": _plugin_health()}
 
 
 # -- runs -----------------------------------------------------------------
