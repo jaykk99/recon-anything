@@ -40,6 +40,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.plugins.auto_validator import STRANGER, \
     _caller_metered, validate_candidate  # noqa: E402
+from app.plugins.inline_gates import GATE_CALLER_METERED, \
+    GATE_SELF_FUNDED, gate_candidate, gate_verdict  # noqa: E402
 from app.plugins import contract_chain as cc  # noqa: E402
 from app.plugins import contract_sim as sim  # noqa: E402
 
@@ -545,6 +547,68 @@ def signature_of(source, function, contract_name=""):
     return None, None
 
 
+def _basis_read(chain, address, signature):
+    """One read-only uint256 call for the gate's basis
+    confirmation, or None when unreadable / reverting.
+
+    Uses _cast directly with a decimal-or-hex first-token
+    parse: this cast build prints annotated uint returns in
+    decimal ("0", "12345 [1.2e4]"), which _call_uint's
+    hex-only parse cannot read - with _call_uint the stranger
+    basis would always come back None and the caller-metered
+    fast path could never fire. Kept local to the gate so
+    validator v2's own gather semantics are unchanged.
+    """
+    cfg = cc.CHAINS.get(chain)
+    if cfg is None:
+        return None
+    for rpc in cfg.rpc_urls:
+        out, _err = _cast(["call", "--from", STRANGER,
+                           "--rpc-url", rpc, address, signature,
+                           STRANGER], timeout=15)
+        if out is None:
+            continue
+        s = out.strip()
+        if not s or "revert" in s.lower():
+            return None
+        tok = s.splitlines()[0].split()[0]
+        try:
+            return int(tok, 16) if tok.startswith("0x") \
+                else int(tok)
+        except (ValueError, IndexError):
+            continue
+    return None
+
+
+def _inline_gate_row(cand, no_probe):
+    """Inline static gate fast path (app.plugins.inline_gates).
+
+    Returns a finished verdict row when the static gates settle
+    the candidate, else None (fall through to the full evidence
+    gather + validator v2, untouched). GATED_SELF_FUNDED needs
+    no live read. GATED_CALLER_METERED is confirmed with the
+    single basis read of the unfunded stranger (balanceOf or
+    the caller-keyed mapping getter) instead of the probe
+    suite; a nonzero or unreadable basis falls through.
+    """
+    gr = gate_candidate(cand)
+    if gr["gate"] == GATE_SELF_FUNDED:
+        return gate_verdict(cand, gr)
+    if gr["gate"] == GATE_CALLER_METERED and not no_probe:
+        basis = gr.get("basis") or {}
+        if basis.get("basis") == "token_self":
+            sig = "balanceOf(address)(uint256)"
+        elif basis.get("name"):
+            sig = str(basis["name"]) + "(address)(uint256)"
+        else:
+            return None
+        val = _basis_read(cand["chain"], cand["address"], sig)
+        if val is not None and int(val) == 0:
+            return gate_verdict(cand, gr,
+                                basis_measured_zero=True)
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("candidates")
@@ -552,6 +616,10 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--no-probe", action="store_true")
+    ap.add_argument("--inline-gates", action="store_true",
+                    help="run the inline static gates before "
+                         "the evidence gather; gated shapes "
+                         "skip the live probe suite")
     args = ap.parse_args()
 
     rows = [json.loads(l) for l in open(args.candidates)
@@ -578,7 +646,11 @@ def main():
             cand["source"] = src["source"]
             cand["contract_name"] = src.get("contract_name", "")
             cand["source_origin"] = src.get("origin", "")
-        if src and cand["function"] and not args.no_probe:
+        verdict = None
+        if args.inline_gates and src and cand["function"]:
+            verdict = _inline_gate_row(cand, args.no_probe)
+        if src and cand["function"] and not args.no_probe \
+                and verdict is None:
             if function_scope(src["source"], cand["function"],
                               cand["contract_name"]) == \
                     "compilation_only":
@@ -634,7 +706,8 @@ def main():
                 if pair_res is not None:
                     cand["balances"]["token_pair_reserves"] = \
                         pair_res
-        verdict = validate_candidate(cand)
+        if verdict is None:
+            verdict = validate_candidate(cand)
         verdict["symbol"] = row.get("symbol", "")
         verdict["source_origin"] = cand.get("source_origin", "")
         if cand.get("probe_note"):
