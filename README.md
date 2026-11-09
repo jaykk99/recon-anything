@@ -90,6 +90,22 @@ python -m app.batch_scan --input ./corpus --workers 16 --out findings.jsonl
 python -m app.batch_scan --input corpus.jsonl --engine plugins --workers 32
 ```
 
+A JSONL corpus record may carry pre-fetched chain data, not just source:
+
+```json
+{"address": "0x...", "chain": "ethereum", "source": "contract ...",
+ "bytecode": "0x6080...", "storage": {"0x0": "0x...", "0x1": "0x..."}}
+```
+
+When `bytecode`/`storage` are present, the `plugins` engine seeds them into
+the same caches the deep plugins read (`_code_cache`/`_storage_cache`), so
+`rpc_get_code` / `rpc_get_storage_at` serve from the corpus and **nothing
+touches the network**. This is what lets the deep analysis run at corpus
+speed (scales with cores) instead of live-RPC speed - feed it the bytecode
+and source your fast Tier-1 fetch already pulled, and the deep pass scales
+the same way Tier-1 does. The live per-target runner stays the on-demand
+path; it is fast but network-bound and not the million-contract lane.
+
 It prints the achieved `contracts_per_sec` and the projected minutes for
 1,000,000 contracts, so you can size the box. Measured single-core cost
 on ~9 KB of Solidity: the structured analyzer ~2.4 ms (~410/sec/core);

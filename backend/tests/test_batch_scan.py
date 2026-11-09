@@ -61,3 +61,35 @@ def test_plugins_engine_runs_offline():
                              target_type="crypto_wallet", progress_every=0)
     assert summary["scanned"] == 20
     assert summary["engine"] == "plugins"
+
+
+def test_batchctx_seeds_chain_data_for_offline_plugins():
+    """Pre-fetched bytecode/storage must be seeded into the caches the deep
+    plugins read (_code_cache/_storage_cache), so rpc_get_code /
+    rpc_get_storage_at serve from the corpus with zero live RPC - the whole
+    point of running the deep pass at corpus speed instead of network speed.
+    """
+    import asyncio
+    import app.plugins.contract_chain as cc
+
+    addr = "0xABCdef0000000000000000000000000000000001"
+    ctx = bs._BatchCtx("contract V {}", addr, "crypto_wallet",
+                       bytecode="0x6080aa", storage={"0x0": "0x" + "11" * 32})
+
+    async def boom(*a, **k):
+        raise RuntimeError("network was called - not offline")
+    orig = cc._rpc_post
+    cc._rpc_post = boom
+    try:
+        class Chain:
+            id = "ethereum"
+            rpc_urls = ["https://rpc1"]
+
+        async def run():
+            code = await cc.rpc_get_code(ctx, Chain(), addr)
+            word = await cc.rpc_get_storage_at(ctx, Chain(), addr, "0x0")
+            assert code == "0x6080aa"
+            assert word == "0x" + "11" * 32
+        asyncio.run(run())
+    finally:
+        cc._rpc_post = orig

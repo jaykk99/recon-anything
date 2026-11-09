@@ -186,6 +186,12 @@ class ContractRecord:
     address: str
     chain: str
     source: str
+    # Pre-fetched chain data (from your Tier-1 pass). When present, the
+    # plugins engine serves the deep plugins' rpc_get_code / rpc_get_storage
+    # reads straight from these instead of hitting live RPC - which is what
+    # lets the deep analysis run at corpus speed instead of network speed.
+    bytecode: str = ""
+    storage: Dict[str, str] = dataclasses.field(default_factory=dict)
     meta: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
@@ -218,12 +224,18 @@ def _iter_corpus(path: pathlib.Path,
             except json.JSONDecodeError:
                 continue
             src = rec.get("source") or rec.get("source_code") or ""
-            if not src:
-                continue
+            bytecode = rec.get("bytecode") or rec.get("code") or ""
+            storage = rec.get("storage") or {}
+            if not src and not bytecode:
+                continue  # nothing to analyze offline
             yield ContractRecord(
                 address=str(rec.get("address", "")),
                 chain=str(rec.get("chain", "")),
                 source=src,
+                bytecode=str(bytecode),
+                storage={str(k).lower(): str(v)
+                         for k, v in storage.items()} if isinstance(
+                             storage, dict) else {},
                 meta=rec.get("meta") or {})
             n += 1
 
@@ -257,8 +269,9 @@ class _BatchCache:
 class _BatchCtx:
     """A ctx that carries pre-fetched source and no live network."""
 
-    def __init__(self, source: str, address: str,
-                 target_type: str) -> None:
+    def __init__(self, source: str, address: str, target_type: str,
+                 bytecode: str = "",
+                 storage: Optional[Dict[str, str]] = None) -> None:
         self.run_id = "batch"
         self.mode = "passive"
         self.http = None
@@ -269,8 +282,23 @@ class _BatchCtx:
         self.module_overrides = {}
         self.evidence_dir = "/tmp"
         self.source_type = "website"
-        src_cache = {(cid, address.lower()): source for cid in _CHAIN_IDS}
-        self.shared = {"_source_cache": src_cache}
+        addr = address.lower()
+        # Seed the same caches the live deep plugins read from, for every
+        # chain id (whichever a plugin resolves, it hits the pre-fetched
+        # data). With bytecode + storage seeded, rpc_get_code /
+        # rpc_get_storage_at return instantly and nothing touches the
+        # network - the deep analysis runs at corpus speed, not RPC speed.
+        self.shared: Dict[str, Any] = {
+            "_source_cache": {(cid, addr): source for cid in _CHAIN_IDS},
+        }
+        if bytecode:
+            self.shared["_code_cache"] = {
+                (cid, addr): bytecode for cid in _CHAIN_IDS}
+        if storage:
+            self.shared["_storage_cache"] = {
+                (cid, addr, slot.lower()): word
+                for cid in _CHAIN_IDS
+                for slot, word in storage.items()}
 
     def publish(self, kind, item):
         b = self.shared.setdefault(kind, [])
@@ -354,7 +382,10 @@ def _scan_one_plugins(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
     plugins = _PLUGIN_STATE["plugins"]
     loop = _PLUGIN_STATE["loop"]
     ttype = _PLUGIN_STATE["target_type"]
-    ctx = _BatchCtx(source, address or "0x0", ttype)
+    _meta = _meta or {}
+    ctx = _BatchCtx(source, address or "0x0", ttype,
+                    bytecode=_meta.get("_bytecode", ""),
+                    storage=_meta.get("_storage") or {})
     target = base.Target(raw=address or "0x0", type=ttype,
                          normalized=address or "0x0")
 
@@ -429,7 +460,12 @@ def scan_corpus(input_path: str,
 
     def _records() -> Iterable[Tuple[str, str, str, Dict[str, Any]]]:
         for rec in _iter_corpus(path, limit):
-            yield (rec.address, rec.chain, rec.source, rec.meta)
+            meta = dict(rec.meta)
+            if rec.bytecode:
+                meta["_bytecode"] = rec.bytecode
+            if rec.storage:
+                meta["_storage"] = rec.storage
+            yield (rec.address, rec.chain, rec.source, meta)
 
     ctx = mp.get_context("fork" if sys.platform != "win32" else "spawn")
     if engine == "plugins":
