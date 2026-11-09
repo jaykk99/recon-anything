@@ -436,11 +436,14 @@ def _scan_one(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
 # instead of the full plugin cost on every contract.
 # ---------------------------------------------------------------------------
 _TIER1_ESC: set = set()
+_TIER1_MIN_COUNT: int = 1
 
 
-def _init_tier1_worker(escalate_severities: Tuple[str, ...]) -> None:
-    global _TIER1_ESC
+def _init_tier1_worker(escalate_severities: Tuple[str, ...],
+                       min_count: int = 1) -> None:
+    global _TIER1_ESC, _TIER1_MIN_COUNT
     _TIER1_ESC = set(escalate_severities)
+    _TIER1_MIN_COUNT = max(1, int(min_count))
     _load_rules()
 
 
@@ -448,13 +451,18 @@ def _scan_one_tier1(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
                     ) -> Tuple[str, str, int, List[Dict[str, Any]],
                                Optional[Dict[str, Any]]]:
     """Tier-1 rules scan. Returns findings plus the FULL record only when
-    the contract escalates (any finding at an escalate severity) - so the
-    heavy source text crosses the process boundary only for the small
-    flagged subset, not all 1M."""
+    the contract escalates - it has at least _TIER1_MIN_COUNT distinct
+    finding keys at an escalate severity. Counting DISTINCT keys (not raw
+    hits) is deliberate: on real data one rule often fires many times, so
+    raw count is a noisy signal; distinct keys measures how many different
+    things flagged. The heavy source crosses to tier 2 only for the flagged
+    subset, not all 1M."""
     address, chain, source, meta = rec_tuple
     m = dict(meta or {})
     findings = scan_source(source, m)
-    flag = any(f.get("severity", "") in _TIER1_ESC for f in findings)
+    esc_keys = {f.get("key", "") for f in findings
+                if f.get("severity", "") in _TIER1_ESC}
+    flag = len(esc_keys) >= _TIER1_MIN_COUNT
     record = None
     if flag:
         record = {
@@ -468,6 +476,7 @@ def _scan_one_tier1(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
 def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
                  out_path: Optional[str], target_type: str,
                  escalate_severities: Tuple[str, ...],
+                 escalate_min_count: int,
                  progress_every: int) -> Dict[str, Any]:
     import multiprocessing as mp
     import tempfile
@@ -492,7 +501,8 @@ def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
     flagged = 0
     start = time.perf_counter()
     with mpctx.Pool(workers, initializer=_init_tier1_worker,
-                    initargs=(tuple(escalate_severities),)) as pool:
+                    initargs=(tuple(escalate_severities),
+                              escalate_min_count)) as pool:
         for address, chain, nbytes, findings, record in pool.imap_unordered(
                 _scan_one_tier1, _records(), chunksize=64):
             t1_scanned += 1
@@ -525,6 +535,7 @@ def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
     return {
         "engine": "tiered",
         "escalate_severities": list(escalate_severities),
+        "escalate_min_distinct_keys": escalate_min_count,
         "tier1": {
             "scanned": t1_scanned,
             "contracts_per_sec": round(t1_rate, 1),
@@ -554,6 +565,7 @@ def scan_corpus(input_path: str,
                 engine: str = "rules",
                 target_type: str = "crypto_wallet",
                 escalate_severities: Tuple[str, ...] = ("high", "critical"),
+                escalate_min_count: int = 1,
                 progress_every: int = 20000) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
 
@@ -578,7 +590,8 @@ def scan_corpus(input_path: str,
 
     if engine == "tiered":
         return _scan_tiered(path, workers, limit, out_path, target_type,
-                            escalate_severities, progress_every)
+                            escalate_severities, escalate_min_count,
+                            progress_every)
 
     out_fh = open(out_path, "w", encoding="utf-8") if out_path else None
     scanned = 0
@@ -660,6 +673,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help="for --engine tiered: comma-separated severities "
                          "that escalate a contract to the full plugin engine "
                          "(default high,critical)")
+    ap.add_argument("--escalate-min-count", type=int, default=1,
+                    help="for --engine tiered: escalate only when a contract "
+                         "has at least this many DISTINCT finding keys at an "
+                         "escalate severity (default 1; raise to be more "
+                         "selective about what gets the deep pass)")
     ap.add_argument("--engine", choices=["rules", "plugins", "tiered"],
                     default="rules",
                     help="rules: compiled RULES + analyzer (fast). "
@@ -681,7 +699,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
                                   limit=args.limit, out_path=args.out,
                                   engine=args.engine,
                                   target_type=args.target_type,
-                                  escalate_severities=esc)
+                                  escalate_severities=esc,
+                                  escalate_min_count=args.escalate_min_count)
     except BatchAlreadyRunning as e:
         print(f"skipped: {e}", file=sys.stderr)
         return 0
