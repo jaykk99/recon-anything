@@ -23,6 +23,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..ratelimit import fetch
@@ -204,15 +205,69 @@ async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
     return d
 
 
+async def _cached_rpc(ctx: Any, bucket: str, key: tuple, factory):
+    """Per-run cache + singleflight for a read-only chain call.
+
+    A single contract runs hundreds of plugins and ~29 of them read the
+    same bytecode / storage word live; without sharing, each re-fetched it
+    against rate-limited public RPC - a large part of the ~124s/contract.
+    This caches the first successful result on ctx.shared (keyed by chain +
+    address [+ slot], exactly like _source_cache) and coalesces concurrent
+    identical fetches into one in-flight request (like _fetch_page_inflight),
+    so the other callers wait on it instead of issuing duplicates.
+
+    Returns identical values to the uncached call - this is pure dedupe, it
+    changes nothing about what any plugin detects. Failures (None) are not
+    cached, so a transient all-endpoints-down does not poison the run; the
+    dead-host cooldown already makes the retry fast.
+    """
+    shared = getattr(ctx, "shared", None)
+    if shared is None:
+        return await factory()
+    cache = shared.setdefault(bucket, {})
+    if key in cache:
+        return cache[key]
+    inflight = shared.setdefault(bucket + "_inflight", {})
+    task = inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(factory())
+        inflight[key] = task
+        task.add_done_callback(lambda _t: inflight.pop(key, None))
+    result = await asyncio.shield(task)
+    if result is not None:
+        cache[key] = result
+    return result
+
+
+async def _rpc_get_code_uncached(ctx: Any, chain: ChainConfig,
+                                 address: str) -> Optional[str]:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getCode",
+               "params": [address, "latest"]}
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            return d["result"]
+    return None
+
+
 async def rpc_get_code(ctx: Any, chain: ChainConfig,
                        address: str) -> Optional[str]:
     """eth_getCode via public JSON-RPC. Read-only.
 
     Returns the deployed bytecode hex ("0x..." - "0x" itself when the
     address holds no code), or None when every RPC endpoint failed.
+    Cached and singleflighted per run (bytecode is immutable per address).
     """
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getCode",
-               "params": [address, "latest"]}
+    return await _cached_rpc(
+        ctx, "_code_cache", (chain.id, address.lower()),
+        lambda: _rpc_get_code_uncached(ctx, chain, address))
+
+
+async def _rpc_get_storage_at_uncached(ctx: Any, chain: ChainConfig,
+                                       address: str,
+                                       slot: str) -> Optional[str]:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt",
+               "params": [address, slot, "latest"]}
     for rpc in _rpc_order(chain.rpc_urls):
         d = await _rpc_post(ctx, rpc, payload)
         if isinstance(d, dict) and isinstance(d.get("result"), str):
@@ -227,15 +282,11 @@ async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
     calls or transacts with the contract.
 
     Returns the 32-byte word hex ("0x..." + 64 hex chars), or None
-    when every RPC endpoint failed.
+    when every RPC endpoint failed. Cached + singleflighted per run.
     """
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt",
-               "params": [address, slot, "latest"]}
-    for rpc in _rpc_order(chain.rpc_urls):
-        d = await _rpc_post(ctx, rpc, payload)
-        if isinstance(d, dict) and isinstance(d.get("result"), str):
-            return d["result"]
-    return None
+    return await _cached_rpc(
+        ctx, "_storage_cache", (chain.id, address.lower(), slot.lower()),
+        lambda: _rpc_get_storage_at_uncached(ctx, chain, address, slot))
 
 
 async def rpc_get_balance(ctx: Any, chain: ChainConfig,
