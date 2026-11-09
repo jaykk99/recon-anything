@@ -88,7 +88,20 @@ python -m app.batch_scan --input ./corpus --workers 16 --out findings.jsonl
 
 # faithful lane: the real contract plugins, run fully offline
 python -m app.batch_scan --input corpus.jsonl --engine plugins --workers 32
+
+# tiered: fast rules sweep across all, full plugins only on what flags
+python -m app.batch_scan --input corpus.jsonl --engine tiered \
+    --escalate-severity high,critical --workers 48
 ```
+
+The `tiered` engine is the affordable path to full depth on a huge corpus.
+It runs the fast `rules` engine across every contract, then escalates only
+the ones that flag at an escalate severity (default `high,critical`) to the
+heavy full-plugin engine - and the heavy source text crosses to tier 2 only
+for that flagged subset, not all 1M. Measured on a real 1k Tier-1 sample:
+the rules sweep runs at ~18 contracts/sec/core, so 1M in 20 min (833/sec)
+is ~48 cores for the sweep, plus a small deep pass on the flagged few. The
+summary reports each tier's throughput and the flag rate.
 
 A JSONL corpus record may carry pre-fetched chain data, not just source:
 

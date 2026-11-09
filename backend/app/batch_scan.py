@@ -428,12 +428,132 @@ def _scan_one(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
     return address, chain, len(source), findings
 
 
+# ---------------------------------------------------------------------------
+# Tiered engine: sweep everything with the fast rules engine, then escalate
+# only the contracts that flagged to the heavy full-plugin engine. Mirrors
+# the Tier-1 (fast, wide) / deep (slow, narrow) split: full depth on 1M
+# becomes "rules sweep on 1M + full plugins on the few thousand that matter"
+# instead of the full plugin cost on every contract.
+# ---------------------------------------------------------------------------
+_TIER1_ESC: set = set()
+
+
+def _init_tier1_worker(escalate_severities: Tuple[str, ...]) -> None:
+    global _TIER1_ESC
+    _TIER1_ESC = set(escalate_severities)
+    _load_rules()
+
+
+def _scan_one_tier1(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
+                    ) -> Tuple[str, str, int, List[Dict[str, Any]],
+                               Optional[Dict[str, Any]]]:
+    """Tier-1 rules scan. Returns findings plus the FULL record only when
+    the contract escalates (any finding at an escalate severity) - so the
+    heavy source text crosses the process boundary only for the small
+    flagged subset, not all 1M."""
+    address, chain, source, meta = rec_tuple
+    m = dict(meta or {})
+    findings = scan_source(source, m)
+    flag = any(f.get("severity", "") in _TIER1_ESC for f in findings)
+    record = None
+    if flag:
+        record = {
+            "address": address, "chain": chain, "source": source,
+            "bytecode": m.get("_bytecode", ""),
+            "storage": m.get("_storage") or {},
+        }
+    return address, chain, len(source), findings, record
+
+
+def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
+                 out_path: Optional[str], target_type: str,
+                 escalate_severities: Tuple[str, ...],
+                 progress_every: int) -> Dict[str, Any]:
+    import multiprocessing as mp
+    import tempfile
+
+    workers = workers or (os.cpu_count() or 1)
+
+    def _records() -> Iterable[Tuple[str, str, str, Dict[str, Any]]]:
+        for rec in _iter_corpus(path, limit):
+            meta = dict(rec.meta)
+            if rec.bytecode:
+                meta["_bytecode"] = rec.bytecode
+            if rec.storage:
+                meta["_storage"] = rec.storage
+            yield (rec.address, rec.chain, rec.source, meta)
+
+    _load_rules()
+    mpctx = mp.get_context("fork" if sys.platform != "win32" else "spawn")
+    esc_fh = tempfile.NamedTemporaryFile(
+        "w", suffix=".escalate.jsonl", delete=False, encoding="utf-8")
+    t1_scanned = 0
+    t1_findings = 0
+    flagged = 0
+    start = time.perf_counter()
+    with mpctx.Pool(workers, initializer=_init_tier1_worker,
+                    initargs=(tuple(escalate_severities),)) as pool:
+        for address, chain, nbytes, findings, record in pool.imap_unordered(
+                _scan_one_tier1, _records(), chunksize=64):
+            t1_scanned += 1
+            t1_findings += len(findings)
+            if record is not None:
+                flagged += 1
+                esc_fh.write(json.dumps(record) + "\n")
+            if progress_every and t1_scanned % progress_every == 0:
+                el = time.perf_counter() - start
+                print(f"  tier1 {t1_scanned:,}  "
+                      f"{t1_scanned / el if el else 0:,.0f}/s  "
+                      f"{flagged:,} flagged", file=sys.stderr)
+    esc_fh.close()
+    t1_elapsed = time.perf_counter() - start
+    t1_rate = t1_scanned / t1_elapsed if t1_elapsed else 0
+
+    # Tier 2: full plugin engine over ONLY the flagged subset.
+    if flagged:
+        tier2 = scan_corpus(esc_fh.name, workers=workers, engine="plugins",
+                            target_type=target_type, out_path=out_path,
+                            progress_every=progress_every)
+    else:
+        tier2 = {"scanned": 0, "contracts_per_sec": 0, "findings_total": 0,
+                 "elapsed_s": 0.0, "severity_breakdown": {}}
+    try:
+        os.unlink(esc_fh.name)
+    except OSError:
+        pass
+
+    return {
+        "engine": "tiered",
+        "escalate_severities": list(escalate_severities),
+        "tier1": {
+            "scanned": t1_scanned,
+            "contracts_per_sec": round(t1_rate, 1),
+            "findings_total": t1_findings,
+            "elapsed_s": round(t1_elapsed, 2),
+            "flagged_for_escalation": flagged,
+            "flag_rate_pct": round(100 * flagged / t1_scanned, 2)
+            if t1_scanned else 0,
+        },
+        "tier2_plugins": {
+            "scanned": tier2.get("scanned", 0),
+            "contracts_per_sec": tier2.get("contracts_per_sec", 0),
+            "findings_total": tier2.get("findings_total", 0),
+            "elapsed_s": tier2.get("elapsed_s", 0.0),
+            "severity_breakdown": tier2.get("severity_breakdown", {}),
+        },
+        "wall_elapsed_s": round(t1_elapsed + tier2.get("elapsed_s", 0.0), 2),
+        "projected_1m_minutes": (round((1_000_000 / t1_rate) / 60, 1)
+                                 if t1_rate else None),
+    }
+
+
 def scan_corpus(input_path: str,
                 workers: int = 0,
                 limit: Optional[int] = None,
                 out_path: Optional[str] = None,
                 engine: str = "rules",
                 target_type: str = "crypto_wallet",
+                escalate_severities: Tuple[str, ...] = ("high", "critical"),
                 progress_every: int = 20000) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
 
@@ -441,6 +561,10 @@ def scan_corpus(input_path: str,
                         ~tens of contracts/sec/core).
     engine="plugins" -> the real contract-applicable plugins, run offline
                         (faithful, slower; benchmark on your hardware).
+    engine="tiered"  -> rules sweep across all, then the full plugin engine
+                        on only the contracts that flagged at an escalate
+                        severity. Full depth on a huge corpus for roughly
+                        the cost of the rules sweep plus a small deep pass.
 
     Writes one JSON object per contract (with findings) to ``out_path``
     if given. Prints progress to stderr. Pure CPU - safe to pin to every
@@ -451,6 +575,10 @@ def scan_corpus(input_path: str,
     if not path.exists():
         raise FileNotFoundError(input_path)
     workers = workers or (os.cpu_count() or 1)
+
+    if engine == "tiered":
+        return _scan_tiered(path, workers, limit, out_path, target_type,
+                            escalate_severities, progress_every)
 
     out_fh = open(out_path, "w", encoding="utf-8") if out_path else None
     scanned = 0
@@ -528,7 +656,12 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help="scan at most this many contracts")
     ap.add_argument("--out", default=None,
                     help="write findings JSONL here")
-    ap.add_argument("--engine", choices=["rules", "plugins"], default="rules",
+    ap.add_argument("--escalate-severity", default="high,critical",
+                    help="for --engine tiered: comma-separated severities "
+                         "that escalate a contract to the full plugin engine "
+                         "(default high,critical)")
+    ap.add_argument("--engine", choices=["rules", "plugins", "tiered"],
+                    default="rules",
                     help="rules: compiled RULES + analyzer (fast). "
                          "plugins: the real contract plugins, run offline.")
     ap.add_argument("--target-type", default="crypto_wallet",
@@ -542,10 +675,13 @@ def _main(argv: Optional[List[str]] = None) -> int:
             else single_batch_lock())
     try:
         with lock:
+            esc = tuple(s.strip() for s in args.escalate_severity.split(",")
+                        if s.strip())
             summary = scan_corpus(args.input, workers=args.workers,
                                   limit=args.limit, out_path=args.out,
                                   engine=args.engine,
-                                  target_type=args.target_type)
+                                  target_type=args.target_type,
+                                  escalate_severities=esc)
     except BatchAlreadyRunning as e:
         print(f"skipped: {e}", file=sys.stderr)
         return 0
