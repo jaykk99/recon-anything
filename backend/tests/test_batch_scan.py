@@ -58,6 +58,6 @@ def test_plugins_engine_runs_offline():
     # Must complete every contract and never throw.
     path = _corpus(20)
     summary = bs.scan_corpus(path, workers=2, engine="plugins",
-                             target_type="crypto_contract", progress_every=0)
+                             target_type="crypto_wallet", progress_every=0)
     assert summary["scanned"] == 20
     assert summary["engine"] == "plugins"

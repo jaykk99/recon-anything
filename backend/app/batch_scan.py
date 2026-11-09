@@ -361,7 +361,7 @@ def scan_corpus(input_path: str,
                 limit: Optional[int] = None,
                 out_path: Optional[str] = None,
                 engine: str = "rules",
-                target_type: str = "crypto_contract",
+                target_type: str = "crypto_wallet",
                 progress_every: int = 20000) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
 
@@ -454,9 +454,9 @@ def _main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--engine", choices=["rules", "plugins"], default="rules",
                     help="rules: compiled RULES + analyzer (fast). "
                          "plugins: the real contract plugins, run offline.")
-    ap.add_argument("--target-type", default="crypto_contract",
+    ap.add_argument("--target-type", default="crypto_wallet",
                     help="plugin target type to select for --engine plugins "
-                         "(crypto_contract, crypto_wallet, solana_contract)")
+                         "(crypto_wallet for EVM addresses, solana_contract, stacks_contract)")
     args = ap.parse_args(argv)
 
     summary = scan_corpus(args.input, workers=args.workers,
