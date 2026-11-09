@@ -31,7 +31,7 @@ import asyncio
 import json
 import os
 import time
-import urllib.request
+import urllib.request  # noqa: F401 (kept for parity; transport is httpx)
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .plugins.cryptopack_util import keccak256
@@ -106,10 +106,36 @@ class RpcPool:
         self._down_until: Dict[str, float] = {}
         self._next_id = 0
         self.stats: Dict[str, Dict[str, int]] = {}
+        self._client: Any = None
 
     def _stat(self, chain: str, key: str) -> None:
         self.stats.setdefault(chain, {"calls": 0, "errors": 0})
         self.stats[chain][key] += 1
+
+    def _http(self) -> Any:
+        # httpx, not urllib: this VM's egress proxy truncates
+        # urllib reads (IncompleteRead) while httpx - the sweep's
+        # own transport - handles it cleanly. The proxy is passed
+        # explicitly with trust_env=False because the ambient
+        # NO_PROXY value carries bracketed IPv6 entries that
+        # httpx's env parsing rejects ("Invalid port: ':1]'");
+        # the sweep's fetch_api works around the same quirk by
+        # rewriting no_proxy at import time.
+        if self._client is None:
+            import httpx
+            proxy = os.environ.get("https_proxy") or \
+                os.environ.get("HTTPS_PROXY") or \
+                os.environ.get("http_proxy") or \
+                os.environ.get("HTTP_PROXY")
+            kwargs: Dict[str, Any] = {
+                "timeout": self.timeout,
+                "headers": {"User-Agent": "recon-mempool-watch/1.0"},
+            }
+            if proxy:
+                kwargs["proxy"] = proxy
+                kwargs["trust_env"] = False
+            self._client = httpx.Client(**kwargs)
+        return self._client
 
     def call(self, chain: str, method: str, params: Sequence[Any]) -> Any:
         urls = self.pools.get(chain)
@@ -121,19 +147,13 @@ class RpcPool:
             if self._down_until.get(url, 0.0) > now:
                 continue
             self._next_id += 1
-            body = json.dumps({
-                "jsonrpc": "2.0", "id": self._next_id,
-                "method": method, "params": list(params),
-            }).encode()
-            req = urllib.request.Request(
-                url, data=body,
-                headers={"Content-Type": "application/json",
-                         "User-Agent": "recon-mempool-watch/1.0"})
             self._stat(chain, "calls")
             try:
-                with urllib.request.urlopen(
-                        req, timeout=self.timeout) as resp:
-                    payload = json.loads(resp.read().decode())
+                resp = self._http().post(url, json={
+                    "jsonrpc": "2.0", "id": self._next_id,
+                    "method": method, "params": list(params)})
+                resp.raise_for_status()
+                payload = resp.json()
             except Exception as e:  # noqa: BLE001 - failover by design
                 last_err = e
                 self._stat(chain, "errors")
