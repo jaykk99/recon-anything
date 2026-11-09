@@ -67,10 +67,16 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from . import config
+
+# Depth stays fixed at 2 (one extra hop): this cap, plus chain_followups
+# publishing nothing back into the bus, is the anti-runaway invariant - it
+# is deliberately NOT configurable. The breadth caps below are tunable via
+# RECON_CHAIN_* so a scan can confirm and follow more per hop.
 MAX_CHAIN_DEPTH = 2
-MAX_CHAIN_ITEMS = 20
-MAX_CHAIN_PROBES = 30
-MAX_SUBLINKS_PER_ITEM = 5
+MAX_CHAIN_ITEMS = config.CHAIN_MAX_ITEMS
+MAX_CHAIN_PROBES = config.CHAIN_MAX_PROBES
+MAX_SUBLINKS_PER_ITEM = config.CHAIN_MAX_SUBLINKS
 BLOCKED_DOMAINS = ("crypto.com",)
 
 # Secret shapes that must never be used as probe input or shown raw.

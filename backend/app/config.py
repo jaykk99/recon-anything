@@ -73,3 +73,17 @@ CRAWL_CONCURRENCY = int(env("RECON_CRAWL_CONCURRENCY", "16"))
 # and how many discovered endpoints to report per bundle sweep.
 JS_MAX_BUNDLES = int(env("RECON_JS_MAX_BUNDLES", "24"))
 JS_MAX_ENDPOINT_FINDINGS = int(env("RECON_JS_MAX_ENDPOINTS", "60"))
+
+# --- Finding-chain breadth ----------------------------------------------
+# How much follow-up work a single finding justifies on the SAME target:
+# how many chain items to plan, how many confirmation probes to run, and
+# how many sublinks to follow off one probed page. Raised from 20/30/5 and
+# made tunable so a scan confirms more and follows more per hop. These are
+# BREADTH knobs only. The chain DEPTH stays fixed at 2 (one extra hop) on
+# purpose - that cap, plus chain_followups publishing nothing back, is what
+# guarantees a chain cannot loop or fan out runaway, and it is not a knob.
+# Same-target scope, no brute-force, no auth bypass, and the never-a-target
+# block all remain in force regardless of these values.
+CHAIN_MAX_ITEMS = int(env("RECON_CHAIN_MAX_ITEMS", "40"))
+CHAIN_MAX_PROBES = int(env("RECON_CHAIN_MAX_PROBES", "60"))
+CHAIN_MAX_SUBLINKS = int(env("RECON_CHAIN_MAX_SUBLINKS", "8"))
