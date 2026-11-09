@@ -129,3 +129,22 @@ def test_registry_health_reports_healthy():
     from app.plugins.registry import health
     rep = health()
     assert rep["healthy"], f"registry reports unhealthy: {rep}"
+
+
+def test_registry_main_entrypoint_exits_zero():
+    """Regression: `python -m app.plugins.registry` must exit 0.
+
+    The CI gate runs the registry as a module, where __name__ is
+    "__main__". discover() once derived the package from __name__, so the
+    -m run crashed with AttributeError (module '__main__' has no
+    attribute '__path__') while every in-process test stayed green.
+    Run the real entrypoint in a subprocess so this path is covered.
+    """
+    import subprocess
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run(
+        [sys.executable, "-m", "app.plugins.registry"],
+        cwd=backend_dir, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, (
+        f"python -m app.plugins.registry exited {proc.returncode}:\n"
+        f"{proc.stdout}\n{proc.stderr}")

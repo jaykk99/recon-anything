@@ -27,7 +27,12 @@ def discover() -> Dict[str, Type[Plugin]]:
     global _registry
     if _registry:
         return _registry
-    package = __name__.rsplit(".", 1)[0]
+    # __package__ is "app.plugins" both on normal import and under
+    # `python -m app.plugins.registry`. __name__ is NOT reliable here: under
+    # -m it is "__main__", so __name__.rsplit(".", 1)[0] yields "__main__"
+    # and import_module("__main__") has no __path__ -> AttributeError.
+    # (That exact crash red-lit CI from 0114f87 until this fix.)
+    package = __package__ or __name__.rsplit(".", 1)[0]
     pkg = importlib.import_module(package)
     for mod in pkgutil.iter_modules(pkg.__path__):
         name = mod.name
