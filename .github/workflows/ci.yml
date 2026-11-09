@@ -62,3 +62,6 @@ jobs:
 
       - name: Crawl depth config tests (crawlers honor RECON_CRAWL_* knobs)
         run: pytest tests/test_crawl_depth_config.py -q
+
+      - name: Recursive seeding test (same-origin endpoint recursion)
+        run: pytest tests/test_deepcrawl_recursive_seeding.py -q

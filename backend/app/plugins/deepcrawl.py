@@ -50,6 +50,7 @@ class DeepCrawlPlugin(Plugin):
         if not domain:
             return self._skipped("no domain for this target type")
         base = (await web_base(ctx, target, domain)).rstrip("/")
+        seed_netloc = urlparse(base).netloc
         findings: List[Finding] = []
         seen: Set[str] = set()
         queue = [(base + "/", 0)]
@@ -57,6 +58,47 @@ class DeepCrawlPlugin(Plugin):
         js_files: Set[str] = set()
         css_files: Set[str] = set()
         api_calls: Set[str] = set()
+
+        # Recursive seeding: feed same-origin endpoints back into the crawl
+        # queue so the crawler maps the deep app surface - the routes buried
+        # in JS and referenced by the site's own code - not just linked
+        # pages. Read-only GET, same-origin only, bounded by the same page /
+        # depth / time budget as the rest of the crawl. Detection only:
+        # these are endpoints the target already serves and its own client
+        # already calls; nothing here defeats a control or touches another
+        # origin.
+        _ASSET_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+                      ".css", ".woff", ".woff2", ".ttf", ".map", ".webp",
+                      ".mp4", ".pdf", ".zip")
+
+        def _queue_endpoint(raw: str, depth: int) -> None:
+            if not raw:
+                return
+            # Bound the frontier: a page can reference thousands of routes;
+            # we never need more queued than the page budget can consume.
+            if len(queue) >= MAX_PAGES * 8:
+                return
+            abs_url = urljoin(base + "/", raw)
+            p = urlparse(abs_url)
+            if p.scheme not in ("http", "https"):
+                return
+            if p.netloc != seed_netloc:
+                return  # same-origin only
+            if abs_url in seen or depth > MAX_DEPTH:
+                return
+            low = p.path.lower()
+            if low.endswith(_ASSET_EXT):
+                return
+            if abs_url.endswith(".js"):
+                js_files.add(abs_url)
+                return
+            queue.append((abs_url, depth))
+
+        # Seed from endpoints other plugins already discovered (js_linkfinder,
+        # apidiscover, sourcemap all publish to the "endpoints" bus).
+        for _ep in ctx.consume("endpoints"):
+            if isinstance(_ep, str):
+                _queue_endpoint(_ep, 1)
 
         def _snapshot() -> List[Finding]:
             # Same shape as the end-of-run findings below, built from
@@ -131,7 +173,10 @@ class DeepCrawlPlugin(Plugin):
                 # API calls in inline JS
                 for m in API_CALL_RE.finditer(html):
                     api_calls.add(m.group(1))
-                    ctx.publish("endpoints", urljoin(url, m.group(1)))
+                    _abs = urljoin(url, m.group(1))
+                    ctx.publish("endpoints", _abs)
+                    # recursive seeding: follow same-origin API routes too
+                    _queue_endpoint(_abs, depth + 1)
                 # Imports
                 for m in IMPORT_RE.finditer(html):
                     imp = m.group(1)
@@ -146,7 +191,9 @@ class DeepCrawlPlugin(Plugin):
                         ctx.publish("css_files", css_url)
                 # Comment paths
                 for m in COMMENT_PATH_RE.finditer(html):
-                    ctx.publish("endpoints", urljoin(url, m.group(1)))
+                    _abs = urljoin(url, m.group(1))
+                    ctx.publish("endpoints", _abs)
+                    _queue_endpoint(_abs, depth + 1)
 
             self._checkpoint(_snapshot())
 
