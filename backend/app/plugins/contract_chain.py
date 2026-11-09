@@ -976,6 +976,16 @@ def analyze_contract_source(src: str,
                                      "is access-controlled (gated)")
         if category is None:
             continue
+        # Severity recalibration: a privileged function that IS access-gated
+        # (onlyOwner mint, admin-gated withdraw, ...) is the normal, expected
+        # shape of a contract, not a high-severity issue - so cap it at
+        # medium. High is reserved for an UNGATED privileged function, which
+        # is the genuinely dangerous case. Without this, ~57% of real
+        # contracts tripped a "high" here (measured on a 1k mainnet sample)
+        # purely for having a gated owner function, which made the finding
+        # useless as a triage/escalation signal.
+        if gated and sev == "high":
+            sev = "medium"
         findings.append({
             "kind": "privileged_function", "severity": sev,
             "function": name_l,
