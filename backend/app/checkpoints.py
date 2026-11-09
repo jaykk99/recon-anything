@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS cp_units (
 CREATE INDEX IF NOT EXISTS idx_cp_units_status ON cp_units(status);
 """
 
+# Storing the full findings payload per done unit is what fills a tight disk
+# quota on a long continuous scan: once writes start failing, completions are
+# lost and finished work gets redone. Cap the stored result so the DB stays
+# small; resumability only needs the "done" status, the replayed findings are
+# a bonus we drop when they are oversized.
+_MAX_RESULT_BYTES = int(os.environ.get("RECON_CHECKPOINT_MAX_RESULT", "65536"))
+# A unit another worker marked "running" this recently is assumed in progress,
+# so a second concurrent batch skips it instead of rescanning the same
+# contract. 0 disables the lease (old behaviour: only "done" is skipped).
+_LEASE_S = float(os.environ.get("RECON_CHECKPOINT_LEASE_S", "600"))
+# Truncate the WAL every N writes so it can't grow unbounded on disk.
+_WAL_TRUNCATE_EVERY = int(os.environ.get("RECON_CHECKPOINT_WAL_EVERY", "500"))
+
 
 def unit_key(target: str, module: str, args: Optional[Dict] = None) -> str:
     """hash(target + scanner_module + args), args canonicalized so
@@ -71,12 +84,32 @@ class CheckpointStore:
     def __init__(self, path: Optional[str] = None) -> None:
         self.path = path or default_db_path()
         self._lock = threading.Lock()
-        conn = self._connect()
+        # In-process fallback: keys marked done when the DB itself can't be
+        # written (disk full / quota). Keeps the CURRENT run from redoing a
+        # unit even when nothing can be persisted. self._degraded flips true
+        # when the backing DB is unusable, so we stop hammering a dead disk.
+        self._mem_done: set = set()
+        self._degraded = False
+        self._writes = 0
         try:
-            conn.executescript(_SCHEMA)
-            conn.commit()
-        finally:
-            conn.close()
+            conn = self._connect()
+            try:
+                conn.executescript(_SCHEMA)
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            # Disk full / unwritable at startup: run degraded (in-memory
+            # done-set only) rather than crashing the whole scanner.
+            self._degraded = True
+
+    def _maybe_truncate_wal(self, conn: sqlite3.Connection) -> None:
+        self._writes += 1
+        if _WAL_TRUNCATE_EVERY and self._writes % _WAL_TRUNCATE_EVERY == 0:
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
@@ -86,7 +119,10 @@ class CheckpointStore:
         return conn
 
     def lookup(self, key: str) -> Optional[Dict[str, Any]]:
-        conn = self._connect()
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return None
         try:
             row = conn.execute("SELECT * FROM cp_units WHERE key = ?",
                                (key,)).fetchone()
@@ -99,26 +135,49 @@ class CheckpointStore:
                 except (TypeError, ValueError):
                     d["result"] = None
             return d
+        except sqlite3.Error:
+            return None
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def is_done(self, key: str) -> bool:
+        if key in self._mem_done:
+            return True
         rec = self.lookup(key)
         return bool(rec and rec["status"] == "done")
 
     def begin(self, key: str, target: str, module: str,
               args: Optional[Dict] = None) -> bool:
-        """Mark a unit running. Returns False (do not execute) when
-        the unit is already done; True otherwise."""
+        """Mark a unit running. Returns False (do not execute) when the
+        unit is already done, OR when another worker marked it running
+        within the lease window (so two concurrent batches don't rescan
+        the same contract). Returns True otherwise. Never raises on disk
+        pressure - it degrades to letting the unit run."""
+        if key in self._mem_done:
+            return False
+        if self._degraded:
+            return True  # can't coordinate via DB; run it
         now = time.time()
         with self._lock:
-            conn = self._connect()
+            try:
+                conn = self._connect()
+            except sqlite3.Error:
+                self._degraded = True
+                return True
             try:
                 rec = conn.execute(
-                    "SELECT status FROM cp_units WHERE key = ?",
+                    "SELECT status, updated_at FROM cp_units WHERE key = ?",
                     (key,)).fetchone()
-                if rec is not None and rec["status"] == "done":
-                    return False
+                if rec is not None:
+                    if rec["status"] == "done":
+                        return False
+                    if (rec["status"] == "running" and _LEASE_S > 0
+                            and (now - (rec["updated_at"] or 0)) < _LEASE_S):
+                        # Another batch holds a fresh lease on this unit.
+                        return False
                 conn.execute(
                     "INSERT INTO cp_units (key, target, module, args,"
                     " status, attempts, created_at, updated_at) VALUES"
@@ -130,34 +189,80 @@ class CheckpointStore:
                      now, now, now))
                 conn.commit()
                 return True
+            except sqlite3.Error:
+                # Disk pressure: let the unit run; completion will try to
+                # persist a minimal done-marker.
+                return True
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def complete(self, key: str, result: Dict[str, Any]) -> None:
+        """Record a unit done, durably even under disk pressure. The full
+        result is stored when it fits; when it is oversized or the disk is
+        full, a minimal done-marker is written instead - and if even that
+        fails, the key is held in memory so the current run won't redo it."""
+        blob = json.dumps(result, default=str)
+        if len(blob) > _MAX_RESULT_BYTES:
+            # Keep the verdict, drop the oversized findings payload.
+            blob = json.dumps({"status": (result or {}).get("status"),
+                               "reason": (result or {}).get("reason"),
+                               "_truncated": True}, default=str)
         now = time.time()
         with self._lock:
+            if self._degraded or not self._write_done(key, blob, now):
+                # Retry with no result at all - a bare 'done' is tiny and
+                # far more likely to fit than the findings.
+                if self._degraded or not self._write_done(key, "", now):
+                    self._mem_done.add(key)
+
+    def _write_done(self, key: str, blob: str, now: float) -> bool:
+        """UPDATE ... status='done'. Returns False on any sqlite error
+        (e.g. disk full) so the caller can fall back."""
+        try:
             conn = self._connect()
+        except sqlite3.Error:
+            return False
+        try:
+            conn.execute(
+                "UPDATE cp_units SET status = 'done', result = ?,"
+                " error = '', updated_at = ? WHERE key = ?",
+                (blob, now, key))
+            conn.commit()
+            self._maybe_truncate_wal(conn)
+            return True
+        except sqlite3.Error:
+            return False
+        finally:
             try:
-                conn.execute(
-                    "UPDATE cp_units SET status = 'done', result = ?,"
-                    " error = '', updated_at = ? WHERE key = ?",
-                    (json.dumps(result, default=str), now, key))
-                conn.commit()
-            finally:
                 conn.close()
+            except Exception:
+                pass
 
     def fail(self, key: str, error: str = "") -> None:
         now = time.time()
         with self._lock:
-            conn = self._connect()
+            if self._degraded:
+                return
+            try:
+                conn = self._connect()
+            except sqlite3.Error:
+                return
             try:
                 conn.execute(
                     "UPDATE cp_units SET status = 'failed', error = ?,"
                     " updated_at = ? WHERE key = ?",
                     (str(error)[:500], now, key))
                 conn.commit()
+            except sqlite3.Error:
+                pass
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def stats(self) -> Dict[str, int]:
         conn = self._connect()

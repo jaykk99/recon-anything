@@ -34,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -42,6 +43,46 @@ import re
 import sys
 import time
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+
+
+class BatchAlreadyRunning(RuntimeError):
+    """Raised when another batch already holds the single-batch lock."""
+
+
+_BATCH_LOCK_PATH = os.environ.get("RECON_BATCH_LOCK", "/tmp/recon_batch.lock")
+
+
+@contextlib.contextmanager
+def single_batch_lock(path: Optional[str] = None, blocking: bool = False):
+    """Only one batch at a time. Overlapping batches were rescanning the
+    same contracts (wasted work, double network cost); this holds an
+    exclusive OS file lock for the duration. A second batch gets
+    BatchAlreadyRunning (blocking=False) or waits (blocking=True). The lock
+    is released on exit and auto-dropped if the process dies, so a crash
+    can't wedge it. No-op on platforms without fcntl."""
+    p = path or _BATCH_LOCK_PATH
+    try:
+        import fcntl
+    except Exception:  # noqa: BLE001 - e.g. Windows: lock unavailable
+        yield
+        return
+    fh = open(p, "w")
+    try:
+        flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(fh, flags)
+        except OSError:
+            raise BatchAlreadyRunning(
+                f"another batch holds {p}; not starting a second one")
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        fh.close()
 
 # Rules compiled once per process. Populated by _load_rules(); in a Pool
 # each worker loads its own copy via _init_worker (fork inherits, spawn
@@ -457,11 +498,21 @@ def _main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--target-type", default="crypto_wallet",
                     help="plugin target type to select for --engine plugins "
                          "(crypto_wallet for EVM addresses, solana_contract, stacks_contract)")
+    ap.add_argument("--no-lock", action="store_true",
+                    help="skip the single-batch lock (allow overlapping runs)")
     args = ap.parse_args(argv)
 
-    summary = scan_corpus(args.input, workers=args.workers,
-                          limit=args.limit, out_path=args.out,
-                          engine=args.engine, target_type=args.target_type)
+    lock = (contextlib.nullcontext() if args.no_lock
+            else single_batch_lock())
+    try:
+        with lock:
+            summary = scan_corpus(args.input, workers=args.workers,
+                                  limit=args.limit, out_path=args.out,
+                                  engine=args.engine,
+                                  target_type=args.target_type)
+    except BatchAlreadyRunning as e:
+        print(f"skipped: {e}", file=sys.stderr)
+        return 0
     print(json.dumps(summary, indent=2))
     rate = summary["contracts_per_sec"]
     if rate:

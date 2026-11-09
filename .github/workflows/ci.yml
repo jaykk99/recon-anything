@@ -68,3 +68,6 @@ jobs:
 
       - name: Finding-chain invariants (depth fixed, never-a-target blocked)
         run: pytest tests/test_finding_chain_limits.py -q
+
+      - name: Scanner resilience (RPC skip, durable checkpoints, batch lock)
+        run: pytest tests/test_scanner_resilience.py -q

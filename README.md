@@ -1518,6 +1518,11 @@ this fix instead of a bare "run not found".
 | `RECON_CHAIN_MAX_ITEMS` | `40` | Follow-up items a single finding may chain (same-target). |
 | `RECON_CHAIN_MAX_PROBES` | `60` | Confirmation probes per run in the finding-chain layer. |
 | `RECON_CHAIN_MAX_SUBLINKS` | `8` | Sublinks followed off one probed page (depth stays 2). |
+| `RECON_RPC_COOLDOWN_S` | `120` | Seconds a failing RPC endpoint is skipped before retry (dead-host fast-skip). |
+| `RECON_CHECKPOINT_MAX_RESULT` | `65536` | Max bytes of result stored per checkpoint unit; larger results are truncated so the DB survives tight quotas. |
+| `RECON_CHECKPOINT_LEASE_S` | `600` | A unit marked running this recently is skipped by a second batch (no double-scan). |
+| `RECON_CHECKPOINT_WAL_EVERY` | `500` | Truncate the checkpoint WAL every N writes to bound disk use. |
+| `RECON_BATCH_LOCK` | `/tmp/recon_batch.lock` | Path of the single-batch lock; only one batch runs at a time. |
 | `RECON_EVIDENCE_DIR` | `./evidence` | On-disk evidence files (ephemeral on Render free tier). |
 | `RECON_SERVICE_KEY` | (generated) | Auth key for the MCP server (`/mcp`). When unset, a key is generated once and saved 0600 to the key file below; set the same value on the API and any standalone MCP service. |
 | `RECON_SERVICE_KEY_FILE` | `~/workspace/recon-mcp-service-key.txt` | Where the generated MCP service key is stored when `RECON_SERVICE_KEY` is unset. |

@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -155,6 +157,53 @@ def explorer_url(chain: ChainConfig, address: str) -> str:
 # Read-only chain access (all through the shared rate-limited fetch)
 # ---------------------------------------------------------------------------
 
+# RPC host health: a dead or timing-out endpoint used to cost up to the full
+# per-call timeout on EVERY call, because each helper re-looped the same
+# rpc_urls list from the top. Across getCode / getStorageAt (many slots) /
+# getBalance / batch, for every contract, a couple of dead hosts turned a
+# ~130s scan into ~550s. This process-wide tracker remembers which endpoints
+# just failed and skips them for a cooldown, so a dead host is paid for once
+# per cooldown window, not once per call. Cooling hosts are still tried as a
+# last resort if every endpoint for a chain is cooling, so the tracker can
+# never make a chain permanently unreachable.
+_RPC_COOLDOWN_S = float(os.environ.get("RECON_RPC_COOLDOWN_S", "120"))
+_RPC_DEAD_UNTIL: Dict[str, float] = {}
+
+
+def _rpc_order(urls: List[str]) -> List[str]:
+    """Healthy endpoints first, cooling ones last (as fallback)."""
+    now = time.time()
+    healthy = [u for u in urls if _RPC_DEAD_UNTIL.get(u, 0.0) <= now]
+    cooling = [u for u in urls if _RPC_DEAD_UNTIL.get(u, 0.0) > now]
+    return healthy + cooling
+
+
+def _rpc_mark_dead(url: str) -> None:
+    _RPC_DEAD_UNTIL[url] = time.time() + _RPC_COOLDOWN_S
+
+
+def _rpc_mark_alive(url: str) -> None:
+    if url in _RPC_DEAD_UNTIL:
+        _RPC_DEAD_UNTIL.pop(url, None)
+
+
+async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
+    """One POST to one endpoint, updating its health. Returns the parsed
+    JSON body, or None on any failure (and marks the host dead)."""
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                        json=payload, timeout=12, max_retries=0)
+        if r.status_code != 200:
+            _rpc_mark_dead(rpc)
+            return None
+        d = r.json()
+    except Exception:
+        _rpc_mark_dead(rpc)
+        return None
+    _rpc_mark_alive(rpc)
+    return d
+
+
 async def rpc_get_code(ctx: Any, chain: ChainConfig,
                        address: str) -> Optional[str]:
     """eth_getCode via public JSON-RPC. Read-only.
@@ -164,15 +213,8 @@ async def rpc_get_code(ctx: Any, chain: ChainConfig,
     """
     payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getCode",
                "params": [address, "latest"]}
-    for rpc in chain.rpc_urls:
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
-                            json=payload, timeout=12, max_retries=0)
-            if r.status_code != 200:
-                continue
-            d = r.json()
-        except Exception:
-            continue
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
         if isinstance(d, dict) and isinstance(d.get("result"), str):
             return d["result"]
     return None
@@ -189,15 +231,8 @@ async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
     """
     payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt",
                "params": [address, slot, "latest"]}
-    for rpc in chain.rpc_urls:
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
-                            json=payload, timeout=12, max_retries=0)
-            if r.status_code != 200:
-                continue
-            d = r.json()
-        except Exception:
-            continue
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
         if isinstance(d, dict) and isinstance(d.get("result"), str):
             return d["result"]
     return None
@@ -213,15 +248,8 @@ async def rpc_get_balance(ctx: Any, chain: ChainConfig,
     """
     payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
                "params": [address, "latest"]}
-    for rpc in chain.rpc_urls:
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
-                            json=payload, timeout=12, max_retries=0)
-            if r.status_code != 200:
-                continue
-            d = r.json()
-        except Exception:
-            continue
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
         if isinstance(d, dict) and isinstance(d.get("result"), str):
             try:
                 return int(d["result"], 16)
@@ -248,15 +276,8 @@ async def rpc_batch(ctx: Any, chain: ChainConfig,
         return []
     payload = [{"jsonrpc": "2.0", "id": i + 1, "method": m,
                 "params": p} for i, (m, p) in enumerate(calls)]
-    for rpc in chain.rpc_urls:
-        try:
-            r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
-                            json=payload, timeout=12, max_retries=0)
-            if r.status_code != 200:
-                continue
-            d = r.json()
-        except Exception:
-            continue
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
         if not isinstance(d, list):
             continue
         by_id: Dict[Any, Any] = {}
