@@ -397,7 +397,7 @@ master. Grouped by the plugin's `group` value (the same grouping
 the UI uses), alphabetical by plugin id within each group.
 No sampling: if it is registered, it is listed here.
 
-Group counts: Network 33 · Web 197 · API 18 · Mobile 5 · Identity 26 · Infra 53 · Web3 459 · Financial 43 · Graph 8 · **Total 842**.
+Group counts (live registry): Network 65 · Web 262 · API 28 · Mobile 34 · Identity 29 · Infra 138 · Web3 607 · Financial 43 · Graph 20 · **Total 1226**.
 
 ### Network (33)
 
