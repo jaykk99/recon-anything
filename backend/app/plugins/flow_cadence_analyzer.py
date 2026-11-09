@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .base import Plugin
 
-RULES = [('\.link\s*<[^>]+>\s*\(\s*/public/|save\s*\([^)]*/public/', '/private/|PrivatePath', 'cadence_public_capability_privileged', 'high', "Cadence capability is linked at a /public/ path, so anyone can borrow it and reach the linked resource's functions", 'Link privileged capabilities at /private/ paths and issue them only to trusted accounts.'), ('pub\s+fun\s+(withdraw|transfer|mint|destroy)\w*\s*\(', 'entitlement|access\(self\)|access\(Contract\)|auth\(', 'cadence_privileged_fn_no_entitlement', 'high', 'Cadence privileged resource function (withdraw/transfer/mint/destroy) is declared pub with no entitlement or restricted access', 'Declare privileged functions with entitlements (access(Entitlement)) or access(self).')]
+RULES = [('\\.link\\s*<[^>]+>\\s*\\(\\s*/public/|save\\s*\\([^)]*/public/', '/private/|PrivatePath', 'cadence_public_capability_privileged', 'high', "Cadence capability is linked at a /public/ path, so anyone can borrow it and reach the linked resource's functions", 'Link privileged capabilities at /private/ paths and issue them only to trusted accounts.'), ('pub\\s+fun\\s+(withdraw|transfer|mint|destroy)\\w*\\s*\\(', 'entitlement|access\\(self\\)|access\\(Contract\\)|auth\\(', 'cadence_privileged_fn_no_entitlement', 'high', 'Cadence privileged resource function (withdraw/transfer/mint/destroy) is declared pub with no entitlement or restricted access', 'Declare privileged functions with entitlements (access(Entitlement)) or access(self).')]
 
 def analyze_artifact(text):
     """Pure analysis: returns list of hit dicts. No I/O, never raises."""

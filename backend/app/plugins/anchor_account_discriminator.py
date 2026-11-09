@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .base import Plugin
 
-RULES = [('UncheckedAccount|AccountUnchecked', 'verify_discriminator|check_discriminator', 'anchor_unchecked_account', 'high', 'Anchor program uses an unchecked account type, so deserialization can accept an account of the wrong type (discriminator not verified)', "Use typed Account<'info, T> accounts so Anchor verifies the 8-byte discriminator before field reads."), ('try_from\s*\(', 'discriminator', 'anchor_try_from_no_discriminator_check', 'medium', 'Account data is deserialized via try_from without any discriminator verification in the program', 'Verify the 8-byte discriminator before reading account fields.')]
+RULES = [('UncheckedAccount|AccountUnchecked', 'verify_discriminator|check_discriminator', 'anchor_unchecked_account', 'high', 'Anchor program uses an unchecked account type, so deserialization can accept an account of the wrong type (discriminator not verified)', "Use typed Account<'info, T> accounts so Anchor verifies the 8-byte discriminator before field reads."), ('try_from\\s*\\(', 'discriminator', 'anchor_try_from_no_discriminator_check', 'medium', 'Account data is deserialized via try_from without any discriminator verification in the program', 'Verify the 8-byte discriminator before reading account fields.')]
 
 def _collision_hits(text):
     seen, hits = {}, []

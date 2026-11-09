@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .base import Plugin
 
-RULES = [('fn\s+(withdraw|transfer|set_\w+|update_\w+)\s*\(', 'validate_caller|caller\s*==|check_caller|assert.*caller', 'fvm_export_no_caller_check', 'high', 'FVM actor export moves value / changes config with no caller validation in the actor source', 'Validate the caller (robust address) against the stored owner in every privileged export.'), ('state\.\w+\s*=|save_state|store_state|\.save\(\)', 'caller', 'fvm_state_mutation_no_caller_validation', 'medium', 'FVM actor mutates and saves state with no caller reference anywhere in the source - caller validation is absent', 'Validate the message caller before any state mutation.')]
+RULES = [('fn\\s+(withdraw|transfer|set_\\w+|update_\\w+)\\s*\\(', 'validate_caller|caller\\s*==|check_caller|assert.*caller', 'fvm_export_no_caller_check', 'high', 'FVM actor export moves value / changes config with no caller validation in the actor source', 'Validate the caller (robust address) against the stored owner in every privileged export.'), ('state\\.\\w+\\s*=|save_state|store_state|\\.save\\(\\)', 'caller', 'fvm_state_mutation_no_caller_validation', 'medium', 'FVM actor mutates and saves state with no caller reference anywhere in the source - caller validation is absent', 'Validate the message caller before any state mutation.')]
 
 def analyze_artifact(text):
     """Pure analysis: returns list of hit dicts. No I/O, never raises."""

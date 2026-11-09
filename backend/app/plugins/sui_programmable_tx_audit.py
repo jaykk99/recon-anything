@@ -36,7 +36,7 @@ def analyze_artifact(text):
                     "severity": "high",
                     "remediation": "Pass an explicit minimum-output and deadline to every swap command in a PTB."})
         for m in re.finditer(r'"sharedObjectId"\s*:\s*"([^"]+)"', json.dumps(c)):
-            if '"mutable"\s*:\s*true' in json.dumps(c) or '"mutable": true' in json.dumps(c):
+            if '"mutable"\\s*:\\s*true' in json.dumps(c) or '"mutable": true' in json.dumps(c):
                 shared_mutable.setdefault(m.group(1), []).append(i)
     for oid, idxs in shared_mutable.items():
         if len(idxs) > 1:

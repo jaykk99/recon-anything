@@ -48,6 +48,9 @@ jobs:
       - name: Plugin registry health gate (count floor + import failures)
         run: python -m app.plugins.registry
 
+      - name: Lint gate (no SyntaxWarning - invalid escape sequences)
+        run: pytest tests/test_no_syntax_warnings.py -q
+
       - name: Plugin health tests (import, metadata, unique ids, floor)
         run: pytest tests/test_plugin_health.py -q
 
