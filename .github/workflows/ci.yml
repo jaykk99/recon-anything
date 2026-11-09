@@ -56,3 +56,6 @@ jobs:
 
       - name: Plugin resilience tests (no plugin throws fatally, network-free)
         run: pytest tests/test_plugin_resilience.py -q
+
+      - name: Batch scanner tests (rules + plugins engines, offline)
+        run: pytest tests/test_batch_scan.py -q

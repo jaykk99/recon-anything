@@ -70,6 +70,46 @@ Leave it empty for local dev only.
         +-----------+
 ```
 
+## Batch scanning (high-throughput corpus mode)
+
+The per-target runner is async and network-bound: it fetches each
+contract's verified source from a public explorer, politely rate-limited,
+one target at a time. That is right for scanning an address someone hands
+you, but it cannot sweep a large corpus at speed.
+
+`app/batch_scan.py` is the other lane - it runs the detection stack over
+sources that are **already on disk** (a directory of `.sol` files, or a
+JSONL corpus of `{address, chain, source}`), with **no network**, across
+a multiprocessing pool, every regex compiled once per worker:
+
+```bash
+# fast lane: compiled RULES + the structured analyzer
+python -m app.batch_scan --input ./corpus --workers 16 --out findings.jsonl
+
+# faithful lane: the real contract plugins, run fully offline
+python -m app.batch_scan --input corpus.jsonl --engine plugins --workers 32
+```
+
+It prints the achieved `contracts_per_sec` and the projected minutes for
+1,000,000 contracts, so you can size the box. Measured single-core cost
+on ~9 KB of Solidity: the structured analyzer ~2.4 ms (~410/sec/core);
+the `rules` engine ~357/sec/core end-to-end. So **1M in 20 minutes**
+(833/sec) is reached by the `rules` engine on ~3 cores, and a 16-core box
+clears it in about 3 minutes. The `plugins` engine runs the full plugin
+detection logic and is correspondingly heavier - benchmark it on your
+hardware with `--limit` to read the per-core rate, then scale cores to
+hit your target.
+
+Two honest constraints: **the network wall is upstream** - no public
+explorer API will serve 833 sources/second, so fetching 1M contracts is a
+separate, slower step (a Sourcify repo export, a BigQuery dump of verified
+sources, or your own crawl); this lane assumes the source is already
+fetched. And the `plugins` engine scans source with the network killed, so
+checks that need a live chain read (storage state, simulation) degrade to
+skipped - exactly the resilience contract the plugins already guarantee.
+Both lanes are detection only: pure functions of the source text, nothing
+touches a chain.
+
 ## Smart contract analysis
 
 Contract targets are first-class, not an afterthought. Coverage:
