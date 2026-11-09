@@ -1510,6 +1510,11 @@ this fix instead of a bare "run not found".
 | `RECON_TIMEOUT` | `20` | Default HTTP timeout (seconds) for plugins. |
 | `RECON_CONCURRENCY` | `5` | Parallel plugins per run. |
 | `RECON_RPS` | `25` | Per-host request pacing (requests/sec). |
+| `RECON_CRAWL_MAX_PAGES` | `200` | Max pages the site crawlers enumerate per target (bounded by each crawler's time budget). Raise to go deeper. |
+| `RECON_CRAWL_MAX_DEPTH` | `8` | Max link depth the crawlers follow from the seed. |
+| `RECON_CRAWL_CONCURRENCY` | `16` | Parallel page fetches within a single crawl. |
+| `RECON_JS_MAX_BUNDLES` | `24` | JS bundles pulled and mined for endpoints/secrets per site. |
+| `RECON_JS_MAX_ENDPOINTS` | `60` | Max JS-discovered endpoints reported per sweep. |
 | `RECON_EVIDENCE_DIR` | `./evidence` | On-disk evidence files (ephemeral on Render free tier). |
 | `RECON_SERVICE_KEY` | (generated) | Auth key for the MCP server (`/mcp`). When unset, a key is generated once and saved 0600 to the key file below; set the same value on the API and any standalone MCP service. |
 | `RECON_SERVICE_KEY_FILE` | `~/workspace/recon-mcp-service-key.txt` | Where the generated MCP service key is stored when `RECON_SERVICE_KEY` is unset. |

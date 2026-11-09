@@ -63,8 +63,12 @@ SECRET_SHAPES: List[Tuple[str, re.Pattern, str]] = [
         r"""\s*[:=]\s*['"]([^'"]{8,120})['"]"""), "medium"),
 ]
 
-MAX_BUNDLES = 8
-MAX_ENDPOINT_FINDINGS = 25
+from .. import config
+
+# Tunable via RECON_JS_* (see app/config.py); deeper defaults than the
+# original 8 / 25 so more of a site's JS is mined for endpoints and secrets.
+MAX_BUNDLES = config.JS_MAX_BUNDLES
+MAX_ENDPOINT_FINDINGS = config.JS_MAX_ENDPOINT_FINDINGS
 
 
 def _mask(value: str) -> str:

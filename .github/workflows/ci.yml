@@ -59,3 +59,6 @@ jobs:
 
       - name: Batch scanner tests (rules + plugins engines, offline)
         run: pytest tests/test_batch_scan.py -q
+
+      - name: Crawl depth config tests (crawlers honor RECON_CRAWL_* knobs)
+        run: pytest tests/test_crawl_depth_config.py -q

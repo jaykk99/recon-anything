@@ -15,11 +15,14 @@ from urllib.parse import urljoin, urlparse
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
+from .. import config
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
-MAX_PAGES = 80
-MAX_DEPTH = 6
-CONCURRENCY = 10
+# Tunable via RECON_CRAWL_* (see app/config.py); deeper defaults than the
+# original hard-coded 80 / 6 / 10. The plugin's time budget still bounds it.
+MAX_PAGES = config.CRAWL_MAX_PAGES
+MAX_DEPTH = config.CRAWL_MAX_DEPTH
+CONCURRENCY = config.CRAWL_CONCURRENCY
 
 # Patterns that reveal structure
 LINK_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)

@@ -58,3 +58,18 @@ MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "64"))
 # scanner; lower it via RECON_RPS if a target rate-limits.
 DEFAULT_RPS = float(env("RECON_RPS", "200"))
 EVIDENCE_DIR = env("RECON_EVIDENCE_DIR", "./evidence")
+
+# --- Web crawl depth -----------------------------------------------------
+# How deep the site enumerators dig. These were hard-coded module constants
+# (80 pages / depth 6 / 8 JS bundles); raised and made tunable so the tool
+# goes deeper by default and an operator can push further without a code
+# change. The crawlers stay inside their per-plugin time budget and stop
+# gracefully, so raising a cap deepens the crawl up to the clock, it does
+# not blow it. Push harder on a box with the bandwidth and a target you own.
+CRAWL_MAX_PAGES = int(env("RECON_CRAWL_MAX_PAGES", "200"))
+CRAWL_MAX_DEPTH = int(env("RECON_CRAWL_MAX_DEPTH", "8"))
+CRAWL_CONCURRENCY = int(env("RECON_CRAWL_CONCURRENCY", "16"))
+# JS endpoint/secret mining: how many script bundles to pull and analyze,
+# and how many discovered endpoints to report per bundle sweep.
+JS_MAX_BUNDLES = int(env("RECON_JS_MAX_BUNDLES", "24"))
+JS_MAX_ENDPOINT_FINDINGS = int(env("RECON_JS_MAX_ENDPOINTS", "60"))
