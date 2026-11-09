@@ -344,18 +344,31 @@ per-plugin verdicts). Benchmark numbers are from the change's own
 before/after runs; the merged code and its test suites were
 re-verified on master.
 
-### Shipped plugins (842)
+### Shipped plugins (1226)
 
 The registry auto-discovers every `Plugin` subclass in
 `backend/app/plugins/` - drop in a file, no central list to edit.
 The count is the live registry size, measured by loading the registry
-(`discover()` in `backend/app/plugins/registry.py`): **842 plugins**
-across 263 plugin modules on current master. The health gate
+(`discover()` in `backend/app/plugins/registry.py`): **1226 plugins**
+on current master. Roughly 900 are statically defined (one class per
+capability) and the rest are generated at import by detector batches
+that expand a spec list into one plugin each (e.g. `deep_audit*`,
+`privfind`, `recipient_first`) - so a file or class count understates
+the real total; only loading the registry sees it.
+
+The live count is authoritative and exposed at `GET /api/plugins`
+(and summarised on `GET /api/health`). CI guards it: the health gate
 (`backend/tests/test_plugin_health.py`) enforces unique ids, valid
-groups, and metadata on all of them. Below are the core web plugins;
-the contract-analysis plugins are listed in the Smart contract
-analysis section above. Every plugin, all 842 of them, is listed
-in [All plugins](#all-plugins-842) below.
+groups, metadata, and a **count floor of 1200** (`MIN_PLUGINS` in
+`registry.py`), so a silently deleted category or a broken import
+fails the build instead of shipping with less. `python -m
+app.plugins.registry` prints the same self-report locally.
+
+Below are the core web plugins; the contract-analysis plugins are
+listed in the Smart contract analysis section above. The enumerated
+[All plugins](#all-plugins) table lists the statically-defined set;
+the dynamically-generated detectors are described in their batch rows
+(`deep_audit*`, `recipient_first`, `aml_*`) above.
 
 | id | label | what it does |
 |----|-------|--------------|
@@ -376,7 +389,7 @@ With zero API keys the app still works using only free sources
 (crt.sh, RDAP, DNS, Wayback, direct HTTP, JS analysis). Paid sources
 (Shodan, HIBP, GitHub code search) degrade to clear "skipped" notes.
 
-## All plugins (842)
+## All plugins
 
 Every plugin registered in the live registry, generated from
 `discover()` in `backend/app/plugins/registry.py` on current
