@@ -805,6 +805,15 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help="keep only findings at or above this confidence")
     args = ap.parse_args(argv)
 
+    # Read-only hardblock: a detection tool has no business holding signing
+    # material. Refuse to run an autonomous batch if a key/seed is present.
+    from app.rpc_guard import RpcWriteBlocked, enforce_read_only_env
+    try:
+        enforce_read_only_env()
+    except RpcWriteBlocked as e:
+        print(f"refusing to run: {e}", file=sys.stderr)
+        return 2
+
     def _set(s):
         v = {x.strip().lower() for x in s.split(",") if x.strip()}
         return v or None

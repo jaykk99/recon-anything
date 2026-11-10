@@ -30,6 +30,52 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .rpc_guard import assert_payload_read_only, RpcWriteBlocked
+
+try:  # json is stdlib; the try is only to keep import-order robust
+    import json as _json
+except Exception:  # pragma: no cover
+    _json = None
+
+
+# Read-only transport hardblock. This is NOT an egress restriction - it
+# blocks no host, port or scheme, so the "reach anything" rule above still
+# holds. It refuses one thing: a JSON-RPC request whose method would
+# broadcast a transaction or sign with a key. ReconAnything reads chain
+# state and never writes it; enforcing that here, on the shared HTTP client,
+# means no plugin can broadcast even if it tries to build the request itself.
+def _rpc_body_is_write(content: bytes) -> bool:
+    if not content or b'"method"' not in content or _json is None:
+        return False
+    try:
+        payload = _json.loads(content)
+    except Exception:
+        return False
+    try:
+        assert_payload_read_only(payload)
+    except RpcWriteBlocked:
+        return True
+    return False
+
+
+def _guard_request_sync(request: "httpx.Request") -> None:
+    if request.method == "POST" and _rpc_body_is_write(request.content):
+        raise RpcWriteBlocked(
+            "blocked write/broadcast RPC request to "
+            f"{request.url.host} (ReconAnything is read-only)")
+
+
+async def _guard_request_async(request: "httpx.Request") -> None:
+    _guard_request_sync(request)
+
+
+def _merge_request_hook(kwargs: dict, hook) -> None:
+    hooks = dict(kwargs.get("event_hooks") or {})
+    existing = list(hooks.get("request") or [])
+    existing.insert(0, hook)
+    hooks["request"] = existing
+    kwargs["event_hooks"] = hooks
+
 
 # Connection pool sizing for the scan worker. The worker runs up to
 # MAX_CONCURRENCY (32) plugin jobs at once, and time-based detection
@@ -166,6 +212,7 @@ def async_client(**kwargs) -> httpx.AsyncClient:
         direct = _direct_mounts()
         if direct:
             kwargs["mounts"] = direct
+    _merge_request_hook(kwargs, _guard_request_async)
     return httpx.AsyncClient(**kwargs)
 
 
@@ -181,4 +228,5 @@ def sync_client(**kwargs) -> httpx.Client:
         direct = _direct_mounts_sync()
         if direct:
             kwargs["mounts"] = direct
+    _merge_request_hook(kwargs, _guard_request_sync)
     return httpx.Client(**kwargs)

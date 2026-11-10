@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.rpc_guard import RpcWriteBlocked, assert_read_only
+
 # Public, keyless Ethereum mainnet RPCs (HTTPS polling; WebSocket
 # endpoints are not reachable through every egress proxy, so Tier-10
 # is designed around HTTP polling fallbacks).
@@ -142,6 +144,10 @@ async def rpc(ctx, method: str, params: list,
     Returns (result, "") on success, (None, last_error) otherwise.
     Never raises.
     """
+    try:
+        assert_read_only(method)
+    except RpcWriteBlocked as e:
+        return None, str(e)
     last = "no RPC tried"
     for url in RPCS:
         try:

@@ -27,6 +27,7 @@ import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..ratelimit import fetch
+from ..rpc_guard import RpcWriteBlocked, assert_payload_read_only
 from .cryptopack_util import keccak256
 
 SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
@@ -191,6 +192,10 @@ def _rpc_mark_alive(url: str) -> None:
 async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
     """One POST to one endpoint, updating its health. Returns the parsed
     JSON body, or None on any failure (and marks the host dead)."""
+    try:
+        assert_payload_read_only(payload)
+    except RpcWriteBlocked:
+        return None
     try:
         r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
                         json=payload, timeout=12, max_retries=0)
