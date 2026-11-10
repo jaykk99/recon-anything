@@ -466,6 +466,118 @@ def parse_mint_raw(raw: bytes) -> Optional[Dict[str, Any]]:
     }
 
 
+# Token-2022 extension TLV type id -> the jsonParsed camelCase name the
+# extension audit already understands. Only the ids that matter to the audit
+# (or that we want surfaced) are mapped; others are reported by number.
+_T22_EXT_NAMES = {
+    1: "transferFeeConfig",
+    2: "transferFeeAmount",
+    3: "mintCloseAuthority",
+    4: "confidentialTransferMint",
+    5: "confidentialTransferAccount",
+    6: "defaultAccountState",
+    7: "immutableOwner",
+    8: "memoTransfer",
+    9: "nonTransferable",
+    10: "interestBearingConfig",
+    11: "cpiGuard",
+    12: "permanentDelegate",
+    13: "nonTransferableAccount",
+    14: "transferHook",
+    15: "transferHookAccount",
+    16: "confidentialTransferFeeConfig",
+    17: "confidentialTransferFeeAmount",
+    18: "metadataPointer",
+    19: "tokenMetadata",
+    20: "groupPointer",
+    21: "tokenGroup",
+    22: "groupMemberPointer",
+    23: "tokenGroupMember",
+    24: "confidentialMintBurn",
+    25: "scaledUiAmount",
+    26: "pausable",
+}
+
+# Token-2022 account-type discriminator at offset 165: 1 = Mint, 2 = Account.
+_T22_ACCOUNT_TYPE_MINT = 1
+_T22_BASE_LEN = 165  # base + padding; account_type sits at this offset
+
+
+def _b58_nonzero(raw: bytes) -> Optional[str]:
+    """A 32-byte OptionalNonZeroPubkey: all-zero means None/unset."""
+    if len(raw) != 32 or not any(raw):
+        return None
+    return b58encode(raw)
+
+
+def parse_token2022_extensions_raw(raw: bytes) -> List[Dict[str, Any]]:
+    """Decode a Token-2022 mint's extension TLV from its raw account bytes
+    into the same ``[{extension, state}]`` shape jsonParsed returns.
+
+    Many public RPCs don't parse Token-2022 mints and hand back raw base64,
+    which blinds the jsonParsed extension audit. This reads the extension
+    TLV directly so the dangerous extensions (permanent delegate, transfer
+    hook, frozen-by-default, transfer fee) are still caught. Read-only; it
+    decodes bytes already fetched and makes no new request.
+
+    Returns [] when the account has no extension TLV (plain/legacy mint) or
+    the bytes are malformed - never raises.
+    """
+    out: List[Dict[str, Any]] = []
+    if not raw or len(raw) <= _T22_BASE_LEN:
+        return out
+    if raw[_T22_BASE_LEN] != _T22_ACCOUNT_TYPE_MINT:
+        return out
+    off = _T22_BASE_LEN + 1
+    n = len(raw)
+    while off + 4 <= n:
+        ext_type = int.from_bytes(raw[off:off + 2], "little")
+        length = int.from_bytes(raw[off + 2:off + 4], "little")
+        off += 4
+        if ext_type == 0:  # uninitialized padding -> end of TLV
+            break
+        val = raw[off:off + length]
+        if len(val) < length:  # truncated / malformed
+            break
+        off += length
+        name = _T22_EXT_NAMES.get(ext_type, f"extensionType{ext_type}")
+        state: Any = _decode_t22_ext_state(name, val)
+        out.append({"extension": name, "state": state})
+    return out
+
+
+def _decode_t22_ext_state(name: str, val: bytes) -> Any:
+    """Best-effort state for a Token-2022 extension's raw value, shaped to
+    match what the audit reads. Unknown layouts return {} (presence only)."""
+    try:
+        if name == "permanentDelegate" and len(val) >= 32:
+            return {"delegate": _b58_nonzero(val[:32])}
+        if name == "transferHook" and len(val) >= 64:
+            return {"authority": _b58_nonzero(val[:32]),
+                    "programId": _b58_nonzero(val[32:64])}
+        if name == "defaultAccountState" and len(val) >= 1:
+            st = {0: "uninitialized", 1: "initialized",
+                  2: "frozen"}.get(val[0], str(val[0]))
+            return {"accountState": st}
+        if name == "mintCloseAuthority" and len(val) >= 32:
+            return {"closeAuthority": _b58_nonzero(val[:32])}
+        if name == "transferFeeConfig" and len(val) >= 108:
+            # authorities(32+32) + withheld u64(8) + older fee(18) +
+            # newer fee: epoch u64 @90, maximumFee u64 @98, bps u16 @106
+            return {
+                "transferFeeConfigAuthority": _b58_nonzero(val[0:32]),
+                "withdrawWithheldAuthority": _b58_nonzero(val[32:64]),
+                "newerTransferFee": {
+                    "maximumFee": int.from_bytes(val[98:106], "little"),
+                    "transferFeeBasisPoints":
+                        int.from_bytes(val[106:108], "little"),
+                },
+            }
+    except Exception:
+        return {}
+    return {}
+
+
 def parse_token_account_raw(raw: bytes) -> Optional[Dict[str, Any]]:
     """SPL token account layout fallback (jsonParsed normally
     decodes these): mint pubkey @0 (32 bytes), owner pubkey @32
@@ -1120,11 +1232,25 @@ def analyze_holder_unavailable(address: str) -> List[Dict[str, Any]]:
 
 
 def analyze_mint(address: str, info: Dict[str, Any], owner_program: str,
-                 largest: Optional[List[Dict]]) -> List[Dict[str, Any]]:
+                 largest: Optional[List[Dict]],
+                 raw_bytes: Optional[bytes] = None) -> List[Dict[str, Any]]:
     """Vulnerability/risk findings for one SPL token mint."""
     out: List[Dict[str, Any]] = []
     base = {"address": address, "chain": "solana",
             "token_program": owner_program}
+
+    # Token-2022 blind-spot fallback: if the RPC didn't parse the mint's
+    # extensions (jsonParsed gave none) but we have the raw account bytes
+    # for a Token-2022 mint, decode the extension TLV ourselves so the
+    # dangerous-extension audit below still runs. Marked so the audit can
+    # note the source.
+    if (owner_program == TOKEN2022_PROGRAM and raw_bytes
+            and not info.get("extensions")):
+        decoded = parse_token2022_extensions_raw(raw_bytes)
+        if decoded:
+            info = dict(info)
+            info["extensions"] = decoded
+            info["_extensions_source"] = "raw_tlv"
     try:
         supply_raw = int(info.get("supply") or 0)
     except (TypeError, ValueError):
@@ -2345,7 +2471,8 @@ class SolanaContractPlugin(Plugin):
         # largest-accounts concentration inside analyze_mint (pass
         # None there); the richer finding is emitted separately.
         for fd in analyze_mint(address, info, owner_program,
-                               None if dist is not None else largest):
+                               None if dist is not None else largest,
+                               raw_bytes=account.get("raw_bytes")):
             findings.append(self._to_finding(fd, url))
         if dist is not None:
             for fd in analyze_holder_distribution(

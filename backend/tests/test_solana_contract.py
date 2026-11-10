@@ -1358,3 +1358,65 @@ def test_plugin_deep_extensions_and_dex_sellside(monkeypatch):
     amap = [f for f in res.findings
             if f.key == "solana_authority_map"][0]
     assert amap.evidence["permanent_delegate"] == CREATOR
+
+
+# --- Token-2022 raw-TLV extension fallback (blind-RPC coverage) -----------
+import struct as _struct  # noqa: E402
+from app.plugins import solana_contract as _sc  # noqa: E402
+
+
+def _t22_mint_with_exts(entries):
+    """Build raw Token-2022 mint bytes: 165 base + account_type + TLV."""
+    data = bytearray(165) + bytes([_sc._T22_ACCOUNT_TYPE_MINT])
+    for t, v in entries:
+        data += _struct.pack("<HH", t, len(v)) + v
+    return bytes(data)
+
+
+def test_token2022_raw_tlv_decodes_dangerous_extensions():
+    delegate = bytes(range(1, 33))
+    hook_auth = bytes(range(33, 65))
+    hook_prog = bytes(range(65, 97))
+    raw = _t22_mint_with_exts([
+        (12, delegate),                 # permanentDelegate
+        (14, hook_auth + hook_prog),    # transferHook
+        (6, bytes([2])),                # defaultAccountState = frozen
+        (9, b""),                       # nonTransferable
+    ])
+    exts = _sc.parse_token2022_extensions_raw(raw)
+    names = {e["extension"] for e in exts}
+    assert names == {"permanentDelegate", "transferHook",
+                     "defaultAccountState", "nonTransferable"}
+    pd = next(e for e in exts if e["extension"] == "permanentDelegate")
+    assert pd["state"]["delegate"] == _sc.b58encode(delegate)
+    th = next(e for e in exts if e["extension"] == "transferHook")
+    assert th["state"]["programId"] == _sc.b58encode(hook_prog)
+    das = next(e for e in exts if e["extension"] == "defaultAccountState")
+    assert das["state"]["accountState"] == "frozen"
+
+
+def test_token2022_fallback_runs_audit_when_rpc_gives_no_extensions():
+    raw = _t22_mint_with_exts([(12, bytes(range(1, 33)))])  # permanentDelegate
+    info = {"mintAuthority": None, "freezeAuthority": None,
+            "supply": "0", "decimals": 0}  # jsonParsed with NO extensions
+    fds = _sc.analyze_mint("MintXYZ", info, _sc.TOKEN2022_PROGRAM, None,
+                           raw_bytes=raw)
+    keys = {f["key"] for f in fds}
+    assert "solana_token2022_permanent_delegate" in keys
+    pdf = next(f for f in fds
+               if f["key"] == "solana_token2022_permanent_delegate")
+    assert pdf["severity"] == "critical"
+
+
+def test_token2022_plain_mint_has_no_extensions():
+    assert _sc.parse_token2022_extensions_raw(bytes(82)) == []
+    assert _sc.parse_token2022_extensions_raw(bytes(200)) == []  # type byte 0
+
+
+def test_token2022_fallback_not_applied_to_legacy_token_program():
+    raw = _t22_mint_with_exts([(12, bytes(range(1, 33)))])
+    info = {"mintAuthority": None, "freezeAuthority": None,
+            "supply": "0", "decimals": 0}
+    fds = _sc.analyze_mint("MintXYZ", info, _sc.TOKEN_PROGRAM, None,
+                           raw_bytes=raw)  # legacy program: no extensions
+    assert not any("token2022" in f["key"] for f in fds)
