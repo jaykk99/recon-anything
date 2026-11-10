@@ -72,5 +72,8 @@ jobs:
       - name: RPC dedupe cache (one live call per bytecode/storage word)
         run: pytest tests/test_rpc_cache.py -q
 
+      - name: Detection benchmark (known historical drain classes)
+        run: pytest tests/test_detection_benchmark.py -q
+
       - name: Scanner resilience (RPC skip, durable checkpoints, batch lock)
         run: pytest tests/test_scanner_resilience.py -q
