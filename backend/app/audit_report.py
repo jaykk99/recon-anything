@@ -62,6 +62,56 @@ _REMEDIATION = {
     "privileged_function":
         "Confirm the privileged function is access-gated and that the owner "
         "key is held securely (ideally a multisig or timelock).",
+
+    # --- Token / memecoin market risk (Solana/pump.fun + any SPL/ERC20) ---
+    "rugcheck_mint_authority":
+        "Mint authority is still active — supply can be inflated at will. "
+        "Revoke mint authority (set to null) before trusting the supply.",
+    "mint_authority_active":
+        "Mint authority is still active — the supply can be increased, "
+        "diluting holders. Revoke it (set to null).",
+    "rugcheck_freeze_authority":
+        "Freeze authority is still active — balances can be frozen to block "
+        "sells. Revoke freeze authority.",
+    "freeze_authority_active":
+        "Freeze authority is still active — holders can be frozen and "
+        "prevented from selling. Revoke it.",
+    "rugcheck_liquidity_unlocked":
+        "Liquidity is neither locked nor burned — it can be pulled in a "
+        "single transaction (a classic rug). Require locked or burned LP.",
+    "rugcheck_liquidity_thin":
+        "Liquidity is thin — price is easily manipulated and exit is costly. "
+        "Verify real depth before trusting the market price.",
+    "rugcheck_holder_concentration":
+        "A few wallets hold most of the supply — a coordinated sell can "
+        "collapse the price. Check the holder distribution.",
+    "holder_aggregation":
+        "Supply is concentrated in a few related wallets. Treat the circulating "
+        "supply and price as fragile.",
+    "rugcheck_high_tax":
+        "Buy/sell tax is high — returns are eroded and the tax may be "
+        "adjustable. Confirm the tax is fixed and reasonable.",
+    "rugcheck_extreme_tax":
+        "Extreme buy/sell tax — effectively unsellable. Strong honeypot "
+        "signal; do not treat as tradeable.",
+    "rugcheck_honeypot":
+        "Honeypot: buys succeed but sells are blocked or taxed to ~100%. "
+        "Do not buy.",
+    "honeypot":
+        "Honeypot pattern — the contract blocks or punishes selling. Do not "
+        "buy; funds entered cannot be withdrawn.",
+    "rugcheck_owner_control":
+        "The owner retains control that can rug (mint, freeze, tax, or "
+        "blacklist). Verify ownership is renounced or timelocked.",
+    "creator_share":
+        "The creator/dev holds a large share of supply — a dev dump can "
+        "crash the price. Size the position against this risk.",
+    "mutable_metadata":
+        "Token metadata (name, symbol, image, URI) is mutable and can be "
+        "changed after launch. Make metadata immutable for trust.",
+    "rugcheck_unverified_contract":
+        "Source is not verified, so behavior cannot be audited. Treat with "
+        "caution until verified source is available.",
 }
 
 
@@ -203,11 +253,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## Methodology")
     lines.append("")
-    lines.append("Static analysis of the verified source (function-level "
-                 "control-flow and access-control checks, drain/takeover "
-                 "pattern detection) followed by a read-only on-chain probe "
-                 "to corroborate exploitable shapes. No state-changing "
-                 "transactions are sent; the contract is never drained or "
-                 "modified.")
+    lines.append("For contract source (EVM Solidity, Move, Cairo and "
+                 "others): function-level control-flow and access-control "
+                 "analysis with drain/takeover pattern detection. For tokens "
+                 "and markets (SPL / pump.fun, ERC-20 and equivalents): "
+                 "on-chain authority checks (mint/freeze), liquidity "
+                 "lock/burn status, holder concentration, creator/dev share "
+                 "and honeypot/tax signals, derived from chain RPC and market "
+                 "data. All findings are corroborated by a read-only probe "
+                 "where possible. No state-changing transactions are sent; "
+                 "nothing is drained or modified — detection only.")
     lines.append("")
     return "\n".join(lines)

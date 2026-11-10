@@ -75,6 +75,9 @@ jobs:
       - name: Detection benchmark (known historical drain classes)
         run: pytest tests/test_detection_benchmark.py -q
 
+      - name: Audit report (EVM + token/market remediation)
+        run: pytest tests/test_audit_report.py -q
+
       - name: Keyword search (find contracts by vuln kind / symbol / plugin)
         run: pytest tests/test_search_keyword.py -q
 
