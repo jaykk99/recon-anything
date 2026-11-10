@@ -77,8 +77,42 @@ def _split_functions(src: str) -> List[Tuple[str, str]]:
 # destroys it (force-draining the balance). A public, unguarded function that
 # contains any of these can be called by anyone to drain or redirect funds.
 _FUND_SINK_RE = re.compile(
+    # Value-OUT sinks only. Bare transferFrom() is intentionally NOT here:
+    # it is the ERC20 standard, present in nearly every token, and its
+    # presence is not a contract-fund drain - including it flagged ~every
+    # token as critical.
     r"\.transfer\s*\(|\.send\s*\(|\.call\s*\{[^}]*\bvalue\b|\.call\.value\s*\(|"
-    r"\btransferFrom\s*\(|\bselfdestruct\s*\(|\bsuicide\s*\(")
+    r"\bselfdestruct\s*\(|\bsuicide\s*\(")
+
+# Modifiers that look like access control (presence => gated). A name list
+# can't be exhaustive, so _has_access_gate also treats any custom modifier
+# as a gate; this set is only to seed obvious ones. nonReentrant and
+# whenNotPaused are deliberately NOT access control.
+_NON_ACCESS_MODS = {"nonreentrant", "whennotpaused", "whenpaused", "payable",
+                    "view", "pure", "virtual", "override", "returns",
+                    "public", "external", "internal", "private", "memory",
+                    "storage", "calldata", "constant", "immutable"}
+_SENDER_CHECK_RE = re.compile(
+    r"require\s*\(\s*(msg\.sender|_msgSender\(\)|tx\.origin)|"
+    r"if\s*\(\s*(msg\.sender|_msgSender\(\))|"
+    r"_checkOwner|_checkRole|hasRole\s*\(|onlyOwner|only[A-Z]", re.I)
+_MOD_REGION_RE = re.compile(r"\)([^{;]*)")
+_WORD_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _has_access_gate(sig: str, body: str) -> bool:
+    """True if the function is access-controlled - by a modifier that is
+    plausibly access control (any custom modifier, not just a known name,
+    excluding nonReentrant/whenNotPaused), or by an in-body sender/role
+    check. This is what separates a real ungated drain from an owner-gated
+    one; a thin fixed name list over-flags both ways."""
+    region = _MOD_REGION_RE.search(sig)
+    if region:
+        tail = re.split(r"\breturns\b", region.group(1))[0]
+        for tok in _WORD_RE.findall(tail):
+            if tok.lower() not in _NON_ACCESS_MODS:
+                return True
+    return bool(_SENDER_CHECK_RE.search(body))
 
 
 def _fund_sink(body: str) -> Optional[str]:
@@ -162,7 +196,7 @@ def audit_source(src: str) -> List[Dict[str, str]]:
         sig_text = sig_m.group(0) if sig_m else ""
         is_public = ("public" in sig_text) or ("external" in sig_text)
         mods = _modifiers(sig_text)
-        guarded = bool(mods) or bool(re.search(r"require\s*\(\s*msg\.sender", body))
+        guarded = _has_access_gate(sig_text, body)
 
         # --- 1. reentrancy: external value transfer before state write ---
         for call_re, call_kind in (
@@ -231,14 +265,26 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                            "pool's accounting (repay checks, fee enforcement).")})
 
         # --- 3d. unprotected initializer (proxy pattern) ---
-        if name.lower() == "initialize" and is_public and not guarded:
-            if not re.search(r"require\s*\(\s*!?_?initialized", body, re.I):
+        # Only critical when the initializer actually GRANTS CONTROL (sets an
+        # owner/admin, or calls an ownership/role init) with no guard and no
+        # initialized-flag check. A plain initialize() that just sets config
+        # is not a takeover, so requiring the control-grant cuts the dominant
+        # false positive (every upgradeable config-init was flagged).
+        if (name.lower() in ("initialize", "init", "__init", "setup")
+                and is_public and not guarded):
+            grants_control = re.search(
+                r"\b(owner|admin|_owner|_admin|governance|governor)\b\s*=|"
+                r"_transferOwnership\s*\(|__Ownable_init|_setupRole\s*\(|"
+                r"_grantRole\s*\(|grantRole\s*\(|_setRoleAdmin\s*\(",
+                body, re.I)
+            has_flag = re.search(r"require\s*\(\s*!?_?initialized", body, re.I)
+            if grants_control and not has_flag:
                 findings.append({
                     "check": "unprotected_initializer", "severity": "critical",
                     "function": name,
-                    "detail": (f"FUND DRAIN: public initialize() in '{name}' has no guard. "
-                               "On upgradeable proxies anyone can front-run the "
-                               "initialization and seize ownership/admin rights, then "
+                    "detail": (f"FUND DRAIN: public {name}() grants ownership/admin "
+                               "with no guard. On upgradeable proxies anyone can "
+                               "front-run initialization and seize control, then "
                                "drain or brick the contract.")})
 
         # --- 1b. unprotected fund transfer: a public, unguarded function that
@@ -440,13 +486,21 @@ class ContractAuditPlugin(Plugin):
                             "exploitability": "unknown",
                             "remediation": ("Static scan is a first pass only. Get a "
                                             "professional audit before mainnet use.")}))
+                # Confidence scales with severity so a critical static
+                # finding (reentrancy, ungated fund drain, delegatecall
+                # hijack, unprotected initializer) on verified source reaches
+                # the confirmed tier instead of being capped at 70 (likely)
+                # and buried - which is why critical findings never surfaced.
+                _sev_conf = {"critical": 88, "high": 78, "medium": 60,
+                             "low": 45}
                 for iss in issues:
                     findings.append(self._f(
                         "web3", f"contract_{iss['check']}",
                         f"{iss['severity'].upper()}: {iss['detail']}",
                         source="Etherscan/Sourcify static audit",
                         source_url=f"https://etherscan.io/address/{addr}",
-                        confidence=70, passive=True,
+                        confidence=_sev_conf.get(iss["severity"], 60),
+                        passive=True,
                         evidence={
                             "severity": iss["severity"], "address": addr,
                             "check": iss["check"], "function": iss["function"],
