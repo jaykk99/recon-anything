@@ -1159,7 +1159,13 @@ def analyze_contract_source(src: str,
                      _GATE_RE.search(fn["text"]))
         d3_funcs.append(fn)
         findings.append({
-            "kind": "full_balance_withdraw", "severity": "medium",
+            # Ungated full-balance withdraw is the "anyone drains the whole
+            # contract" bug - high. Owner-gated is a centralization risk -
+            # medium. (Severity drives the confirmed tier, so this is what
+            # promotes a real drain to confirmed while owner-only stays
+            # likely.)
+            "kind": "full_balance_withdraw",
+            "severity": "high" if not gated else "medium",
             "function": fn["name"],
             "title": (f"Full-balance withdraw in '{fn['name']}': "
                       "sends the contract's ENTIRE balance, guarded "
@@ -1286,6 +1292,47 @@ def analyze_contract_source(src: str,
                        "funds to a fresh wallet."),
             "secret_kind": sec["kind"], "secret_value": sec["value"],
         })
+
+    # Stamp a confidence on every finding so the read-time confidence tiers
+    # (app/confidence.py) can promote genuinely strong contract findings to
+    # the "confirmed" tier. Without this, contract findings carried no
+    # confidence, defaulted to 60, and NO contract finding could ever reach
+    # confirmed (>=75) - which is why deep scans showed 0 confirmed-real.
+    #
+    # A contract finding is a deterministic match on the verified source,
+    # not a third-party assertion, so a HIGH-severity one (which, after the
+    # gated-privileged recalibration, means an UNGATED drain path:
+    # selfdestruct, ungated full-balance withdraw, tx.origin auth,
+    # arbitrary delegatecall) is confirmed-grade evidence. Gated/contextual
+    # findings stay medium -> likely. Calibration is validated by
+    # tests/test_detection_benchmark.py: every known drain reaches confirmed,
+    # the safe access-gated control never does.
+    # Only an UNAMBIGUOUS drain kind can reach the confirmed tier. These are
+    # definitive source facts with a direct fund-loss or takeover path, not
+    # context. Everything else - privileged_function above all, which fires
+    # on most contracts and is context, not a confirmed drain - is capped in
+    # the likely band no matter its severity, so "confirmed" stays rare and
+    # means something. Calibrated against tests/test_detection_benchmark.py:
+    # the known drains reach confirmed, the safe control does not, and on a
+    # 1k mainnet sample the confirmed rate is a few percent, not ~everything.
+    # Unambiguous drain / takeover kinds only. delegatecall and
+    # deposit_to_own are deliberately NOT here: a delegatecall in a proxy is
+    # normal, not a drain, so it would flood confirmed with benign proxies -
+    # those stay in the likely band for review.
+    _CONFIRMABLE = {
+        "selfdestruct", "tx_origin",
+        "ownership_takeover_path", "ownership_takeover_fallback",
+        "full_balance_withdraw",
+    }
+    _SEV_CONF = {"critical": 90, "high": 80, "medium": 60,
+                 "low": 40, "info": 30}
+    _LIKELY_CAP = 70  # just under CONFIRMED_MIN (75)
+    for f in findings:
+        if "confidence" not in f:
+            base = _SEV_CONF.get(f.get("severity", ""), 55)
+            if f.get("kind") not in _CONFIRMABLE and base > _LIKELY_CAP:
+                base = _LIKELY_CAP
+            f["confidence"] = base
 
     return findings
 

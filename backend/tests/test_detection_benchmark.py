@@ -38,3 +38,30 @@ def test_safe_control_has_no_drain_finding():
         kinds = {f.get("kind") for f in analyze_contract_source(c.source, {})}
         bad = kinds & _DRAIN_KINDS
         assert not bad, f"{c.name} is a safe control but flagged {sorted(bad)}"
+
+
+def test_unambiguous_drains_reach_confirmed_tier():
+    """The confidence tier must promote genuine drains to 'confirmed' and
+    leave the safe control out - the fix for deep scans showing 0 confirmed.
+    Checks the three unambiguous kinds (ungated selfdestruct, tx.origin auth,
+    ungated full-balance withdraw); reentrancy/ownership-init/delegatecall
+    are known detection gaps tracked separately."""
+    from app import confidence
+
+    def confirmed_kinds(src):
+        rows = [{"target_id": "0x1", "key": f.get("kind", ""),
+                 "value": f.get("function") or f.get("title", ""),
+                 "plugin": "contract", "evidence": {},
+                 "confidence": f.get("confidence"),
+                 "severity": f.get("severity")}
+                for f in analyze_contract_source(src, {})]
+        return {r["key"] for r in confidence.annotate_confidence(rows)
+                if r["confidence_tier"] == "confirmed"}
+
+    by_name = {c.name: c for c in CASES}
+    for name in ("unprotected_selfdestruct", "txorigin_auth",
+                 "unprotected_withdraw"):
+        assert confirmed_kinds(by_name[name].source), \
+            f"{name} should reach the confirmed tier"
+    # the safe, access-gated control must never show a confirmed finding
+    assert not confirmed_kinds(by_name["safe_gated_control"].source)
