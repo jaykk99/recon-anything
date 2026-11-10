@@ -740,6 +740,196 @@ async def eth_call(ctx: Ctx, chain: cc.ChainConfig, to_addr: str,
 
 
 # ---------------------------------------------------------------------------
+# Batched eth_call transport (Track 2): many probes, one round-trip
+# ---------------------------------------------------------------------------
+
+# Probes per batch POST. Public endpoints commonly cap batches near
+# 100 calls; 50 leaves headroom for large calldata fuzz inputs.
+ETH_CALL_BATCH_MAX = int(os.environ.get("RECON_ETH_CALL_BATCH_MAX", "50"))
+
+
+async def eth_call_batch(ctx: Ctx, chain: cc.ChainConfig,
+                         calls: List[Dict[str, str]]
+                         ) -> Optional[List[Dict[str, Any]]]:
+    """Many read-only eth_call simulations in ONE HTTP round-trip.
+
+    ``calls`` is a list of {"to", "data", "sender", "value"?} dicts
+    (same fields eth_call takes). Returns a list aligned with the
+    input of per-call result dicts in exactly eth_call's shape
+    ({"status": "success", "result", "via"} /
+    {"status": "revert", "detail", "via"} /
+    {"status": "transport_error", ...}), or None when there is no
+    HTTP client or the batch failed on every endpoint - callers
+    then fall back to per-call eth_call, so a batch-hostile
+    endpoint can never lose a probe, only the speedup.
+
+    The batch goes to the chain's public JSON-RPC endpoints in
+    provider-pool order (app.rpc_pool: config URLs + pool extras,
+    healthy first, round-robin rotation). The Blockscout eth-rpc
+    route is deliberately NOT used for batches: its batch support
+    is unverified, and the per-call fallback keeps it in play.
+    Responses are matched by JSON-RPC id; an item carrying an
+    error is that call's revert, exactly as eth_call treats it.
+    Read-only throughout: eth_call is the node's local simulation
+    and cannot change state; nothing is ever broadcast.
+    """
+    if not calls:
+        return []
+    if getattr(ctx, "http", None) is None:
+        return None
+    from ..rpc_pool import POOL
+    out: List[Dict[str, Any]] = []
+    for start in range(0, len(calls), ETH_CALL_BATCH_MAX):
+        chunk = calls[start:start + ETH_CALL_BATCH_MAX]
+        payload = [{
+            "jsonrpc": "2.0", "id": start + i + 1, "method": "eth_call",
+            "params": [{"from": c["sender"], "to": c["to"],
+                        "data": c["data"],
+                        "value": c.get("value", "0x0")}, "latest"],
+        } for i, c in enumerate(chunk)]
+        answered: Optional[List[Dict[str, Any]]] = None
+        for url in POOL.order(chain.id, list(chain.rpc_urls)):
+            try:
+                r = await fetch(ctx.http, ctx.limiter, "POST", url,
+                                json=payload, timeout=15, max_retries=0)
+                try:
+                    POOL.note_response(url, r.status_code)
+                except Exception:
+                    pass
+                if r.status_code != 200:
+                    continue
+                d = r.json()
+            except Exception:
+                try:
+                    POOL.note_transport_error(url)
+                except Exception:
+                    pass
+                continue
+            if not isinstance(d, list):
+                try:
+                    POOL.note_batch_failure(url)
+                except Exception:
+                    pass
+                continue
+            by_id: Dict[Any, Any] = {}
+            for item in d:
+                if isinstance(item, dict) and "id" in item:
+                    by_id[item["id"]] = item
+            if not by_id:
+                try:
+                    POOL.note_batch_failure(url)
+                except Exception:
+                    pass
+                continue
+            answered = []
+            for i in range(len(chunk)):
+                item = by_id.get(start + i + 1)
+                if item is None:
+                    answered.append({
+                        "status": "transport_error",
+                        "detail": "no batch item for this call",
+                        "via": "public JSON-RPC (batch)"})
+                elif isinstance(item.get("result"), str):
+                    answered.append({
+                        "status": "success", "result": item["result"],
+                        "via": "public JSON-RPC (batch)"})
+                elif item.get("error") is not None:
+                    answered.append({
+                        "status": "revert",
+                        "detail": str(item["error"])[:240],
+                        "via": "public JSON-RPC (batch)"})
+                else:
+                    answered.append({
+                        "status": "transport_error",
+                        "detail": "malformed batch item",
+                        "via": "public JSON-RPC (batch)"})
+            break
+        if answered is None:
+            return None
+        out.extend(answered)
+    return out
+
+
+async def _execute_probes(ctx: Ctx, chain: cc.ChainConfig, addr: str,
+                          jobs: List[Tuple[str, str]], deadline: float,
+                          stats: Dict[str, int]
+                          ) -> Tuple[List[Dict[str, Any]], bool]:
+    """Execute one function's probe jobs [(label, calldata), ...].
+
+    Returns (results, budget_hit): one result dict per ATTEMPTED
+    job, in job order, plus whether the contract deadline died
+    mid-execution. stats["probes"] is incremented per attempted
+    probe, exactly as the old inline loop counted them.
+
+    With a live HTTP client the jobs go out through eth_call_batch
+    (one POST per chunk of ETH_CALL_BATCH_MAX probes). If the batch
+    transport fails on every endpoint, execution falls back to the
+    original per-probe eth_call loop for the remaining jobs - the
+    batch is a speedup, never a single point of failure. Without an
+    HTTP client (unit fakes, stubbed transports) only the per-probe
+    loop runs, unchanged.
+    """
+    results: List[Dict[str, Any]] = []
+    idx = 0
+    use_batch = getattr(ctx, "http", None) is not None
+    while idx < len(jobs):
+        if use_batch:
+            chunk = jobs[idx:idx + ETH_CALL_BATCH_MAX]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return results, True
+            try:
+                batch = await asyncio.wait_for(
+                    eth_call_batch(ctx, chain, [
+                        {"to": addr, "data": data, "sender": FUZZ_CALLER}
+                        for _label, data in chunk]),
+                    timeout=min(_PROBE_TIMEOUT_S, max(0.1, remaining)))
+            except asyncio.TimeoutError:
+                stats["probes"] += len(chunk)
+                results.extend(
+                    {"status": "transport_error",
+                     "detail": "probe exceeded per-probe cap"}
+                    for _ in chunk)
+                if time.monotonic() >= deadline:
+                    return results, True
+                idx += len(chunk)
+                continue
+            except Exception:
+                batch = None
+            if batch is None:
+                # Batch-hostile routes: fall back to per-probe for
+                # this chunk and everything after it.
+                use_batch = False
+            else:
+                stats["probes"] += len(batch)
+                results.extend(batch)
+                idx += len(chunk)
+                continue
+        # Per-probe path (the original loop, verbatim semantics).
+        _label, data = jobs[idx]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return results, True
+        stats["probes"] += 1
+        try:
+            res = await asyncio.wait_for(
+                eth_call(ctx, chain, addr, data, FUZZ_CALLER),
+                timeout=min(_PROBE_TIMEOUT_S, max(0.1, remaining)))
+        except asyncio.TimeoutError:
+            results.append({"status": "transport_error",
+                            "detail": "probe exceeded per-probe cap"})
+            if time.monotonic() >= deadline:
+                return results, True
+            idx += 1
+            continue
+        except Exception:
+            res = {"status": "transport_error", "detail": "probe raised"}
+        results.append(res)
+        idx += 1
+    return results, False
+
+
+# ---------------------------------------------------------------------------
 # Symbolic execution (Mythril, optional): bounded, honest, off by default
 # ---------------------------------------------------------------------------
 
@@ -1180,6 +1370,12 @@ class ContractSimPlugin(Plugin):
                 break
             encoded_head = function_selector(fn["canonical"])
             successes: List[Dict[str, Any]] = []
+            # Build this function's probe jobs first (identical
+            # budget/encoding decisions to the old per-probe loop),
+            # then execute them through _execute_probes: batched
+            # into single POSTs when a live HTTP client is present,
+            # the original one-POST-per-probe loop otherwise.
+            jobs: List[Tuple[str, str]] = []
             for values, label in boundary_cases(fn["types"], addr):
                 if probes_left <= 0:
                     break
@@ -1191,25 +1387,12 @@ class ContractSimPlugin(Plugin):
                 if enc is None:
                     break
                 probes_left -= 1
-                stats["probes"] += 1
-                try:
-                    res = await asyncio.wait_for(
-                        eth_call(ctx, chain, addr,
-                                 encoded_head + enc, FUZZ_CALLER),
-                        timeout=min(_PROBE_TIMEOUT_S,
-                                    max(0.1, remaining)))
-                except asyncio.TimeoutError:
-                    if time.monotonic() >= deadline:
-                        budget_hit = True
-                        break
-                    # One slow route ate the per-probe cap but the
-                    # contract budget remains: count the probe as a
-                    # transport failure and keep fuzzing.
-                    res = {"status": "transport_error",
-                           "detail": "probe exceeded per-probe cap"}
-                except Exception:
-                    res = {"status": "transport_error",
-                           "detail": "probe raised"}
+                jobs.append((label, encoded_head + enc))
+            probe_results, probe_budget_hit = await _execute_probes(
+                ctx, chain, addr, jobs, deadline, stats)
+            if probe_budget_hit:
+                budget_hit = True
+            for (label, _data), res in zip(jobs, probe_results):
                 if res["status"] == "success":
                     stats["succeeded"] += 1
                     successes.append({"case": label,

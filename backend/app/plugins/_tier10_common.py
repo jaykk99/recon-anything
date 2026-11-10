@@ -188,6 +188,95 @@ async def eth_call(ctx, to: str, data: str,
     return None, err or "empty eth_call result"
 
 
+async def rpc_batch(ctx, calls: List[Tuple[str, list]],
+                    timeout: int = 15) -> Tuple[Optional[list], str]:
+    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+
+    ``calls`` is a list of (method, params) read-only calls. Returns
+    (results, "") with the raw ``result`` values in request order
+    (None for an individual call that errored), or (None, error)
+    when the batch failed on every endpoint - callers then fall
+    back to the per-call rpc() above. Endpoints are tried in
+    provider-pool order (app.rpc_pool over this module's RPCS list:
+    healthy first, round-robin rotation, 429/5xx streaks feed the
+    pool's breaker + exponential throttle backoff), and responses
+    are matched by JSON-RPC id. Never raises. Read-only.
+    """
+    if not calls:
+        return [], ""
+    from ..rpc_pool import POOL
+    payload = [{"jsonrpc": "2.0", "id": i + 1, "method": m,
+                "params": p} for i, (m, p) in enumerate(calls)]
+    last = "no RPC tried"
+    for url in POOL.order("ethereum", list(RPCS)):
+        try:
+            resp = await ctx.http.post(url, json=payload,
+                                       timeout=timeout)
+        except Exception as e:  # network / proxy failure
+            try:
+                POOL.note_transport_error(url)
+            except Exception:
+                pass
+            last = f"{url}: {type(e).__name__} {str(e)[:120]}"
+            continue
+        try:
+            POOL.note_response(url, resp.status_code)
+        except Exception:
+            pass
+        if resp.status_code != 200:
+            last = f"{url}: HTTP {resp.status_code}"
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            last = f"{url}: non-JSON response"
+            continue
+        if not isinstance(data, list):
+            try:
+                POOL.note_batch_failure(url)
+            except Exception:
+                pass
+            last = f"{url}: batch response not a list"
+            continue
+        by_id: Dict[Any, Any] = {}
+        for item in data:
+            if isinstance(item, dict) and "id" in item:
+                by_id[item["id"]] = item.get("result")
+        if not by_id:
+            try:
+                POOL.note_batch_failure(url)
+            except Exception:
+                pass
+            last = f"{url}: empty batch response"
+            continue
+        return [by_id.get(i + 1) for i in range(len(calls))], ""
+    return None, last
+
+
+async def eth_call_many(ctx, calls: List[Tuple[str, str]],
+                        timeout: int = 15
+                        ) -> Optional[List[Tuple[Optional[str], str]]]:
+    """Many eth_calls in one batched POST (see rpc_batch).
+
+    ``calls`` is a list of (to, data) pairs. Returns a list aligned
+    with the input of (result|None, error) tuples with eth_call's
+    per-call contract, or None when the batch failed everywhere -
+    the caller then falls back to per-call eth_call.
+    """
+    results, _err = await rpc_batch(ctx, [
+        ("eth_call", [{"to": to, "data": data}, "latest"])
+        for to, data in calls], timeout)
+    if results is None:
+        return None
+    out: List[Tuple[Optional[str], str]] = []
+    for r in results:
+        if isinstance(r, str) and r.startswith("0x") and r != "0x":
+            out.append((r, ""))
+        else:
+            out.append((None, "empty eth_call result"))
+    return out
+
+
 def classify_tx(tx: Dict[str, Any]) -> Dict[str, Any]:
     """Classify one pending transaction (analysis only)."""
     inp = (tx.get("input") or tx.get("data") or "0x")

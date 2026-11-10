@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..ratelimit import fetch
 from ..rpc_guard import RpcWriteBlocked, assert_payload_read_only
+from ..rpc_pool import POOL as _RPC_POOL
 from .cryptopack_util import keccak256
 
 SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
@@ -191,7 +192,13 @@ def _rpc_mark_alive(url: str) -> None:
 
 async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
     """One POST to one endpoint, updating its health. Returns the parsed
-    JSON body, or None on any failure (and marks the host dead)."""
+    JSON body, or None on any failure (and marks the host dead).
+
+    Health is recorded in two places: the legacy flat-cooldown map
+    above (unchanged contract) and the Track-2 provider pool
+    (app.rpc_pool), whose streak-based breaker + 429 backoff drive
+    the batched transports' endpoint order. Pool bookkeeping is
+    best-effort: it can never break the transport it observes."""
     try:
         assert_payload_read_only(payload)
     except RpcWriteBlocked:
@@ -199,11 +206,19 @@ async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
     try:
         r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
                         json=payload, timeout=12, max_retries=0)
+        try:
+            _RPC_POOL.note_response(rpc, r.status_code)
+        except Exception:
+            pass
         if r.status_code != 200:
             _rpc_mark_dead(rpc)
             return None
         d = r.json()
     except Exception:
+        try:
+            _RPC_POOL.note_transport_error(rpc)
+        except Exception:
+            pass
         _rpc_mark_dead(rpc)
         return None
     _rpc_mark_alive(rpc)
@@ -314,36 +329,110 @@ async def rpc_get_balance(ctx: Any, chain: ChainConfig,
     return None
 
 
-async def rpc_batch(ctx: Any, chain: ChainConfig,
-                    calls: List[Tuple[str, list]]) -> Optional[list]:
-    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+# Public endpoints commonly cap JSON-RPC batches near 100 calls;
+# larger read sets are split into sequential chunk POSTs (still one
+# round-trip per chunk, not per call).
+RPC_BATCH_MAX = int(os.environ.get("RECON_RPC_BATCH_MAX", "100"))
 
-    ``calls`` is a list of (method, params) read-only calls
-    (eth_getCode / eth_getBalance / eth_getStorageAt / ...). Returns
-    the list of raw JSON-RPC ``result`` values in request order
-    (None for an individual call that errored), or None when the
-    batch itself failed on every endpoint - callers then fall back
-    to the per-call helpers above, so a batch-hostile endpoint can
-    never lose data, only the speedup. Goes through the same
-    rate-limited fetch as every other read: one limiter slot for
-    the whole batch, spike backoff untouched.
-    """
-    if not calls:
-        return []
-    payload = [{"jsonrpc": "2.0", "id": i + 1, "method": m,
+
+async def _rpc_batch_chunk(ctx: Any, chain: ChainConfig,
+                           calls: List[Tuple[str, list]],
+                           id_offset: int) -> Optional[list]:
+    """One batch POST for one chunk, over pool-ordered endpoints.
+
+    Endpoints come from the Track-2 provider pool (app.rpc_pool):
+    the chain's config URLs plus the pool's extra keyless endpoints,
+    healthy ones first in round-robin rotation, cooling/throttled
+    ones last as fallback. Response items are matched by JSON-RPC
+    id, so an endpoint answering out of order cannot scramble the
+    results. Returns per-call results in request order (None for an
+    individual call that errored or went unanswered), or None when
+    every endpoint failed the batch itself."""
+    payload = [{"jsonrpc": "2.0", "id": id_offset + i + 1, "method": m,
                 "params": p} for i, (m, p) in enumerate(calls)]
-    for rpc in _rpc_order(chain.rpc_urls):
+    for rpc in _RPC_POOL.order(chain.id, list(chain.rpc_urls)):
         d = await _rpc_post(ctx, rpc, payload)
         if not isinstance(d, list):
+            try:
+                _RPC_POOL.note_batch_failure(rpc)
+            except Exception:
+                pass
             continue
         by_id: Dict[Any, Any] = {}
         for item in d:
             if isinstance(item, dict) and "id" in item:
                 by_id[item["id"]] = item.get("result")
         if not by_id:
+            try:
+                _RPC_POOL.note_batch_failure(rpc)
+            except Exception:
+                pass
             continue
-        return [by_id.get(i + 1) for i in range(len(calls))]
+        return [by_id.get(id_offset + i + 1) for i in range(len(calls))]
     return None
+
+
+async def rpc_batch(ctx: Any, chain: ChainConfig,
+                    calls: List[Tuple[str, list]]) -> Optional[list]:
+    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+
+    ``calls`` is a list of (method, params) read-only calls
+    (eth_getCode / eth_getBalance / eth_getStorageAt / eth_call /
+    ...). Returns the list of raw JSON-RPC ``result`` values in
+    request order (None for an individual call that errored), or
+    None when the batch itself failed on every endpoint - callers
+    then fall back to the per-call helpers above, so a
+    batch-hostile endpoint can never lose data, only the speedup.
+    Goes through the same rate-limited fetch as every other read:
+    one limiter slot for the whole batch, spike backoff untouched.
+    Read sets larger than RPC_BATCH_MAX are chunked into one POST
+    per chunk; if any chunk fails everywhere the whole call returns
+    None, preserving the all-or-fallback contract.
+    """
+    if not calls:
+        return []
+    out: List[Any] = []
+    for start in range(0, len(calls), RPC_BATCH_MAX):
+        chunk = calls[start:start + RPC_BATCH_MAX]
+        part = await _rpc_batch_chunk(ctx, chain, chunk, start)
+        if part is None:
+            return None
+        out.extend(part)
+    return out
+
+
+async def rpc_get_storage_batch(ctx: Any, chain: ChainConfig,
+                                address: str, slots: List[str]
+                                ) -> Optional[Dict[str, Optional[str]]]:
+    """Many eth_getStorageAt reads for one address in ONE POST.
+
+    Returns {slot: word} keyed by the slot strings as passed (None
+    for a slot whose individual call errored), or None when there
+    is no HTTP client or the batch failed on every endpoint - the
+    caller then falls back to rpc_get_storage_at per slot, so the
+    result contract is identical either way. Successful words are
+    seeded into the per-run storage cache, so a later
+    rpc_get_storage_at for the same slot is served without another
+    round-trip. Read-only, same access class as rpc_get_storage_at.
+    """
+    if not slots:
+        return {}
+    if getattr(ctx, "http", None) is None:
+        return None
+    results = await rpc_batch(ctx, chain, [
+        ("eth_getStorageAt", [address, slot, "latest"]) for slot in slots])
+    if results is None:
+        return None
+    out: Dict[str, Optional[str]] = {}
+    shared = getattr(ctx, "shared", None)
+    cache = shared.setdefault("_storage_cache", {}) \
+        if isinstance(shared, dict) else None
+    for slot, word in zip(slots, results):
+        w = word if isinstance(word, str) else None
+        out[slot] = w
+        if w is not None and cache is not None:
+            cache[(chain.id, address.lower(), slot.lower())] = w
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -421,14 +510,33 @@ async def resolve_implementation(
     if impl and impl.lower() != address.lower():
         return {"implementation": impl, "via": "eip1167_bytecode",
                 "beacon": ""}
-    word = await rpc_get_storage_at(ctx, chain, address,
-                                    EIP1967_IMPLEMENTATION_SLOT)
+    # Track-2 batching: with a live HTTP client, both EIP-1967 slots
+    # are read in ONE batched POST (and seeded into the storage
+    # cache). Without one - or when the batch fails everywhere -
+    # prefetched stays None and the reads below run exactly as
+    # before, one rpc_get_storage_at per slot.
+    prefetched: Optional[Dict[str, Optional[str]]] = None
+    if getattr(ctx, "http", None) is not None:
+        try:
+            prefetched = await rpc_get_storage_batch(
+                ctx, chain, address,
+                [EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT])
+        except Exception:
+            prefetched = None
+    if prefetched is not None:
+        word = prefetched.get(EIP1967_IMPLEMENTATION_SLOT)
+    else:
+        word = await rpc_get_storage_at(ctx, chain, address,
+                                        EIP1967_IMPLEMENTATION_SLOT)
     impl = address_from_storage_word(word)
     if impl and impl.lower() != address.lower():
         return {"implementation": impl, "via": "eip1967_slot",
                 "beacon": ""}
-    word = await rpc_get_storage_at(ctx, chain, address,
-                                    EIP1967_BEACON_SLOT)
+    if prefetched is not None:
+        word = prefetched.get(EIP1967_BEACON_SLOT)
+    else:
+        word = await rpc_get_storage_at(ctx, chain, address,
+                                        EIP1967_BEACON_SLOT)
     beacon = address_from_storage_word(word)
     if beacon:
         bword = await rpc_get_storage_at(ctx, chain, beacon, "0x0")
