@@ -265,3 +265,101 @@ def render_markdown(report: Dict[str, Any]) -> str:
                  "nothing is drained or modified — detection only.")
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Batch triage: turn a batch_scan findings file into per-contract audit
+# reports plus a ranked triage index - the "run it over a program's scope,
+# kill the false positives, hand a human the reports" workflow.
+# ---------------------------------------------------------------------------
+def _worst_severity(findings: List[Dict[str, Any]]) -> str:
+    best = "info"
+    for f in findings:
+        s = (f.get("severity") or "info").lower()
+        if _SEV_ORDER.get(s, 9) < _SEV_ORDER.get(best, 9):
+            best = s
+    return best
+
+
+def triage_corpus(findings_path: str, out_dir: str,
+                  min_severity: str = "low") -> Dict[str, Any]:
+    """Read a batch_scan --out JSONL ({address, chain, findings}) and write
+    one markdown audit report per contract that has a finding at or above
+    min_severity, plus an INDEX.md triage summary ranked by risk."""
+    import json
+    import os
+
+    floor = _SEV_ORDER.get(min_severity.lower(), 3)
+    os.makedirs(out_dir, exist_ok=True)
+    index: List[Dict[str, Any]] = []
+    written = 0
+    with open(findings_path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            findings = rec.get("findings") or []
+            if not findings:
+                continue
+            worst = _worst_severity(findings)
+            if _SEV_ORDER.get(worst, 9) > floor:
+                continue  # nothing at or above the floor
+            addr = str(rec.get("address", "unknown"))
+            report = build_report(addr, rec.get("chain", ""), findings)
+            safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                           for c in addr)[:64] or "contract"
+            fname = f"{worst}_{safe}.md"
+            with open(os.path.join(out_dir, fname), "w",
+                      encoding="utf-8") as out:
+                out.write(render_markdown(report))
+            written += 1
+            index.append({"address": addr, "chain": rec.get("chain", ""),
+                          "worst": worst, "count": len(findings),
+                          "file": fname})
+
+    index.sort(key=lambda r: (_SEV_ORDER.get(r["worst"], 9), -r["count"]))
+    idx_lines = ["# Triage Index", "",
+                 f"{written} contract(s) with findings at or above "
+                 f"`{min_severity}`, ranked by risk.", "",
+                 "| # | Severity | Findings | Chain | Contract | Report |",
+                 "| --- | --- | --- | --- | --- | --- |"]
+    for i, r in enumerate(index, 1):
+        idx_lines.append(
+            f"| {i} | {_SEV_LABEL.get(r['worst'], r['worst'])} | {r['count']} "
+            f"| {r['chain'] or 'n/a'} | `{r['address'][:20]}` "
+            f"| [{r['file']}]({r['file']}) |")
+    with open(os.path.join(out_dir, "INDEX.md"), "w",
+              encoding="utf-8") as out:
+        out.write("\n".join(idx_lines) + "\n")
+    return {"reports_written": written, "out_dir": out_dir,
+            "index": [r["address"] for r in index[:20]]}
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+    import json
+    ap = argparse.ArgumentParser(
+        description="Turn batch_scan findings into audit reports + triage "
+                    "index.")
+    ap.add_argument("--findings", required=True,
+                    help="JSONL from `batch_scan --out` "
+                         "({address, chain, findings})")
+    ap.add_argument("--out-dir", required=True,
+                    help="directory to write per-contract reports + INDEX.md")
+    ap.add_argument("--min-severity", default="low",
+                    choices=["critical", "high", "medium", "low", "info"],
+                    help="only report contracts with a finding at or above "
+                         "this severity (default low)")
+    args = ap.parse_args(argv)
+    summary = triage_corpus(args.findings, args.out_dir, args.min_severity)
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_main())

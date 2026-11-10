@@ -1,7 +1,9 @@
 """Audit report renders findings into a shareable markdown deliverable."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.audit_report import build_report, render_markdown  # noqa: E402
+from app.audit_report import (  # noqa: E402
+    build_report, render_markdown, triage_corpus,
+)
 
 
 def test_report_renders_findings_and_probe_verdict():
@@ -46,3 +48,39 @@ def test_token_market_remediation():
     assert "locked or burned" in md
     assert "Honeypot" in md
     assert "dev dump" in md
+
+
+def test_triage_corpus_writes_reports_and_ranked_index(tmp_path):
+    """Batch triage: one report per contract above the severity floor,
+    plus a risk-ranked INDEX.md. Below-floor contracts are skipped."""
+    import json
+    corpus = [
+        {"address": "0xAAA", "chain": "ethereum", "findings": [
+            {"check": "full_balance_withdraw", "severity": "critical",
+             "function": "drain", "detail": "ungated full withdraw"}]},
+        {"address": "0xBBB", "chain": "bsc", "findings": [
+            {"kind": "tx_origin", "severity": "high", "detail": "tx.origin auth"}]},
+        {"address": "SoL1", "chain": "solana", "findings": [
+            {"kind": "rugcheck_mint_authority", "severity": "high",
+             "detail": "mint authority active"}]},
+        {"address": "0xCCC", "chain": "base", "findings": [
+            {"check": "cosmetic", "severity": "info", "detail": "noise"}]},
+    ]
+    src = tmp_path / "findings.jsonl"
+    src.write_text("\n".join(json.dumps(r) for r in corpus))
+    out = tmp_path / "triage"
+
+    summary = triage_corpus(str(src), str(out), min_severity="low")
+    assert summary["reports_written"] == 3            # info-only skipped
+    names = {p.name for p in out.iterdir()}
+    assert "INDEX.md" in names
+    assert "critical_0xAAA.md" in names               # worst-severity prefix
+    assert not any("0xCCC" in n for n in names)       # below floor, no file
+
+    index = (out / "INDEX.md").read_text()
+    assert index.index("0xAAA") < index.index("0xBBB")  # critical ranked first
+
+    # tightening the floor drops the high-severity contracts
+    out2 = tmp_path / "triage_crit"
+    s2 = triage_corpus(str(src), str(out2), min_severity="critical")
+    assert s2["reports_written"] == 1
