@@ -109,7 +109,7 @@ class PostCounter:
         module.fetch = orig
 
 
-def load_contracts(limit):
+def load_contracts(limit, offset=0):
     codes = sqlite3.connect(FETCH_CACHE)
     srcs = sqlite3.connect(SOURCE_CACHE)
     out = []
@@ -130,9 +130,9 @@ def load_contracts(limit):
         if not source:
             continue
         out.append((addr, source))
-        if len(out) >= limit:
+        if len(out) >= offset + limit:
             break
-    return out
+    return out[offset:]
 
 
 def probe_jobs(source, addr):
@@ -180,14 +180,19 @@ async def after_contract(ctx, chain, addr, jobs):
 
 
 async def run_phase(contracts, jobs_by_addr, http, limiter, fn,
-                    concurrency):
+                    concurrency, counter=None, label=""):
     chain = cc.CHAINS[CHAIN_ID]
     sem = asyncio.Semaphore(concurrency)
+    done = {"n": 0}
 
     async def one(addr, _source):
         async with sem:
             await fn(BenchCtx(http, limiter), chain, addr,
                      jobs_by_addr[addr])
+        done["n"] += 1
+        print(f"  [{label}] {done['n']}/{len(contracts)} contracts, "
+              f"{counter.n if counter else 0} POSTs so far",
+              flush=True)
 
     t0 = time.monotonic()
     await asyncio.gather(*(one(a, s) for a, s in contracts))
@@ -197,11 +202,12 @@ async def run_phase(contracts, jobs_by_addr, http, limiter, fn,
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=100)
+    ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
-    contracts = load_contracts(args.limit)
+    contracts = load_contracts(args.limit, args.offset)
     jobs_by_addr = {a: probe_jobs(s, a) for a, s in contracts}
     logical = {a: 2 + len(STORAGE_SLOTS) + len(GETTERS) + len(j)
                for a, j in jobs_by_addr.items()}
@@ -222,7 +228,8 @@ async def main():
                              ("after", after_contract)):
                 counter.n = 0
                 wall = await run_phase(contracts, jobs_by_addr, http,
-                                       limiter, fn, args.concurrency)
+                                       limiter, fn, args.concurrency,
+                                       counter, name)
                 results[name] = {
                     "http_posts": counter.n,
                     "posts_per_contract": counter.n / max(1, len(contracts)),
@@ -230,7 +237,15 @@ async def main():
                 }
                 print(f"{name}: {counter.n} HTTP POSTs "
                       f"({results[name]['posts_per_contract']:.2f}/contract) "
-                      f"in {wall:.1f}s")
+                      f"in {wall:.1f}s", flush=True)
+                if args.out:
+                    # Checkpoint after each phase: a killed run still
+                    # leaves the completed phase's measured numbers.
+                    with open(args.out, "w") as f:
+                        json.dump({"chain": CHAIN_ID,
+                                   "contracts": len(contracts),
+                                   "offset": args.offset,
+                                   "partial": results}, f, indent=2)
     finally:
         counter.unwrap(cc, orig_cc)
         counter.unwrap(cs, orig_cs)
@@ -240,6 +255,7 @@ async def main():
     print(f"round-trip reduction: {red:.1f}%  "
           f"wall: {b['wall_s']}s -> {a['wall_s']}s")
     report = {"chain": CHAIN_ID, "contracts": len(contracts),
+              "offset": args.offset,
               "logical_reads_total": sum(logical.values()),
               "before": b, "after": a,
               "round_trip_reduction_pct": round(red, 1)}
