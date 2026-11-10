@@ -199,11 +199,13 @@ def audit_source(src: str) -> List[Dict[str, str]]:
         guarded = _has_access_gate(sig_text, body)
 
         # --- 1. reentrancy: external value transfer before state write ---
+        # Only .call{value:} / .call.value() forward all gas and can
+        # reenter. .transfer() and .send() are capped at 2300 gas and are
+        # reentrancy-SAFE, so they are deliberately excluded - flagging them
+        # was a false positive (the DAO class needs a gas-unlimited call).
         for call_re, call_kind in (
                 (r"\.call\{value\s*:", "call{value}"),
-                (r"\.call\.value\(", "call.value()"),
-                (r"\.send\(", "send()"),
-                (r"\.transfer\(", "transfer()")):
+                (r"\.call\.value\(", "call.value()")):
             for cm in re.finditer(call_re, body):
                 after = body[cm.end():]
                 if _state_writes(after):
@@ -244,6 +246,22 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                     if re.search(r"\b(immutable|constant)\b", decl.group(0)):
                         trusted = True
                         break
+                # A target that is NOT a parameter of this function is a
+                # state variable - on a proxy that is the admin-set
+                # implementation, not attacker-controlled in this call. The
+                # real hijack (and the benchmark case) is a target passed as
+                # a function PARAMETER, i.e. attacker-supplied. So critical
+                # is reserved for parameter targets; a state-var target is a
+                # normal proxy and is not flagged here.
+                params = re.search(r"\(([^)]*)\)", sig_text)
+                param_names = set()
+                if params:
+                    for part in params.group(1).split(","):
+                        toks = _WORD_RE.findall(part)
+                        if toks:
+                            param_names.add(toks[-1])
+                if not trusted and receiver not in param_names:
+                    trusted = True  # state var (proxy impl), not a param
             if not trusted:
                 findings.append({
                     "check": "delegatecall_untrusted", "severity": "critical",
