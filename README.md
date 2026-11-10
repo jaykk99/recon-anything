@@ -96,12 +96,20 @@ python -m app.batch_scan --input corpus.jsonl --engine tiered \
 
 The `tiered` engine is the affordable path to full depth on a huge corpus.
 It runs the fast `rules` engine across every contract, then escalates only
-the ones that flag at an escalate severity (default `high,critical`) to the
-heavy full-plugin engine - and the heavy source text crosses to tier 2 only
-for that flagged subset, not all 1M. Measured on a real 1k Tier-1 sample:
-the rules sweep runs at ~18 contracts/sec/core, so 1M in 20 min (833/sec)
-is ~48 cores for the sweep, plus a small deep pass on the flagged few. The
-summary reports each tier's throughput and the flag rate.
+the ones whose findings reach the **confirmed confidence tier** (the
+selective signal - reserved for unambiguous drains: ungated selfdestruct,
+tx.origin auth, ungated full-balance withdraw) to the heavy full-plugin
+engine. The heavy source text crosses to tier 2 only for that flagged
+subset, not all 1M.
+
+Measured on a real 1k Tier-1 sample: the rules sweep runs at ~18
+contracts/sec/core and the confirmed-tier flag rate is **~1.7%**. So full
+depth on 1M = ~48 cores for the 20-minute sweep, plus a deep pass on only
+~17k contracts instead of ~580k (escalating on raw `high` severity flagged
+~58% - most of it gated-owner noise). `--escalate-tier` picks the tier
+(default `confirmed`); set it empty to fall back to `--escalate-severity`
+with `--escalate-min-count`. The summary reports each tier's throughput and
+the flag rate.
 
 A JSONL corpus record may carry pre-fetched chain data, not just source:
 

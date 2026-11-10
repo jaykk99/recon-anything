@@ -95,25 +95,26 @@ def test_batchctx_seeds_chain_data_for_offline_plugins():
         cc._rpc_post = orig
 
 
-def test_tier1_escalates_only_matching_severity():
+def test_tier1_escalates_on_confirmed_confidence_tier():
     """Tier-1 flags a contract (and carries its full record forward) only
-    when a finding hits an escalate severity; otherwise it returns no
-    record, so heavy source doesn't cross to tier 2 for the whole corpus."""
-    bs._init_tier1_worker(("high", "critical"))
-    # a finding at escalate severity -> escalates; patch scan_source so the
-    # test is deterministic regardless of rule content.
+    when a finding reaches the confirmed confidence tier - the selective
+    signal that keeps the deep pass small. A likely-tier finding does not
+    escalate."""
     import app.batch_scan as _bs
+    _bs._init_tier1_worker(("high", "critical"), 1, ("confirmed",))
     orig = _bs.scan_source
     try:
+        # an unambiguous drain reaches confirmed -> escalates
         _bs.scan_source = lambda src, meta=None: [
-            {"severity": "high", "key": "x"}]
+            {"kind": "selfdestruct", "severity": "high", "confidence": 80}]
         a, c, n, finds, rec = _bs._scan_one_tier1(
             ("0xabc", "ethereum", "contract C {}",
              {"_bytecode": "0x60", "_storage": {}}))
         assert rec is not None and rec["bytecode"] == "0x60"
-        # below-threshold severity -> no escalation, no record carried
+        # a likely-tier finding (context, capped) does not escalate
         _bs.scan_source = lambda src, meta=None: [
-            {"severity": "low", "key": "y"}]
+            {"kind": "privileged_function", "severity": "high",
+             "confidence": 70}]
         a, c, n, finds, rec = _bs._scan_one_tier1(
             ("0xabc", "ethereum", "contract C {}", {}))
         assert rec is None
@@ -123,8 +124,9 @@ def test_tier1_escalates_only_matching_severity():
 
 def test_tiered_sweep_skips_tier2_when_nothing_flags():
     path = _corpus(40)
+    # escalate on a tier no finding can have -> nothing flags, tier 2 skipped
     summary = bs.scan_corpus(path, workers=2, engine="tiered",
-                             escalate_severities=("__none__",),
+                             escalate_tiers=("__none__",),
                              progress_every=0)
     assert summary["engine"] == "tiered"
     assert summary["tier1"]["scanned"] == 40

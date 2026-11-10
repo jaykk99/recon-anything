@@ -437,14 +437,34 @@ def _scan_one(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
 # ---------------------------------------------------------------------------
 _TIER1_ESC: set = set()
 _TIER1_MIN_COUNT: int = 1
+_TIER1_TIERS: set = {"confirmed"}
 
 
 def _init_tier1_worker(escalate_severities: Tuple[str, ...],
-                       min_count: int = 1) -> None:
-    global _TIER1_ESC, _TIER1_MIN_COUNT
+                       min_count: int = 1,
+                       escalate_tiers: Tuple[str, ...] = ("confirmed",)
+                       ) -> None:
+    global _TIER1_ESC, _TIER1_MIN_COUNT, _TIER1_TIERS
     _TIER1_ESC = set(escalate_severities)
     _TIER1_MIN_COUNT = max(1, int(min_count))
+    _TIER1_TIERS = set(escalate_tiers)
     _load_rules()
+
+
+def _confidence_tiers(findings: List[Dict[str, Any]],
+                      address: str) -> set:
+    """Confidence tiers present in a finding set, via the same read-time
+    scorer the UI uses. The confirmed tier is the selective escalation
+    signal - it is reserved for unambiguous drains, so escalating on it
+    (instead of raw high severity) is what makes the deep pass small."""
+    from . import confidence
+    rows = [{"target_id": address, "key": f.get("kind") or f.get("key", ""),
+             "value": f.get("function") or f.get("title", ""),
+             "plugin": f.get("plugin", "contract"), "evidence": {},
+             "confidence": f.get("confidence"), "severity": f.get("severity")}
+            for f in findings]
+    return {r["confidence_tier"]
+            for r in confidence.annotate_confidence(rows)}
 
 
 def _scan_one_tier1(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
@@ -460,9 +480,14 @@ def _scan_one_tier1(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
     address, chain, source, meta = rec_tuple
     m = dict(meta or {})
     findings = scan_source(source, m)
-    esc_keys = {f.get("key", "") for f in findings
-                if f.get("severity", "") in _TIER1_ESC}
-    flag = len(esc_keys) >= _TIER1_MIN_COUNT
+    # Escalate on the confirmed confidence tier (the selective signal) when
+    # configured; otherwise fall back to distinct-key severity counting.
+    if _TIER1_TIERS:
+        flag = bool(_confidence_tiers(findings, address) & _TIER1_TIERS)
+    else:
+        esc_keys = {f.get("key", "") for f in findings
+                    if f.get("severity", "") in _TIER1_ESC}
+        flag = len(esc_keys) >= _TIER1_MIN_COUNT
     record = None
     if flag:
         record = {
@@ -477,7 +502,9 @@ def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
                  out_path: Optional[str], target_type: str,
                  escalate_severities: Tuple[str, ...],
                  escalate_min_count: int,
-                 progress_every: int) -> Dict[str, Any]:
+                 progress_every: int,
+                 escalate_tiers: Tuple[str, ...] = ("confirmed",)
+                 ) -> Dict[str, Any]:
     import multiprocessing as mp
     import tempfile
 
@@ -502,7 +529,8 @@ def _scan_tiered(path: pathlib.Path, workers: int, limit: Optional[int],
     start = time.perf_counter()
     with mpctx.Pool(workers, initializer=_init_tier1_worker,
                     initargs=(tuple(escalate_severities),
-                              escalate_min_count)) as pool:
+                              escalate_min_count,
+                              tuple(escalate_tiers))) as pool:
         for address, chain, nbytes, findings, record in pool.imap_unordered(
                 _scan_one_tier1, _records(), chunksize=64):
             t1_scanned += 1
@@ -566,6 +594,7 @@ def scan_corpus(input_path: str,
                 target_type: str = "crypto_wallet",
                 escalate_severities: Tuple[str, ...] = ("high", "critical"),
                 escalate_min_count: int = 1,
+                escalate_tiers: Tuple[str, ...] = ("confirmed",),
                 progress_every: int = 20000) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
 
@@ -591,7 +620,7 @@ def scan_corpus(input_path: str,
     if engine == "tiered":
         return _scan_tiered(path, workers, limit, out_path, target_type,
                             escalate_severities, escalate_min_count,
-                            progress_every)
+                            progress_every, escalate_tiers=escalate_tiers)
 
     out_fh = open(out_path, "w", encoding="utf-8") if out_path else None
     scanned = 0
@@ -674,10 +703,14 @@ def _main(argv: Optional[List[str]] = None) -> int:
                          "that escalate a contract to the full plugin engine "
                          "(default high,critical)")
     ap.add_argument("--escalate-min-count", type=int, default=1,
-                    help="for --engine tiered: escalate only when a contract "
-                         "has at least this many DISTINCT finding keys at an "
-                         "escalate severity (default 1; raise to be more "
-                         "selective about what gets the deep pass)")
+                    help="for --engine tiered severity mode: escalate only "
+                         "when a contract has at least this many DISTINCT "
+                         "finding keys at an escalate severity")
+    ap.add_argument("--escalate-tier", default="confirmed",
+                    help="for --engine tiered: confidence tier(s) that "
+                         "escalate to the full plugin engine (default "
+                         "'confirmed' - the selective signal; empty string "
+                         "falls back to --escalate-severity)")
     ap.add_argument("--engine", choices=["rules", "plugins", "tiered"],
                     default="rules",
                     help="rules: compiled RULES + analyzer (fast). "
@@ -700,7 +733,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
                                   engine=args.engine,
                                   target_type=args.target_type,
                                   escalate_severities=esc,
-                                  escalate_min_count=args.escalate_min_count)
+                                  escalate_min_count=args.escalate_min_count,
+                                  escalate_tiers=tuple(
+                                      x.strip() for x in
+                                      args.escalate_tier.split(",")
+                                      if x.strip()))
     except BatchAlreadyRunning as e:
         print(f"skipped: {e}", file=sys.stderr)
         return 0
