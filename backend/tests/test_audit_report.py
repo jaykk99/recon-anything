@@ -84,3 +84,50 @@ def test_triage_corpus_writes_reports_and_ranked_index(tmp_path):
     out2 = tmp_path / "triage_crit"
     s2 = triage_corpus(str(src), str(out2), min_severity="critical")
     assert s2["reports_written"] == 1
+
+
+def test_dedupe_merges_corroborating_findings_capped_below_confirmed():
+    """Several detectors flagging one issue collapse to a single finding
+    that records corroboration and raises confidence - but corroboration
+    alone can't reach the confirmed tier (75)."""
+    findings = [
+        {"kind": "reentrancy", "severity": "high", "function": "claim",
+         "detail": "ext call before state", "confidence": 60,
+         "plugin": "contract_audit"},
+        {"kind": "reentrancy", "severity": "critical", "function": "claim",
+         "detail": "external call before state write", "confidence": 66,
+         "plugin": "contract_chain"},
+        {"kind": "reentrancy", "severity": "high", "function": "claim",
+         "detail": "reentrancy", "confidence": 55, "plugin": "deep_audit_7"},
+        {"kind": "tx_origin", "severity": "high", "function": "auth",
+         "detail": "tx.origin", "confidence": 70, "plugin": "contract_audit"},
+    ]
+    report = build_report("0xabc", "ethereum", findings)
+    fs = report["findings"]
+    assert len(fs) == 2                        # 3 reentrancy -> 1, + tx_origin
+    re_f = next(f for f in fs if f["kind"] == "reentrancy")
+    assert re_f["severity"] == "critical"      # worst severity wins
+    assert re_f["corroboration"] == 3
+    assert re_f["confidence"] == 74            # capped below confirmed(75)
+    assert "corroborated by 3 detectors" in render_markdown(report)
+
+
+def test_dedupe_preserves_confirmed_base_confidence():
+    findings = [
+        {"kind": "selfdestruct", "severity": "critical", "function": "kill",
+         "confidence": 80, "plugin": "a"},
+        {"kind": "selfdestruct", "severity": "critical", "function": "kill",
+         "confidence": 78, "plugin": "b"},
+    ]
+    f = build_report("0x", "eth", findings)["findings"][0]
+    assert f["confidence"] == 85               # already confirmed: not capped
+
+
+def test_dedupe_keeps_distinct_findings_separate():
+    findings = [
+        {"kind": "reentrancy", "severity": "high", "function": "claim",
+         "confidence": 60},
+        {"kind": "reentrancy", "severity": "high", "function": "withdraw",
+         "confidence": 60},   # different function = different finding
+    ]
+    assert len(build_report("0x", "eth", findings)["findings"]) == 2

@@ -118,6 +118,8 @@ _REMEDIATION = {
 def _norm(f: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize a finding from either analyzer into one shape."""
     kind = f.get("kind") or f.get("check") or "finding"
+    detector = (f.get("plugin") or f.get("detector") or f.get("source")
+                or f.get("rule") or "")
     return {
         "kind": kind,
         "title": f.get("title") or f.get("detail", "")[:80] or kind,
@@ -127,7 +129,68 @@ def _norm(f: Dict[str, Any]) -> Dict[str, Any]:
         "detail": f.get("detail") or f.get("title") or "",
         "code": f.get("code") or "",
         "remediation": f.get("remediation") or _REMEDIATION.get(kind, ""),
+        "detectors": [detector] if detector else [],
+        "corroboration": 1,
     }
+
+
+# Corroboration never, on its own, pushes a finding into the confirmed tier -
+# that tier is reserved for the live read-only probe. Independent detectors
+# agreeing is a real priority signal, so it raises confidence, but the bump is
+# capped just below CONFIRMED_MIN (75) unless the base was already there.
+_CORROBORATION_BUMP = 5      # per extra detector
+_CORROBORATION_CAP = 74      # ceiling reachable by corroboration alone
+
+
+def _dedupe(norm: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge findings that describe the same issue (same kind + location).
+
+    Multiple plugins flagging one vulnerability collapse into a single
+    finding that records how many independent detectors agreed. Keeps the
+    worst severity and the highest confidence seen, and the richest
+    evidence (longest detail / any code). Order is preserved by first
+    appearance; build_report re-sorts afterwards.
+    """
+    merged: Dict[tuple, Dict[str, Any]] = {}
+    order: List[tuple] = []
+    for f in norm:
+        # Same kind + same function is the same issue. When neither names a
+        # function, fall back to the detail text so genuinely distinct
+        # findings of the same kind aren't over-merged.
+        loc = f["function"] or (f["detail"][:80])
+        key = (f["kind"], loc)
+        cur = merged.get(key)
+        if cur is None:
+            merged[key] = dict(f)
+            order.append(key)
+            continue
+        # merge into the existing finding
+        if _SEV_ORDER.get(f["severity"], 9) < _SEV_ORDER.get(cur["severity"], 9):
+            cur["severity"] = f["severity"]
+        if (f["confidence"] or 0) > (cur["confidence"] or 0):
+            cur["confidence"] = f["confidence"]
+        if len(f["detail"]) > len(cur["detail"]):
+            cur["detail"] = f["detail"]
+        if f["code"] and not cur["code"]:
+            cur["code"] = f["code"]
+        if f["remediation"] and not cur["remediation"]:
+            cur["remediation"] = f["remediation"]
+        for d in f["detectors"]:
+            if d not in cur["detectors"]:
+                cur["detectors"].append(d)
+        cur["corroboration"] += 1
+
+    out: List[Dict[str, Any]] = []
+    for key in order:
+        f = merged[key]
+        extra = f["corroboration"] - 1
+        if extra > 0 and f["confidence"] is not None:
+            bumped = f["confidence"] + extra * _CORROBORATION_BUMP
+            if f["confidence"] < _CORROBORATION_CAP:
+                bumped = min(bumped, _CORROBORATION_CAP)
+            f["confidence"] = min(bumped, max(f["confidence"], 100))
+        out.append(f)
+    return out
 
 
 def build_report(address: str, chain: str, findings: List[Dict[str, Any]],
@@ -140,7 +203,7 @@ def build_report(address: str, chain: str, findings: List[Dict[str, Any]],
     read-only probe. Verdicts are carried verbatim - including
     "unverified"/"could not confirm", which is the honest and common case.
     """
-    norm = [_norm(f) for f in findings]
+    norm = _dedupe([_norm(f) for f in findings])
     norm.sort(key=lambda x: (_SEV_ORDER.get(x["severity"], 9),
                              -(x["confidence"] or 0)))
     counts: Dict[str, int] = {}
@@ -218,10 +281,13 @@ def render_markdown(report: Dict[str, Any]) -> str:
             conf = f" · confidence {f['confidence']}" if f["confidence"] \
                 else ""
             loc = f" · `{f['function']}()`" if f["function"] else ""
+            corr = ""
+            if f.get("corroboration", 1) > 1:
+                corr = f" · corroborated by {f['corroboration']} detectors"
             lines.append(f"### {f['id']} — {f['title']}")
             lines.append("")
             lines.append(f"**{_SEV_LABEL.get(f['severity'], f['severity'])}**"
-                         f"{loc}{conf}")
+                         f"{loc}{conf}{corr}")
             lines.append("")
             lines.append(f["detail"])
             lines.append("")
