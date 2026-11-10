@@ -1,6 +1,7 @@
 """ReconAnything API (FastAPI).
 
 Routes:
+  GET  /healthz                 zero-dependency liveness (no DB/queue/disk)
   GET  /api/health
   POST /api/classify            single + batch input classification
   GET  /api/plugins             plugin registry with key status
@@ -467,6 +468,17 @@ async def _startup():
         except Exception as e:
             log.error("pending-run recovery failed: %s", e)
     asyncio.create_task(_recover_pending_runs())
+
+
+@app.get("/healthz")
+def healthz():
+    # Zero-dependency liveness: return instantly without touching the
+    # database, the scanner queue, the plugin registry, or disk.
+    # Deliberately separate from /api/health, whose registry self-report
+    # calls discover() (imports every plugin module from disk, cached
+    # after first call) - a broken/slow registry must not fail liveness,
+    # and a liveness probe must not pay that import cost on cold start.
+    return {"ok": True, "service": "recon-anything"}
 
 
 @app.get("/api/health")
