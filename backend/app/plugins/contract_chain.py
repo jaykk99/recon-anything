@@ -789,8 +789,56 @@ def _line_context(src: str, pos: int, before: int = 1,
 
 
 _GATE_RE = re.compile(
-    r"onlyOwner|onlyAdmin|onlyRole|onlyMinter|onlyPauser|authorized|"
-    r"require\s*\(\s*msg\.sender\s*==")
+    # Named access-control modifiers (OZ + common governance idioms).
+    r"only(Owner|Admin|Role|Minter|Pauser|Governance|Governor|Operator|"
+    r"Manager|Controller|Keeper|Guardian|Timelock|Factory|Self|Authorized|"
+    r"Whitelisted|Gov|DAO|Initializing)|"
+    # OZ initializer guards - a function with these is NOT an open init.
+    r"\binitializer\b|\breinitializer\b|"
+    # OZ internal check helpers and role checks.
+    r"_checkOwner|_checkRole|_authorizeUpgrade|hasRole\s*\(|"
+    # require/if access checks against sender, in the common shapes.
+    r"require\s*\(\s*msg\.sender\s*==|"
+    r"require\s*\(\s*_msgSender\(\)\s*==|"
+    r"require\s*\(\s*owner\(\)\s*==|"
+    r"authorized", re.I)
+
+# Solidity keywords that can legitimately sit between the parameter list and
+# the body WITHOUT being an access modifier. Anything else there is a
+# (usually access-control) modifier.
+_SIG_KEYWORDS = {
+    "public", "external", "internal", "private", "view", "pure", "payable",
+    "virtual", "override", "returns", "memory", "storage", "calldata",
+    "nonpayable", "immutable", "constant",
+}
+# Modifiers that exist but are NOT access control, so their presence alone
+# does not make a function "gated".
+_NON_ACCESS_MODIFIERS = {
+    "nonreentrant", "whennotpaused", "whenpaused", "noreentrancy",
+}
+_MODIFIER_REGION = re.compile(r"\)([^{;]*)", re.S)
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _has_access_modifier(signature: str) -> bool:
+    """True if the function carries a modifier that is plausibly access
+    control. Catches custom/project modifiers (onlyMinterRole, whenAuth...)
+    that a name list can never enumerate, while ignoring visibility,
+    mutability and known non-access modifiers (nonReentrant, whenNotPaused).
+    The truly dangerous functions - the real ungated case - have no modifier
+    here at all."""
+    m = _MODIFIER_REGION.search(signature)
+    if not m:
+        return False
+    region = m.group(1)
+    # drop a trailing returns(...) tuple so its types aren't read as modifiers
+    region = re.split(r"\breturns\b", region)[0]
+    for tok in _IDENT_RE.findall(region):
+        low = tok.lower()
+        if low in _SIG_KEYWORDS or low in _NON_ACCESS_MODIFIERS:
+            continue
+        return True
+    return False
 
 # Privileged-function categories, checked in order; first match wins so
 # a function yields one inventory finding (the most specific role).
@@ -962,7 +1010,8 @@ def analyze_contract_source(src: str,
             continue
         sig = fn["signature"]
         body = fn["text"]
-        gated = bool(_GATE_RE.search(sig) or _GATE_RE.search(body))
+        gated = bool(_GATE_RE.search(sig) or _GATE_RE.search(body)
+                     or _has_access_modifier(sig))
         category = None
         sev = "medium"
         effect = ""
@@ -976,6 +1025,17 @@ def analyze_contract_source(src: str,
                                      "is access-controlled (gated)")
         if category is None:
             continue
+        # Visibility gate: a privileged function is only an attacker risk if
+        # it is externally reachable. _PRIV_RULES matches on the name, so it
+        # also catches internal helpers (_mint, _burn, _beforeTokenTransfer)
+        # that carry no modifier precisely because they are internal and
+        # cannot be called directly - those are not high-severity. Demote any
+        # non-external privileged function to low (inventory, not a finding).
+        # This is the dominant false-"high" source on real contracts.
+        is_external = bool(re.search(r"\b(public|external)\b", sig))
+        is_internal = bool(re.search(r"\b(internal|private)\b", sig))
+        if is_internal and not is_external and sev == "high":
+            sev = "low"
         # Severity recalibration: a privileged function that IS access-gated
         # (onlyOwner mint, admin-gated withdraw, ...) is the normal, expected
         # shape of a contract, not a high-severity issue - so cap it at
@@ -1156,7 +1216,8 @@ def analyze_contract_source(src: str,
         if not re.search(r"\.(transfer|send|call)\b", fn["text"]):
             continue
         gated = bool(_GATE_RE.search(fn["signature"]) or
-                     _GATE_RE.search(fn["text"]))
+                     _GATE_RE.search(fn["text"]) or
+                     _has_access_modifier(fn["signature"]))
         d3_funcs.append(fn)
         findings.append({
             # Ungated full-balance withdraw is the "anyone drains the whole
