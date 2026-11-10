@@ -116,6 +116,18 @@ def _ensure_db() -> sqlite3.Connection:
                 extra += _split_parts(fn)
             if r.get("name"):
                 extra += _split_parts(str(r["name"]))
+            # Also index the finding kinds, plugins and token symbol (with
+            # their split parts) so a keyword search can find contracts BY
+            # vulnerability class: "selfdestruct", "delegatecall",
+            # "withdraw", "reentrancy", a plugin name, or a symbol all hit.
+            # Without this you could only search function/name text.
+            for kind in (r.get("kinds") or []):
+                extra.append(str(kind))
+                extra += _split_parts(str(kind))
+            for plug in (r.get("plugins") or []):
+                extra += _split_parts(str(plug))
+            if r.get("symbol"):
+                extra.append(str(r["symbol"]).lower())
             doc = (r.get("doc") or "") + " " + " ".join(extra)
             con.execute(ins_c, (
                 i, r.get("chain"), r.get("address"), r.get("name"),

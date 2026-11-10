@@ -75,5 +75,8 @@ jobs:
       - name: Detection benchmark (known historical drain classes)
         run: pytest tests/test_detection_benchmark.py -q
 
+      - name: Keyword search (find contracts by vuln kind / symbol / plugin)
+        run: pytest tests/test_search_keyword.py -q
+
       - name: Scanner resilience (RPC skip, durable checkpoints, batch lock)
         run: pytest tests/test_scanner_resilience.py -q
