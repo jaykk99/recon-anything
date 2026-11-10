@@ -182,6 +182,57 @@ def scan_source(src: str,
 
 
 @dataclasses.dataclass
+class FindingFilter:
+    """A runtime filter over scan output - set any field to narrow what you
+    see, no code change needed. A finding is kept only if it matches every
+    field that is set (kinds/severities match that finding; min_confidence
+    is its confidence; tiers is its confidence tier). chains filters whole
+    contracts. Empty = keep everything."""
+    kinds: Optional[set] = None
+    severities: Optional[set] = None
+    tiers: Optional[set] = None
+    chains: Optional[set] = None
+    min_confidence: int = 0
+
+    def any_set(self) -> bool:
+        return bool(self.kinds or self.severities or self.tiers
+                    or self.chains or self.min_confidence)
+
+    def contract_ok(self, chain: str) -> bool:
+        return not self.chains or (chain or "").lower() in self.chains
+
+    def filter_findings(self, findings: List[Dict[str, Any]],
+                        address: str) -> List[Dict[str, Any]]:
+        if not (self.kinds or self.severities or self.tiers
+                or self.min_confidence):
+            return findings
+        tier_by_id = {}
+        if self.tiers:
+            from . import confidence
+            rows = [{"target_id": address,
+                     "key": f.get("kind") or f.get("key", ""),
+                     "value": "", "plugin": "c", "evidence": {},
+                     "confidence": f.get("confidence"),
+                     "severity": f.get("severity")} for f in findings]
+            for i, r in enumerate(confidence.annotate_confidence(rows)):
+                tier_by_id[i] = r["confidence_tier"]
+        out = []
+        for i, f in enumerate(findings):
+            if self.kinds and (f.get("kind") or f.get("key", "")) \
+                    not in self.kinds:
+                continue
+            if self.severities and f.get("severity", "") not in self.severities:
+                continue
+            if self.min_confidence and (f.get("confidence") or 0) \
+                    < self.min_confidence:
+                continue
+            if self.tiers and tier_by_id.get(i) not in self.tiers:
+                continue
+            out.append(f)
+        return out
+
+
+@dataclasses.dataclass
 class ContractRecord:
     address: str
     chain: str
@@ -595,8 +646,14 @@ def scan_corpus(input_path: str,
                 escalate_severities: Tuple[str, ...] = ("high", "critical"),
                 escalate_min_count: int = 1,
                 escalate_tiers: Tuple[str, ...] = ("confirmed",),
+                find_filter: Optional[FindingFilter] = None,
                 progress_every: int = 20000) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
+
+    find_filter: a FindingFilter to narrow the output at runtime (by kind,
+    severity, confidence tier, chain, or min confidence) - "filter what you
+    want to see" without touching code. Only matching findings are written
+    and counted; contracts left with nothing are skipped in the output.
 
     engine="rules"   -> the compiled RULES + structured analyzer (fast,
                         ~tens of contracts/sec/core).
@@ -650,15 +707,25 @@ def scan_corpus(input_path: str,
         pool = ctx.Pool(workers, initializer=_init_worker)
         scan_fn = _scan_one
         rules_loaded = len(_load_rules())
+    flt = find_filter or FindingFilter()
+    matched_contracts = 0
     with pool:
         for address, chain, nbytes, findings in pool.imap_unordered(
                 scan_fn, _records(), chunksize=64):
             scanned += 1
+            # Apply the runtime filter: drop the contract if it's out of
+            # chain scope, then keep only findings that match.
+            if not flt.contract_ok(chain):
+                findings = []
+            elif flt.any_set():
+                findings = flt.filter_findings(findings, address)
+            if findings:
+                matched_contracts += 1
             findings_total += len(findings)
             for f in findings:
                 s = f.get("severity", "")
                 sev_counts[s] = sev_counts.get(s, 0) + 1
-            if out_fh is not None:
+            if out_fh is not None and (findings or not flt.any_set()):
                 out_fh.write(json.dumps({
                     "address": address, "chain": chain,
                     "findings": findings}) + "\n")
@@ -679,6 +746,8 @@ def scan_corpus(input_path: str,
         "contracts_per_sec": round(rate, 1),
         "workers": workers,
         "findings_total": findings_total,
+        "matched_contracts": matched_contracts if flt.any_set() else scanned,
+        "filtered": flt.any_set(),
         "severity_breakdown": dict(sorted(sev_counts.items())),
         "rules_loaded": rules_loaded,
         "projected_1m_minutes": (round((1_000_000 / rate) / 60, 1)
@@ -720,7 +789,31 @@ def _main(argv: Optional[List[str]] = None) -> int:
                          "(crypto_wallet for EVM addresses, solana_contract, stacks_contract)")
     ap.add_argument("--no-lock", action="store_true",
                     help="skip the single-batch lock (allow overlapping runs)")
+    # Runtime output filters - narrow what you see without editing code.
+    ap.add_argument("--only-kind", default="",
+                    help="comma-separated finding kinds to keep "
+                         "(e.g. selfdestruct,delegatecall,reentrancy)")
+    ap.add_argument("--only-severity", default="",
+                    help="comma-separated severities to keep "
+                         "(e.g. critical,high)")
+    ap.add_argument("--only-tier", default="",
+                    help="comma-separated confidence tiers to keep "
+                         "(e.g. confirmed)")
+    ap.add_argument("--only-chain", default="",
+                    help="comma-separated chains to keep (e.g. ethereum,bsc)")
+    ap.add_argument("--min-confidence", type=int, default=0,
+                    help="keep only findings at or above this confidence")
     args = ap.parse_args(argv)
+
+    def _set(s):
+        v = {x.strip().lower() for x in s.split(",") if x.strip()}
+        return v or None
+    find_filter = FindingFilter(
+        kinds=_set(args.only_kind),
+        severities=_set(args.only_severity),
+        tiers=_set(args.only_tier),
+        chains=_set(args.only_chain),
+        min_confidence=args.min_confidence)
 
     lock = (contextlib.nullcontext() if args.no_lock
             else single_batch_lock())
@@ -737,7 +830,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
                                   escalate_tiers=tuple(
                                       x.strip() for x in
                                       args.escalate_tier.split(",")
-                                      if x.strip()))
+                                      if x.strip()),
+                                  find_filter=find_filter)
     except BatchAlreadyRunning as e:
         print(f"skipped: {e}", file=sys.stderr)
         return 0

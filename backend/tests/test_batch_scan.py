@@ -132,3 +132,28 @@ def test_tiered_sweep_skips_tier2_when_nothing_flags():
     assert summary["tier1"]["scanned"] == 40
     assert summary["tier1"]["flagged_for_escalation"] == 0
     assert summary["tier2_plugins"]["scanned"] == 0
+
+
+def test_finding_filter_narrows_output():
+    """Runtime FindingFilter keeps only matching findings, no code change."""
+    path = _corpus(30)
+    base = bs.scan_corpus(path, workers=2, engine="rules", progress_every=0)
+    assert base["findings_total"] > 0
+
+    # filter to a kind that the sample contract does produce
+    kinds = {f.get("kind") or f.get("key")
+             for f in bs.scan_source(_SRC, {})}
+    some_kind = next(iter(k for k in kinds if k))
+    flt = bs.FindingFilter(kinds={some_kind})
+    r = bs.scan_corpus(path, workers=2, engine="rules",
+                       find_filter=flt, progress_every=0)
+    assert r["filtered"] is True
+    assert 0 < r["findings_total"] <= base["findings_total"]
+    assert r["matched_contracts"] <= r["scanned"]
+
+    # a kind that cannot occur -> nothing matches
+    none = bs.scan_corpus(path, workers=2, engine="rules",
+                          find_filter=bs.FindingFilter(kinds={"__nope__"}),
+                          progress_every=0)
+    assert none["findings_total"] == 0
+    assert none["matched_contracts"] == 0
