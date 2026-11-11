@@ -157,3 +157,32 @@ def test_finding_filter_narrows_output():
                           progress_every=0)
     assert none["findings_total"] == 0
     assert none["matched_contracts"] == 0
+
+
+def test_scan_source_includes_audit_source_drain_checks():
+    """The fast batch path runs the contract_audit checks too, so drain-class
+    issues are caught without escalating to the full plugin engine."""
+    src = ('pragma solidity 0.8.19;\n'
+           'contract Vault { mapping(address=>uint) bal;\n'
+           ' function withdrawAll(address to) external {'
+           ' (bool ok,)=to.call{value:address(this).balance}(""); }\n'
+           ' function claim() external {'
+           ' (bool ok,)=msg.sender.call{value:bal[msg.sender]}("");'
+           ' bal[msg.sender]=0; }\n}')
+    kinds = {f.get("kind") for f in bs.scan_source(src, {})}
+    # audit_source contributes these; analyzer alone did not
+    assert "fund_drain" in kinds or "reentrancy" in kinds
+    assert not any(f.get("kind") == "error" for f in bs.scan_source(src, {}))
+
+
+def test_audit_crash_surfaces_as_error_not_empty(monkeypatch):
+    """A crashing audit must produce an error finding, never a silent clean."""
+    import app.plugins.contract_audit as ca
+
+    def boom(_src):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(ca, "audit_source", boom)
+    findings = bs.scan_source("contract C {}", {})
+    assert any(f.get("kind") == "error" and "kaboom" in f.get("detail", "")
+               for f in findings)

@@ -162,6 +162,28 @@ def scan_source(src: str,
                          "title": "analyzer error",
                          "detail": f"{type(e).__name__}: {e}"})
 
+    # Source audit (fund-drain / access-control / reentrancy classes). This
+    # catches drain-class issues the RULES regex sweep misses, so the fast
+    # rules/tiered engines no longer need the full plugin engine to find
+    # them. A crash here surfaces as an error finding, never a silent empty
+    # (a scanner that reports a contract "clean" because it threw is a false
+    # negative).
+    try:
+        from .plugins.contract_audit import audit_source
+        for a in audit_source(src):
+            findings.append({"kind": a.get("check", "audit"),
+                             "key": a.get("check", "audit"),
+                             "severity": a.get("severity", "low"),
+                             "function": a.get("function", ""),
+                             "title": (a.get("detail", "") or "")[:80],
+                             "detail": a.get("detail", ""),
+                             "code": a.get("code", ""),
+                             "plugin": "contract_audit"})
+    except Exception as e:  # noqa: BLE001
+        findings.append({"kind": "error", "severity": "low",
+                         "title": "audit error",
+                         "detail": f"{type(e).__name__}: {e}"})
+
     # Shared RULES sweep: fire when the pattern matches and the guard
     # (a "but not if this is present" exclusion) does not - the exact
     # semantics the plugins use.

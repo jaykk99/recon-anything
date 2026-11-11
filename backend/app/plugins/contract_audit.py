@@ -47,8 +47,14 @@ def _strip_comments(src: str) -> str:
     return re.sub(r"//[^\n]*", "", src)
 
 
-def _split_functions(src: str) -> List[Tuple[str, str]]:
-    """Return (name, body) pairs using brace matching after each signature."""
+def _split_functions(src: str) -> List[Tuple[str, str, str]]:
+    """Return (name, signature, body) triples via brace matching.
+
+    The signature is captured for THIS occurrence (from `function` up to the
+    opening brace, including any returns clause), so overloaded or repeated
+    names get their own signature instead of whichever one appears first -
+    and no per-function re-scan of the whole source is needed.
+    """
     out = []
     for m in FUNC_RE.finditer(src):
         name = m.group(1)
@@ -58,6 +64,7 @@ def _split_functions(src: str) -> List[Tuple[str, str]]:
             i += 1
         if i >= len(src):
             continue
+        sig = src[m.start():i]
         depth = 0
         start = i
         j = i
@@ -69,7 +76,7 @@ def _split_functions(src: str) -> List[Tuple[str, str]]:
                 if depth == 0:
                     break
             j += 1
-        out.append((name, src[start:j + 1]))
+        out.append((name, sig, src[start:j + 1]))
     return out
 
 
@@ -189,11 +196,8 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                                    "attacker-chosen address."})
 
     funcs = _split_functions(clean)
-    fn_names = [n for n, _ in funcs]
-    for name, body in funcs:
-        # find the signature text (from 'function name' to the '{')
-        sig_m = re.search(r"function\s+" + re.escape(name) + r"\s*\([^;{}]*\)[^{;]*", clean)
-        sig_text = sig_m.group(0) if sig_m else ""
+    fn_names = [n for n, _, _ in funcs]
+    for name, sig_text, body in funcs:
         is_public = ("public" in sig_text) or ("external" in sig_text)
         mods = _modifiers(sig_text)
         guarded = _has_access_gate(sig_text, body)

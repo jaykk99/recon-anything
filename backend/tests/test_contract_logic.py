@@ -548,3 +548,33 @@ def test_registry_discovers_plugin():
     reg = discover()
     assert "contract_logic" in reg
     assert reg["contract_logic"] is contract_logic.ContractLogicPlugin
+
+
+# --- contract_audit function splitter: per-occurrence signatures ----------
+from app.plugins import contract_audit as _ca  # noqa: E402
+
+
+def test_split_functions_returns_per_occurrence_signatures():
+    """Overloaded / repeated names each get their OWN signature, so an
+    internal function isn't mis-read as public because an external overload
+    appears first in the source (the old whole-source re.search bug)."""
+    src = _ca._strip_comments(
+        'contract C {\n'
+        ' function f(uint a, address b) external returns (uint) {'
+        ' return a; }\n'
+        ' function f(uint a) internal pure returns (uint) { return a; }\n'
+        '}')
+    funcs = _ca._split_functions(src)
+    assert all(len(t) == 3 for t in funcs)      # (name, sig, body)
+    fs = [(n, s) for n, s, _ in funcs if n == "f"]
+    assert len(fs) == 2
+    pub = [("public" in s or "external" in s) for _, s in fs]
+    assert pub == [True, False]                  # external first, internal second
+
+
+def test_audit_source_still_flags_drain_class():
+    src = ('contract V { mapping(address=>uint) bal;\n'
+           ' function withdrawAll(address to) external {'
+           ' (bool ok,)=to.call{value:address(this).balance}(""); } }')
+    checks = {f["check"] for f in _ca.audit_source(src)}
+    assert "fund_drain" in checks
