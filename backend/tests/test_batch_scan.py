@@ -237,3 +237,20 @@ def test_deep_does_not_revive_usdg_false_positive():
              ' onlyRole(DEFAULT_ADMIN_ROLE) {} }')
     kinds = {f.get("kind") for f in bs.scan_source(gated, deep=True)}
     assert "uups_authorize_upgrade_missing" not in kinds
+
+
+def test_deep_runs_zeroday_guard_convention_detector():
+    """deep mode flags a state-changing public fn that breaks its own
+    contract's access-control convention - the anomaly no fixed-signature
+    detector catches."""
+    src = ('pragma solidity 0.8.19;\n'
+           'contract T { uint public x; uint public y; uint public z;'
+           ' address owner;\n'
+           ' function setX(uint v) public onlyOwner { x=v; }\n'
+           ' function setY(uint v) public onlyOwner { y=v; }\n'
+           ' function setZ(uint v) public onlyOwner { z=v; }\n'
+           ' function setAll(uint v) public { x=v; y=v; z=v; } }')
+    deep = {f.get("kind") for f in bs.scan_source(src, deep=True)}
+    shallow = {f.get("kind") for f in bs.scan_source(src)}
+    assert "guard_convention_break" in deep
+    assert "guard_convention_break" not in shallow

@@ -181,6 +181,14 @@ def _load_deep_analyzers() -> List[Any]:
         callables.append(lambda src: audit_protocol_source(src) or [])
     except Exception:  # noqa: BLE001
         pass
+    # Zero-day guard-convention anomaly detector: flags a public state-
+    # changing function that breaks its own contract's access-control
+    # convention (the bug no fixed-signature detector has a pattern for).
+    try:
+        from .plugins.zeroday_contract_guards import analyze_guard_consistency
+        callables.append(lambda src: analyze_guard_consistency(src) or [])
+    except Exception:  # noqa: BLE001
+        pass
     _DEEP_ANALYZERS = callables
     return _DEEP_ANALYZERS
 
