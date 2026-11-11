@@ -112,6 +112,21 @@ _REMEDIATION = {
     "rugcheck_unverified_contract":
         "Source is not verified, so behavior cannot be audited. Treat with "
         "caution until verified source is available.",
+    "bytecode_selfdestruct":
+        "Bytecode can self-destruct. Obtain verified source and confirm the "
+        "SELFDESTRUCT path is access-gated (or removed) before trusting the "
+        "contract with value.",
+    "bytecode_delegatecall":
+        "Bytecode delegatecalls another address. Verify the target is fixed "
+        "and trusted (not attacker-settable); get verified source to confirm "
+        "the upgrade/library path is guarded.",
+    "bytecode_minimal_proxy":
+        "This is a minimal proxy; audit the implementation contract it points "
+        "to, where the real logic and risk live.",
+    "bytecode_unverified":
+        "No verified source available. Request/verify source (e.g. via "
+        "Sourcify or the explorer) so the contract can be fully audited; "
+        "bytecode-only findings are capability facts, not guarantees.",
 }
 
 

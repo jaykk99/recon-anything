@@ -309,3 +309,97 @@ def analyze(code_hex: str) -> Dict[str, Any]:
             "storage_writes": path["storage_writes"],
         })
     return out
+
+
+# Finding severity + confidence for bytecode-only analysis. Confidence is
+# deliberately lower than source-based findings: from bytecode alone we can
+# see that a dangerous opcode is REACHABLE from an external selector, but not
+# whether an access check guards it (that lives in the source we don't have).
+# These are "capability present / reachable" findings, honestly labelled.
+_BYTECODE_CONF = 50
+
+
+def audit_bytecode(code_hex: str) -> List[Dict[str, Any]]:
+    """Produce audit findings from runtime bytecode alone - the lane for the
+    large fraction of candidates that have NO verified source and would
+    otherwise be dropped unscanned.
+
+    Combines opcode presence (contract_chain.analyze_bytecode) with per-
+    selector reachability (analyze() above): a sensitive opcode reachable
+    from an external function selector is attributed to that function.
+
+    Honest by construction: without source we cannot see access control, so
+    findings are capability/reachability facts at reduced confidence, never
+    an exploit claim. Returns [] for empty/invalid code.
+    """
+    out: List[Dict[str, Any]] = []
+    meta = cc.analyze_bytecode(code_hex)
+    if not meta.get("size"):
+        return out
+    opcodes = meta.get("opcodes") or {}
+    paths = analyze(code_hex)
+
+    # Map each sensitive opcode to the external selectors that can reach it,
+    # so a finding can name the responsible function instead of just "present".
+    reached_by: Dict[str, List[str]] = {}
+    for sel in paths.get("selectors", []):
+        label = sel.get("signature") or sel.get("selector") or ""
+        for op in sel.get("sensitive_opcodes", []):
+            reached_by.setdefault(op, [])
+            if label and label not in reached_by[op]:
+                reached_by[op].append(label)
+
+    def _fns(op: str) -> str:
+        fns = reached_by.get(op, [])
+        return (" Reachable from: " + ", ".join(fns[:8])) if fns else ""
+
+    is_proxy = bool(meta.get("minimal_proxy_impl"))
+
+    if opcodes.get("SELFDESTRUCT"):
+        out.append({
+            "kind": "bytecode_selfdestruct", "severity": "high",
+            "confidence": _BYTECODE_CONF,
+            "function": (reached_by.get("SELFDESTRUCT") or [""])[0],
+            "detail": "Bytecode contains SELFDESTRUCT - the contract can be "
+                      "destroyed (and any ETH force-sent to an arbitrary "
+                      "address)." + _fns("SELFDESTRUCT") +
+                      " No verified source, so whether it is access-gated "
+                      "cannot be confirmed from bytecode.",
+            "plugin": "bytecode_audit"})
+
+    if opcodes.get("DELEGATECALL"):
+        if is_proxy:
+            out.append({
+                "kind": "bytecode_minimal_proxy", "severity": "low",
+                "confidence": _BYTECODE_CONF,
+                "function": "",
+                "detail": "EIP-1167 minimal proxy; real logic lives at "
+                          f"implementation {meta['minimal_proxy_impl']}. "
+                          "Audit the implementation, not this proxy.",
+                "plugin": "bytecode_audit"})
+        else:
+            out.append({
+                "kind": "bytecode_delegatecall", "severity": "medium",
+                "confidence": _BYTECODE_CONF,
+                "function": (reached_by.get("DELEGATECALL") or [""])[0],
+                "detail": "Bytecode contains DELEGATECALL - code from another "
+                          "address runs in this contract's storage/context "
+                          "(upgradeable or library pattern)." +
+                          _fns("DELEGATECALL") +
+                          " Without source the target's trust cannot be "
+                          "confirmed.",
+                "plugin": "bytecode_audit"})
+
+    # Unverified-source context flag: no Solidity metadata and no source means
+    # behaviour can't be fully audited. Low severity, but it tells the report
+    # reader why confidence is capped.
+    if not (meta.get("metadata") or {}).get("solc"):
+        out.append({
+            "kind": "bytecode_unverified", "severity": "low",
+            "confidence": 40, "function": "",
+            "detail": "No verified source and no embedded compiler metadata; "
+                      "analysis is bytecode-only. Treat findings as capability "
+                      "facts, not guarantees, until source is available.",
+            "plugin": "bytecode_audit"})
+
+    return out

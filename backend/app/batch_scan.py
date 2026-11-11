@@ -203,6 +203,39 @@ def scan_source(src: str,
     return findings
 
 
+def scan_bytecode(code_hex: str,
+                  meta: Optional[Dict[str, Any]] = None
+                  ) -> List[Dict[str, Any]]:
+    """Run bytecode-only detection over one contract's runtime bytecode.
+
+    The drop-in for candidates with NO verified source: instead of
+    discarding them unscanned, fetch the deployed bytecode and call this.
+    Returns finding dicts (bytecode_selfdestruct / bytecode_delegatecall /
+    bytecode_minimal_proxy / bytecode_unverified) at reduced confidence - a
+    crash surfaces as an error finding, never a silent empty.
+    """
+    meta = meta or {}
+    findings: List[Dict[str, Any]] = []
+    try:
+        from .plugins.bytecode_paths import audit_bytecode
+        for a in audit_bytecode(code_hex):
+            findings.append({
+                "kind": a.get("kind", "bytecode"),
+                "key": a.get("kind", "bytecode"),
+                "severity": a.get("severity", "low"),
+                "confidence": a.get("confidence"),
+                "function": a.get("function", ""),
+                "title": (a.get("detail", "") or "")[:80],
+                "detail": a.get("detail", ""),
+                "plugin": a.get("plugin", "bytecode_audit"),
+            })
+    except Exception as e:  # noqa: BLE001
+        findings.append({"kind": "error", "severity": "low",
+                         "title": "bytecode audit error",
+                         "detail": f"{type(e).__name__}: {e}"})
+    return findings
+
+
 @dataclasses.dataclass
 class FindingFilter:
     """A runtime filter over scan output - set any field to narrow what you

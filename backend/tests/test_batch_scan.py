@@ -186,3 +186,27 @@ def test_audit_crash_surfaces_as_error_not_empty(monkeypatch):
     findings = bs.scan_source("contract C {}", {})
     assert any(f.get("kind") == "error" and "kaboom" in f.get("detail", "")
                for f in findings)
+
+
+def test_scan_bytecode_finds_issues_without_source():
+    """No-source candidates still produce findings from bytecode alone
+    instead of being dropped unscanned."""
+    code = "0x" + bytes([0x60, 0x00, 0xf4, 0xff]).hex()  # DELEGATECALL+SELFDESTRUCT
+    kinds = {f["kind"] for f in bs.scan_bytecode(code)}
+    assert "bytecode_selfdestruct" in kinds
+    assert "bytecode_delegatecall" in kinds
+    assert "bytecode_unverified" in kinds
+
+
+def test_scan_bytecode_handles_empty_and_invalid():
+    assert bs.scan_bytecode("0x") == []
+    assert bs.scan_bytecode("") == []
+    assert bs.scan_bytecode("zzz") == []   # invalid hex -> no crash, no finding
+
+
+def test_scan_bytecode_minimal_proxy_points_at_impl():
+    proxy = ("0x363d3d373d3d3d363d73" + "be" * 20 +
+             "5af43d82803e903d91602b57fd5bf3")
+    kinds = {f["kind"] for f in bs.scan_bytecode(proxy)}
+    assert "bytecode_minimal_proxy" in kinds
+    assert "bytecode_delegatecall" not in kinds
