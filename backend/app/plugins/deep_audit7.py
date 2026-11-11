@@ -930,6 +930,39 @@ def _analyze_payload_slice(src: str, spec: DetectorSpec,
 # 9. uups_authorize_upgrade_missing (PRX-002 slice)
 # ---------------------------------------------------------------------------
 
+def _authorize_modifier_region(fn_text: str) -> str:
+    """The modifier region of a function declaration: everything between the
+    end of the parameter list and the opening brace. That's where
+    `onlyRole(...)` / `onlyOwner` live - NOT the body. Returns "" if it can't
+    be isolated."""
+    decl = fn_text.split("{", 1)[0]
+    open_p = decl.find("(")
+    if open_p < 0:
+        return decl
+    depth = 0
+    for i in range(open_p, len(decl)):
+        c = decl[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return decl[i + 1:]
+    return ""
+
+
+# Access-control gates that can appear as a MODIFIER on _authorizeUpgrade.
+# The standard, CORRECT OpenZeppelin UUPS pattern is an empty-bodied
+# _authorizeUpgrade gated by a modifier (`... onlyOwner {}` /
+# `... onlyRole(DEFAULT_ADMIN_ROLE) {}`), so the gate lives in the modifier
+# region, not the body. Deliberately scoped to the modifier region so it
+# never matches the function's own name.
+_UUPS_AUTH_MODIFIER_RE = re.compile(
+    r"\bonly[A-Z]\w*"                    # onlyOwner/onlyRole/onlyAdmin/custom
+    r"|\brequiresAuth\b|\bauthorized\b|\brestricted\b|\bonlyProxy\w*\b"
+    r"|\brestricted\b", re.I)
+
+
 def _analyze_uups(src: str, spec: DetectorSpec,
                   compiler: str = "",
                   contract_name: str = ""
@@ -941,6 +974,13 @@ def _analyze_uups(src: str, spec: DetectorSpec,
     out: List[Dict[str, Any]] = []
     if auth:
         for fn in auth:
+            # Gate in the MODIFIER region is the standard, correct UUPS
+            # pattern (empty body + `onlyRole(...)`/`onlyOwner`). The old
+            # check only looked at the body and false-positived on every
+            # correctly-secured upgradeable contract.
+            mod_region = _authorize_modifier_region(fn["text"])
+            if _UUPS_AUTH_MODIFIER_RE.search(mod_region):
+                continue  # access-gated by a modifier - not vulnerable
             body = _body(fn)
             # fn text ends at the matching brace; the body is
             # everything between the first { and the last }.

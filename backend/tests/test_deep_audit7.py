@@ -148,3 +148,37 @@ def test_diamond_names_colliding_contracts():
     assert hits and "FacetAlpha" in hits[0]["detail"]
     assert "FacetBeta" in hits[0]["detail"]
     assert "transfer(address,uint256)" in hits[0]["detail"]
+
+
+# --- UUPS _authorizeUpgrade modifier-gate awareness (USDG false positive) ---
+# Labeled case: USDG impl 0xfacd...a65f gates upgrades with
+# `_authorizeUpgrade(...) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}` -
+# empty body, gated by a modifier. The standard OZ pattern must NOT flag.
+_PID_UUPS = "uups_authorize_upgrade_missing"
+
+
+def test_uups_empty_body_but_modifier_gated_not_flagged():
+    gated = [
+        ("onlyRole(DEFAULT_ADMIN_ROLE)",
+         "contract USDG is UUPSUpgradeable {"
+         " function _authorizeUpgrade(address n) internal override"
+         " onlyRole(DEFAULT_ADMIN_ROLE) {} }"),
+        ("onlyOwner",
+         "contract T is UUPSUpgradeable {"
+         " function _authorizeUpgrade(address a) internal override"
+         " onlyOwner {} }"),
+        ("custom onlyUpgrader modifier",
+         "contract T is UUPSUpgradeable {"
+         " function _authorizeUpgrade(address a) internal override"
+         " onlyUpgrader {} }"),
+    ]
+    for label, src in gated:
+        assert hits_for(src, _PID_UUPS) == [], \
+            f"false positive on modifier-gated UUPS: {label}"
+
+
+def test_uups_genuinely_ungated_still_flags():
+    src = ("contract Bad is UUPSUpgradeable {"
+           " function _authorizeUpgrade(address a) internal override {} }")
+    assert hits_for(src, _PID_UUPS), \
+        "genuinely ungated _authorizeUpgrade must still flag"
