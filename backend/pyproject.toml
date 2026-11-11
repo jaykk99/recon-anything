@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recon-anything-backend"
+version = "2.0.0"
+description = "ReconAnything backend: detection-only attack-surface scanning, plus the ReconAnything MCP server"
+readme = { text = "ReconAnything backend and MCP server. Install, then run `recon-mcp --stdio` for a keyless local MCP server any AI client can use.", content-type = "text/plain" }
+requires-python = ">=3.10"
+# Mirrors requirements.txt (kept pinned for reproducible installs).
+dependencies = [
+    "fastapi==0.143.3",
+    "uvicorn[standard]==0.54.0",
+    "sqlalchemy==2.1.5",
+    "pydantic==2.14.1",
+    "httpx==0.28.1",
+    "dnspython==2.9.0",
+    "cryptography==50.0.2",
+    "bcrypt==5.0.0",
+    "phonenumbers==9.0.15",
+    "redis==8.1.0",
+    "psycopg2-binary==2.9.13",
+    "pymongo==4.10.1",
+    "neo4j==5.28.1",
+]
+
+[project.scripts]
+recon-mcp = "app.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["breachwatch_emails.json.example"]
+"app.hunters" = ["knowledge/*.json", "knowledge/*.txt"]
