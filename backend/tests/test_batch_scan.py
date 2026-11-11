@@ -210,3 +210,30 @@ def test_scan_bytecode_minimal_proxy_points_at_impl():
     kinds = {f["kind"] for f in bs.scan_bytecode(proxy)}
     assert "bytecode_minimal_proxy" in kinds
     assert "bytecode_delegatecall" not in kinds
+
+
+def test_deep_adds_crypto_detectors_as_superset():
+    """deep=True runs the deep_audit families too - a strict superset of the
+    fast path, catching source-level crypto issues the rules sweep misses."""
+    ungated = ('pragma solidity 0.8.19;\n'
+               'import "x/UUPSUpgradeable.sol";\n'
+               'contract Vault is UUPSUpgradeable { mapping(address=>uint) b;\n'
+               ' function _authorizeUpgrade(address n) internal override {}\n'
+               ' function withdraw(address t) external {'
+               ' (bool k,)=t.call{value:address(this).balance}(""); } }')
+    shallow = {f.get("kind") for f in bs.scan_source(ungated)}
+    deep = {f.get("kind") for f in bs.scan_source(ungated, deep=True)}
+    assert deep >= shallow
+    assert "uups_authorize_upgrade_missing" in deep
+    assert "uups_authorize_upgrade_missing" not in shallow
+
+
+def test_deep_does_not_revive_usdg_false_positive():
+    """The USDG-style modifier-gated UUPS must stay silent even in deep mode."""
+    gated = ('pragma solidity 0.8.19;\n'
+             'import "x/UUPSUpgradeable.sol";\n'
+             'contract USDG is UUPSUpgradeable {\n'
+             ' function _authorizeUpgrade(address n) internal override'
+             ' onlyRole(DEFAULT_ADMIN_ROLE) {} }')
+    kinds = {f.get("kind") for f in bs.scan_source(gated, deep=True)}
+    assert "uups_authorize_upgrade_missing" not in kinds

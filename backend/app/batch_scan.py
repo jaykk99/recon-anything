@@ -141,14 +141,65 @@ def _load_rules() -> List[Tuple[Any, Any, str, str, str, str, str]]:
     return _RULES
 
 
+_DEEP_ANALYZERS: Optional[List[Any]] = None
+
+
+def _load_deep_analyzers() -> List[Any]:
+    """Load the deep_audit detector family (analyze_deepN_source + its SPECS)
+    plus the protocol auditor, once per process. These are the richest
+    source-level crypto detectors; they normally only run inside the full
+    plugin engine, so the fast path misses them unless scan_source(deep=True).
+    Returns a list of zero-arg-over-src callables that each yield findings."""
+    global _DEEP_ANALYZERS
+    if _DEEP_ANALYZERS is not None:
+        return _DEEP_ANALYZERS
+    import importlib
+    callables: List[Any] = []
+    for suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
+        try:
+            mod = importlib.import_module(f"app.plugins.deep_audit{suffix}")
+            specs = getattr(mod, "SPECS", None)
+            fn = getattr(mod, f"analyze_deep{suffix}_source", None)
+            if not specs or fn is None:
+                continue
+
+            def make(fn, specs):
+                def run(src):
+                    out = []
+                    for spec in specs:
+                        try:
+                            out.extend(fn(src, spec) or [])
+                        except Exception:  # noqa: BLE001
+                            continue
+                    return out
+                return run
+            callables.append(make(fn, specs))
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        from .plugins.cryptopack_protocol import audit_protocol_source
+        callables.append(lambda src: audit_protocol_source(src) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    _DEEP_ANALYZERS = callables
+    return _DEEP_ANALYZERS
+
+
 def scan_source(src: str,
-                meta: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+                meta: Optional[Dict[str, Any]] = None,
+                deep: bool = False) -> List[Dict[str, Any]]:
     """Run the full CPU detection stack over one contract source.
 
-    Combines the structured analyzer (contract_chain.analyze_contract_source)
-    with the shared RULES detectors. Returns a list of finding dicts. Never
-    raises on a bad rule - a single detector failing must not drop the
-    whole contract.
+    Combines the structured analyzer (contract_chain.analyze_contract_source),
+    the source audit, and the shared RULES detectors. Returns a list of
+    finding dicts. Never raises on a bad rule - a single detector failing
+    must not drop the whole contract.
+
+    deep=True additionally runs the 11 deep_audit detector families (~84
+    crypto-focused source detectors) and the protocol auditor. That's ~8ms
+    extra per contract - negligible for the live per-address scanner (where a
+    network fetch dominates), too heavy for a million-contract bulk sweep, so
+    it is off by default and on for maximum recall on high-value targets.
     """
     meta = meta or {}
     findings: List[Dict[str, Any]] = []
@@ -200,6 +251,32 @@ def scan_source(src: str,
             "title": value or key, "detail": value,
             "remediation": remediation, "plugin": pid,
         })
+
+    # Deep crypto detector families (opt-in): the ~84 deep_audit + protocol
+    # detectors that otherwise only run in the full plugin engine. For the
+    # live/high-value path this gives the fast scan the same source-level
+    # recall as the plugin engine. A crash in one family is isolated.
+    if deep:
+        for run in _load_deep_analyzers():
+            try:
+                for a in run(src):
+                    kind = (a.get("kind") or a.get("check")
+                            or a.get("id") or "deep")
+                    findings.append({
+                        "kind": kind, "key": kind,
+                        "severity": a.get("severity", "low"),
+                        "confidence": a.get("confidence"),
+                        "function": a.get("function", ""),
+                        "title": (a.get("detail") or a.get("title")
+                                  or "")[:80],
+                        "detail": a.get("detail", ""),
+                        "code": a.get("code", ""),
+                        "plugin": a.get("plugin", "deep_audit"),
+                    })
+            except Exception as e:  # noqa: BLE001
+                findings.append({"kind": "error", "severity": "low",
+                                 "title": "deep audit error",
+                                 "detail": f"{type(e).__name__}: {e}"})
     return findings
 
 
@@ -521,16 +598,23 @@ def _scan_one_plugins(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
     return address, chain, len(source), findings
 
 
-def _init_worker() -> None:
+_SCAN_DEEP: bool = False
+
+
+def _init_worker(deep: bool = False) -> None:
     # Ensure this worker has its rules compiled before the first task.
+    global _SCAN_DEEP
+    _SCAN_DEEP = deep
     _load_rules()
+    if deep:
+        _load_deep_analyzers()
 
 
 def _scan_one(rec_tuple: Tuple[str, str, str, Dict[str, Any]]
               ) -> Tuple[str, str, int, List[Dict[str, Any]]]:
     address, chain, source, meta = rec_tuple
     m = dict(meta or {})
-    findings = scan_source(source, m)
+    findings = scan_source(source, m, deep=_SCAN_DEEP)
     return address, chain, len(source), findings
 
 
@@ -702,7 +786,8 @@ def scan_corpus(input_path: str,
                 escalate_min_count: int = 1,
                 escalate_tiers: Tuple[str, ...] = ("confirmed",),
                 find_filter: Optional[FindingFilter] = None,
-                progress_every: int = 20000) -> Dict[str, Any]:
+                progress_every: int = 20000,
+                deep: bool = False) -> Dict[str, Any]:
     """Scan a whole corpus and return a throughput + findings summary.
 
     find_filter: a FindingFilter to narrow the output at runtime (by kind,
@@ -759,7 +844,9 @@ def scan_corpus(input_path: str,
         # fork keeps the parent's compiled rules; load them once up front so
         # the children inherit a warm table instead of each rebuilding it.
         _load_rules()
-        pool = ctx.Pool(workers, initializer=_init_worker)
+        if deep:
+            _load_deep_analyzers()
+        pool = ctx.Pool(workers, initializer=_init_worker, initargs=(deep,))
         scan_fn = _scan_one
         rules_loaded = len(_load_rules())
     flt = find_filter or FindingFilter()
@@ -858,6 +945,10 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help="comma-separated chains to keep (e.g. ethereum,bsc)")
     ap.add_argument("--min-confidence", type=int, default=0,
                     help="keep only findings at or above this confidence")
+    ap.add_argument("--deep", action="store_true",
+                    help="also run the ~84 deep_audit + protocol crypto "
+                         "detectors per contract (~8ms extra; maximum recall "
+                         "for high-value targets, too heavy for a 1M sweep)")
     args = ap.parse_args(argv)
 
     # Read-only hardblock: a detection tool has no business holding signing
@@ -895,7 +986,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
                                       x.strip() for x in
                                       args.escalate_tier.split(",")
                                       if x.strip()),
-                                  find_filter=find_filter)
+                                  find_filter=find_filter,
+                                  deep=args.deep)
     except BatchAlreadyRunning as e:
         print(f"skipped: {e}", file=sys.stderr)
         return 0
