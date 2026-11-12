@@ -265,146 +265,6 @@ contract CappedPaymasterClean {
 """
 
 # ---------------------------------------------------------------------------
-# 4. approval_binds_id_not_version
-# ---------------------------------------------------------------------------
-
-_APPROVAL_VULN = """
-contract FirelightApprovalVuln {
-    struct Assessment {
-        uint256 round;
-        uint256 schedule;
-        bytes32 payload;
-    }
-
-    mapping(uint256 => Assessment) public assessments;
-    uint256 public currentRound;
-
-    function approveCurrentAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "not current");
-    }
-
-    function cancelAssessment(uint256 incidentId) external {
-        delete assessments[incidentId];
-    }
-
-    function submitAssessment(uint256 incidentId, uint256 schedule, bytes32 payload) external {
-        assessments[incidentId] = Assessment(currentRound, schedule, payload);
-    }
-
-    function executeAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "stale round");
-        _pay(a.schedule);
-    }
-
-    function _pay(uint256 amount) internal {}
-}
-"""
-
-_APPROVAL_CLEAN = """
-contract FirelightApprovalClean {
-    struct Assessment {
-        uint256 round;
-        uint256 schedule;
-        bytes32 payload;
-    }
-
-    mapping(uint256 => Assessment) public assessments;
-    mapping(uint256 => bytes32) public approvedHash;
-    uint256 public currentRound;
-
-    function approveCurrentAssessment(uint256 incidentId, uint256 roundId, bytes32 payloadHash) external {
-        require(roundId == currentRound, "not current");
-        approvedHash[incidentId] = payloadHash;
-    }
-
-    function cancelAssessment(uint256 incidentId) external {
-        delete assessments[incidentId];
-    }
-
-    function submitAssessment(uint256 incidentId, uint256 schedule, bytes32 payload) external {
-        assessments[incidentId] = Assessment(currentRound, schedule, payload);
-    }
-
-    function executeAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "stale round");
-        require(keccak256(abi.encode(a.schedule, a.payload)) == approvedHash[incidentId], "hash mismatch");
-        _pay(a.schedule);
-    }
-
-    function _pay(uint256 amount) internal {}
-}
-"""
-
-_APPROVAL_VARIANT = _TOKEN_IFACE + """
-contract FirelightApprovalFixed {
-    struct Assessment {
-        uint256 round;
-        uint256 schedule;
-        bytes32 payload;
-    }
-
-    IERC20Like public token;
-    address public treasury;
-    mapping(uint256 => Assessment) public assessments;
-    uint256 public currentRound;
-
-    function approveCurrentAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "not current");
-        token.transfer(treasury, 1);
-    }
-
-    function cancelAssessment(uint256 incidentId) external {
-        delete assessments[incidentId];
-    }
-
-    function submitAssessment(uint256 incidentId, uint256 schedule, bytes32 payload) external {
-        assessments[incidentId] = Assessment(currentRound, schedule, payload);
-    }
-
-    function executeAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "stale round");
-        _pay(a.schedule);
-    }
-
-    function _pay(uint256 amount) internal {}
-}
-"""
-
-_APPROVAL_EXTRA_CLEAN = """
-contract FirelightApprovalNoSwap {
-    struct Assessment {
-        uint256 round;
-        uint256 schedule;
-        bytes32 payload;
-    }
-
-    mapping(uint256 => Assessment) public assessments;
-    uint256 public currentRound;
-
-    function approveCurrentAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "not current");
-    }
-
-    function executeAssessment(uint256 incidentId) external {
-        Assessment storage a = assessments[incidentId];
-        require(a.round == currentRound, "stale round");
-        _pay(a.schedule);
-    }
-
-    function _pay(uint256 amount) internal {}
-}
-"""
-
-# ---------------------------------------------------------------------------
-# 5. stale_permission_after_replacement
-# ---------------------------------------------------------------------------
-
 _STALE_VULN = """
 contract TrovesVaultVuln {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR");
@@ -503,7 +363,6 @@ VULN = {
     "residual_balance_sweep_ungated": _SWEEP_VULN,
     "pyth_price_unsafe_unchecked": _PYTH_VULN,
     "paymaster_sponsorship_unbounded": _PAYMASTER_VULN,
-    "approval_binds_id_not_version": _APPROVAL_VULN,
     "stale_permission_after_replacement": _STALE_VULN,
 }
 
@@ -511,7 +370,6 @@ CLEAN = {
     "residual_balance_sweep_ungated": _SWEEP_CLEAN,
     "pyth_price_unsafe_unchecked": _PYTH_CLEAN,
     "paymaster_sponsorship_unbounded": _PAYMASTER_CLEAN,
-    "approval_binds_id_not_version": _APPROVAL_CLEAN,
     "stale_permission_after_replacement": _STALE_CLEAN,
 }
 
@@ -519,7 +377,6 @@ VARIANT = {
     "residual_balance_sweep_ungated": _SWEEP_VARIANT,
     "pyth_price_unsafe_unchecked": _PYTH_VARIANT,
     "paymaster_sponsorship_unbounded": _PAYMASTER_VARIANT,
-    "approval_binds_id_not_version": _APPROVAL_VARIANT,
     "stale_permission_after_replacement": _STALE_VARIANT,
 }
 
@@ -527,7 +384,6 @@ EXTRA_CLEAN = {
     "residual_balance_sweep_ungated": _SWEEP_EXTRA_CLEAN,
     "pyth_price_unsafe_unchecked": _PYTH_EXTRA_CLEAN,
     "paymaster_sponsorship_unbounded": _PAYMASTER_EXTRA_CLEAN,
-    "approval_binds_id_not_version": _APPROVAL_EXTRA_CLEAN,
     "stale_permission_after_replacement": _STALE_EXTRA_CLEAN,
 }
 

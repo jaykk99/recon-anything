@@ -4,11 +4,11 @@ Per plugin: the vulnerable fixture MUST fire with the plugin's
 own finding kind + code evidence + gate analysis, classified
 candidate; the FIXED-recipient variant MUST fire trigger-only
 at low severity (never a candidate); every clean control MUST
-stay silent under ALL five detectors; every other plugin's
+stay silent under ALL four detectors; every other plugin's
 vulnerable fixture MUST stay silent under this one (no
 cross-talk); the batch-10, batch-11 and batch-12 fixtures MUST
-stay silent under all five (no cross-batch noise); the registry
-discovers exactly 1232 plugins including all five.
+stay silent under all four (no cross-batch noise); the registry
+discovers exactly 1339 plugins including all four.
 """
 import os
 import sys
@@ -37,17 +37,17 @@ def hits_for(src, pid):
     return analyze_deep13_source(src, SPECS_BY_ID[pid])
 
 
-def test_five_plugins_registered():
-    assert len(IDS) == 5
+def test_four_plugins_registered():
+    assert len(IDS) == 4
     reg = discover()
     for pid in IDS:
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1232():
+def test_registry_count_1339():
     reg = discover()
-    assert len(reg) == 1232, \
-        f"registry size {len(reg)}, expected 1232"
+    assert len(reg) == 1339, \
+        f"registry size {len(reg)}, expected 1339"
 
 
 def test_vuln_fires_candidate_with_evidence():
@@ -80,7 +80,7 @@ def test_variant_fires_trigger_only_never_candidate():
             assert h["recipient"] == "FIXED"
 
 
-def test_clean_controls_silent_under_all_five():
+def test_clean_controls_silent_under_all_four():
     for clean_id, src in fx.CLEAN.items():
         for pid in IDS:
             hits = hits_for(src, pid)
@@ -117,7 +117,7 @@ def test_no_cross_talk_from_variant_fixtures():
                 f"{hits}")
 
 
-def test_batch12_fixtures_silent_under_all_five():
+def test_batch12_fixtures_silent_under_all_four():
     # No cross-batch noise: the previous batch's fixtures must
     # not fire under any batch-13 detector. Skipped while
     # batch-12 fixtures are still on unmerged PR #153.
@@ -135,7 +135,7 @@ def test_batch12_fixtures_silent_under_all_five():
                     f"{hits}")
 
 
-def test_batch11_fixtures_silent_under_all_five():
+def test_batch11_fixtures_silent_under_all_four():
     for group in (fx11.VULN, fx11.CLEAN, fx11.VARIANT):
         for fid, src in group.items():
             for pid in IDS:
@@ -145,7 +145,7 @@ def test_batch11_fixtures_silent_under_all_five():
                     f"{hits}")
 
 
-def test_batch10_fixtures_silent_under_all_five():
+def test_batch10_fixtures_silent_under_all_four():
     for group in (fx10.VULN, fx10.CLEAN, fx10.VARIANT):
         for fid, src in group.items():
             for pid in IDS:
@@ -223,28 +223,6 @@ def test_paymaster_capped_silent():
         "paymaster_sponsorship_unbounded")
     assert hits == []
 
-
-def test_approval_names_the_approve_function():
-    hits = hits_for(fx.VULN["approval_binds_id_not_version"],
-                    "approval_binds_id_not_version")
-    assert [h["function"] for h in hits] == [
-        "approveCurrentAssessment"]
-    assert "incidentId" in hits[0]["detail"]
-    assert hits[0]["recipient"] == "UNRESOLVED"
-
-
-def test_approval_version_bound_silent():
-    hits = hits_for(
-        fx.CLEAN["approval_binds_id_not_version"],
-        "approval_binds_id_not_version")
-    assert hits == []
-
-
-def test_approval_no_swap_path_silent():
-    hits = hits_for(
-        fx.EXTRA_CLEAN["approval_binds_id_not_version"],
-        "approval_binds_id_not_version")
-    assert hits == []
 
 
 def test_stale_names_the_setter_function():

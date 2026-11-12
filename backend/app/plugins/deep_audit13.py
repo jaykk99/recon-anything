@@ -1,6 +1,6 @@
 """Deep-audit detectors, batch 13: AI plugin dev (2026-11-09).
 
-Five more chain-agnostic EVM detectors from the standing backlog
+Four more chain-agnostic EVM detectors from the standing backlog
 queue, built to the batch-12 / recipient-first standard: recipient
 classification computed inside the detector and carried on the
 finding (CALLER / CALLER-SUPPLIED = candidate; FIXED /
@@ -42,17 +42,7 @@ report_class, gate).
   (off-chain signer paymasters are the legitimate pattern).
   Distinct from built aa_validation_ungated (validateUserOp
   only) - this is the paymaster half of the AA surface.
-- approval_binds_id_not_version: an approve / authorize
-  function takes ONLY an id (incident / proposal / assessment
-  id) with no version / round / payload-hash parameter, while
-  execution resolves the CURRENT round / version at run time
-  and a cancel + resubmit path can swap the payload under a
-  pending approval. The Firelight Immunefi #88618 / #88366
-  shape (Aug 2026, High): a 100-unit reviewed schedule swapped
-  for 1,000 units. Distinct from built
-  eip712_digest_unbound_to_payload (signature digest, not
-  on-chain approval resolution) and from ERC-20 approve
-  (two parameters, no version resolution).
+
 - stale_permission_after_replacement: a privileged role /
   allowance is granted to a contract address held in a mutable
   state variable, and the setter that replaces the address
@@ -142,22 +132,6 @@ SPECS = [
       fix="Bind sponsorship to a verified payer (signature / "
           "ecrecover), a per-user spending cap, and an allowlist "
           "or token whitelist before returning validationData 0."),
-    S("approval_binds_id_not_version", FAMILY, severity="high",
-      outcome="a", recipient=True,
-      detail="Approval binds an id, not the version reviewed: an "
-             "approve / authorize function takes ONLY an id "
-             "(incident / proposal / assessment id) with no "
-             "version / round / payload-hash parameter, while "
-             "execution resolves the CURRENT round / version at "
-             "run time and a cancel + resubmit path can swap the "
-             "payload under a pending approval - the Firelight "
-             "Immunefi #88618 / #88366 shape. Binding the "
-             "approval to a version and a payload hash is the "
-             "protected shape.",
-      fix="Approve (id, version, payloadHash) and require the "
-          "execution to match the exact version and hash that "
-          "was reviewed; never resolve the current round at "
-          "execution time under an id-only approval."),
     S("stale_permission_after_replacement", FAMILY,
       severity="high", outcome="a", recipient=True,
       detail="Stale permission after replacement: a privileged "
@@ -574,72 +548,23 @@ def _analyze_paymaster_unbounded(src, spec, compiler,
 # 4. Approval binds an id, not the version reviewed (Firelight)
 # ---------------------------------------------------------------------------
 
-_APPROVE_FN_RE = re.compile(r"approve|authorize|confirm", re.I)
-_ID_PARAM_RE = re.compile(
-    r"^(incident|proposal|assessment|claim|request)?[Ii]d$")
-_VERSION_PARAM_RE = re.compile(
-    r"round|version|payloadHash|assessmentHash|scheduleHash",
-    re.I)
-_CURRENT_RE = re.compile(
-    r"currentRound|currentVersion|latestRound|"
-    r"currentAssessment|currentSchedule", re.I)
-_CANCEL_FN_RE = re.compile(r"^cancel", re.I)
-_RESUBMIT_FN_RE = re.compile(
-    r"^(submit|create|propose|resubmit)", re.I)
 
 
-def _analyze_approval_id_only(src, spec, compiler,
-                              contract_name):
-    scope, fns = _scope_fns(src, contract_name)
-    names = [fn["name"] for fn in fns]
-    has_cancel = any(_CANCEL_FN_RE.search(n) for n in names)
-    has_resubmit = any(_RESUBMIT_FN_RE.search(n) for n in names)
-    if not (has_cancel and has_resubmit):
-        return []
-    # Execution resolves the current round / version at run
-    # time somewhere in the contract.
-    if not _CURRENT_RE.search(scope.scoped_text):
-        return []
-    out: List[Dict[str, Any]] = []
-    for fn in fns:
-        if not _APPROVE_FN_RE.search(fn["name"]):
-            continue
-        # No _skip_fn here on purpose: the threat is not an
-        # ungated stranger calling approve, it is a privileged
-        # swapper (curator) replacing the payload under an
-        # approval that reviewed a different version. The
-        # approve function's own gate does not mitigate that.
-        if re.search(r"\b(view|pure)\b", fn["signature"]):
-            continue
-        params = _fn_params(fn)
-        if len(params) != 1:
-            continue
-        if not _ID_PARAM_RE.match(params[0]):
-            continue
-        if _VERSION_PARAM_RE.search(fn["signature"]):
-            continue
-        detail = spec.detail + (
-            f" Observed: '{fn['name']}' approves by id only "
-            f"('{params[0]}', no version / round / payload-hash "
-            f"parameter) while the contract resolves the "
-            f"current round at execution time and exposes a "
-            f"cancel + resubmit path, so a replacement payload "
-            f"can execute under an approval that reviewed a "
-            f"different version. Gate analysis: the approval "
-            f"does not bind the reviewed version; the cancel / "
-            f"resubmit path can swap the payload underneath it.")
-        item = _hit(spec, fn["name"], cc._snip(fn["text"]),
-                    detail,
-                    "id-only approval: no version / hash bound, "
-                    "current round resolved at execution, cancel "
-                    "+ resubmit can swap the payload")
-        out.append(_finish_recipient(spec, item, fn["text"]))
-    return out
 
+def _grant_sites(scoped_text: str, var: str) -> bool:
+    """True when the state-var address is granted a role /
+    allowance somewhere in the contract. Word boundaries
+    matter: OZ's internal _approve(owner, ...) must not count
+    as a grant to the variable."""
+    pats = [
+        rf"\bgrantRole\s*\([^,]+,\s*{var}\s*\)",
+        rf"\b_grantRole\s*\([^,]+,\s*{var}\s*\)",
+        rf"\bapprove\s*\(\s*{var}\s*,",
+        rf"\bsetOperator\s*\(\s*{var}\s*\)",
+        rf"\bgrantOperator\s*\(\s*{var}\s*\)",
+    ]
+    return any(re.search(p, scoped_text) for p in pats)
 
-# ---------------------------------------------------------------------------
-# 5. Stale permission after replacement (Troves legacy role)
-# ---------------------------------------------------------------------------
 
 _STATE_ADDR_RE = re.compile(
     r"\baddress\s+(?:payable\s+)?(?:public\s+|internal\s+|"
@@ -664,6 +589,7 @@ def _grant_sites(scoped_text: str, var: str) -> bool:
         rf"\bgrantOperator\s*\(\s*{var}\s*\)",
     ]
     return any(re.search(p, scoped_text) for p in pats)
+
 
 
 def _analyze_stale_permission(src, spec, compiler,
@@ -748,7 +674,6 @@ ANALYZERS = {
     "pyth_price_unsafe_unchecked": _analyze_pyth_unsafe,
     "paymaster_sponsorship_unbounded":
         _analyze_paymaster_unbounded,
-    "approval_binds_id_not_version": _analyze_approval_id_only,
     "stale_permission_after_replacement":
         _analyze_stale_permission,
 }
