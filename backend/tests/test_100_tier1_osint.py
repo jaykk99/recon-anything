@@ -277,7 +277,7 @@ def _no_real_keys(monkeypatch):
 
 def test_all_ten_registered_and_count_857():
     reg = discover()
-    assert len(reg) == 1361, f"registry size {len(reg)}, expected 1361"
+    assert len(reg) == 1363, f"registry size {len(reg)}, expected 1363"
     for pid in IDS:
         assert pid in reg, f"{pid} missing from registry"
 

@@ -181,7 +181,7 @@ def test_unrelated_clean_corpus_stays_silent():
 def test_plugin_registered():
     reg = discover()
     assert SPEC_ID in reg
-    assert len(reg) == 1361, f"registry size {len(reg)}, expected 1361"
+    assert len(reg) == 1363, f"registry size {len(reg)}, expected 1363"
 
 
 # ---------------------------------------------------------------------------
