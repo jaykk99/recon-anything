@@ -436,3 +436,36 @@ def test_registry_discovers_hunters():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_extract_functions_reports_spans():
+    """extract_functions now carries start/end offsets used for span-masking."""
+    src = "contract C { uint x; function f() public { x=1; } }"
+    fns = cc.extract_functions(src)
+    f = next(fn for fn in fns if fn["name"] == "f")
+    assert "start" in f and "end" in f
+    assert src[f["start"]:f["end"]].startswith("function f")
+    assert src[f["start"]:f["end"]].rstrip().endswith("}")
+
+
+def test_state_vars_excludes_locals_via_span_mask():
+    """A declaration inside a function body is a local, not a state var."""
+    src = cc._strip_comments(
+        "contract C { uint public total; address owner;\n"
+        " function f() public { uint localOnly = 5; total = localOnly; } }")
+    funcs = cc.extract_functions(src)
+    sv = zg._state_vars(src, funcs)
+    assert "total" in sv and "owner" in sv
+    assert "localOnly" not in sv          # declared inside f -> not a state var
+
+
+def test_guard_convention_break_still_detected_after_perf_rewrite():
+    src = ("contract T { uint public x; uint public y; uint public z;"
+           " address o;\n"
+           " function setX(uint v) public onlyOwner { x=v; }\n"
+           " function setY(uint v) public onlyOwner { y=v; }\n"
+           " function setZ(uint v) public onlyOwner { z=v; }\n"
+           " function setAll(uint v) public { x=v; y=v; z=v; } }")
+    r = zg.analyze_guard_consistency(src)
+    assert any(f["kind"] == "guard_convention_break"
+               and f["function"] == "setAll" for f in r)

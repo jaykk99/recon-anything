@@ -754,23 +754,25 @@ def extract_functions(src: str) -> List[Dict[str, str]]:
     with their declaration as text.
     """
     out: List[Dict[str, str]] = []
+    n = len(src)  # hoisted out of the inner char loops (was called per-char)
     for m in _FUNC_START.finditer(src):
         name = m.group(2) or m.group(3) or m.group(4) or m.group(5) or ""
         start = m.start()
         i = m.end()
         # walk to the body's opening brace or the ';' of a declaration
-        while i < len(src) and src[i] not in "{;":
+        while i < n and src[i] not in "{;":
             i += 1
-        if i >= len(src):
+        if i >= n:
             continue
         signature = src[start:i].strip()
         if src[i] == ";":
             out.append({"name": name, "signature": signature,
-                        "text": src[start:i + 1].strip()})
+                        "text": src[start:i + 1].strip(),
+                        "start": start, "end": i + 1})
             continue
         depth = 0
         j = i
-        while j < len(src):
+        while j < n:
             if src[j] == "{":
                 depth += 1
             elif src[j] == "}":
@@ -779,7 +781,8 @@ def extract_functions(src: str) -> List[Dict[str, str]]:
                     break
             j += 1
         out.append({"name": name, "signature": signature,
-                    "text": src[start:j + 1].strip()})
+                    "text": src[start:j + 1].strip(),
+                    "start": start, "end": j + 1})
     return out
 
 

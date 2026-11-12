@@ -34,6 +34,7 @@ comparison.
 """
 from __future__ import annotations
 
+import bisect
 import os
 import re
 import time
@@ -148,16 +149,32 @@ def guards_of(fn: Dict[str, str]) -> Set[str]:
     return guards
 
 
-def _state_vars(src_clean: str) -> Set[str]:
-    """Contract-level state variable names (functions removed first)."""
-    body = src_clean
-    for fn in cc.extract_functions(src_clean):
-        body = body.replace(fn["text"], " ", 1)
-    decl = re.compile(
-        r"\b(?:address|uint\d*|int\d*|bool|bytes\d*|string|mapping\s*\([^;]*?\))"
-        r"\s+(?:public\s+|private\s+|internal\s+|constant\s+|immutable\s+)*"
-        r"([A-Za-z_]\w*)\s*(?:=[^;]*)?;")
-    return set(decl.findall(body))
+_STATE_DECL_RE = re.compile(
+    r"\b(?:address|uint\d*|int\d*|bool|bytes\d*|string|mapping\s*\([^;]*?\))"
+    r"\s+(?:public\s+|private\s+|internal\s+|constant\s+|immutable\s+)*"
+    r"([A-Za-z_]\w*)\s*(?:=[^;]*)?;")
+
+
+def _state_vars(src_clean: str,
+                funcs: Optional[List[Dict[str, str]]] = None) -> Set[str]:
+    """Contract-level state variable names: declarations that fall OUTSIDE
+    any function body. Instead of removing each function text from the source
+    (O(functions x length), and a second full extract), this masks by the
+    function spans extract_functions already computed and keeps only
+    declarations that land in a gap between functions - one pass.
+    """
+    if funcs is None:
+        funcs = cc.extract_functions(src_clean)
+    spans = sorted((f["start"], f["end"]) for f in funcs if "start" in f)
+    starts = [s for s, _ in spans]
+    out: Set[str] = set()
+    for m in _STATE_DECL_RE.finditer(src_clean):
+        pos = m.start()
+        k = bisect.bisect_right(starts, pos) - 1
+        if k >= 0 and spans[k][0] <= pos < spans[k][1]:
+            continue  # inside a function body - a local, not a state var
+        out.add(m.group(1))
+    return out
 
 
 _EFFECT_RES = [
@@ -172,6 +189,15 @@ _EFFECT_RES = [
 ]
 
 
+# One pass over a body yields every identifier that is assigned or mutated
+# (x = , x[i] = , x += , x++ ...). Set-intersecting that with the state vars
+# is O(body), replacing the old O(body x state_vars) per-variable re-scan that
+# also recompiled a fresh regex for every (function, state var) pair.
+_ASSIGN_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*"
+    r"(?:[:+\-*/]?=(?![=>])|\+\+|--)")
+
+
 def is_state_changing(fn: Dict[str, str], state_vars: Set[str]) -> bool:
     sig = fn["signature"]
     if re.search(r"\b(view|pure)\b", sig):
@@ -179,11 +205,9 @@ def is_state_changing(fn: Dict[str, str], state_vars: Set[str]) -> bool:
     body = _body_of(fn)
     if not body:
         return False
-    for var in state_vars:
-        if re.search(rf"\b{re.escape(var)}\s*"
-                     rf"(?:\[[^\]]*\])?\s*[:+\-*/]?=(?![=>])", body):
-            return True
-        if re.search(rf"\b{re.escape(var)}\s*(?:\+\+|--)", body):
+    if state_vars:
+        assigned = {m.group(1) for m in _ASSIGN_RE.finditer(body)}
+        if assigned & state_vars:
             return True
     return any(r.search(body) for r in _EFFECT_RES)
 
@@ -218,8 +242,9 @@ def analyze_guard_consistency(src: str) -> List[Dict[str, Any]]:
     sibling_pattern, siblings, confidence, severity}.
     """
     clean = cc._strip_comments(src)
-    funcs = [f for f in cc.extract_functions(clean) if f["name"]]
-    state_vars = _state_vars(clean)
+    all_funcs = cc.extract_functions(clean)           # extract once
+    state_vars = _state_vars(clean, all_funcs)        # mask by span, no re-extract
+    funcs = [f for f in all_funcs if f["name"]]
 
     pub: List[Dict[str, Any]] = []
     for fn in funcs:
