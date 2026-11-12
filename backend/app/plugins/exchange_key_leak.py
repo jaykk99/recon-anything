@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -167,7 +168,16 @@ async def validate_binance(http, key: str, secret: str):
             headers={"X-MBX-APIKEY": key}, timeout=8)
         if r.status_code == 401:
             return "ROTATED", 0, {}
+        if r.status_code != 200:
+            # 451 (geo-block), 403, 400, ... : the endpoint did not
+            # answer as Binance. Never tag a key off an error page.
+            return "UNVERIFIED", 0, {}
         j = safe_json_dict(r)
+        if not any(k in j for k in
+                   ("ipRestrict", "enableWithdrawals", "enableReading")):
+            # 200 but not a restrictions payload (error page, empty
+            # JSON): cannot judge liveness from this response.
+            return "UNVERIFIED", 0, {}
         ip = j.get("ipRestrict")
         wd = j.get("enableWithdrawals")
         usd = 0
@@ -207,7 +217,16 @@ async def validate_bybit(http, key: str, secret: str):
             timeout=8)
         if r.status_code in (401, 403):
             return "ROTATED", 0, {}
-        wd = "Withdraw" in (r.text or "")
+        if r.status_code != 200:
+            return "UNVERIFIED", 0, {}
+        j = safe_json_dict(r)
+        if "retCode" not in j:
+            # 200 but not a query-api payload: cannot judge liveness.
+            return "UNVERIFIED", 0, {}
+        if j.get("retCode") != 0:
+            # Dead key (e.g. retCode 10003 invalid API key).
+            return "ROTATED", 0, {}
+        wd = "Withdraw" in json.dumps(j)
         return ("ACTIONABLE", 0, {"withdrawals_enabled": True}) if wd else (
             "READ-ONLY", 0, {"withdrawals_enabled": False})
     except Exception:
@@ -220,21 +239,33 @@ async def validate_okx(http, key: str, secret: str,
         # k.py only validates OKX when a passphrase was found alongside.
         return "UNVERIFIED", 0, {"note": "no passphrase found with key"}
     try:
-        ts = datetime.now(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        sig = base64.b64encode(hmac.new(
-            secret.encode(), (ts + "GET/api/v5/account/config").encode(),
-            hashlib.sha256).digest()).decode()
-        r = await http.get(
-            "https://www.okx.com/api/v5/account/config",
-            headers={"OK-ACCESS-KEY": key, "OK-ACCESS-SIGN": sig,
-                     "OK-ACCESS-TIMESTAMP": ts,
-                     "OK-ACCESS-PASSPHRASE": passphrase},
-            timeout=8)
-        j = safe_json_dict(r)
+        for _attempt in range(2):
+            ts = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            sig = base64.b64encode(hmac.new(
+                secret.encode(), (ts + "GET/api/v5/account/config").encode(),
+                hashlib.sha256).digest()).decode()
+            r = await http.get(
+                "https://www.okx.com/api/v5/account/config",
+                headers={"OK-ACCESS-KEY": key, "OK-ACCESS-SIGN": sig,
+                         "OK-ACCESS-TIMESTAMP": ts,
+                         "OK-ACCESS-PASSPHRASE": passphrase},
+                timeout=8)
+            j = safe_json_dict(r)
+            if j.get("code") == "50102":
+                # Timestamp expired in transit (slow egress): retry once
+                # with a fresh timestamp instead of mis-tagging the key.
+                continue
+            break
+        if "code" not in j:
+            # Not an OKX payload (error page, empty JSON): cannot judge.
+            return "UNVERIFIED", 0, {}
         if j.get("code") in ("50111", "50113"):
             return "ROTATED", 0, {}
-        wd = "withdraw" in (r.text or "")
+        if j.get("code") != "0":
+            # Any other provider error: do not guess at liveness.
+            return "UNVERIFIED", 0, {}
+        wd = "withdraw" in json.dumps(j)
         return ("ACTIONABLE", 0, {"withdrawals_enabled": True}) if wd else (
             "READ-ONLY", 0, {"withdrawals_enabled": False})
     except Exception:

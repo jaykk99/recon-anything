@@ -48,6 +48,14 @@ def _exchange_response(request: httpx.Request) -> httpx.Response:
         key = request.headers.get("X-MBX-APIKEY", "")
         if key == samples.ROT_BIN_KEY:
             return httpx.Response(401, content=b"{}", request=request)
+        if key == samples.BIN_451_KEY:
+            return httpx.Response(451, content=b"{}", request=request)
+        if key == samples.BIN_EMPTY_KEY:
+            return httpx.Response(200, json={}, request=request)
+        if key == samples.BIN_HTML_KEY:
+            return httpx.Response(200, content=b"<html>blocked</html>",
+                                  headers={"Content-Type": "text/html"},
+                                  request=request)
         if key == samples.IP_BIN_KEY:
             return httpx.Response(200, json={
                 "ipRestrict": True, "enableWithdrawals": True,
@@ -71,6 +79,14 @@ def _exchange_response(request: httpx.Request) -> httpx.Response:
                 "retCode": 0,
                 "result": {"permissions": {"Spot": ["Order", "Withdraw"]}},
             }, request=request)
+        if key == samples.BYB_DEAD_KEY:
+            return httpx.Response(200, json={
+                "retCode": 10003, "retMsg": "Invalid API key"},
+                request=request)
+        if key == samples.BYB_HTML_KEY:
+            return httpx.Response(200, content=b"<html>blocked</html>",
+                                  headers={"Content-Type": "text/html"},
+                                  request=request)
         if key == samples.BYB_KEY:
             return httpx.Response(200, json={
                 "retCode": 0,
@@ -83,6 +99,14 @@ def _exchange_response(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={
                 "code": "50111", "msg": "Invalid API key"},
                 request=request)
+        if key == samples.OKX_TS_KEY:
+            return httpx.Response(200, json={
+                "code": "50102", "msg": "Timestamp request expired"},
+                request=request)
+        if key == samples.OKX_HTML_KEY:
+            return httpx.Response(200, content=b"<html>blocked</html>",
+                                  headers={"Content-Type": "text/html"},
+                                  request=request)
         return httpx.Response(200, json={
             "code": "0", "msg": "",
             "data": [{"uid": "1", "withdraw": True}]}, request=request)
@@ -239,6 +263,16 @@ def test_validate_binance_read_only():
     assert extra.get("withdrawals_enabled") is False
 
 
+def test_validate_binance_error_responses_unverified():
+    # 451 geo-block, 200 empty JSON, 200 HTML error page: none of these
+    # is a restrictions payload, so none may tag the key.
+    for key in (samples.BIN_451_KEY, samples.BIN_EMPTY_KEY,
+                samples.BIN_HTML_KEY):
+        tag, usd, _ = _validate(
+            lambda http, k=key: validate_binance(http, k, "s" * 64))
+        assert tag == "UNVERIFIED", key
+
+
 def test_validate_bybit_actionable_and_rotated():
     tag, _, _ = _validate(
         lambda http: validate_bybit(http, samples.BYB_ACTION_KEY,
@@ -250,6 +284,17 @@ def test_validate_bybit_actionable_and_rotated():
     assert tag == "ROTATED"
 
 
+def test_validate_bybit_dead_key_and_error_page():
+    tag, _, _ = _validate(
+        lambda http: validate_bybit(http, samples.BYB_DEAD_KEY,
+                                    "s" * 32))
+    assert tag == "ROTATED"
+    tag, _, _ = _validate(
+        lambda http: validate_bybit(http, samples.BYB_HTML_KEY,
+                                    "s" * 32))
+    assert tag == "UNVERIFIED"
+
+
 def test_validate_okx_rotated_and_no_passphrase():
     tag, _, _ = _validate(
         lambda http: validate_okx(http, samples.OKX_ROT_KEY, "S" * 32,
@@ -259,6 +304,16 @@ def test_validate_okx_rotated_and_no_passphrase():
         lambda http: validate_okx(http, samples.OKX_KEY, samples.OKX_SEC,
                                   None))
     assert tag == "UNVERIFIED"
+
+
+def test_validate_okx_error_responses_unverified():
+    # 50102 timestamp-expired (retried once, still expired) and a 200
+    # HTML error page: neither proves anything about the key.
+    for key in (samples.OKX_TS_KEY, samples.OKX_HTML_KEY):
+        tag, _, _ = _validate(
+            lambda http, k=key: validate_okx(http, k, "S" * 32,
+                                             samples.OKX_PASS))
+        assert tag == "UNVERIFIED", key
 
 
 def test_validate_kucoin_unverified():
