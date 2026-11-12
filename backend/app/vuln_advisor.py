@@ -964,6 +964,41 @@ curl -s -o /dev/null -w "%{{http_code}}" http://{base.replace('https://', '').re
 
 
 # ---------------------------------------------------------------------------
+# Venice analysis pack (keyless): bundle a run for Venice's free chat.
+# No API key, no network call. See app/venice_pack.py for the honest
+# limits: Venice's API needs a key (or x402 USDC per request); the
+# free guest chat at venice.ai is browser-only, so the operator pastes
+# the pack in by hand and Venice writes the plain-English analysis.
+# ---------------------------------------------------------------------------
+
+def advise_with_pack(findings: List[Dict], run_summary: Dict,
+                     code_context: List[Dict] | None = None,
+                     max_chars: int = 6000) -> Dict:
+    """Heuristic candidates + a paste-ready Venice analysis pack.
+
+    Returns {"candidates": [...], "venice_pack": str,
+    "venice_pack_chars": int, "how_to_use": str}. Never raises for
+    pack-building reasons and never touches the network. The
+    heuristic advisor stays the built-in default; the pack is the
+    optional Venice step.
+    """
+    from app.venice_pack import build_pack, pack_size_note, SUGGESTED_MODEL
+
+    cands = advise(findings, run_summary)
+    pack = build_pack(cands, findings=findings, run_summary=run_summary,
+                      code_context=code_context or [], max_chars=max_chars)
+    return {
+        "candidates": cands,
+        "venice_pack": pack,
+        "venice_pack_chars": len(pack),
+        "how_to_use": (
+            "Copy venice_pack and paste it into venice.ai guest chat "
+            f"(no account needed, ~10 free text prompts/day). Suggested "
+            f"model: {SUGGESTED_MODEL}. " + pack_size_note(pack)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Safe-test simulator: dry-run terminal output for a candidate.
 # No network calls happen here; it narrates what a safe check would do.
 # ---------------------------------------------------------------------------
