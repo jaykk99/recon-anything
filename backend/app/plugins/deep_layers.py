@@ -387,6 +387,40 @@ async def eth_call_read(ctx: Ctx, chain: cc.ChainConfig, addr: str,
         return None
 
 
+async def eth_call_read_batch(ctx: Ctx, chain: cc.ChainConfig, addr: str,
+                              signatures: List[str]
+                              ) -> Optional[Dict[str, Optional[int]]]:
+    """Batched form of eth_call_read: every signature's zero-arg
+    getter in ONE batched eth_call POST (contract_sim.eth_call_batch),
+    decoded exactly as eth_call_read decodes (int of the last word).
+
+    Returns {signature: int|None} aligned with ``signatures``, or
+    None when the batch transport is unavailable / failed on every
+    endpoint - the caller then falls back to per-getter
+    eth_call_read, so results are identical either way. Read-only.
+    """
+    from . import contract_sim as cs
+    from .cryptopack_util import keccak256
+    calls = [{"to": addr,
+              "data": "0x" + keccak256(sig.encode())[:4].hex(),
+              "sender": cs.FUZZ_CALLER} for sig in signatures]
+    results = await cs.eth_call_batch(ctx, chain, calls)
+    if results is None:
+        return None
+    out: Dict[str, Optional[int]] = {}
+    for sig, res in zip(signatures, results):
+        v: Optional[int] = None
+        if res.get("status") == "success":
+            raw = (res.get("result") or "0x").removeprefix("0x")
+            if raw:
+                try:
+                    v = int(raw[-64:], 16)
+                except ValueError:
+                    v = None
+        out[sig] = v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Layer 1 pure analysis: cross-contract call graph
 # ---------------------------------------------------------------------------
@@ -839,27 +873,57 @@ class StorageStateAnalysisPlugin(_DeepBase):
                 src = await cc.fetch_verified_source(ctx, chain, addr, key)
                 observed = _now()
                 st: Dict[str, Any] = {"observed_at": observed, "slots": {}}
-                # standard slots first
-                for label, slot in (("implementation", cc.EIP1967_IMPLEMENTATION_SLOT),
-                                    ("admin", EIP1967_ADMIN_SLOT),
-                                    ("beacon", cc.EIP1967_BEACON_SLOT)):
-                    word = await cc.rpc_get_storage_at(ctx, chain, addr, slot)
-                    st["slots"][label] = {"slot": slot, "raw": word}
-                    if label == "implementation":
-                        st["implementation"] = \
-                            cc.address_from_storage_word(word) or ""
+                # Layout is computed before the reads (it only needs
+                # the source) so EVERY storage word this layer needs
+                # can be fetched together.
                 layout: List[Dict[str, Any]] = []
                 layout_known = False
                 if src:
                     layout = state_layout(src["source"],
                                           src.get("contract_name", ""))
                     layout_known = bool(layout)
-                    for var in layout:
-                        if not _INTERESTING.search(var["name"]):
-                            continue
+                layout_vars = [v for v in layout
+                               if _INTERESTING.search(v["name"])] \
+                    if layout_known else []
+                # Track-2 batching: the 3 standard slots + every
+                # interesting layout slot in ONE batched POST when a
+                # live HTTP client is present. Any slot the batch
+                # leaves unanswered falls back to the per-slot
+                # helper, so the words - and therefore every finding
+                # below - are identical either way.
+                _std_slots = (("implementation",
+                               cc.EIP1967_IMPLEMENTATION_SLOT),
+                              ("admin", EIP1967_ADMIN_SLOT),
+                              ("beacon", cc.EIP1967_BEACON_SLOT))
+                _words: Dict[str, Any] = {}
+                if getattr(ctx, "http", None) is not None:
+                    try:
+                        _batched = await cc.rpc_get_storage_batch(
+                            ctx, chain, addr,
+                            [s for _l, s in _std_slots]
+                            + [slot_hex(v["slot"]) for v in layout_vars])
+                    except Exception:
+                        _batched = None
+                    if _batched:
+                        _words.update(_batched)
+
+                async def _slot_word(_slot: str):
+                    if _words.get(_slot) is not None:
+                        return _words[_slot]
+                    return await cc.rpc_get_storage_at(
+                        ctx, chain, addr, _slot)
+
+                # standard slots first
+                for label, slot in _std_slots:
+                    word = await _slot_word(slot)
+                    st["slots"][label] = {"slot": slot, "raw": word}
+                    if label == "implementation":
+                        st["implementation"] = \
+                            cc.address_from_storage_word(word) or ""
+                if layout_known:
+                    for var in layout_vars:
                         slot = slot_hex(var["slot"])
-                        word = await cc.rpc_get_storage_at(
-                            ctx, chain, addr, slot)
+                        word = await _slot_word(slot)
                         val = decode_word(word, var["type"])
                         st["slots"][var["name"]] = {
                             "slot": slot, "raw": word, "value": val,
@@ -874,12 +938,27 @@ class StorageStateAnalysisPlugin(_DeepBase):
                 rec["depth"]["storage"] = "ran" if layout_known \
                     else "layout_unknown"
                 # token params (synergy -> math layer)
+                # Track-2 batching: the four getters go out as ONE
+                # batched eth_call POST when a live client is
+                # present; otherwise (or if the batch fails) the
+                # original per-getter eth_call_read loop runs.
                 live: Dict[str, Any] = {}
-                for sig_name, sig in (("decimals", "decimals()"),
-                                      ("totalSupply", "totalSupply()"),
-                                      ("cap", "cap()"),
-                                      ("totalAssets", "totalAssets()")):
-                    v = await eth_call_read(ctx, chain, addr, sig)
+                _getters = (("decimals", "decimals()"),
+                            ("totalSupply", "totalSupply()"),
+                            ("cap", "cap()"),
+                            ("totalAssets", "totalAssets()"))
+                _batched_live: Optional[Dict[str, Any]] = None
+                if getattr(ctx, "http", None) is not None:
+                    try:
+                        _batched_live = await eth_call_read_batch(
+                            ctx, chain, addr, [s for _n, s in _getters])
+                    except Exception:
+                        _batched_live = None
+                for sig_name, sig in _getters:
+                    if _batched_live is not None:
+                        v = _batched_live.get(sig)
+                    else:
+                        v = await eth_call_read(ctx, chain, addr, sig)
                     if v is not None:
                         live[sig_name] = v
                 params = extract_token_params(src["source"] if src else "",
