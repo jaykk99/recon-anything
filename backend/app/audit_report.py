@@ -363,14 +363,23 @@ def _worst_severity(findings: List[Dict[str, Any]]) -> str:
 
 
 def triage_corpus(findings_path: str, out_dir: str,
-                  min_severity: str = "low") -> Dict[str, Any]:
-    """Read a batch_scan --out JSONL ({address, chain, findings}) and write
-    one markdown audit report per contract that has a finding at or above
-    min_severity, plus an INDEX.md triage summary ranked by risk."""
+                  min_severity: str = "low",
+                  min_value_usd: float = 0.0) -> Dict[str, Any]:
+    """Read a batch_scan --out JSONL ({address, chain, findings, value_usd?})
+    and write one markdown audit report per contract that has a finding at or
+    above min_severity, plus an INDEX.md triage summary ranked by risk.
+
+    min_value_usd skips contracts whose realizable value is below the
+    threshold - the "nominally has 100k but holds dust" case. A row with no
+    value_usd is never skipped on value grounds (we can't assess it). The
+    scanner supplies value_usd via valuation.realizable_value_usd().
+    """
     import json
     import os
+    from .valuation import is_dust, value_band
 
     floor = _SEV_ORDER.get(min_severity.lower(), 3)
+    skipped_dust = 0
     os.makedirs(out_dir, exist_ok=True)
     index: List[Dict[str, Any]] = []
     written = 0
@@ -389,6 +398,10 @@ def triage_corpus(findings_path: str, out_dir: str,
             worst = _worst_severity(findings)
             if _SEV_ORDER.get(worst, 9) > floor:
                 continue  # nothing at or above the floor
+            value_usd = rec.get("value_usd")
+            if min_value_usd > 0 and is_dust(value_usd, min_value_usd):
+                skipped_dust += 1
+                continue  # real value below threshold - skip the dust
             addr = str(rec.get("address", "unknown"))
             report = build_report(addr, rec.get("chain", ""), findings)
             safe = "".join(c if c.isalnum() or c in "-_" else "_"
@@ -400,23 +413,39 @@ def triage_corpus(findings_path: str, out_dir: str,
             written += 1
             index.append({"address": addr, "chain": rec.get("chain", ""),
                           "worst": worst, "count": len(findings),
-                          "file": fname})
+                          "file": fname, "value_usd": value_usd,
+                          "band": value_band(value_usd)})
 
-    index.sort(key=lambda r: (_SEV_ORDER.get(r["worst"], 9), -r["count"]))
+    # Rank by severity first, then by realizable value (so the high-value
+    # contracts rise to the top within a severity), then finding count.
+    index.sort(key=lambda r: (_SEV_ORDER.get(r["worst"], 9),
+                              -(r["value_usd"] or 0.0), -r["count"]))
+
+    def _fmt_val(r: Dict[str, Any]) -> str:
+        v = r["value_usd"]
+        if v is None:
+            return "unknown"
+        return f"${float(v):,.0f}"
+
     idx_lines = ["# Triage Index", "",
                  f"{written} contract(s) with findings at or above "
-                 f"`{min_severity}`, ranked by risk.", "",
-                 "| # | Severity | Findings | Chain | Contract | Report |",
-                 "| --- | --- | --- | --- | --- | --- |"]
+                 f"`{min_severity}`, ranked by risk.", ""]
+    if skipped_dust:
+        idx_lines += [f"_{skipped_dust} contract(s) skipped as dust "
+                      f"(realizable value under ${min_value_usd:,.0f})._", ""]
+    idx_lines += [
+        "| # | Severity | Value | Findings | Chain | Contract | Report |",
+        "| --- | --- | --- | --- | --- | --- | --- |"]
     for i, r in enumerate(index, 1):
         idx_lines.append(
-            f"| {i} | {_SEV_LABEL.get(r['worst'], r['worst'])} | {r['count']} "
-            f"| {r['chain'] or 'n/a'} | `{r['address'][:20]}` "
+            f"| {i} | {_SEV_LABEL.get(r['worst'], r['worst'])} | {_fmt_val(r)} "
+            f"| {r['count']} | {r['chain'] or 'n/a'} | `{r['address'][:20]}` "
             f"| [{r['file']}]({r['file']}) |")
     with open(os.path.join(out_dir, "INDEX.md"), "w",
               encoding="utf-8") as out:
         out.write("\n".join(idx_lines) + "\n")
     return {"reports_written": written, "out_dir": out_dir,
+            "skipped_dust": skipped_dust,
             "index": [r["address"] for r in index[:20]]}
 
 
@@ -435,8 +464,13 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     choices=["critical", "high", "medium", "low", "info"],
                     help="only report contracts with a finding at or above "
                          "this severity (default low)")
+    ap.add_argument("--min-value", type=float, default=0.0,
+                    help="skip contracts whose realizable value_usd is below "
+                         "this (strips 'nominally 100k but dust' contracts; "
+                         "rows without value_usd are never skipped)")
     args = ap.parse_args(argv)
-    summary = triage_corpus(args.findings, args.out_dir, args.min_severity)
+    summary = triage_corpus(args.findings, args.out_dir, args.min_severity,
+                            min_value_usd=args.min_value)
     print(json.dumps(summary, indent=2))
     return 0
 

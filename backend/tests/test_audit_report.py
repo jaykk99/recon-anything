@@ -131,3 +131,34 @@ def test_dedupe_keeps_distinct_findings_separate():
          "confidence": 60},   # different function = different finding
     ]
     assert len(build_report("0x", "eth", findings)["findings"]) == 2
+
+
+def test_triage_skips_dust_keeps_real_and_unknown(tmp_path):
+    """min_value_usd strips 'nominally 100k but dust' contracts, keeps the
+    real ones and the ones we can't value, ranks by value within severity."""
+    import json
+    rows = [
+        {"address": "0xREAL", "chain": "ethereum", "value_usd": 2_500_000,
+         "findings": [{"check": "full_balance_withdraw", "severity": "critical",
+                       "function": "drain", "detail": "ungated"}]},
+        {"address": "0xDUST", "chain": "bsc", "value_usd": 120,
+         "findings": [{"kind": "tx_origin", "severity": "high",
+                       "detail": "tx.origin"}]},
+        {"address": "0xNOMINAL", "chain": "base", "value_usd": 0,
+         "findings": [{"check": "mint_authority_active", "severity": "high",
+                       "detail": "infinite mint, no pool"}]},
+        {"address": "0xUNKNOWN", "chain": "ethereum",
+         "findings": [{"kind": "reentrancy", "severity": "high",
+                       "function": "claim", "detail": "reentrant"}]},
+    ]
+    src = tmp_path / "f.jsonl"
+    src.write_text("\n".join(json.dumps(r) for r in rows))
+    out = tmp_path / "tri"
+    s = triage_corpus(str(src), str(out), min_severity="low",
+                      min_value_usd=100_000)
+    assert s["reports_written"] == 2
+    assert s["skipped_dust"] == 2
+    assert s["index"] == ["0xREAL", "0xUNKNOWN"]   # real first, unknown kept
+    index = (out / "INDEX.md").read_text()
+    assert "$2,500,000" in index and "skipped as dust" in index
+    assert "0xDUST" not in index and "0xNOMINAL" not in index
