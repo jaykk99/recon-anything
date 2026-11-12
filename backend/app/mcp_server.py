@@ -99,6 +99,12 @@ from .agent_tools import (anvil_tool as _anvil_impl,
                          time_travel_tool as _time_travel_impl,
                          write_poc as _write_poc_impl,
                          write_report as _write_report_impl)
+from .batch_scan import scan_bytecode as _scan_bytecode
+from .batch_scan import scan_source as _scan_source
+from .defense_watch import diff_snapshots as _defense_diff
+from .defense_watch import snapshot as _defense_snapshot
+from .fork_attack import run_fork_attack as _run_fork_attack
+from .fundflow_cli import trace as _fundflow_trace
 
 log = logging.getLogger("recon-anything-mcp")
 
@@ -1651,6 +1657,334 @@ async def _tool_agent_multicall(args: Dict) -> Dict:
         timeout_s=float(args.get("timeout_s") or 60))
 
 
+# ---------------------------------------------------------------------------
+# Agent attack/defend tools (v2.1, from feat/agent-attack-defend):
+# one-address recon the main agent can call from chat. Detection
+# only; the fork tool verdict is always UNVERIFIED; nothing here
+# broadcasts a transaction.
+# ---------------------------------------------------------------------------
+
+
+def _agent_chain_config(chain: str):
+    from .plugins import contract_chain as cc
+    if chain not in cc.CHAINS:
+        raise ToolError(
+            f"unknown chain {chain}; known: "
+            f"{', '.join(sorted(cc.CHAINS))}")
+    return cc.CHAINS[chain]
+
+
+def _agent_check_address(address: str) -> None:
+    if not isinstance(address, str) or not re.fullmatch(
+            r"0x[0-9a-fA-F]{40}", address or ""):
+        raise ToolError("address must be 0x + 40 hex characters")
+
+
+def _agent_auto_validate():
+    """scripts/auto_validate.py, imported the way the runner does it."""
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import auto_validate as av  # noqa: E402
+    return av
+
+
+def _agent_fetch_sourcify_httpx(chain: str,
+                                  address: str) -> Optional[Dict]:
+    """Verified source from Sourcify over httpx (urllib reads
+    truncate through the egress proxy). Returns the same shape
+    as auto_validate.fetch_sourcify, or None."""
+    try:
+        from .plugins import contract_chain as cc
+        import httpx
+        cfg = cc.CHAINS.get(chain)
+        if cfg is None:
+            return None
+        url = ("https://sourcify.dev/server/files/any/"
+               f"{cfg.chain_id}/{address}")
+        # trust_env=False: proxy env vars on this host break
+        # httpx's env parsing (bracketed NO_PROXY entries).
+        with httpx.Client(trust_env=False, timeout=25) as client:
+            r = client.get(url, headers={
+                "User-Agent": "recon-agent-scan"})
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        files = d.get("files") or []
+        parts = [f["content"] for f in files
+                 if f.get("name", "").endswith(".sol")
+                 and f.get("content")]
+        if not parts:
+            return None
+        name = ""
+        for f in files:
+            if f.get("name") == "metadata.json":
+                try:
+                    meta = json.loads(f["content"])
+                    targets = ((meta.get("settings") or {})
+                               .get("compilationTarget") or {})
+                    if targets:
+                        name = str(next(iter(targets.values())))
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"source": "\n".join(parts),
+                "contract_name": name, "origin": "Sourcify"}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _agent_scan_impl(chain: str, address: str,
+                     deep: bool = True) -> Dict:
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    av = _agent_auto_validate()
+    src = None
+    cache_dirs = [d for d in
+                  os.environ.get("RECON_SOURCE_CACHE_DIRS", "")
+                  .split(",") if d]
+    try:
+        src = av.load_cached_source(cache_dirs, chain, address)
+    except Exception:  # noqa: BLE001
+        src = None
+    if src is None:
+        try:
+            src = av.fetch_sourcify(chain, address)
+        except Exception:  # noqa: BLE001
+            src = None
+    if src is None:
+        # Sourcify via urllib truncates through the egress proxy
+        # (the valuation.py httpx lesson); retry over httpx.
+        src = _agent_fetch_sourcify_httpx(chain, address)
+    if src and src.get("source"):
+        source = src["source"]
+        findings = _scan_source(
+            source, {"chain": chain, "address": address},
+            deep=bool(deep))
+        # Defense + fork-path detectors are plugin-engine
+        # detectors, not part of batch_scan's fast lane: run them
+        # over the same source so agent_scan covers the
+        # attack/defend pack too.
+        try:
+            from .plugins import bsc_common as bc
+            from .plugins.defense_monitor import SPECS as _DEF_SPECS
+            from .plugins.fork_attack_path import (
+                analyze_forkpath_source as _fork_analyze)
+            for spec in _DEF_SPECS:
+                for item in bc.analyze_bsc_source(
+                        source, spec, src.get("compiler", ""),
+                        contract_name=src.get("contract_name", "")):
+                    findings.append({
+                        "kind": item["kind"], "key": item["kind"],
+                        "severity": item["severity"],
+                        "function": item.get("function", ""),
+                        "title": (item.get("detail") or "")[:80],
+                        "detail": item.get("detail", ""),
+                        "code": item.get("code", ""),
+                        "plugin": spec.id})
+            for item in _fork_analyze(
+                    source, contract_name=src.get("contract_name", "")):
+                findings.append({
+                    "kind": item["kind"], "key": item["kind"],
+                    "severity": item["severity"],
+                    "function": item.get("function", ""),
+                    "title": (item.get("detail") or "")[:80],
+                    "detail": item.get("detail", ""),
+                    "code": item.get("code", ""),
+                    "plugin": "fork_attack_path_complete",
+                    "recipient": item.get("recipient", ""),
+                    "report_class": item.get("report_class", ""),
+                    "hypothesis": item.get("hypothesis")})
+        except Exception as e:  # noqa: BLE001
+            findings.append({
+                "kind": "error", "severity": "low",
+                "title": "defense/forkpath error",
+                "detail": f"{type(e).__name__}: {e}"})
+        # Most important first: the attack/defend pack findings
+        # and high severity, so the 50-finding cap never cuts
+        # the findings the agent asked for.
+        _sev_rank = {"critical": 0, "high": 1, "medium": 2,
+                     "low": 3}
+        findings.sort(key=lambda f: (
+            _sev_rank.get(str(f.get("severity", "low")).lower(), 3),
+            0 if str(f.get("plugin", "")).startswith("defense_")
+            or f.get("plugin") == "fork_attack_path_complete"
+            else 1))
+        by_sev: Dict[str, int] = {}
+        for f in findings:
+            sev = str(f.get("severity", "low")).lower()
+            by_sev[sev] = by_sev.get(sev, 0) + 1
+        return {
+            "chain": chain, "address": address,
+            "source_status": "verified",
+            "source_origin": src.get("origin", ""),
+            "contract_name": src.get("contract_name", ""),
+            "findings_count": len(findings),
+            "by_severity": by_sev,
+            "findings": findings[:50],
+            "note": ("fast-lane plugin stack (scan_source deep) + "
+                     "defense/forkpath detectors. High findings are "
+                     "candidates for a live probe (agent_probe) or a "
+                     "fork run (agent_fork); they are NOT proof. "
+                     "Full plugin-engine run: recon_start_scan.")}
+    # No verified source: bytecode-only fallback, never "clean".
+    cfg = _agent_chain_config(chain)
+    code = None
+    for rpc in cfg.rpc_urls:
+        out, _err = av._cast(["code", "--rpc-url", rpc, address],
+                             timeout=20)
+        if out and out.strip().startswith("0x"):
+            code = out.strip()
+            break
+    if code is None:
+        return {"chain": chain, "address": address,
+                "source_status": "degraded", "findings_count": 0,
+                "findings": [],
+                "detail": ("chain data unavailable: every RPC/source "
+                           "route failed, so nothing was analyzed and "
+                           "the contract is NOT cleared")}
+    if code == "0x" or len(code) < 4:
+        return {"chain": chain, "address": address,
+                "source_status": "not_a_contract",
+                "findings_count": 0, "findings": [],
+                "detail": ("no deployed bytecode at this address on "
+                           "this chain")}
+    findings = _scan_bytecode(code, {"chain": chain,
+                                     "address": address})
+    return {"chain": chain, "address": address,
+            "source_status": "bytecode_only",
+            "findings_count": len(findings),
+            "findings": findings[:50],
+            "note": ("no verified source: bytecode-only detection "
+                     "at reduced confidence; a clean result here is "
+                     "NOT a clean bill of health")}
+
+
+def _agent_probe_impl(chain: str, address: str, signature: str,
+                      args: Optional[List[Any]] = None) -> Dict:
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    if not isinstance(signature, str) or "(" not in signature:
+        raise ToolError("signature must be a call signature like "
+                        "'owner()(address)'")
+    av = _agent_auto_validate()
+    probe = av.probe_function(
+        chain, address, signature,
+        [str(a) for a in (args or [])])
+    native = av.native_balance(chain, address)
+    token_bal = av.token_self_balance(chain, address)
+    return {"chain": chain, "address": address,
+            "signature": signature,
+            "args": [str(a) for a in (args or [])],
+            "probe": probe,
+            "stranger_native_wei": native.get("native_wei"),
+            "contract_token_balance": token_bal,
+            "note": ("read-only eth_call from the unfunded stranger; "
+                     "a revert is a definitive contract answer, not "
+                     "a transport failure")}
+
+
+def _agent_fork_impl(chain: str, address: str,
+                     hypothesis: Dict[str, Any],
+                     timeout_s: float = 300) -> Dict:
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    if not isinstance(hypothesis, dict):
+        raise ToolError("hypothesis must be an object with function "
+                        "+ args")
+    return _run_fork_attack(chain, address, hypothesis,
+                            timeout_s=float(timeout_s or 300))
+
+
+def _agent_trace_impl(chain: str, address: str, hops: int = 1,
+                      from_block: Optional[int] = None,
+                      to_block: Optional[int] = None) -> Dict:
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    hops = int(hops or 1)
+    if hops < 1 or hops > 2:
+        raise ToolError("hops must be 1 or 2 over MCP (use the "
+                        "fundflow CLI for 3)")
+    av = _agent_auto_validate()
+    cfg = _agent_chain_config(chain)
+    latest = None
+    for rpc in cfg.rpc_urls:
+        out, _err = av._cast(["block-number", "--rpc-url", rpc],
+                             timeout=15)
+        if out:
+            try:
+                latest = int(out.strip().splitlines()[0])
+                break
+            except Exception:  # noqa: BLE001
+                continue
+    if to_block is None:
+        if latest is None:
+            raise ToolError("could not read the latest block from "
+                            "any RPC")
+        to_block = latest
+    if from_block is None:
+        from_block = max(0, int(to_block) - 20000)
+    graph = _fundflow_trace(chain, address, hops, int(from_block),
+                            int(to_block))
+    return {"chain": chain, "address": address, "hops": hops,
+            "window": graph.get("window"),
+            "nodes": len(graph.get("nodes", [])),
+            "edges": len(graph.get("edges", [])),
+            "graph": graph,
+            "note": ("keyless Blockscout + public RPC trace; no "
+                     "attribution or labels")}
+
+
+def _agent_watch_impl(chain: str, address: str,
+                      spenders: Optional[List[str]] = None,
+                      token: Optional[str] = None,
+                      prev_snapshot: Optional[Dict] = None) -> Dict:
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    cur = _defense_snapshot(chain, address,
+                            spenders=spenders or [], token=token)
+    out: Dict[str, Any] = {"chain": chain, "address": address,
+                           "snapshot": cur, "changes": []}
+    if prev_snapshot is not None:
+        if not isinstance(prev_snapshot, dict):
+            raise ToolError("prev_snapshot must be a snapshot object")
+        out["changes"] = _defense_diff(prev_snapshot, cur)
+    return out
+
+
+async def _tool_agent_scan(args: Dict) -> Dict:
+    return await asyncio.to_thread(
+        _agent_scan_impl, args.get("chain", ""),
+        args.get("address", ""), bool(args.get("deep", True)))
+
+
+async def _tool_agent_probe(args: Dict) -> Dict:
+    return await asyncio.to_thread(
+        _agent_probe_impl, args.get("chain", ""),
+        args.get("address", ""), args.get("signature", ""),
+        args.get("args") or [])
+
+
+async def _tool_agent_fork(args: Dict) -> Dict:
+    return await asyncio.to_thread(
+        _agent_fork_impl, args.get("chain", ""),
+        args.get("address", ""), args.get("hypothesis") or {},
+        float(args.get("timeout_s", 300) or 300))
+
+
+async def _tool_agent_trace(args: Dict) -> Dict:
+    return await asyncio.to_thread(
+        _agent_trace_impl, args.get("chain", ""),
+        args.get("address", ""), int(args.get("hops", 1) or 1),
+        args.get("from_block"), args.get("to_block"))
+
+
+async def _tool_agent_watch(args: Dict) -> Dict:
+    return await asyncio.to_thread(
+        _agent_watch_impl, args.get("chain", ""),
+        args.get("address", ""), args.get("spenders") or [],
+        args.get("token"), args.get("prev_snapshot"))
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "recon_health",
@@ -2512,6 +2846,92 @@ TOOLS: List[Dict[str, Any]] = [
         },
         "handler": _tool_agent_multicall,
     },
+    {
+        "name": "agent_scan",
+        "description": "Agent scan: full fast-lane plugin stack over ONE contract address (verified source when available, bytecode-only fallback when not), findings grouped by severity. Detection only, read-only. High findings are candidates for agent_probe / agent_fork, never proof. Never use on crypto.com or Binance targets unless Jay explicitly ordered that address.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "description": "ethereum | bsc | polygon | arbitrum | base | optimism"},
+                "address": {"type": "string"},
+                "deep": {"type": "boolean", "default": True,
+                         "description": "also run the deep-audit families"},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_agent_scan,
+    },
+    {
+        "name": "agent_probe",
+        "description": "Agent probe: one live read-only eth_call from the unfunded stranger against one contract, plus the stranger's native balance and the contract's own token balance. A revert is a definitive contract answer. Detection only, never a transaction.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "signature": {"type": "string",
+                              "description": "call signature, e.g. 'owner()(address)'"},
+                "args": {"type": "array", "items": {"type": "string"},
+                         "description": "call arguments as strings"},
+            },
+            "required": ["chain", "address", "signature"],
+        },
+        "handler": _tool_agent_probe,
+    },
+    {
+        "name": "agent_fork",
+        "description": "Agent fork: run the COMPLETE attack path for one hypothesis on a local Anvil fork and measure exactly what an unfunded stranger receives before/after. Verdict is ALWAYS UNVERIFIED - a fork payout is never proof. Refuses any broadcast hypothesis; never broadcasts, never touches live funds. Needs foundry (anvil + cast) on the machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "hypothesis": {"type": "object",
+                               "description": "function (signature), args (STRANGER for the stranger address, MAX for a max uint), value_wei, tokens (token addresses to measure), optional steps list"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address", "hypothesis"],
+        },
+        "handler": _tool_agent_fork,
+    },
+    {
+        "name": "agent_trace",
+        "description": "Agent trace: keyless fund-flow trace out from one address (Blockscout + public RPC, hops 1-2, last ~20k blocks by default). Returns nodes, edges and the graph. No attribution or labels. Detection only, read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "hops": {"type": "integer", "default": 1,
+                         "description": "1 or 2 over MCP"},
+                "from_block": {"type": "integer"},
+                "to_block": {"type": "integer"},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_agent_trace,
+    },
+    {
+        "name": "agent_watch",
+        "description": "Agent watch: read-only live defense snapshot of one contract - owner(), paused(), EIP-1967 implementation/admin/beacon slots, code hash, native balance, allowance(owner, spender) for named spenders. Pass a previous snapshot as prev_snapshot to get the change list (owner/implementation/admin changes, pause flips, allowance growth). Detection only, never a transaction.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "spenders": {"type": "array",
+                             "items": {"type": "string"},
+                             "description": "spender addresses to check allowances for"},
+                "token": {"type": "string",
+                          "description": "token contract for allowances (default: the address itself)"},
+                "prev_snapshot": {"type": "object",
+                                  "description": "a previous agent_watch snapshot to diff against"},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_agent_watch,
+    },
 ]
 
 _TOOL_MAP = {t["name"]: t for t in TOOLS}
@@ -2597,7 +3017,11 @@ async def _dispatch(msg: Any) -> Optional[Dict]:
                 "agent_mythril, agent_fetch / agent_search / "
                 "agent_explorer, and agent_fuzz / agent_simulate / "
                 "agent_time_travel / agent_deploy_fork / "
-                "agent_multicall. State-changing work runs on a local "
+                "agent_multicall. Agent attack/defend tools (agent_scan, "
+                "agent_probe, agent_fork, agent_trace, agent_watch) "
+                "work on one address at a time from chat; agent_fork "
+                "runs a local Anvil fork and always reports UNVERIFIED. "
+                "State-changing work runs on a local "
                 "fork only; fork/sim/fuzz results are always "
                 "UNVERIFIED."),
         })

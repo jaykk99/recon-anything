@@ -32,10 +32,27 @@ http = httpx.Client(trust_env=False)
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "test-service-key-123"
-EXPECTED_TOOLS = {"recon_health", "recon_start_scan", "recon_list_runs",
-                  "recon_run_status", "recon_get_findings",
-                  "recon_get_graph", "recon_list_plugins",
-                  "recon_query_knowledge", "recon_get_delta"}
+# Full current tool set (v2 + v2.1 agent tools). The v1-era
+# 9-tool set went stale when v2 landed and this test red-lit
+# on master; asserting the real set keeps the boot check
+# meaningful.
+EXPECTED_TOOLS = {
+    "recon_health", "recon_start_scan", "recon_list_runs",
+    "recon_run_status", "recon_get_findings", "recon_get_graph",
+    "recon_list_plugins", "recon_query_knowledge", "recon_get_delta",
+    "recon_classify", "recon_settings", "recon_set_mode",
+    "recon_set_owned_assets", "recon_run_detail",
+    "recon_agent_activity", "recon_retest_finding",
+    "recon_get_apimap", "recon_export_run", "recon_fetch_run_file",
+    "recon_list_vulns", "recon_test_vulns",
+    "recon_verify_subdomains", "recon_probe_port", "recon_diff_runs",
+    "recon_atm_locate", "recon_list_schedules",
+    "recon_create_schedule", "recon_delete_schedule",
+    "recon_breachwatch", "recon_breachwatch_check",
+    "recon_agentdata", "recon_hunters",
+    "agent_scan", "agent_probe", "agent_fork", "agent_trace",
+    "agent_watch",
+}
 
 
 def _free_port() -> int:

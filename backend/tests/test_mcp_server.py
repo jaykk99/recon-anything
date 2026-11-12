@@ -46,12 +46,18 @@ EXPECTED_TOOLS = {
     "recon_list_schedules", "recon_create_schedule",
     "recon_delete_schedule", "recon_breachwatch",
     "recon_breachwatch_check", "recon_agentdata", "recon_hunters",
+<<<<<<< HEAD
     # v2.2: agent write / terminal / browser / crazy tools
     "agent_write_poc", "agent_write_report", "agent_cast",
     "agent_forge", "agent_anvil", "agent_slither", "agent_mythril",
     "agent_fetch", "agent_search", "agent_explorer", "agent_fuzz",
     "agent_simulate", "agent_time_travel", "agent_deploy_fork",
     "agent_multicall",
+=======
+    # v2.1: agent attack/defend tools
+    "agent_scan", "agent_probe", "agent_fork", "agent_trace",
+    "agent_watch",
+>>>>>>> 27ebb26 (Agent attack/defend pack: fork harness, defense monitor, agent MCP tools)
 }
 
 
@@ -518,7 +524,11 @@ def test_standalone_keyless_localhost_without_key(monkeypatch):
                                      "method": "initialize",
                                      "params": {}})
             assert r.status_code == 200
+<<<<<<< HEAD
             assert r.json()["result"]["serverInfo"]["version"] == "2.2.0"
+=======
+            assert r.json()["result"]["serverInfo"]["version"] == "2.1.0"
+>>>>>>> 27ebb26 (Agent attack/defend pack: fork harness, defense monitor, agent MCP tools)
             assert c.get("/").json()["auth"].startswith("none")
     finally:
         mcp_server._keyless_local_bind = False
@@ -573,10 +583,74 @@ def test_stdio_transport_handshake(tmp_path):
     out = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
     by_id = {m.get("id"): m for m in out}
     assert by_id[1]["result"]["serverInfo"] == {
+<<<<<<< HEAD
         "name": "recon-anything", "version": "2.2.0"}
+=======
+        "name": "recon-anything", "version": "2.1.0"}
+>>>>>>> 27ebb26 (Agent attack/defend pack: fork harness, defense monitor, agent MCP tools)
     tools = by_id[2]["result"]["tools"]
     assert {t["name"] for t in tools} == EXPECTED_TOOLS
     health = by_id[3]["result"]
     assert health["isError"] is False
     assert json.loads(health["content"][0]["text"])["ok"] is True
     assert by_id[4]["result"] == {}
+
+
+# -- agent attack/defend tools (v2.1) --------------------------------------
+
+def test_mcp_agent_fork_refuses_broadcast(client):
+    result = _call_tool(client, "agent_fork", {
+        "chain": "bsc", "address": "0x" + "11" * 20,
+        "hypothesis": {"broadcast": True,
+                       "function": "mint(address,uint256)",
+                       "args": []}})
+    assert result["isError"] is False
+    data = _structured(result)
+    assert data["status"] == "refused"
+    assert "broadcast" in data["detail"]
+    assert data["verdict"] == "UNVERIFIED"
+
+
+def test_mcp_agent_fork_rejects_bad_address(client):
+    result = _call_tool(client, "agent_fork", {
+        "chain": "bsc", "address": "not-an-address",
+        "hypothesis": {"function": "mint(address,uint256)",
+                       "args": []}})
+    assert result["isError"] is True
+
+
+def test_mcp_agent_scan_stubbed(client, monkeypatch):
+    monkeypatch.setattr(
+        mcp_server, "_agent_scan_impl",
+        lambda chain, address, deep=True: {
+            "chain": chain, "address": address,
+            "source_status": "verified", "findings_count": 0,
+            "findings": []})
+    data = _structured(_call_tool(client, "agent_scan", {
+        "chain": "bsc", "address": "0x" + "11" * 20}))
+    assert data["source_status"] == "verified"
+    assert data["findings_count"] == 0
+
+
+def test_mcp_agent_watch_stubbed(client, monkeypatch):
+    snap = {"chain": "bsc", "address": "0x" + "11" * 20,
+            "owner": "0x" + "22" * 20, "paused": False,
+            "implementation": None, "admin": None, "beacon": None,
+            "code_hash": "abc", "native_wei": 0, "allowances": {},
+            "unavailable": ["implementation", "admin", "beacon"]}
+    monkeypatch.setattr(
+        mcp_server, "_agent_watch_impl",
+        lambda chain, address, spenders=None, token=None,
+        prev_snapshot=None: {"chain": chain, "address": address,
+                             "snapshot": snap, "changes": []})
+    data = _structured(_call_tool(client, "agent_watch", {
+        "chain": "bsc", "address": "0x" + "11" * 20}))
+    assert data["snapshot"]["owner"] == "0x" + "22" * 20
+    assert data["changes"] == []
+
+
+def test_mcp_agent_probe_bad_signature(client):
+    result = _call_tool(client, "agent_probe", {
+        "chain": "bsc", "address": "0x" + "11" * 20,
+        "signature": "not-a-signature"})
+    assert result["isError"] is True
