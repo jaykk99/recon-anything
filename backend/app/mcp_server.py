@@ -83,11 +83,27 @@ from .plugins.registry import describe
 from .reporting import (executive_summary, findings_dump, run_progress,
                         to_csv, to_html, to_markdown)
 from .runner import launch_run
+from .agent_tools import AgentToolError as _AgentToolError
+from .agent_tools import (anvil_tool as _anvil_impl,
+                         cast_tool as _cast_impl,
+                         deploy_fork_tool as _deploy_fork_impl,
+                         explorer_tool as _explorer_impl,
+                         fetch_tool as _fetch_impl,
+                         forge_tool as _forge_impl,
+                         fuzz_tool as _fuzz_impl,
+                         multicall_tool as _multicall_impl,
+                         mythril_tool as _mythril_impl,
+                         search_tool as _search_impl,
+                         simulate_tool as _simulate_impl,
+                         slither_tool as _slither_impl,
+                         time_travel_tool as _time_travel_impl,
+                         write_poc as _write_poc_impl,
+                         write_report as _write_report_impl)
 
 log = logging.getLogger("recon-anything-mcp")
 
 SERVER_NAME = "recon-anything"
-SERVER_VERSION = "2.0.0"
+SERVER_VERSION = "2.2.0"
 SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 
@@ -1492,6 +1508,149 @@ _RUN_ID_PROP = {"run_id": {"type": "string"}}
 _RUN_ID_SCHEMA = {"type": "object", "properties": _RUN_ID_PROP,
                   "required": ["run_id"]}
 
+
+# -- v2.2: agent write / terminal / browser / crazy tools -------------------
+# Sync agent_tools impls run in a thread so long subprocess calls do not
+# block the event loop. AgentToolError becomes the MCP ToolError.
+
+async def _run_agent(fn, *a, **kw):
+    try:
+        return await asyncio.to_thread(fn, *a, **kw)
+    except _AgentToolError as e:
+        raise ToolError(str(e))
+
+
+async def _tool_agent_write_poc(args: Dict) -> Dict:
+    return await _run_agent(
+        _write_poc_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        args.get("hypothesis") or {},
+        fork_block=args.get("fork_block"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_write_report(args: Dict) -> Dict:
+    return await _run_agent(
+        _write_report_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        scan=args.get("scan"), probe=args.get("probe"),
+        fork=args.get("fork"),
+        verdict=str(args.get("verdict") or "UNVERIFIED"))
+
+
+async def _tool_agent_cast(args: Dict) -> Dict:
+    argv = args.get("args")
+    if not isinstance(argv, list) or not argv:
+        raise ToolError("args is required (list of cast arguments)")
+    return await _run_agent(
+        _cast_impl, [str(a) for a in argv],
+        rpc_url=args.get("rpc_url"),
+        timeout_s=float(args.get("timeout_s") or 60))
+
+
+async def _tool_agent_forge(args: Dict) -> Dict:
+    return await _run_agent(
+        _forge_impl, str(args.get("action") or "test"),
+        str(args.get("tree") or ""),
+        target=args.get("target"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_anvil(args: Dict) -> Dict:
+    return await _run_agent(
+        _anvil_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        args.get("hypothesis") or {},
+        fork_block=args.get("fork_block"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_slither(args: Dict) -> Dict:
+    return await _run_agent(
+        _slither_impl, chain=args.get("chain"),
+        address=args.get("address"), source=args.get("source"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_mythril(args: Dict) -> Dict:
+    return await _run_agent(
+        _mythril_impl, chain=args.get("chain"),
+        address=args.get("address"), source=args.get("source"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_fetch(args: Dict) -> Dict:
+    return await _run_agent(
+        _fetch_impl, str(args.get("url") or ""),
+        timeout_s=float(args.get("timeout_s") or 25))
+
+
+async def _tool_agent_search(args: Dict) -> Dict:
+    return await _run_agent(
+        _search_impl, str(args.get("query") or ""),
+        limit=int(args.get("limit") or 5),
+        timeout_s=float(args.get("timeout_s") or 30))
+
+
+async def _tool_agent_explorer(args: Dict) -> Dict:
+    return await _run_agent(
+        _explorer_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        str(args.get("what") or "transactions"),
+        page=int(args.get("page") or 0),
+        page_size=int(args.get("page_size") or 25))
+
+
+async def _tool_agent_fuzz(args: Dict) -> Dict:
+    return await _run_agent(
+        _fuzz_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        token=args.get("token"), runs=int(args.get("runs") or 64),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_simulate(args: Dict) -> Dict:
+    steps = args.get("steps")
+    if not isinstance(steps, list):
+        raise ToolError("steps is required (list of step objects)")
+    return await _run_agent(
+        _simulate_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""), steps,
+        fork_block=args.get("fork_block"),
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_time_travel(args: Dict) -> Dict:
+    blocks = args.get("blocks")
+    if not isinstance(blocks, list):
+        raise ToolError("blocks is required (list of block numbers)")
+    return await _run_agent(
+        _time_travel_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        str(args.get("signature") or ""),
+        args=args.get("args"), blocks=[int(b) for b in blocks],
+        timeout_s=float(args.get("timeout_s") or 120))
+
+
+async def _tool_agent_deploy_fork(args: Dict) -> Dict:
+    return await _run_agent(
+        _deploy_fork_impl, str(args.get("chain") or ""),
+        str(args.get("address") or ""),
+        str(args.get("patched_source") or ""),
+        args.get("hypothesis") or {},
+        timeout_s=float(args.get("timeout_s") or 300))
+
+
+async def _tool_agent_multicall(args: Dict) -> Dict:
+    calls = args.get("calls")
+    if not isinstance(calls, list):
+        raise ToolError("calls is required (list of call objects)")
+    return await _run_agent(
+        _multicall_impl, str(args.get("chain") or ""), calls,
+        block=args.get("block"),
+        timeout_s=float(args.get("timeout_s") or 60))
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "recon_health",
@@ -2046,6 +2205,313 @@ TOOLS: List[Dict[str, Any]] = [
         },
         "handler": _tool_hunters,
     },
+    {
+        "name": "agent_write_poc",
+        "description": "Write a Foundry fork test for a candidate + "
+                       "hypothesis, run it on a local Anvil fork, and "
+                       "return the test path + result. Fork only; the "
+                       "result is UNVERIFIED, never proof.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "enum": ["bsc", "ethereum", "base",
+                                   "arbitrum", "polygon"]},
+                "address": {"type": "string"},
+                "hypothesis": {"type": "object",
+                               "properties": {
+                                   "function": {"type": "string"},
+                                   "args": {"type": "array"},
+                                   "value_wei": {"type": "integer"},
+                                   "tokens": {"type": "array",
+                                              "items": {"type": "string"}},
+                               },
+                               "required": ["function"]},
+                "fork_block": {"type": "integer"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address", "hypothesis"],
+        },
+        "handler": _tool_agent_write_poc,
+    },
+    {
+        "name": "agent_write_report",
+        "description": "Write a verdict report (markdown) for an "
+                       "address from scan / probe / fork results. Can "
+                       "NEVER stamp VERIFIED_REAL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "scan": {"type": "object"},
+                "probe": {"type": "object"},
+                "fork": {"type": "object"},
+                "verdict": {"type": "string",
+                            "enum": ["UNVERIFIED", "FALSE_POSITIVE",
+                                     "TRIGGER_ONLY"],
+                            "default": "UNVERIFIED"},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_agent_write_report,
+    },
+    {
+        "name": "agent_cast",
+        "description": "Bounded cast wrapper: read-only calls and "
+                       "fork sends only. Refuses mainnet sends and "
+                       "any private-key / mnemonic / keystore / "
+                       "hardware flag.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "args": {"type": "array", "items": {"type": "string"}},
+                "rpc_url": {"type": "string"},
+                "timeout_s": {"type": "number", "default": 60},
+            },
+            "required": ["args"],
+        },
+        "handler": _tool_agent_cast,
+    },
+    {
+        "name": "agent_forge",
+        "description": "Run forge build / test / fmt on a given tree "
+                       "(tree must be under /var/tmp or ~/workspace).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["build", "test", "fmt"],
+                           "default": "test"},
+                "tree": {"type": "string"},
+                "target": {"type": "string"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["action", "tree"],
+        },
+        "handler": _tool_agent_forge,
+    },
+    {
+        "name": "agent_anvil",
+        "description": "Start a local Anvil fork at a block, run one "
+                       "scripted attack step as an unfunded stranger, "
+                       "stop it, report what the stranger received. "
+                       "Fork only; result is UNVERIFIED.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "hypothesis": {"type": "object",
+                               "properties": {
+                                   "function": {"type": "string"},
+                                   "args": {"type": "array"},
+                                   "value_wei": {"type": "integer"},
+                                   "tokens": {"type": "array",
+                                              "items": {"type": "string"}},
+                               },
+                               "required": ["function"]},
+                "fork_block": {"type": "integer"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address", "hypothesis"],
+        },
+        "handler": _tool_agent_anvil,
+    },
+    {
+        "name": "agent_slither",
+        "description": "Run Slither on verified source (or pasted "
+                       "source) and return its findings. Read-only "
+                       "static analysis.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "source": {"type": "string"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+        },
+        "handler": _tool_agent_slither,
+    },
+    {
+        "name": "agent_mythril",
+        "description": "Run Mythril on verified source (or pasted "
+                       "source) and return its findings. Read-only "
+                       "static analysis.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "source": {"type": "string"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+        },
+        "handler": _tool_agent_mythril,
+    },
+    {
+        "name": "agent_fetch",
+        "description": "Fetch one URL's text (explorers, Sourcify, "
+                       "DexScreener, GitHub raw). Allowlisted hosts, "
+                       "https only, 200KB cap.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "timeout_s": {"type": "number", "default": 25},
+            },
+            "required": ["url"],
+        },
+        "handler": _tool_agent_fetch,
+    },
+    {
+        "name": "agent_search",
+        "description": "Keyless web search (DuckDuckGo html) for a "
+                       "contract address, topic or error string.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 5,
+                          "minimum": 1, "maximum": 10},
+                "timeout_s": {"type": "number", "default": 30},
+            },
+            "required": ["query"],
+        },
+        "handler": _tool_agent_search,
+    },
+    {
+        "name": "agent_explorer",
+        "description": "Read-only explorer reads via the keyless "
+                       "Blockscout v2 API: transactions, token "
+                       "transfers, logs, holders, token info.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "what": {"type": "string",
+                         "enum": ["transactions", "token_transfers",
+                                  "logs", "holders", "token_info"]},
+                "page": {"type": "integer", "default": 0},
+                "page_size": {"type": "integer", "default": 25,
+                              "minimum": 1, "maximum": 50},
+            },
+            "required": ["chain", "address", "what"],
+        },
+        "handler": _tool_agent_explorer,
+    },
+    {
+        "name": "agent_fuzz",
+        "description": "Bounded invariant fuzz on a fork: random "
+                       "calldata against the target, invariant = the "
+                       "unfunded stranger never gains value. Verdict "
+                       "always UNVERIFIED.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "token": {"type": "string"},
+                "runs": {"type": "integer", "default": 64,
+                         "minimum": 1, "maximum": 256},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_agent_fuzz,
+    },
+    {
+        "name": "agent_simulate",
+        "description": "Multi-step simulation on a fork, including "
+                       "flash-loan-shaped steps funded on the fork "
+                       "only. Sim-only verdict, always UNVERIFIED.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "steps": {"type": "array",
+                          "items": {"type": "object"}},
+                "fork_block": {"type": "integer"},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address", "steps"],
+        },
+        "handler": _tool_agent_simulate,
+    },
+    {
+        "name": "agent_time_travel",
+        "description": "Re-run one read-only probe at historical "
+                       "blocks to catch upgrade-window bugs. Archive "
+                       "gaps are reported, never faked.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "signature": {"type": "string"},
+                "args": {"type": "array"},
+                "blocks": {"type": "array",
+                           "items": {"type": "integer"}},
+                "timeout_s": {"type": "number", "default": 120},
+            },
+            "required": ["chain", "address", "signature", "blocks"],
+        },
+        "handler": _tool_agent_time_travel,
+    },
+    {
+        "name": "agent_deploy_fork",
+        "description": "Deploy a patched contract to a local fork "
+                       "and diff its behavior vs the original under "
+                       "the same hypothesis. Fork only; verdict "
+                       "always UNVERIFIED.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "address": {"type": "string"},
+                "patched_source": {"type": "string"},
+                "hypothesis": {"type": "object",
+                               "properties": {
+                                   "function": {"type": "string"},
+                                   "args": {"type": "array"},
+                                   "value_wei": {"type": "integer"},
+                               },
+                               "required": ["function"]},
+                "timeout_s": {"type": "number", "default": 300},
+            },
+            "required": ["chain", "address", "patched_source",
+                         "hypothesis"],
+        },
+        "handler": _tool_agent_deploy_fork,
+    },
+    {
+        "name": "agent_multicall",
+        "description": "Batch read-only calls in one round trip via "
+                       "Multicall3, falling back to sequential calls. "
+                       "Read-only, never a transaction.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string"},
+                "calls": {"type": "array",
+                          "items": {"type": "object",
+                                    "properties": {
+                                        "address": {"type": "string"},
+                                        "function": {"type": "string"},
+                                        "args": {"type": "array"},
+                                    },
+                                    "required": ["address",
+                                                 "function"]}},
+                "block": {"type": "integer"},
+                "timeout_s": {"type": "number", "default": 60},
+            },
+            "required": ["chain", "calls"],
+        },
+        "handler": _tool_agent_multicall,
+    },
 ]
 
 _TOOL_MAP = {t["name"]: t for t in TOOLS}
@@ -2124,7 +2590,16 @@ async def _dispatch(msg: Any) -> Optional[Dict]:
                 "vuln advisor (recon_list_vulns / recon_test_vulns, "
                 "dry-run by default), breach watch, and the agent "
                 "data / hunter state (recon_agentdata, "
-                "recon_hunters)."),
+                "recon_hunters). Agent tools (agent_*) add write / "
+                "terminal / browser / fork-simulation capability: "
+                "agent_write_poc and agent_write_report, agent_cast / "
+                "agent_forge / agent_anvil / agent_slither / "
+                "agent_mythril, agent_fetch / agent_search / "
+                "agent_explorer, and agent_fuzz / agent_simulate / "
+                "agent_time_travel / agent_deploy_fork / "
+                "agent_multicall. State-changing work runs on a local "
+                "fork only; fork/sim/fuzz results are always "
+                "UNVERIFIED."),
         })
     if method == "ping":
         return _result(req_id, {})
