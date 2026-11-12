@@ -1,0 +1,14 @@
+"""Fixtures for exchange-web block 4.
+
+VULN[pid] MUST fire under its own detector and stay silent
+under the other nine; CLEAN[pid] (the protected shape) MUST
+stay silent under all ten. Values are (text, headers).
+"""
+
+VULN = {'exch_internal_api_base_prod': ('const apiBase = "https://api-internal.exchange.example/v2";', None), 'exch_admin_api_base_frontend': ('const adminApiBase = "https://admin-api.exchange.example/v1";', None), 'exch_staging_api_host_prod': ('const apiHost = "https://staging-api.exchange.example/v2";', None), 'exch_debug_flag_admin_enable': ('const config = {enableAdmin: true, theme: "dark"};', None), 'exch_deprecated_api_version_ref': ('const legacyRoute = "/api/v1/withdraw/history"; // deprecated, kept for old apps', None), 'exch_treasury_api_route_ref': ('const route = "/api/treasury/transfer";', None), 'exch_compliance_api_route_ref': ('const route = "/api/compliance/review/queue";', None), 'exch_localhost_api_prod_bundle': ('const apiBase = "http://localhost:8080/api";', None), 'exch_ops_feature_flag_ref': ('const featureFlags = {enableTreasury: false, newChart: true};', None), 'exch_internal_route_path_ref': ('const route = "/api/internal/users/search";', None)}
+
+CLEAN = {'exch_internal_api_base_prod': ('const apiBase = "https://api.exchange.example/v2";', None), 'exch_admin_api_base_frontend': ('// admin tooling is a separate app; this bundle has no admin endpoints', None), 'exch_staging_api_host_prod': ('const apiHost = "https://api.exchange.example/v2";', None), 'exch_debug_flag_admin_enable': ('const config = {enableAdmin: false, debugMode: false};', None), 'exch_deprecated_api_version_ref': ('const route = "/api/v3/withdraw/history";', None), 'exch_treasury_api_route_ref': ('const route = "/api/v3/account/balance";', None), 'exch_compliance_api_route_ref': ('const route = "/api/v3/kyc/status";', None), 'exch_localhost_api_prod_bundle': ('const apiBase = "https://api.exchange.example/v2";', None), 'exch_ops_feature_flag_ref': ('const featureFlags = {newChart: true, darkMode: false};', None), 'exch_internal_route_path_ref': ('const route = "/api/v3/users/search";', None)}
+
+CLEAN_BUNDLE = 'const apiBase = "https://api.exchange.example/v3";\nconst routes = [{path: "/account/dashboard"}, {path: "/trade"}];\nconst socket = io(streamUrl, {auth: {token: sessionToken}});\nconst gql = {depthLimit: 8, maxComplexity: 500};\nfunction isValidAddress(a) { return checksumVerify(a); }\n'
+
+STRONG_HEADERS = {'content-security-policy': "default-src 'self'; script-src 'self'", 'strict-transport-security': 'max-age=63072000; includeSubDomains', 'x-frame-options': 'DENY', 'set-cookie': 'sessionid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax', 'access-control-allow-origin': 'https://app.exchange.example', 'access-control-allow-credentials': 'true'}

@@ -1,0 +1,14 @@
+"""Fixtures for exchange-web block 1.
+
+VULN[pid] MUST fire under its own detector and stay silent
+under the other nine; CLEAN[pid] (the protected shape) MUST
+stay silent under all ten. Values are (text, headers).
+"""
+
+VULN = {'exch_api_key_secret_pair_js': ('const cfg={apiKey:"AKEX9f2kLmN8pQr4sT6v",apiSecret:"Zx8Qw2Er5Ty7Ui9Op0As3Df6Gh1Jk4Lz"};', None), 'exch_testnet_key_prod_bundle': ('const testnetApiKey = "tn8Kd3Pw9Qx2Vb7Nm4Hs6J";', None), 'exch_withdrawal_key_client_side': ('const withdrawApiKey = "WD7hJ3kL9mN2pQ5rS8tV1x";', None), 'exch_sourcemap_embedded_secret': ('{"sourcesContent":["const apiSecret = \'SM9qW8eR7tY6uI5oP4aS3d\';"]}', None), 'exch_env_config_bundle_leak': ('API_SECRET=Zx9Qw8Er7Ty6Ui5Op4As3Df6Gh', None), 'exch_request_signing_secret_js': ('const signingSecret = "SG7hJ9kL2mN4pQ6rS8tV0xZ";', None), 'exch_subaccount_key_js': ('const subaccountApiSecret = "SB3dF5gH7jK9lM1nP3qR5s";', None), 'exch_partner_affiliate_secret_key': ('const partnerSecret = "PT5tG7hJ9kL1mN3pQ5rS7v";', None), 'exch_webhook_secret_frontend': ('const webhookSecret = "WH2wE4rT6yU8iO0pA3sD5f";', None), 'exch_listenkey_leak_handling': ('const listenKey = "lk9H8gF7dS6aP5oI4uY3tR2eW1q";', None)}
+
+CLEAN = {'exch_api_key_secret_pair_js': ('const cfg={apiKey:process.env.EXCHANGE_API_KEY,apiSecret:process.env.EXCHANGE_API_SECRET};', None), 'exch_testnet_key_prod_bundle': ('const testnetApiKey = process.env.TESTNET_API_KEY;', None), 'exch_withdrawal_key_client_side': ('// withdrawal keys never leave the server; the client calls /api/withdraw/prepare', None), 'exch_sourcemap_embedded_secret': ('{"sourcesContent":["const label = \'account balance\';"]}', None), 'exch_env_config_bundle_leak': ('API_SECRET=your_secret_here', None), 'exch_request_signing_secret_js': ('const signingSecret = process.env.SIGNING_SECRET;', None), 'exch_subaccount_key_js': ('const subaccountApiSecret = process.env.SUBACCOUNT_API_SECRET;', None), 'exch_partner_affiliate_secret_key': ('const partnerId = "partner-public-123";', None), 'exch_webhook_secret_frontend': ('// webhook signatures are verified on the server only', None), 'exch_listenkey_leak_handling': ('const listenKey = await api.getListenKey(session);', None)}
+
+CLEAN_BUNDLE = 'const apiBase = "https://api.exchange.example/v3";\nconst routes = [{path: "/account/dashboard"}, {path: "/trade"}];\nconst socket = io(streamUrl, {auth: {token: sessionToken}});\nconst gql = {depthLimit: 8, maxComplexity: 500};\nfunction isValidAddress(a) { return checksumVerify(a); }\n'
+
+STRONG_HEADERS = {'content-security-policy': "default-src 'self'; script-src 'self'", 'strict-transport-security': 'max-age=63072000; includeSubDomains', 'x-frame-options': 'DENY', 'set-cookie': 'sessionid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax', 'access-control-allow-origin': 'https://app.exchange.example', 'access-control-allow-credentials': 'true'}

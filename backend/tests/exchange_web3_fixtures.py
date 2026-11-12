@@ -1,0 +1,14 @@
+"""Fixtures for exchange-web block 3.
+
+VULN[pid] MUST fire under its own detector and stay silent
+under the other nine; CLEAN[pid] (the protected shape) MUST
+stay silent under all ten. Values are (text, headers).
+"""
+
+VULN = {'exch_ws_private_channel_no_auth': ('socket.subscribe("private-orders");', None), 'exch_user_stream_endpoint_hardcoded': ('const userStreamUrl = "wss://stream.exchange.example/ws/userDataStream";', None), 'exch_ws_debug_mode_enabled': ('const socketConfig = {url: "wss://stream.exchange.example", debug: true};', None), 'exch_ws_token_in_url': ('const ws = new WebSocket("wss://stream.exchange.example/ws?token=tok8H7g6F5d4S3a2P1o");', None), 'exch_staging_socket_in_prod': ('const backupSocket = "wss://staging-stream.exchange.example/ws";', None), 'exch_pusher_secret_client': ('const pusherSecret = "PS9kL8mN7bV6cX5zA4sD3f";', None), 'exch_ably_root_key_client': ('const ablyClient = new Ably.Realtime({key: "xVLw7A.9kLm2N:Ab3Cd4Ef5Gh6Ij7Kl8Mn"});', None), 'exch_ws_token_persisted_storage': ('localStorage.setItem("streamToken", tok);', None), 'exch_ws_admin_channel_reference': ('socket.subscribe("admin-events");', None), 'exch_socketio_auth_disabled': ('const socket = io(url, {auth: false, transports: ["websocket"]});', None)}
+
+CLEAN = {'exch_ws_private_channel_no_auth': ('socket.subscribe("private-orders", {auth: {token: sessionToken}});', None), 'exch_user_stream_endpoint_hardcoded': ('const userStreamUrl = await api.getStreamUrl(session);', None), 'exch_ws_debug_mode_enabled': ('const socketConfig = {url: streamUrl, debug: false};', None), 'exch_ws_token_in_url': ('const ws = new WebSocket(streamUrl); ws.onopen = () => ws.send(JSON.stringify({auth: sessionToken}));', None), 'exch_staging_socket_in_prod': ('const backupSocket = "wss://stream2.exchange.example/ws";', None), 'exch_pusher_secret_client': ('const pusherKey = "public-app-key-123";', None), 'exch_ably_root_key_client': ('const ablyClient = new Ably.Realtime({authUrl: "/api/ably/token"});', None), 'exch_ws_token_persisted_storage': ('sessionStorage.setItem("uiTheme", "dark");', None), 'exch_ws_admin_channel_reference': ('socket.subscribe("public-trades");', None), 'exch_socketio_auth_disabled': ('const socket = io(url, {auth: {token: sessionToken}});', None)}
+
+CLEAN_BUNDLE = 'const apiBase = "https://api.exchange.example/v3";\nconst routes = [{path: "/account/dashboard"}, {path: "/trade"}];\nconst socket = io(streamUrl, {auth: {token: sessionToken}});\nconst gql = {depthLimit: 8, maxComplexity: 500};\nfunction isValidAddress(a) { return checksumVerify(a); }\n'
+
+STRONG_HEADERS = {'content-security-policy': "default-src 'self'; script-src 'self'", 'strict-transport-security': 'max-age=63072000; includeSubDomains', 'x-frame-options': 'DENY', 'set-cookie': 'sessionid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax', 'access-control-allow-origin': 'https://app.exchange.example', 'access-control-allow-credentials': 'true'}

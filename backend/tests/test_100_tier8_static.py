@@ -414,7 +414,7 @@ def test_new_source_analyzers_silent_on_fp_clean_corpus():
 
 def test_registry_count_and_ids():
     reg = discover()
-    assert len(reg) == 1235, f"registry size {len(reg)}, expected 1235"
+    assert len(reg) == 1335, f"registry size {len(reg)}, expected 1335"
     for pid in NEW_IDS + DUP_IDS:
         assert pid in reg, pid
     for cls in (SolhintLintPlugin, SmartcheckRulesPlugin,

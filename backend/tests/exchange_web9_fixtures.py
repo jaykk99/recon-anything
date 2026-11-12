@@ -1,0 +1,14 @@
+"""Fixtures for exchange-web block 9.
+
+VULN[pid] MUST fire under its own detector and stay silent
+under the other nine; CLEAN[pid] (the protected shape) MUST
+stay silent under all ten. Values are (text, headers).
+"""
+
+VULN = {'exch_admin_panel_route_ref': ('const routes = [{path: "/admin/dashboard", name: "Admin"}];', None), 'exch_treasury_ops_panel_ref': ('const routes = [{path: "/ops/dashboard", name: "Ops"}];', None), 'exch_compliance_panel_ref': ('const routes = [{path: "/compliance/review-queue", name: "Compliance"}];', None), 'exch_employee_sso_endpoint_ref': ('const ssoUrl = "https://exchange.okta.com/oauth2/default";', None), 'exch_internal_hostname_bundle': ('const metrics = "https://db-01.internal/metrics";', None), 'exch_support_impersonation_route_ref': ('const route = "/support/impersonate/user";', None), 'exch_internal_health_endpoint_ref': ('const route = "/actuator/health";', None), 'exch_robots_admin_disallow': ('User-agent: *\nDisallow: /admin/\nDisallow: /internal/', None), 'exch_sitemap_admin_url': ('<url><loc>https://exchange.example/admin/users</loc></url>', None), 'exch_ops_tooling_hostname_ref': ('const grafanaUrl = "https://grafana.monitoring.example/d/abc";', None)}
+
+CLEAN = {'exch_admin_panel_route_ref': ('const routes = [{path: "/account/dashboard", name: "Account"}];', None), 'exch_treasury_ops_panel_ref': ('const routes = [{path: "/account/balances", name: "Balances"}];', None), 'exch_compliance_panel_ref': ('const routes = [{path: "/account/verification", name: "Verification"}];', None), 'exch_employee_sso_endpoint_ref': ('const loginUrl = "https://app.exchange.example/login";', None), 'exch_internal_hostname_bundle': ('const metrics = "https://metrics.exchange.example/metrics";', None), 'exch_support_impersonation_route_ref': ('const route = "/support/tickets";', None), 'exch_internal_health_endpoint_ref': ('const route = "/api/v3/ping";', None), 'exch_robots_admin_disallow': ('User-agent: *\nDisallow: /tmp/\nAllow: /', None), 'exch_sitemap_admin_url': ('<url><loc>https://exchange.example/about</loc></url>', None), 'exch_ops_tooling_hostname_ref': ('const statusUrl = "https://status.exchange.example/";', None)}
+
+CLEAN_BUNDLE = 'const apiBase = "https://api.exchange.example/v3";\nconst routes = [{path: "/account/dashboard"}, {path: "/trade"}];\nconst socket = io(streamUrl, {auth: {token: sessionToken}});\nconst gql = {depthLimit: 8, maxComplexity: 500};\nfunction isValidAddress(a) { return checksumVerify(a); }\n'
+
+STRONG_HEADERS = {'content-security-policy': "default-src 'self'; script-src 'self'", 'strict-transport-security': 'max-age=63072000; includeSubDomains', 'x-frame-options': 'DENY', 'set-cookie': 'sessionid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax', 'access-control-allow-origin': 'https://app.exchange.example', 'access-control-allow-credentials': 'true'}
