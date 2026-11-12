@@ -8,7 +8,7 @@ stay silent under ALL five detectors; every other plugin's
 vulnerable fixture MUST stay silent under this one (no
 cross-talk); the batch-10, batch-11 and batch-13 fixtures MUST
 stay silent under all five (no cross-batch noise); the registry
-discovers exactly 1232 plugins including all five.
+discovers exactly 1346 plugins including all five.
 """
 import os
 import sys
@@ -52,8 +52,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_1232():
     reg = discover()
-    assert len(reg) == 1232, \
-        f"registry size {len(reg)}, expected 1232"
+    assert len(reg) == 1346, \
+        f"registry size {len(reg)}, expected 1346"
 
 
 def test_vuln_fires_candidate_with_evidence():
@@ -143,8 +143,13 @@ def test_batch13_fixtures_silent_under_all_five():
 
 def test_batch12_fixtures_silent_under_all_five():
     # No cross-batch noise: the previous batch's fixtures must
-    # not fire under any batch-14 detector. Skipped while
-    # batch-12 fixtures are still on unmerged PR #153.
+    # not fire under any batch-14 detector, with ONE known
+    # dual-shape exception (merged 2026-11-12): the batch-12
+    # intent_deposit_ghost_credit_no_rollback fixture ALSO
+    # performs its token transfer before the accounting write,
+    # so callback_token_cei_violation legitimately fires on it
+    # as trigger_only / low / FIXED - never a candidate. The
+    # overlap is in the fixture shape, not a detector bug.
     if fx12 is None:
         import pytest
         pytest.skip("deep_audit12_fixtures not on master yet "
@@ -154,6 +159,14 @@ def test_batch12_fixtures_silent_under_all_five():
         for fid, src in group.items():
             for pid in IDS:
                 hits = hits_for(src, pid)
+                if (pid == "callback_token_cei_violation" and
+                        fid == "intent_deposit_ghost_credit_no_rollback"):
+                    assert all(
+                        h["report_class"] == "trigger_only" and
+                        h["severity"] == "low" for h in hits), (
+                        f"{pid}: dual-shape overlap on {fid} must "
+                        f"stay trigger_only/low, got {hits}")
+                    continue
                 assert hits == [], (
                     f"{pid}: fired on batch-12 fixture {fid}: "
                     f"{hits}")
