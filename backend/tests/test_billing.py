@@ -213,6 +213,57 @@ def test_customer_cannot_open_another_users_run(client):
     assert r.status_code == 404
 
 
+def test_customer_cannot_open_another_users_run_via_sibling_routes(client):
+    """Regression: /api/runs/{id} and /export already blocked a
+    cross-customer peek, but graph, apimap, agent-activity, vulns,
+    fetch, subdomains/verify, probe/port and findings/retest did not --
+    any signed-in customer who learned another customer's run_id (a
+    shared link, a screenshot) could read that run's full findings
+    graph/API map/vulnerabilities, or re-trigger live probes against a
+    target that wasn't theirs. All of these must 404 the same way
+    /api/runs/{id} does."""
+    _cleanup()
+    owner_uid = _mk_user("sibling-run-owner")
+    other_uid = _mk_user("sibling-run-peeker")
+    run_id = "bill-run-sibling"
+    _mk_run(run_id, user_id=owner_uid, n_findings=1)
+    other_cookie = _cookie(other_uid)
+
+    assert client.get(f"/api/runs/{run_id}/graph",
+                      headers=other_cookie).status_code == 404
+    assert client.get(f"/api/runs/{run_id}/apimap",
+                      headers=other_cookie).status_code == 404
+    assert client.get(f"/api/runs/{run_id}/agent-activity",
+                      headers=other_cookie).status_code == 404
+    assert client.get(f"/api/runs/{run_id}/vulns",
+                      headers=other_cookie).status_code == 404
+    assert client.get(f"/api/runs/{run_id}/fetch",
+                      params={"url": "http://example.com/x"},
+                      headers=other_cookie).status_code == 404
+    assert client.post(f"/api/runs/{run_id}/subdomains/verify", json={},
+                       headers=other_cookie).status_code == 404
+    assert client.get(f"/api/runs/{run_id}/probe/port",
+                      params={"host": "example.com", "port": 80},
+                      headers=other_cookie).status_code == 404
+    assert client.post(f"/api/runs/{run_id}/findings/1/retest",
+                       headers=other_cookie).status_code == 404
+    assert client.post(f"/api/runs/{run_id}/vulns/test",
+                       headers=other_cookie).status_code == 404
+    assert client.post(f"/api/runs/{run_id}/vulns/dry-run",
+                       json={"candidate_id": "x"},
+                       headers=other_cookie).status_code == 404
+    assert client.post(f"/api/runs/{run_id}/atm/locate",
+                       json={"query": "x", "authorized": True},
+                       headers=other_cookie).status_code == 404
+
+    # the owning customer still gets through (not a universal lockout)
+    owner_cookie = _cookie(owner_uid)
+    assert client.get(f"/api/runs/{run_id}/graph",
+                      headers=owner_cookie).status_code == 200
+    assert client.get(f"/api/runs/{run_id}/vulns",
+                      headers=owner_cookie).status_code == 200
+
+
 def test_free_scan_daily_limit(client):
     _cleanup()
     uid = _mk_user("scan-limited")
@@ -249,6 +300,39 @@ def test_plugin_filter_pure():
         free, ["dns", "cp_a", "tls", "cp_b"])
     assert excl == ["cp_a", "cp_b"]
     assert billing.excluded_plugins_for_plan(pro, ["cp_a"]) == []
+
+
+# --------------------------------------------------------- session secret
+
+def test_session_secret_refuses_hardcoded_fallback_in_signin_mode(monkeypatch):
+    """Regression: _session_secret() used to silently sign every customer
+    session cookie with a hardcoded string the moment none of
+    RECON_SESSION_SECRET/RECON_MASTER_KEY/RECON_ACCESS_CODE were set --
+    which, in sign-in mode (GitHub creds configured, access code
+    retired), would let anyone forge a session for any user_id. It must
+    now fail loudly instead."""
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "x")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "y")
+    monkeypatch.delenv("RECON_SESSION_SECRET", raising=False)
+    monkeypatch.delenv("RECON_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RECON_ACCESS_CODE", raising=False)
+    with pytest.raises(RuntimeError):
+        billing._session_secret()
+    # setting any one of the three real secrets is enough
+    monkeypatch.setenv("RECON_SESSION_SECRET", "a-real-secret")
+    assert billing._session_secret() == "a-real-secret"
+
+
+def test_session_secret_dev_fallback_when_no_signin(monkeypatch):
+    """No GitHub creds and no access code = already fully open local dev
+    (resolve_actor treats every request as owner); the dev fallback here
+    grants nothing beyond that, so it is fine for it to stay quiet."""
+    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GITHUB_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("RECON_SESSION_SECRET", raising=False)
+    monkeypatch.delenv("RECON_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RECON_ACCESS_CODE", raising=False)
+    assert billing._session_secret() == "recon-dev-session-secret"
 
 
 # --------------------------------------------------------------- BTC orders
@@ -344,6 +428,9 @@ def test_github_signin_opens_soon_when_unconfigured(client, monkeypatch):
 def test_github_signin_redirects_when_configured(client, monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-secret")
+    # oauth state signing needs a real session secret in sign-in mode
+    # (see test_session_secret_refuses_hardcoded_fallback_in_signin_mode)
+    monkeypatch.setenv("RECON_SESSION_SECRET", "test-session-secret")
     r = client.get("/api/auth/github", follow_redirects=False)
     assert r.status_code == 303
     loc = r.headers["location"]
