@@ -21,6 +21,7 @@ Rules baked in, same as v2.1:
   crashing when they are not installed.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -113,17 +115,23 @@ def _run(cmd: List[str], timeout: float, cwd: Optional[str] = None,
 
 def _find_binary(name: str) -> Optional[str]:
     """foundry lives in ~/workspace/tools/audit/bin; tool venvs in /tmp."""
-    candidates = [
-        os.path.expanduser(f"~/workspace/tools/audit/bin/{name}"),
-        f"/var/tmp/tool-libs/slither-venv/bin/{name}",
-        os.path.expanduser(
-            "~/workspace/wt/tool-integrations/.venv-mythril/bin/"
-            f"{name}"),
-    ]
-    for path in candidates:
+    found = shutil.which(name)
+    if found:
+        return found
+    audit = os.path.expanduser("~/workspace/tools/audit")
+    for path in [
+            os.path.join(audit, "bin", name),
+            os.path.join(audit, "venv-slither", "bin", name),
+            os.path.join(audit, "venv-mythril", "bin", name),
+            os.path.join(audit, "venv-semgrep", "bin", name),
+            f"/var/tmp/tool-libs/slither-venv/bin/{name}",
+            os.path.expanduser(
+                "~/workspace/wt/tool-integrations/.venv-mythril/bin/"
+                f"{name}"),
+    ]:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
-    return shutil.which(name)
+    return None
 
 
 def _scratch(sub: str) -> Path:
@@ -274,12 +282,14 @@ def _encode_calldata(signature: str,
     """Minimal ABI encoder for the types a hypothesis needs:
     address / uint / int / bool / bytes32 / string. Raises on anything
     else instead of guessing."""
-    m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\((.*)\)",
-                     (signature or "").strip())
-    if not m:
+    sig = (signature or "").strip()
+    i = sig.find("(")
+    j = sig.find(")", i) if i >= 0 else -1
+    if i < 0 or j < 0 or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", sig[:i]):
         raise AgentToolError(
             "function must be a signature like 'mint(address,uint256)'")
-    name, params = m.group(1), m.group(2).strip()
+    name, params = sig[:i], sig[i + 1:j].strip()
     types = [t.strip() for t in params.split(",")] if params else []
     vals = [str(a) for a in (args or [])]
     if len(vals) != len(types):
@@ -422,9 +432,21 @@ def _find_forge_std() -> Optional[str]:
             if dirpath.count(os.sep) - root.count(os.sep) > 4:
                 dirnames[:] = []
     return None
-PYEOF_AGENT_TOOLS
 
 # ---------------------------------------------------------------------------
+def _sol_address(address: str) -> str:
+    """An address literal solc accepts: EIP-55 checksum via cast,
+    all-lowercase when cast is unavailable (solc accepts lowercase)."""
+    cast = _find_binary("cast")
+    if cast:
+        run = _run([cast, "to-check-sum-address", address], timeout=15)
+        out = (run["stdout"] or "").strip()
+        if run["rc"] == 0 and re.fullmatch(
+                r"0x[0-9a-fA-F]{40}", out or ""):
+            return out
+    return address.lower()
+
+
 # WRITE tools
 # ---------------------------------------------------------------------------
 
@@ -439,23 +461,23 @@ contract AgentPoc is Test {
     address constant TARGET = {target};
     address constant STRANGER = {stranger};
 
-    function setUp() public {{
+    function setUp() public {
         vm.createSelectFork(vm.envString("AGENT_FORK_RPC"));
-    }}
+    }
 
-    function testAgentPoc() public {{
+    function testAgentPoc() public {
         uint256 nativeBefore = STRANGER.balance;
         uint256 tokenBefore = 0;
         {token_before}
         vm.prank(STRANGER);
-        (bool ok, bytes memory ret) = TARGET.call{{value: {value_wei}}}(
-            {calldata});
+        (bool ok, bytes memory ret) = TARGET.call{value: {value_wei}}(
+            hex"{calldata_hex}");
         emit log_named_string("CALL_OK", ok ? "true" : "false");
         emit log_named_uint("STRANGER_NATIVE_BEFORE", nativeBefore);
         emit log_named_uint("STRANGER_NATIVE_AFTER", STRANGER.balance);
         {token_after}
         emit log_named_bytes("RETURN_DATA", ret);
-    }}
+    }
 }
 """
 
@@ -493,16 +515,18 @@ def write_poc(chain: str, address: str, hypothesis: Dict[str, Any],
     token_after = ""
     for i, t in enumerate(tokens):
         token_before += (
-            f"uint256 token{i}Before = IERC20({t}).balanceOf(STRANGER);"
+            f"uint256 token{i}Before = IERC20({_sol_address(t)}).balanceOf(STRANGER);"
             f"\n        emit log_named_uint(\"STRANGER_TOKEN{i}_BEFORE"
             f"\", token{i}Before);")
         token_after += (
             f"emit log_named_uint(\"STRANGER_TOKEN{i}_AFTER\", "
-            f"IERC20({t}).balanceOf(STRANGER));")
-    source = _POC_TEMPLATE.format(
-        target=address, stranger=STRANGER,
-        value_wei=value_wei, calldata=calldata,
-        token_before=token_before, token_after=token_after)
+            f"IERC20({_sol_address(t)}).balanceOf(STRANGER));")
+    source = (_POC_TEMPLATE.replace("{target}", _sol_address(address))
+                .replace("{stranger}", _sol_address(STRANGER))
+                .replace("{value_wei}", str(value_wei))
+                .replace("{calldata_hex}", calldata[2:])
+                .replace("{token_before}", token_before)
+                .replace("{token_after}", token_after))
     source = ("interface IERC20 { function balanceOf(address) external "
               "view returns (uint256); }\n\n" + source)
     slug = f"{chain}-{address[:10].lower()}"
@@ -514,7 +538,7 @@ def write_poc(chain: str, address: str, hypothesis: Dict[str, Any],
     forge_std = _find_forge_std()
     foundry_toml = "[profile.default]\nsrc = 'src'\ntest = 'test'\n"
     if forge_std:
-        foundry_toml += (f"remappings = ['forge-std/={forge_std}/']\n")
+        foundry_toml += (f"remappings = ['forge-std/={forge_std}/src/']\n")
     (proj / "foundry.toml").write_text(foundry_toml)
     out: Dict[str, Any] = {
         "chain": chain, "address": address,
@@ -577,11 +601,18 @@ def write_report(chain: str, address: str,
              f"- verdict: **{verdict}**", ""]
     if scan:
         by_sev = scan.get("by_severity") or {}
+        flist = scan.get("findings")
+        fcount = scan.get("findings_count")
+        if isinstance(flist, list):
+            if fcount is None:
+                fcount = len(flist)
+        elif isinstance(flist, int) and fcount is None:
+            fcount = flist
         lines += ["## Scan",
-                  f"- findings: {scan.get('findings_count', '?')}",
+                  f"- findings: {fcount if fcount is not None else '?'}",
                   f"- by severity: {json.dumps(by_sev)}",
                   f"- source: {scan.get('source_status', '?')}"]
-        for f in (scan.get("findings") or [])[:20]:
+        for f in (flist if isinstance(flist, list) else [])[:20]:
             lines.append(
                 f"- [{f.get('severity', '?')}] "
                 f"`{f.get('plugin', '?')}` "
@@ -646,6 +677,12 @@ def cast_tool(args: List[str], rpc_url: Optional[str] = None,
     if len(args) > 20:
         raise AgentToolError("too many args (20 max)")
     sub = args[0]
+    if sub in ("--version", "--help", "-h", "-V", "version"):
+        cast0 = _find_binary("cast")
+        if not cast0:
+            return {"status": "unavailable",
+                    "detail": "cast is not installed (foundry)"}
+        return _run([cast0] + args, timeout=float(timeout_s or 60))
     joined = " ".join(args)
     if any(flag in joined for flag in _CAST_SECRET_FLAGS):
         raise AgentToolError(
@@ -686,10 +723,11 @@ def forge_tool(action: str, tree: str,
     p = Path(tree)
     if not p.is_dir():
         raise AgentToolError(f"tree does not exist: {tree}")
-    allowed = ("/var/tmp/", os.path.expanduser("~/workspace/"))
+    allowed = ("/var/tmp/", "/tmp/",
+                 os.path.expanduser("~/workspace/"))
     if not str(p).startswith(allowed):
         raise AgentToolError(
-            "tree must be under /var/tmp or ~/workspace")
+            "tree must be under /var/tmp, /tmp or ~/workspace")
     if not ((p / "foundry.toml").exists()
             or (p / "remappings.txt").exists()
             or (p / "src").is_dir()):
@@ -767,6 +805,102 @@ def anvil_tool(chain: str, address: str, hypothesis: Dict[str, Any],
                  "VERIFIED_REAL.")}
 
 
+def _parse_ver(v: str):
+    parts = (v.strip().split(".") + ["0", "0", "0"])[:3]
+    try:
+        return tuple(int(x) for x in parts)
+    except ValueError:
+        return None
+
+
+def _pragma_satisfies(constraint: str, ver) -> bool:
+    """Tiny semver-constraint check for `pragma solidity ...;`.
+    Handles = ^ >= > <= <, ranges, and || (first matching branch)."""
+    constraint = (constraint or "").strip()
+    if not constraint:
+        return True
+    for branch in constraint.split("||"):
+        branch = branch.strip()
+        if not branch:
+            continue
+        ok = True
+        for m in re.finditer(r"(>=|<=|>|<|=|\^)?\s*(\d+\.\d+\.\d+)",
+                             branch):
+            op, vs = m.group(1) or "", m.group(2)
+            want = _parse_ver(vs)
+            if want is None:
+                continue
+            if op in ("", "="):
+                good = ver == want
+            elif op == "^":
+                good = (ver >= want and ver[0] == want[0]
+                        and (want[0] != 0 or ver[1] == want[1]))
+            elif op == ">=":
+                good = ver >= want
+            elif op == ">":
+                good = ver > want
+            elif op == "<=":
+                good = ver <= want
+            elif op == "<":
+                good = ver < want
+            else:
+                good = True
+            ok = ok and good
+        if ok:
+            return True
+    return False
+
+
+def _installed_solcs():
+    """solc binaries already on this machine: svm + solc-select."""
+    found = {}
+    roots = [
+        os.path.expanduser("~/.local/share/svm"),
+        os.path.expanduser("~/.solc-select/artifacts"),
+    ]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for entry in os.listdir(root):
+            m = (re.fullmatch(r"solc-(\d+\.\d+\.\d+)", entry)
+                 or re.fullmatch(r"(\d+\.\d+\.\d+)", entry))
+            if not m:
+                continue
+            ver = _parse_ver(m.group(1))
+            if ver is None:
+                continue
+            for cand in (os.path.join(root, entry, f"solc-{m.group(1)}"),
+                         os.path.join(root, entry, "solc")):
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    found.setdefault(ver, cand)
+                    break
+    return found
+
+
+def _pick_solc(source: str):
+    """(version_str, path) of the lowest installed solc satisfying the
+    source's pragma, or (None, None) when nothing installed matches."""
+    # a flattened source can carry several pragmas; a version must
+    # satisfy ALL of them (e.g. >=0.5.0 in one file and =0.5.16 in
+    # another means only 0.5.16 works)
+    constraints = [m.group(1).strip() for m in
+                   re.finditer(r"pragma\s+solidity\s+([^;]+);",
+                               source or "")]
+    installed = _installed_solcs()
+    for ver in sorted(installed):
+        if all(_pragma_satisfies(c, ver) for c in constraints):
+            return (".".join(str(x) for x in ver), installed[ver])
+    return (None, None)
+
+
+# Third-party slitherin detectors that crash on some contracts
+# (tracebacks in slitherin/detectors/nft_approve_warning.py and
+# public_vs_external.py). Excluded by default; the exclusion is
+# reported in every result so coverage loss is visible.
+SLITHER_EXCLUDE_DEFAULT = ["pess-nft-approve-warning",
+                           "pess-public-vs-external"]
+
+
 def _slither_binary() -> Optional[str]:
     return _find_binary("slither")
 
@@ -778,24 +912,56 @@ def slither_tool(chain: Optional[str] = None,
     """Run Slither on verified source (chain+address) or inline source.
     Returns Slither detectors. Degrades honestly when Slither/solc
     is not installed."""
-    src = _source_for(chain or "", address or "",
-                      inline_source=source) if (source or address) \
-        else None
-    if src is None:
-        raise AgentToolError("pass inline source or chain + address")
     slither = _slither_binary()
     if not slither:
         return {"status": "unavailable",
                 "detail": ("slither is not installed; "
                            "pip install slither-analyzer")}
+    src = _source_for(chain or "", address or "",
+                      inline_source=source) if (source or address) \
+        else None
+    if src is None:
+        raise AgentToolError("pass inline source or chain + address")
     slug = (src.get("contract_name") or "Contract") or "Contract"
     slug = re.sub(r"[^A-Za-z0-9_]", "_", slug)[:40] or "Contract"
-    work = _scratch("slither")
+    slug = f"{slug}-{hashlib.sha256(src['source'].encode()).hexdigest()[:8]}"
+    work = _scratch(os.path.join(
+        "slither", f"{slug}-{uuid.uuid4().hex[:8]}"))
     sol_path = work / f"{slug}.sol"
     sol_path.write_text(src["source"])
     out_json = work / f"{slug}.slither.json"
-    run = _run([slither, str(sol_path), "--json", str(out_json)],
-               timeout=float(timeout_s or 180), cwd=str(work))
+    solc_ver, solc_path = _pick_solc(src["source"])
+    if solc_path is None:
+        return {"status": "failed",
+                "contract": slug, "origin": src.get("origin", ""),
+                "detectors": [], "count": 0, "by_impact": {},
+                "detail": ("no installed solc satisfies this source's "
+                           "pragma; install the matching solc version "
+                           "and re-run")}
+    env = dict(os.environ)
+    env["PATH"] = (os.path.dirname(slither) + os.pathsep
+                   + env.get("PATH", ""))
+    exclude = list(SLITHER_EXCLUDE_DEFAULT)
+    cmd = [slither, str(sol_path), "--json", str(out_json),
+           "--solc", solc_path]
+    if exclude:
+        cmd += ["--exclude", ",".join(exclude)]
+    run = _run(cmd, timeout=float(timeout_s or 180), cwd=str(work),
+               env=env)
+    if run["rc"] != 0 and not out_json.exists():
+        # a crashing third-party detector kills the whole run before
+        # the JSON is written; exclude it and retry once
+        m = re.search(r"slitherin/detectors/([A-Za-z0-9_]+)\.py",
+                      run["stderr"] or "")
+        if m:
+            crashed = "pess-" + m.group(1).replace("_", "-")
+            if crashed not in exclude:
+                exclude.append(crashed)
+                cmd = [slither, str(sol_path), "--json", str(out_json),
+                       "--solc", solc_path,
+                       "--exclude", ",".join(exclude)]
+                run = _run(cmd, timeout=float(timeout_s or 180),
+                           cwd=str(work), env=env)
     detectors: List[Dict[str, Any]] = []
     if out_json.exists():
         try:
@@ -817,10 +983,15 @@ def slither_tool(chain: Optional[str] = None,
     for d in detectors:
         by_impact[d.get("impact", "?")] = \
             by_impact.get(d.get("impact", "?"), 0) + 1
-    return {"status": "ok" if run["rc"] == 0 else "failed",
+    # slither exits non-zero when it fires findings; a parsed JSON
+    # output means the compile succeeded, so that is "ok"
+    parsed = out_json.exists()
+    return {"status": "ok" if parsed else "failed",
             "contract": slug, "origin": src.get("origin", ""),
             "detectors": detectors, "count": len(detectors),
             "by_impact": by_impact,
+            "excluded_detectors": exclude,
+            "solc": solc_ver,
             "stdout": run["stdout"], "stderr": run["stderr"]}
 
 
@@ -835,21 +1006,26 @@ def mythril_tool(chain: Optional[str] = None,
     """Run Mythril symbolic analysis on verified source (chain+address)
     or inline source. Detection only; verdicts are static findings,
     never proof."""
-    src = _source_for(chain or "", address or "",
-                      inline_source=source) if (source or address) \
-        else None
-    if src is None:
-        raise AgentToolError("pass inline source or chain + address")
     myth = _mythril_binary()
     if not myth:
         return {"status": "unavailable",
                 "detail": ("mythril is not installed; it ships in the "
                            "tool-integrations salvage venv")}
+    src = _source_for(chain or "", address or "",
+                      inline_source=source) if (source or address) \
+        else None
+    if src is None:
+        raise AgentToolError("pass inline source or chain + address")
     slug = (src.get("contract_name") or "Contract") or "Contract"
     slug = re.sub(r"[^A-Za-z0-9_]", "_", slug)[:40] or "Contract"
-    work = _scratch("mythril")
+    slug = f"{slug}-{hashlib.sha256(src['source'].encode()).hexdigest()[:8]}"
+    work = _scratch(os.path.join(
+        "mythril", f"{slug}-{uuid.uuid4().hex[:8]}"))
     sol_path = work / f"{slug}.sol"
     sol_path.write_text(src["source"])
+    env = dict(os.environ)
+    env["PATH"] = (os.path.dirname(myth) + os.pathsep
+                   + env.get("PATH", ""))
     run = _run([myth, "analyze", str(sol_path), "-o", "json"],
                timeout=float(timeout_s or 300), cwd=str(work))
     issues: List[Dict[str, Any]] = []
@@ -867,7 +1043,6 @@ def mythril_tool(chain: Optional[str] = None,
             "contract": slug, "origin": src.get("origin", ""),
             "issues": issues, "count": len(issues),
             "stdout": run["stdout"], "stderr": run["stderr"]}
-PYEOF_AGENT_TOOLS
 
 # ---------------------------------------------------------------------------
 # BROWSER tools (read-only, keyless, allowlisted hosts)
@@ -1054,13 +1229,14 @@ def fuzz_tool(chain: str, address: str,
     proj = _scratch(os.path.join("fuzz", slug))
     (proj / "test").mkdir(exist_ok=True)
     (proj / "src").mkdir(exist_ok=True)
-    source = _FUZZ_TEMPLATE.format(
-        target=address, stranger=STRANGER,
-        token=token or "address(0)")
+    source = (_FUZZ_TEMPLATE.replace("{target}", _sol_address(address))
+                    .replace("{stranger}", _sol_address(STRANGER))
+                    .replace("{token}", _sol_address(token)
+                             if token else "address(0)"))
     (proj / "test" / "AgentFuzz.t.sol").write_text(source)
     (proj / "foundry.toml").write_text(
         "[profile.default]\nsrc = 'src'\ntest = 'test'\n"
-        f"remappings = ['forge-std/={forge_std}/']\n")
+        f"remappings = ['forge-std/={forge_std}/src/']\n")
     env = dict(os.environ)
     env["AGENT_FORK_RPC"] = _rpc_for_chain(chain)
     run = _run([forge, "test", "--match-contract", "AgentFuzz",
@@ -1266,7 +1442,7 @@ def deploy_fork_tool(chain: str, address: str, patched_source: str,
     forge_std = _find_forge_std()
     toml = "[profile.default]\nsrc = 'src'\ntest = 'test'\n"
     if forge_std:
-        toml += f"remappings = ['forge-std/={forge_std}/']\n"
+        toml += f"remappings = ['forge-std/={forge_std}/src/']\n"
     (proj / "foundry.toml").write_text(toml)
     build = _run([forge, "build"], timeout=180, cwd=str(proj))
     if build["rc"] != 0:
@@ -1451,4 +1627,3 @@ def _try_decode(hexstr: Optional[str]):
         return {"utf8": raw.decode("utf-8", errors="strict")[:200]}
     except Exception:  # noqa: BLE001
         return None
-PYEOF_AGENT_TOOLS
