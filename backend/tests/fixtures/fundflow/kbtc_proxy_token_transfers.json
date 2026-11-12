@@ -1,0 +1,691 @@
+{
+  "items": [
+    {
+      "block_hash": "0x9aaa5d71267a7711ac34c58837c5a554d0dc63104ed14004857d9ba8b336bee7",
+      "block_number": 25446698,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x55af1e49cc799491A3E16a4FadDbe742b66FD562",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 233,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-07-02T18:44:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "circulating_market_cap": "644101824.3452338",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "74341",
+        "holders_count": "5438",
+        "icon_url": "https://assets.coingecko.com/coins/images/50879/small/kBTC.png?1730321084",
+        "name": "Kraken Wrapped BTC",
+        "reputation": "ok",
+        "symbol": "KBTC",
+        "total_supply": "668971590896",
+        "type": "ERC-20",
+        "volume_24h": "1557711.4360817885"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "6928"
+      },
+      "transaction_hash": "0xd99d1359eb2385512555cd6d523f37194b4c66f2e22284832f980f58a9bea98d",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x8f490c906dccdededf2f875d2aa88e36709d1b50b25e721a13e73f971d0aee6e",
+      "block_number": 25267381,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x81D7D326b8cB65Bb136b7252C536d05D9a41a60F",
+        "implementations": [],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": null,
+        "name": "BasicContract",
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 469,
+      "method": "0x60806040",
+      "timestamp": "2026-06-07T18:42:47.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xa49DC04D118bDf4a3471F593C1BBA0c99B2187eA",
+        "circulating_market_cap": null,
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": null,
+        "holders_count": "163379",
+        "icon_url": null,
+        "name": "odius.ai",
+        "reputation": "ok",
+        "symbol": "ODI",
+        "total_supply": "999999998970410000000000000000",
+        "type": "ERC-20",
+        "volume_24h": null
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "1029590000000000000000"
+      },
+      "transaction_hash": "0xf324d0b30e3d76f8e1d33a8a81cc5cee64049fb14ff1ed572447e07efb2ffad6",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xead5195a309808584646534fbdc1e976a9cddea926f603c6a07d6b18d7acb259",
+      "block_number": 24819096,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x55af1e49cc799491A3E16a4FadDbe742b66FD562",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 210,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-04-06T07:20:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "circulating_market_cap": "644101824.3452338",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "74341",
+        "holders_count": "5438",
+        "icon_url": "https://assets.coingecko.com/coins/images/50879/small/kBTC.png?1730321084",
+        "name": "Kraken Wrapped BTC",
+        "reputation": "ok",
+        "symbol": "KBTC",
+        "total_supply": "668971590896",
+        "type": "ERC-20",
+        "volume_24h": "1557711.4360817885"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "2198"
+      },
+      "transaction_hash": "0xa5c468533916a46db7ebb1bba55128251c6a1e44beeb41b1d43506df28256589",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xd8c3f8a9f00d4acd086813fd04d77933f8b99168f1232501771294c095297d9a",
+      "block_number": 24791413,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x6357d3843D715496257e338a878Ab0B72040A918",
+        "implementations": [],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": null,
+        "name": "HexDotCom",
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 817,
+      "method": "0xc73a2d60",
+      "timestamp": "2026-04-02T10:45:35.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39",
+        "circulating_market_cap": "0",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "0.00049161",
+        "holders_count": "8985687",
+        "icon_url": "https://assets.coingecko.com/coins/images/10103/small/HEX-logo.png?1696510130",
+        "name": "HEX",
+        "reputation": "ok",
+        "symbol": "HEX",
+        "total_supply": "5866251976633594063",
+        "type": "ERC-20",
+        "volume_24h": "36731.96018688253"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "100000000"
+      },
+      "transaction_hash": "0xce1f21931d5f55d3a15fc982ad7df876d844c216d90fbc2b2f8b2eb98e0c22b9",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xac403a1e8576903847d3fe75ceae0270158a98b55a87f5983f8dc9d71592ff32",
+      "block_number": 24640511,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x55af1e49cc799491A3E16a4FadDbe742b66FD562",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 25,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-03-12T09:32:35.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "circulating_market_cap": "644101824.3452338",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "74341",
+        "holders_count": "5438",
+        "icon_url": "https://assets.coingecko.com/coins/images/50879/small/kBTC.png?1730321084",
+        "name": "Kraken Wrapped BTC",
+        "reputation": "ok",
+        "symbol": "KBTC",
+        "total_supply": "668971590896",
+        "type": "ERC-20",
+        "volume_24h": "1557711.4360817885"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "8277"
+      },
+      "transaction_hash": "0xca0cf4c7301a8852692428a27a1cb6d1c8b78abcb5b0b6df71d17bec3056e724",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xaf6cf64209c5f4c5141783f17a1423261229bfd884b8d9184c57ff61c84c9a09",
+      "block_number": 23602104,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x75e324E5Fec80eC8cEe9645ca08d9E795630a6d6",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 754,
+      "method": "0xa9059cbb",
+      "timestamp": "2025-10-18T04:18:59.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xaea46A60368A7bD060eec7DF8CBa43b7EF41Ad85",
+        "circulating_market_cap": "352264582.5133199",
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": "0.152396",
+        "holders_count": "168005",
+        "icon_url": "https://assets.coingecko.com/coins/images/5681/small/ASI.png?1719827289",
+        "name": "Artificial Superintelligence Alliance",
+        "reputation": "ok",
+        "symbol": "FET",
+        "total_supply": "2714384546671999999999656122",
+        "type": "ERC-20",
+        "volume_24h": "50826038.69503724"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "1100100000000000"
+      },
+      "transaction_hash": "0x3f4528ae90d5a4dfed218e628992e998b49f80b4db58e2db9096c1256d26df92",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x8a959623e8ba04159e91c183cf99ec4a5088e424587d4ebeebcf6caa0f8e006a",
+      "block_number": 21208092,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xC83dEA9195432Ee5a4618bc14670f05c345dD6C7",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 325,
+      "method": "0xa9059cbb",
+      "timestamp": "2024-11-17T14:41:59.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "implementations": [
+          {
+            "address_hash": "0x35B436cEa882b5A171A1d063f9F3e8b0A7499220",
+            "name": "KBTCV3"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "kBTC is a wrapped Bitcoin token issued by Kraken. It's fully backed by Bitcoin held in Kraken's custody and designed for use on Ethereum and OP Mainnet (and more to come). This allows you to use Bitcoin in DeFi activities and other onchain applications that are not natively supported by Bitcoin.",
+                "tooltipUrl": "https://kraken.com/kbtc"
+              },
+              "name": "Kraken Wrapped Bitcoin: kBTC Token",
+              "ordinal": 10,
+              "slug": "kraken-wrapped-bitcoin-kbtc-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "DeFi",
+              "ordinal": 0,
+              "slug": "defi",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Kraken Wrapped Bitcoin",
+              "ordinal": 0,
+              "slug": "kraken-wrapped-bitcoin",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "KBTCProxy",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98",
+        "circulating_market_cap": "644101824.3452338",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "74341",
+        "holders_count": "5438",
+        "icon_url": "https://assets.coingecko.com/coins/images/50879/small/kBTC.png?1730321084",
+        "name": "Kraken Wrapped BTC",
+        "reputation": "ok",
+        "symbol": "KBTC",
+        "total_supply": "668971590896",
+        "type": "ERC-20",
+        "volume_24h": "1557711.4360817885"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "29490"
+      },
+      "transaction_hash": "0x9778f6ba95de0c605d446227bc1bfe874d06d19e86c547e67e5ddba095ff9e16",
+      "type": "token_transfer"
+    }
+  ],
+  "next_page_params": null
+}

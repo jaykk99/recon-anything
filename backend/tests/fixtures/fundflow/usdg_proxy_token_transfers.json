@@ -1,0 +1,2279 @@
+{
+  "items": [
+    {
+      "block_hash": "0x8402a2f0ceccefe17ff09a007deac8ec277704bdb79c7cac5a05a1c03f3df16c",
+      "block_number": 25954844,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xeAEaA6D1891037f74cE54dB935eeF03212E6036b",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 69,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-09-11T14:45:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "2000000"
+      },
+      "transaction_hash": "0xbe9686aee20c3e831b87b5f2f4bf946c7ae44bf0ea93c9f8b98132fc5390a685",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x217dc80d320cab94b6710a524ff23b6e6659433e454a748c9a14342b1d97bd1a",
+      "block_number": 25902323,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xEc522AF60CC27066DA0C540B500a3e5359db2138",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 11,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-09-04T07:01:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x0558D600cebb05C34F693b9DF8a3B3D0a2f16698",
+        "circulating_market_cap": null,
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": null,
+        "holders_count": "131",
+        "icon_url": null,
+        "name": "USDG",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "3300000000000000000000000000",
+        "type": "ERC-20",
+        "volume_24h": null
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "20000000000000000000"
+      },
+      "transaction_hash": "0x0adffd30916c6cd2691555e5f93e245a31301955a04e5dafa40aa44034ce1a3a",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x5fc15863d8dc4af9d63b968b3162ea95e8ccf785dc937e4595a99aa8e11223cc",
+      "block_number": 25902303,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x5b59e16dE9C0082eAfDe24f19E24F352729E199F",
+        "implementations": [
+          {
+            "address_hash": "0x77021100bD87b7008E5E1989d0eB38555d0d0000",
+            "name": "SemiModularAccount7702"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": "eip7702",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 512,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-09-04T06:57:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "50000000"
+      },
+      "transaction_hash": "0x5e5980507413e62746e8e3bdcbb5cc22a3487782ec5e6ddcacfb626f2bc9a72c",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x7440cadb79378743970c1789c53bb2b652fd831c0d58f406a4903177da546021",
+      "block_number": 25777941,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xBD1a72eB20824C34CA25c6920e4e35114D02E909",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 453,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-08-17T22:58:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "10000000"
+      },
+      "transaction_hash": "0xfb4108905582adffc27c766106a8fbadba696a816a5e9aedb867d7f03d6d8360",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x889d04b745b9f3959c63d3d75c4c25da68ab38f7518c899646f25ed676a17dd6",
+      "block_number": 25717077,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x018e928F527565750dc5E6008568f0919232f186",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 586,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-08-09T11:19:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "3000271"
+      },
+      "transaction_hash": "0x2faee87146b4423bb154b67820968be3a9cf07bd131fc66e63543cf27bc35046",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x8cbc75a382017f7cfa0eabdec949c7881880c468a498efbaa960b1c34ace4dac",
+      "block_number": 25700857,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x1887FA9EdADeaB7562B01CC3F4FA246AcE2c3Cdd",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipUrl": "https://robinhood.com/us/en/"
+              },
+              "name": "Robinhood 9",
+              "ordinal": 10,
+              "slug": "robinhood-9",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Robinhood",
+              "ordinal": 0,
+              "slug": "robinhood",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Exchange",
+              "ordinal": 0,
+              "slug": "exchange",
+              "tagType": "generic"
+            }
+          ]
+        },
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 494,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-08-07T05:00:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "984338"
+      },
+      "transaction_hash": "0xa0a541c710cd6de391c7706c1e8d8914cd2a38ad60e03c5098ebe27aaba22895",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xb85b04dafa99b1d8240229322992b51ed0331ee1d8baaa32be78d722ecb05554",
+      "block_number": 25700789,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x1887FA9EdADeaB7562B01CC3F4FA246AcE2c3Cdd",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipUrl": "https://robinhood.com/us/en/"
+              },
+              "name": "Robinhood 9",
+              "ordinal": 10,
+              "slug": "robinhood-9",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Robinhood",
+              "ordinal": 0,
+              "slug": "robinhood",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Exchange",
+              "ordinal": 0,
+              "slug": "exchange",
+              "tagType": "generic"
+            }
+          ]
+        },
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 308,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-08-07T04:46:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "983117"
+      },
+      "transaction_hash": "0xd6d4c7cad8b4886162fbdef9203e6a6786c42c1135adfefe02af4e6cc3f08b25",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x5b1fb7ba1cb64797bfda962a3581e36084989c4a34f9d51aaf8157631a07b565",
+      "block_number": 25583258,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x1887FA9EdADeaB7562B01CC3F4FA246AcE2c3Cdd",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipUrl": "https://robinhood.com/us/en/"
+              },
+              "name": "Robinhood 9",
+              "ordinal": 10,
+              "slug": "robinhood-9",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Robinhood",
+              "ordinal": 0,
+              "slug": "robinhood",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Exchange",
+              "ordinal": 0,
+              "slug": "exchange",
+              "tagType": "generic"
+            }
+          ]
+        },
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 263,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-07-21T19:41:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "69959"
+      },
+      "transaction_hash": "0xf872ff89d37a228c7a8986470a138336ed9c1d628db44f9e8666f7a6c27cfa49",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x234bc65027d3ca54f22172e4996553e650df56e3ff6fb05670ef95142c73addf",
+      "block_number": 25568302,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xf70da97812CB96acDF810712Aa562db8dfA3dbEF",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Relay is a cross-chain payments system enabling instant, low-cost bridging and cross-chain execution. This address is Relay\u2019s primary solver wallet, responsible for executing cross-chain actions on behalf of users.",
+                "tooltipUrl": "https://www.relay.link/bridge"
+              },
+              "name": "Relay: Solver",
+              "ordinal": 10,
+              "slug": "relay-solver",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Bridge",
+              "ordinal": 0,
+              "slug": "bridge",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "Relay Bridge",
+              "ordinal": 0,
+              "slug": "relay-bridge",
+              "tagType": "name"
+            },
+            {
+              "meta": {
+                "appActionButtonText": "relay",
+                "appID": "relay"
+              },
+              "name": "Relay",
+              "ordinal": 0,
+              "slug": "relay",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 282,
+      "method": "0x23b872dd",
+      "timestamp": "2026-07-19T17:38:47.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "19963717"
+      },
+      "transaction_hash": "0xa066b3e11cf6c88f9aa29acb51552d70711b36f31b3d252a8a7bd7edfae16a73",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x9772572ccb63b28c59ebabeac2addfb722c6815999f0591a2feefc4d3c525749",
+      "block_number": 25501485,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x5F2a1A543A415dC160Deb3E102f1f73eA0Fe6E4b",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 339,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-07-10T10:06:47.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x3C89DF6C17Ca5c735498712d343387198e573383",
+        "circulating_market_cap": null,
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": null,
+        "holders_count": "366",
+        "icon_url": null,
+        "name": "Gold USD",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "50000000000000000000000000000",
+        "type": "ERC-20",
+        "volume_24h": null
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "5000000000000000000"
+      },
+      "transaction_hash": "0x86193f725a3cb53309cb86ed1a8a8c4c7a3a4d95a060918c190f98f832fec9b4",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x862c6cea8bb52d546ef32920cdfef3b14fd1c79ddc6c9128fed11eec42a9e508",
+      "block_number": 25426315,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xeAEaA6D1891037f74cE54dB935eeF03212E6036b",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 24,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-06-29T22:29:35.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "9266159"
+      },
+      "transaction_hash": "0x0722bac5d302490bd660a1270f79fde7cfefab5a4470e3b57c8f7b671974a8f8",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x16db21fabf03d930048acca05a4f17d3d38ec36126202551ac70a847e19b1517",
+      "block_number": 25410212,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x1887FA9EdADeaB7562B01CC3F4FA246AcE2c3Cdd",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipUrl": "https://robinhood.com/us/en/"
+              },
+              "name": "Robinhood 9",
+              "ordinal": 10,
+              "slug": "robinhood-9",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Robinhood",
+              "ordinal": 0,
+              "slug": "robinhood",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Exchange",
+              "ordinal": 0,
+              "slug": "exchange",
+              "tagType": "generic"
+            }
+          ]
+        },
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 1331,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-06-27T16:36:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "60000000"
+      },
+      "transaction_hash": "0xb91b1363912542047e60c41984fdd57f4a0beb23f422fc6aca4b5a57f0099f32",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x1e420270b0e2c433c5ea68923cd35f7fc7f41ca46d5213edfefc0daba270225c",
+      "block_number": 25407021,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x53FdCa91fd33B9131B5CEADe42A3EdBd9B38edFf",
+        "implementations": [],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": "Royal Cat",
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 739,
+      "method": "0x2766ddda",
+      "timestamp": "2026-06-27T05:55:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x53FdCa91fd33B9131B5CEADe42A3EdBd9B38edFf",
+        "circulating_market_cap": null,
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": null,
+        "holders_count": "1454590",
+        "icon_url": null,
+        "name": "Royal Cat",
+        "reputation": "ok",
+        "symbol": "CAT",
+        "total_supply": "5120310627000000000000000000",
+        "type": "ERC-20",
+        "volume_24h": null
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "1000000000000000000"
+      },
+      "transaction_hash": "0xe625870051da5bcf45394fad57d81efbd5565ec3826f06bab59ce60bc4d0b711",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x10bd42d679b226b1b387163bdade2f6dbca3b443cc653d406527252925b59d30",
+      "block_number": 25221179,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x327e5e41990D2203898EDF47c35Ac723506d4015",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 351,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-06-01T07:58:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "2037226"
+      },
+      "transaction_hash": "0x0b574c750df7736f65082a08f38171da0571b0763a4ff7ac278e300c911a53c9",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x6d71ecf0efd2c861c6b0cdbab340c75942a3c67a9de77915b50f7f00f46e82ec",
+      "block_number": 24796728,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0xeAEaA6D1891037f74cE54dB935eeF03212E6036b",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 33,
+      "method": "0xa9059cbb",
+      "timestamp": "2026-04-03T04:31:59.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "1000000"
+      },
+      "transaction_hash": "0xb466a6afc6d864003c13551c841ec965c7d4737b32e38d3c1bc3432f4cf24905",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xd0f84867ee350beee145a81613b1941c0ae431d04b0707860c2a63be31873af1",
+      "block_number": 24790853,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x6357d3843D715496257e338a878Ab0B72040A918",
+        "implementations": [],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": null,
+        "name": "HexDotCom",
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 264,
+      "method": "0xc73a2d60",
+      "timestamp": "2026-04-02T08:53:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39",
+        "circulating_market_cap": "0",
+        "circulating_supply": null,
+        "decimals": "8",
+        "exchange_rate": "0.00049161",
+        "holders_count": "8985687",
+        "icon_url": "https://assets.coingecko.com/coins/images/10103/small/HEX-logo.png?1696510130",
+        "name": "HEX",
+        "reputation": "ok",
+        "symbol": "HEX",
+        "total_supply": "5866251976633594063",
+        "type": "ERC-20",
+        "volume_24h": "36731.96018688253"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "8",
+        "value": "100000000"
+      },
+      "transaction_hash": "0xac72fd162b019cd171917d0ec30d8fe1f4c3868bc61428b95c111a7d8aab7d6c",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xf29917e25fdcc71f18172088404b28809e1fe88313c8bea9106f72c76be2fee0",
+      "block_number": 23515690,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x4E51A09277110950c71138c2a99FD40041Db900D",
+        "implementations": [],
+        "is_contract": true,
+        "is_scam": true,
+        "is_verified": false,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "bgColor": "#FED7D7",
+                "textColor": "#822727"
+              },
+              "name": "Phish / Hack",
+              "ordinal": 0,
+              "slug": "phish--hack",
+              "tagType": "generic"
+            }
+          ]
+        },
+        "name": "Visit website eventshiba .com to claim rewards",
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "scam",
+        "watchlist_names": []
+      },
+      "log_index": 1892,
+      "method": "0x60806040",
+      "timestamp": "2025-10-06T02:16:35.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
+        "circulating_market_cap": "2630514577.7646613",
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": "0.00000447",
+        "holders_count": "1849273",
+        "icon_url": "https://assets.coingecko.com/coins/images/11939/small/shiba.png?1696511800",
+        "name": "Shiba Inu",
+        "reputation": "ok",
+        "symbol": "SHIB",
+        "total_supply": "999982326580529390423000293589330",
+        "type": "ERC-20",
+        "volume_24h": "47383675.15696298"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "103240000000000000000"
+      },
+      "transaction_hash": "0xf104838776a1ebb8b0525bc12c711b04ae98509a67507aede31cea55c47ef682",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0x390b3b2a6e5df0fa44812b34576e797a5fde6d4d09a0e247b687e23f86d9c0d7",
+      "block_number": 22367932,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x43563E1F2929C668497B73bcA25712bBFB71c89e",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 329,
+      "method": "0xa9059cbb",
+      "timestamp": "2025-04-28T13:43:11.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "circulating_market_cap": "2699931847.57129",
+        "circulating_supply": null,
+        "decimals": "6",
+        "exchange_rate": "0.999943",
+        "holders_count": "10124",
+        "icon_url": "https://assets.coingecko.com/coins/images/51281/small/GDN_USDG_Token_200x200.png?1730484111",
+        "name": "Global Dollar",
+        "reputation": "ok",
+        "symbol": "USDG",
+        "total_supply": "311448869093434",
+        "type": "ERC-20",
+        "volume_24h": "494735510.0207153"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "6",
+        "value": "458201530"
+      },
+      "transaction_hash": "0x48003ac810a2634c152bf9126f6b904391257d729fb26c2e1d237b75b8ee3a1e",
+      "type": "token_transfer"
+    },
+    {
+      "block_hash": "0xf234febf0f710d78e70b87d37f09f16ac26d78e552b3fc904f61c1dac3b17e16",
+      "block_number": 22367928,
+      "from": {
+        "ens_domain_name": null,
+        "hash": "0x43563E1F2929C668497B73bcA25712bBFB71c89e",
+        "implementations": [],
+        "is_contract": false,
+        "is_scam": false,
+        "is_verified": false,
+        "metadata": null,
+        "name": null,
+        "private_tags": [],
+        "proxy_type": null,
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "log_index": 521,
+      "method": "0xa9059cbb",
+      "timestamp": "2025-04-28T13:42:23.000000Z",
+      "to": {
+        "ens_domain_name": null,
+        "hash": "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+        "implementations": [
+          {
+            "address_hash": "0xFACd5ff359aDf87822374275699Dd518aAf9a65F",
+            "name": "USDG"
+          }
+        ],
+        "is_contract": true,
+        "is_scam": false,
+        "is_verified": true,
+        "metadata": {
+          "tags": [
+            {
+              "meta": {
+                "tooltipDescription": "Global Dollar (USDG) is a single-currency stablecoin pegged to the US dollar, issued by Paxos Digital Singapore Pte. Ltd. and is compliant with the Monetary Authority of Singapore's (MAS) forthcoming stablecoin framework. USDG is redeemable from Paxos on a one-to-one basis for US dollars.",
+                "tooltipUrl": "https://globaldollar.com/"
+              },
+              "name": "Global Dollar: USDG Token",
+              "ordinal": 10,
+              "slug": "global-dollar-usdg-token",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Token Contract",
+              "ordinal": 0,
+              "slug": "token-contract",
+              "tagType": "generic"
+            },
+            {
+              "meta": {},
+              "name": "Stablecoin",
+              "ordinal": 0,
+              "slug": "stablecoin",
+              "tagType": "generic"
+            },
+            {
+              "meta": {
+                "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "textColor": "#C163D4",
+                "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                "tooltipDescription": "Provided by OLI"
+              },
+              "name": "USDG",
+              "ordinal": 0,
+              "slug": "usdg",
+              "tagType": "name"
+            },
+            {
+              "meta": {},
+              "name": "Global Dollar",
+              "ordinal": 0,
+              "slug": "global-dollar",
+              "tagType": "protocol"
+            }
+          ]
+        },
+        "name": "Global Dollar",
+        "private_tags": [],
+        "proxy_type": "eip1967",
+        "public_tags": [],
+        "reputation": "ok",
+        "watchlist_names": []
+      },
+      "token": {
+        "address_hash": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
+        "circulating_market_cap": "2630514577.7646613",
+        "circulating_supply": null,
+        "decimals": "18",
+        "exchange_rate": "0.00000447",
+        "holders_count": "1849273",
+        "icon_url": "https://assets.coingecko.com/coins/images/11939/small/shiba.png?1696511800",
+        "name": "Shiba Inu",
+        "reputation": "ok",
+        "symbol": "SHIB",
+        "total_supply": "999982326580529390423000293589330",
+        "type": "ERC-20",
+        "volume_24h": "47383675.15696298"
+      },
+      "token_type": "ERC-20",
+      "total": {
+        "decimals": "18",
+        "value": "3892427000000000000000000"
+      },
+      "transaction_hash": "0x824074539e534c34e655664aa014dc58f3ebf670838539f11f5d40c5e5418642",
+      "type": "token_transfer"
+    }
+  ],
+  "next_page_params": null
+}
