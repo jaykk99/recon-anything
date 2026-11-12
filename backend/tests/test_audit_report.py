@@ -191,3 +191,35 @@ def test_triage_only_kinds_hunts_specific_vuln_including_zeroday(tmp_path):
                        only_kinds={"guard_convention_break", "reentrancy"})
     assert set(s2["index"]) == {"0xZERO", "0xREENT"}
     assert s2["skipped_kind"] == 1
+
+
+def test_report_coverage_states_zero_drainable_paths_when_clean():
+    """A clean report is a defensible artifact: it states 0 fund-loss paths
+    were found and lists what was checked, not just an empty findings list."""
+    r = build_report("0xCLEAN", "ethereum", [])
+    assert r["drainable_paths"] == []
+    md = render_markdown(r)
+    assert "fund-loss / takeover paths found: 0" in md
+    assert "Checks performed:" in md
+    assert "Reentrancy on value-transferring paths" in md
+
+
+def test_report_coverage_names_drainable_paths_when_present():
+    r = build_report("0xVULN", "ethereum", [
+        {"kind": "full_balance_withdraw", "severity": "critical",
+         "function": "drain", "detail": "ungated withdraw"},
+        {"kind": "reentrancy", "severity": "high", "function": "claim",
+         "detail": "ext call before state"},
+        {"kind": "shadowed_var", "severity": "low", "detail": "cosmetic"},
+    ])
+    # cosmetic finding is not a drainable path
+    assert r["drainable_paths"] == ["full_balance_withdraw", "reentrancy"]
+    md = render_markdown(r)
+    assert "paths found: 2" in md
+    assert "`full_balance_withdraw`" in md and "`reentrancy`" in md
+
+
+def test_report_accepts_custom_checks_run():
+    r = build_report("0xA", "ethereum", [], checks_run=["Only this check"])
+    assert r["coverage"] == ["Only this check"]
+    assert "Only this check" in render_markdown(r)

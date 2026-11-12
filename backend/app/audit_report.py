@@ -208,15 +208,48 @@ def _dedupe(norm: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+# The finding kinds that represent a path by which an unprivileged caller
+# could drain funds or seize control - the ones that matter for "is this
+# contract safe to put money in". Used to state, explicitly and either way,
+# how many such paths the audit found (0 is the clean-bill evidence).
+_DRAINABLE_KINDS = frozenset({
+    "full_balance_withdraw", "fund_drain", "unprotected_withdraw",
+    "ownership_takeover_path", "ownership_takeover_fallback",
+    "selfdestruct", "tx_origin", "delegatecall_untrusted",
+    "missing_access_control", "reentrancy",
+    "bytecode_selfdestruct", "bytecode_delegatecall",
+    "rugcheck_honeypot", "honeypot",
+})
+
+# The fund-loss / takeover checks the audit runs, in plain language. Shown as
+# the coverage list so a report with no findings reads as "these were checked
+# and nothing was found", not "we didn't look".
+_COVERAGE_CHECKS = [
+    "Unauthenticated fund withdrawal (full-balance and partial)",
+    "Ownership / admin takeover paths (including fallback and initializer)",
+    "Self-destruct reachable by an unprivileged caller",
+    "Delegatecall to a caller-controllable target",
+    "tx.origin authentication bypass",
+    "Reentrancy on value-transferring paths",
+    "Missing access control on state-changing functions",
+    "Proxy upgrade authorization (UUPS / transparent)",
+    "Token rug vectors: mint/freeze authority, liquidity lock, honeypot/tax",
+    "Bytecode-level self-destruct / delegatecall (when source is unverified)",
+]
+
+
 def build_report(address: str, chain: str, findings: List[Dict[str, Any]],
                  source: Optional[str] = None,
                  probes: Optional[List[Dict[str, Any]]] = None,
-                 meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 meta: Optional[Dict[str, Any]] = None,
+                 checks_run: Optional[List[str]] = None) -> Dict[str, Any]:
     """Assemble a structured audit report from scan findings.
 
     probes: optional list of {finding, verdict, transcript} from the live
     read-only probe. Verdicts are carried verbatim - including
     "unverified"/"could not confirm", which is the honest and common case.
+    checks_run: optional override of the coverage checklist (what was
+    examined); defaults to the standard fund-loss/takeover coverage.
     """
     norm = _dedupe([_norm(f) for f in findings])
     norm.sort(key=lambda x: (_SEV_ORDER.get(x["severity"], 9),
@@ -226,6 +259,10 @@ def build_report(address: str, chain: str, findings: List[Dict[str, Any]],
         counts[f["severity"]] = counts.get(f["severity"], 0) + 1
     for i, f in enumerate(norm, 1):
         f["id"] = f"RA-{i:03d}"
+    # Count the distinct drainable/takeover paths found - the headline
+    # evidence number, stated either way.
+    drainable = sorted({f["kind"] for f in norm
+                        if f["kind"] in _DRAINABLE_KINDS})
     return {
         "address": address,
         "chain": chain or "",
@@ -236,6 +273,8 @@ def build_report(address: str, chain: str, findings: List[Dict[str, Any]],
         "probes": probes or [],
         "meta": meta or {},
         "source_lines": len((source or "").splitlines()) if source else None,
+        "coverage": checks_run or list(_COVERAGE_CHECKS),
+        "drainable_paths": drainable,
     }
 
 
@@ -283,6 +322,28 @@ def render_markdown(report: Dict[str, Any]) -> str:
                  "that the contract is exploitable for profit. A probe "
                  "verdict of *unverified* means the issue could not be "
                  "confirmed live — the honest and common outcome.")
+    lines.append("")
+
+    # Coverage / evidence: what was checked, and the headline drainable-path
+    # count stated either way. This is what makes a clean report a defensible
+    # artifact rather than an empty page.
+    drainable = report.get("drainable_paths", [])
+    lines.append("## Coverage")
+    lines.append("")
+    if drainable:
+        lines.append(f"**Unprivileged fund-loss / takeover paths found: "
+                     f"{len(drainable)}** "
+                     f"({', '.join(f'`{k}`' for k in drainable)}). "
+                     "See findings below.")
+    else:
+        lines.append("**Unprivileged fund-loss / takeover paths found: 0.** "
+                     "No path was found by which an unprivileged caller could "
+                     "withdraw funds or seize control.")
+    lines.append("")
+    lines.append("Checks performed:")
+    lines.append("")
+    for chk in report.get("coverage", []):
+        lines.append(f"- {chk}")
     lines.append("")
 
     probe_by_kind: Dict[str, Dict[str, Any]] = {}
