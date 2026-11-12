@@ -48,6 +48,55 @@ npm install && npm run dev
 Set `RECON_ACCESS_CODE` to gate the UI/API with a single access code.
 Leave it empty for local dev only.
 
+## MCP (use ReconAnything from any AI)
+
+The full backend is an MCP server: 32 tools covering scans, run
+detail and findings, the vuln advisor and safe tester, settings and
+schedules, breach watch, and the agent/hunter data layer. No API key,
+no account, no setup file to hunt down. It runs locally over stdio,
+keyless, like every other local MCP server.
+
+Claude Code, one line:
+
+```bash
+claude mcp add recon-anything -- uvx --from git+https://github.com/jaykk99/recon-anything#subdirectory=backend recon-mcp --stdio
+```
+
+Claude Desktop (`claude_desktop_config.json`), Cursor
+(`.cursor/mcp.json`), and VS Code (`.vscode/mcp.json`) all take the
+same server entry; VS Code wraps it in a top-level `"servers"` object
+instead of `"mcpServers"`:
+
+```json
+{
+  "mcpServers": {
+    "recon-anything": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jaykk99/recon-anything#subdirectory=backend", "recon-mcp", "--stdio"]
+    }
+  }
+}
+```
+
+No `uvx`? `pip install ./backend` (from a clone) gives the same
+`recon-mcp` command, and `python -m app.mcp_server --stdio` works
+from the `backend/` directory with no install at all.
+
+Remote/hosted use: the hosted app serves the same tools over
+streamable HTTP at `https://recon-anything.onrender.com/mcp`. Hosted
+is the one place a key applies: send the service key as the
+`X-Recon-Service-Key` header (the key is the `RECON_SERVICE_KEY`
+env var on the server). A standalone HTTP server
+(`recon-mcp --http --port 8765`) binds localhost and stays keyless
+unless `RECON_SERVICE_KEY` is set; binding a non-localhost host
+requires the key, or `RECON_MCP_NO_AUTH=1` to opt out explicitly.
+
+Two deliberate limits: authenticated-mode scans (stored credentials)
+are not offered over MCP, and the `/api/keys` credential vault has
+no MCP tools. The SANDBOX/LIVE mode gate still applies to scan
+starts, and `recon_test_vulns` defaults to `dry_run=true` (zero
+requests sent).
+
 ## How it works
 
 ```

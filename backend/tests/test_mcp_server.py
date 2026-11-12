@@ -31,10 +31,22 @@ from app.main import app  # noqa: E402
 from app.models import Finding, Run, get_session, init_db  # noqa: E402
 
 KEY = {"X-Recon-Service-Key": "test-service-key-123"}
-EXPECTED_TOOLS = {"recon_health", "recon_start_scan", "recon_list_runs",
-                  "recon_run_status", "recon_get_findings",
-                  "recon_get_graph", "recon_list_plugins",
-                  "recon_query_knowledge", "recon_get_delta"}
+EXPECTED_TOOLS = {
+    # v1 (PR #57)
+    "recon_health", "recon_start_scan", "recon_list_runs",
+    "recon_run_status", "recon_get_findings", "recon_get_graph",
+    "recon_list_plugins", "recon_query_knowledge", "recon_get_delta",
+    # v2: full backend surface
+    "recon_classify", "recon_settings", "recon_set_mode",
+    "recon_set_owned_assets", "recon_run_detail",
+    "recon_agent_activity", "recon_retest_finding",
+    "recon_get_apimap", "recon_export_run", "recon_fetch_run_file",
+    "recon_list_vulns", "recon_test_vulns", "recon_verify_subdomains",
+    "recon_probe_port", "recon_diff_runs", "recon_atm_locate",
+    "recon_list_schedules", "recon_create_schedule",
+    "recon_delete_schedule", "recon_breachwatch",
+    "recon_breachwatch_check", "recon_agentdata", "recon_hunters",
+}
 
 
 @pytest.fixture(scope="module")
@@ -302,3 +314,263 @@ def test_standalone_app_serves_mcp():
                    headers=KEY)
         assert r.status_code == 200
         assert r.json()["result"]["serverInfo"]["name"] == "recon-anything"
+
+# -- v2: classify / settings --------------------------------------------------
+
+def test_mcp_call_classify(client):
+    data = _structured(_call_tool(client, "recon_classify",
+                                  {"text": "example.com"}))
+    assert data["type"] == "domain"
+    batch = _structured(_call_tool(
+        client, "recon_classify",
+        {"text": "example.com\n1.2.3.4"}))
+    assert len(batch["results"]) == 2
+
+
+def test_mcp_settings_and_mode_roundtrip(client):
+    from app import modes as app_modes
+    data = _structured(_call_tool(client, "recon_settings"))
+    assert data["mode"] in ("sandbox", "live")
+    assert isinstance(data["owned_assets"], list) and data["owned_assets"]
+    previous = data["mode"]
+    try:
+        out = _structured(_call_tool(client, "recon_set_mode",
+                                     {"mode": "live"}))
+        assert out["ok"] is True and out["mode"] == "live"
+        assert _structured(_call_tool(
+            client, "recon_settings"))["mode"] == "live"
+        out = _structured(_call_tool(
+            client, "recon_set_owned_assets",
+            {"assets": ["Example.COM", "foo.local"]}))
+        assert "example.com" in out["owned_assets"]
+    finally:
+        _call_tool(client, "recon_set_mode", {"mode": previous})
+        session = get_session()
+        try:
+            app_modes.set_owned_assets(
+                session, app_modes.DEFAULT_OWNED_ASSETS, actor="test")
+        finally:
+            session.close()
+
+
+# -- v2: run detail / apimap / activity / vulns --------------------------------
+
+def test_mcp_call_run_detail_and_apimap(client):
+    _seed_run()
+    detail = _structured(_call_tool(client, "recon_run_detail",
+                                    {"run_id": "mcp-test-run"}))
+    assert detail["status"] == "done" and detail["findings_count"] == 2
+    assert len(detail["findings"]) == 2 and "progress" in detail
+    amap = _structured(_call_tool(client, "recon_get_apimap",
+                                  {"run_id": "mcp-test-run"}))
+    assert amap["count"] == 0
+    assert set(amap["groups"]) == {"pages", "api_routes", "forms",
+                                   "js_endpoints", "websockets",
+                                   "graphql"}
+
+
+def test_mcp_call_agent_activity_and_vulns(client):
+    _seed_run()
+    act = _structured(_call_tool(client, "recon_agent_activity",
+                                 {"run_id": "mcp-test-run"}))
+    assert act["run_id"] == "mcp-test-run" and act["total_actions"] == 0
+    vulns = _structured(_call_tool(client, "recon_list_vulns",
+                                   {"run_id": "mcp-test-run"}))
+    assert vulns["run_id"] == "mcp-test-run"
+    assert isinstance(vulns["candidates"], list)
+
+
+def test_mcp_test_vulns_defaults_to_dry_run(client):
+    _seed_run()
+    data = _structured(_call_tool(client, "recon_test_vulns",
+                                  {"run_id": "mcp-test-run"}))
+    assert data["dry_run"] is True
+    assert isinstance(data["candidates"], list)
+
+
+def test_mcp_test_vulns_rejects_non_bool_dry_run(client):
+    _seed_run()
+    result = _call_tool(client, "recon_test_vulns",
+                        {"run_id": "mcp-test-run", "dry_run": "yes"})
+    assert result["isError"] is True
+
+
+def test_mcp_export_run_formats(client):
+    _seed_run()
+    js = _structured(_call_tool(client, "recon_export_run",
+                                {"run_id": "mcp-test-run",
+                                 "format": "json"}))
+    assert len(js["findings"]) == 2
+    csv_out = _structured(_call_tool(client, "recon_export_run",
+                                     {"run_id": "mcp-test-run",
+                                      "format": "csv"}))
+    assert "1.2.3.4" in csv_out["content"]
+    md = _structured(_call_tool(client, "recon_export_run",
+                                {"run_id": "mcp-test-run",
+                                 "format": "md"}))
+    assert md["content"]
+
+
+def test_mcp_diff_runs(client):
+    _seed_run()
+    session = get_session()
+    try:
+        session.add(Run(id="mcp-test-run-b", mode="passive",
+                        status="done", source_type="website",
+                        summary={}))
+        session.add(Finding(run_id="mcp-test-run-b", target_id="t1",
+                            plugin_id="dns", category="dns", key="a",
+                            value="5.6.7.8", source="dns",
+                            confidence=0.9))
+        session.commit()
+    finally:
+        session.close()
+    d = _structured(_call_tool(client, "recon_diff_runs",
+                               {"run_a": "mcp-test-run",
+                                "run_b": "mcp-test-run-b"}))
+    assert d["counts"] == {"a": 2, "b": 1}
+    assert d["new_count"] == 1 and d["removed_count"] == 2
+
+
+def test_mcp_network_tools_enforce_run_guards(client):
+    # SSRF guards: probe/fetch only touch data from the run itself.
+    _seed_run()
+    result = _call_tool(client, "recon_probe_port",
+                        {"run_id": "mcp-test-run", "host": "example.com",
+                         "port": 80})
+    assert result["isError"] is True
+    result = _call_tool(client, "recon_fetch_run_file",
+                        {"run_id": "mcp-test-run",
+                         "url": "https://example.com/x"})
+    assert result["isError"] is True
+    # Subdomain verify on a run with no subdomains is a clean no-op.
+    data = _structured(_call_tool(client, "recon_verify_subdomains",
+                                  {"run_id": "mcp-test-run"}))
+    assert data["count"] == 0 and data["live"] == 0
+
+
+# -- v2: schedules / agentdata / hunters / breachwatch --------------------------
+
+def test_mcp_schedules_roundtrip(client):
+    created = _structured(_call_tool(
+        client, "recon_create_schedule",
+        {"target_raw": "example.com", "cron": "0 6 * * *",
+         "mode": "passive"}))
+    assert created["ok"] is True
+    listed = _structured(_call_tool(client, "recon_list_schedules"))
+    mine = [s for s in listed["schedules"] if s["id"] == created["id"]]
+    assert mine and mine[0]["target_raw"] == "example.com"
+    deleted = _structured(_call_tool(
+        client, "recon_delete_schedule",
+        {"schedule_id": created["id"]}))
+    assert deleted == {"ok": True, "deleted": 1}
+
+
+def test_mcp_agentdata_and_hunters(client):
+    packs = _structured(_call_tool(client, "recon_agentdata",
+                                   {"view": "packs"}))
+    assert isinstance(packs["packs"], list)
+    hunters = _structured(_call_tool(client, "recon_hunters",
+                                     {"view": "list"}))
+    assert hunters["count"] > 0
+    added = _structured(_call_tool(
+        client, "recon_agentdata",
+        {"view": "add_known", "target": "example.com",
+         "asset_type": "domain", "value": "example.com"}))
+    assert added["ok"] is True
+    got = _structured(_call_tool(client, "recon_agentdata",
+                                 {"view": "known",
+                                  "target": "example.com"}))
+    assert got["count"] >= 1
+
+
+def test_mcp_breachwatch_list(client):
+    data = _structured(_call_tool(client, "recon_breachwatch"))
+    assert "configured" in data and isinstance(data["emails"], list)
+
+
+def test_mcp_atm_locate_requires_authorization(client):
+    _seed_run()
+    result = _call_tool(client, "recon_atm_locate",
+                        {"run_id": "mcp-test-run", "query": "Winnipeg",
+                         "authorized": False})
+    assert result["isError"] is True
+    assert "authorized" in result["content"][0]["text"]
+
+
+# -- v2: keyless local HTTP vs key enforcement ---------------------------------
+
+def test_standalone_keyless_localhost_without_key(monkeypatch):
+    from fastapi.testclient import TestClient as TC
+    monkeypatch.delenv("RECON_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("RECON_MCP_NO_AUTH", raising=False)
+    standalone = mcp_server.create_standalone_app(host="127.0.0.1")
+    try:
+        assert mcp_server.auth_required() is False
+        with TC(standalone) as c:
+            r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                     "method": "initialize",
+                                     "params": {}})
+            assert r.status_code == 200
+            assert r.json()["result"]["serverInfo"]["version"] == "2.0.0"
+            assert c.get("/").json()["auth"].startswith("none")
+    finally:
+        mcp_server._keyless_local_bind = False
+
+
+def test_key_still_enforced_when_env_key_set(monkeypatch):
+    from fastapi.testclient import TestClient as TC
+    # The module pins RECON_SERVICE_KEY for the whole suite; a
+    # non-localhost standalone bind must demand it.
+    standalone = mcp_server.create_standalone_app(host="0.0.0.0")
+    try:
+        assert mcp_server.auth_required() is True
+        with TC(standalone) as c:
+            r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                     "method": "tools/list"},
+                       headers={})
+            assert r.status_code == 401
+            r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                     "method": "tools/list"},
+                       headers=KEY)
+            assert r.status_code == 200
+    finally:
+        mcp_server._keyless_local_bind = False
+
+
+# -- v2: stdio transport ---------------------------------------------------------
+
+def test_stdio_transport_handshake(tmp_path):
+    import subprocess
+    db = tmp_path / "stdio.db"
+    env = dict(os.environ)
+    env["DATABASE_URL"] = f"sqlite:///{db}"
+    env["ACCESS_CODE"] = ""
+    env.pop("RECON_SERVICE_KEY", None)
+    backend = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))
+    lines = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-03-26"}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "recon_health", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "ping"},
+    ]
+    proc = subprocess.run(
+        [sys.executable, "-m", "app.mcp_server", "--stdio"],
+        input="\n".join(json.dumps(x) for x in lines) + "\n",
+        capture_output=True, text=True, cwd=backend, env=env,
+        timeout=180)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    by_id = {m.get("id"): m for m in out}
+    assert by_id[1]["result"]["serverInfo"] == {
+        "name": "recon-anything", "version": "2.0.0"}
+    tools = by_id[2]["result"]["tools"]
+    assert {t["name"] for t in tools} == EXPECTED_TOOLS
+    health = by_id[3]["result"]
+    assert health["isError"] is False
+    assert json.loads(health["content"][0]["text"])["ok"] is True
+    assert by_id[4]["result"] == {}
