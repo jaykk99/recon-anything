@@ -364,7 +364,8 @@ def _worst_severity(findings: List[Dict[str, Any]]) -> str:
 
 def triage_corpus(findings_path: str, out_dir: str,
                   min_severity: str = "low",
-                  min_value_usd: float = 0.0) -> Dict[str, Any]:
+                  min_value_usd: float = 0.0,
+                  only_kinds: Optional[set] = None) -> Dict[str, Any]:
     """Read a batch_scan --out JSONL ({address, chain, findings, value_usd?})
     and write one markdown audit report per contract that has a finding at or
     above min_severity, plus an INDEX.md triage summary ranked by risk.
@@ -373,13 +374,21 @@ def triage_corpus(findings_path: str, out_dir: str,
     threshold - the "nominally has 100k but holds dust" case. A row with no
     value_usd is never skipped on value grounds (we can't assess it). The
     scanner supplies value_usd via valuation.realizable_value_usd().
+
+    only_kinds, when set, keeps only contracts that have at least one finding
+    of one of those kinds - e.g. {"guard_convention_break"} to pull just the
+    contracts where the zero-day guard detector fired, or
+    {"reentrancy", "full_balance_withdraw"} for a specific vuln hunt. The
+    report still shows all of that contract's findings for context.
     """
     import json
     import os
     from .valuation import is_dust, value_band
 
     floor = _SEV_ORDER.get(min_severity.lower(), 3)
+    want = {str(k).lower() for k in only_kinds} if only_kinds else None
     skipped_dust = 0
+    skipped_kind = 0
     os.makedirs(out_dir, exist_ok=True)
     index: List[Dict[str, Any]] = []
     written = 0
@@ -395,6 +404,12 @@ def triage_corpus(findings_path: str, out_dir: str,
             findings = rec.get("findings") or []
             if not findings:
                 continue
+            if want is not None:
+                kinds = {str(f.get("kind") or f.get("check")
+                             or "").lower() for f in findings}
+                if not (kinds & want):
+                    skipped_kind += 1
+                    continue  # doesn't have the vuln class we're hunting
             worst = _worst_severity(findings)
             if _SEV_ORDER.get(worst, 9) > floor:
                 continue  # nothing at or above the floor
@@ -430,6 +445,10 @@ def triage_corpus(findings_path: str, out_dir: str,
     idx_lines = ["# Triage Index", "",
                  f"{written} contract(s) with findings at or above "
                  f"`{min_severity}`, ranked by risk.", ""]
+    if want is not None:
+        idx_lines += [f"_Hunting kinds: {', '.join(sorted(want))} "
+                      f"({skipped_kind} contract(s) without them skipped)._",
+                      ""]
     if skipped_dust:
         idx_lines += [f"_{skipped_dust} contract(s) skipped as dust "
                       f"(realizable value under ${min_value_usd:,.0f})._", ""]
@@ -445,7 +464,7 @@ def triage_corpus(findings_path: str, out_dir: str,
               encoding="utf-8") as out:
         out.write("\n".join(idx_lines) + "\n")
     return {"reports_written": written, "out_dir": out_dir,
-            "skipped_dust": skipped_dust,
+            "skipped_dust": skipped_dust, "skipped_kind": skipped_kind,
             "index": [r["address"] for r in index[:20]]}
 
 
@@ -468,9 +487,14 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help="skip contracts whose realizable value_usd is below "
                          "this (strips 'nominally 100k but dust' contracts; "
                          "rows without value_usd are never skipped)")
+    ap.add_argument("--only-kind", default="",
+                    help="comma-separated finding kinds to hunt; keep only "
+                         "contracts that have one (e.g. guard_convention_break "
+                         "for the zero-day, or reentrancy)")
     args = ap.parse_args(argv)
+    only = {k.strip() for k in args.only_kind.split(",") if k.strip()} or None
     summary = triage_corpus(args.findings, args.out_dir, args.min_severity,
-                            min_value_usd=args.min_value)
+                            min_value_usd=args.min_value, only_kinds=only)
     print(json.dumps(summary, indent=2))
     return 0
 

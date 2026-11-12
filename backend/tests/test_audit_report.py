@@ -162,3 +162,32 @@ def test_triage_skips_dust_keeps_real_and_unknown(tmp_path):
     index = (out / "INDEX.md").read_text()
     assert "$2,500,000" in index and "skipped as dust" in index
     assert "0xDUST" not in index and "0xNOMINAL" not in index
+
+
+def test_triage_only_kinds_hunts_specific_vuln_including_zeroday(tmp_path):
+    """only_kinds keeps just the contracts that have the hunted vuln class -
+    e.g. the zero-day guard_convention_break - and reports the rest skipped."""
+    import json
+    rows = [
+        {"address": "0xZERO", "chain": "ethereum", "value_usd": 2_000_000,
+         "findings": [{"kind": "guard_convention_break", "severity": "high",
+                       "function": "setAll", "detail": "breaks convention"}]},
+        {"address": "0xREENT", "chain": "ethereum", "value_usd": 500_000,
+         "findings": [{"kind": "reentrancy", "severity": "high",
+                       "function": "claim", "detail": "reentrant"}]},
+        {"address": "0xBORING", "chain": "bsc", "value_usd": 900_000,
+         "findings": [{"kind": "shadowed_var", "severity": "low",
+                       "detail": "cosmetic"}]},
+    ]
+    src = tmp_path / "f.jsonl"
+    src.write_text("\n".join(json.dumps(r) for r in rows))
+
+    s = triage_corpus(str(src), str(tmp_path / "a"), min_severity="low",
+                      only_kinds={"guard_convention_break"})
+    assert s["index"] == ["0xZERO"]
+    assert s["skipped_kind"] == 2
+
+    s2 = triage_corpus(str(src), str(tmp_path / "b"), min_severity="low",
+                       only_kinds={"guard_convention_break", "reentrancy"})
+    assert set(s2["index"]) == {"0xZERO", "0xREENT"}
+    assert s2["skipped_kind"] == 1
