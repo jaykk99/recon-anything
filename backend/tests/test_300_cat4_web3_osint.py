@@ -181,7 +181,7 @@ def test_all_cat4_plugins_registered():
     reg = discover()
     for pid in IDS:
         assert pid in reg, f"{pid} missing from registry"
-    assert len(reg) == 1233
+    assert len(reg) == 1235
 
 
 # ---------------------------------------------------------------------------
