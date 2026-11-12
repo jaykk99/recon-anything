@@ -5,7 +5,7 @@ first-party JS bundles, HTML comments, and meta tags. Covers 60+ secret
 types: cloud keys, CI tokens, payment keys, private keys, database URLs,
 and generic credential assignments.
 
-Detection only: read-only GETs of public pages. All matches redacted.
+Detection only: read-only GETs of public pages. Full matches shown.
 Authorized testing only.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from ..classifier import domain_from_target
 from ..net import web_base
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
-from .secretutils import evidence_block, finding_value, is_placeholder, redact
+from .secretutils import evidence_block, finding_value, is_placeholder
 
 REMED_KEY = "api_key"
 
@@ -104,7 +104,7 @@ class GitleaksScanPlugin(Plugin):
             seen.add(key)
             findings.append(self._f(
                 "leak", f"exposed_{name}",
-                finding_value(severity, name.replace("_", " "), redact(m), where),
+                finding_value(severity, name.replace("_", " "), m, where),
                 source=f"gitleaks scan: {where}", source_url=url,
                 confidence=conf, passive=passive,
                 evidence=evidence_block(m, name, REMED_KEY, severity)))

@@ -150,12 +150,11 @@ class KeyHarvestPlugin(Plugin):
                             continue
                         findings.append(self._f(
                             "leak", key,
-                            f"{title} found in {label}: {_redact(raw)}",
+                            f"{title} found in {label}: {raw}",
                             source="Key harvest", source_url=base,
                             confidence=conf,
                             evidence={"severity": sev,
                                       "remediation": REMEDIATION,
-                                      "redacted": _redact(raw),
                                       "full_value": raw[:500],
                                       "found_in": label[:120],
                                       "note": "Credential value stored in "

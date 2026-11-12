@@ -19,7 +19,7 @@ This module hunts the actual wallet artifacts a target serves:
   reflog of a served .git.
 
 Detection only: read-only GETs of public paths, structure/content
-validation, secrets redacted in findings.
+validation, full secrets shown in findings.
 """
 from __future__ import annotations
 
@@ -106,10 +106,9 @@ def _wallet_material_detail(text: str) -> Optional[str]:
     """Why this text counts as wallet material (or None)."""
     phrases = _bip39_phrases(text)
     if phrases:
-        from .secretutils import redact
         phrase, n = phrases[0]
         return (f"contains a checksum-valid BIP-39 seed phrase "
-                f"({n} words): {redact(phrase, show=6)}")
+                f"({n} words): {phrase}")
     if _LABELED_KEY_RE.search(text):
         return "contains a labeled private key / seed entry"
     addrs = _validated_addresses(text)
@@ -595,25 +594,25 @@ class CpWalletSourcemap(Plugin):
                 pass
             phrases = _bip39_phrases(content)
             if phrases:
-                from .secretutils import redact
                 phrase, n = phrases[0]
                 findings.append(self._f(
                     "leak", "sourcemap_seed_phrase",
                     f"Seed phrase ({n} words) in source map "
-                    f"{urlparse(map_url).path}: {redact(phrase, show=6)}",
+                    f"{urlparse(map_url).path}: {phrase}",
                     source="source map", source_url=map_url,
                     confidence=97, passive=True,
-                    evidence={"words": n, "severity": "high"}))
+                    evidence={"words": n, "severity": "high",
+                              "full_value": phrase}))
             km = _SIGNER_CTX_RE.search(content)
             if km:
-                from .secretutils import redact
                 findings.append(self._f(
                     "leak", "sourcemap_private_key",
                     f"Context-labeled private key in source map "
-                    f"{urlparse(map_url).path}: {redact(km.group(1), show=4)}",
+                    f"{urlparse(map_url).path}: {km.group(1)}",
                     source="source map", source_url=map_url,
                     confidence=95, passive=True,
-                    evidence={"severity": "high"}))
+                    evidence={"severity": "high",
+                              "full_value": km.group(1)}))
             for chain, addr in _validated_addresses(content)[:3]:
                 findings.append(self._f(
                     "crypto", "sourcemap_address",

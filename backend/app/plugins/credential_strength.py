@@ -222,7 +222,7 @@ class CredentialStrengthPlugin(Plugin):
             if pw in seen or is_placeholder(pw) or len(pw) < 4:
                 continue
             seen.add(pw)
-            value = (f"HIGH: plaintext password {redact(pw, 3)} exposed in "
+            value = (f"HIGH: plaintext password {pw} exposed in "
                      f"public {'JS' if url and url.endswith('.js') else 'page'}")
             ev = evidence_block(pw, "plaintext_password", "credential",
                                 "high",

@@ -1,8 +1,11 @@
 """Shared helpers for secret/exposure finding plugins.
 
-Redaction: findings never carry a full secret in `value`. The full match
-goes into evidence["match"] so the owner can verify and rotate it, and
-`value` carries a redacted form plus severity tag.
+Full values shown (Jay's order, 2026-10-29, reversing the 2026-10-27
+masked-only rule): a found secret is shown IN FULL in the finding. The
+full match goes into evidence["match"] and evidence["full_value"] so
+the owner can verify and rotate it, and finding `value` strings carry
+the full value plus severity tag. `redact` remains available as a
+display helper for non-secret material (emails, hashes, samples).
 """
 from __future__ import annotations
 
@@ -43,8 +46,9 @@ def evidence_block(match: str, pattern_name: str, remediation_key: str,
     ev: Dict = {
         "severity": severity,
         "match": match,
+        "full_value": match,
         "pattern": pattern_name,
-        "redacted": True,
+        "redacted": False,
         "remediation": REMEDIATION.get(remediation_key, ""),
         "scope_note": "Authorized testing only: verify you own this asset or it is in an approved bounty scope before acting on this finding.",
     }

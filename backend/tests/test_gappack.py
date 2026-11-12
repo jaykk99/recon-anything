@@ -3,7 +3,7 @@
 Every gx plugin runs through the REAL Ctx against a canary served via
 httpx MockTransport (tests/gappack_samples.py): each detector must
 fire on the canary, stay silent on the clean site, and no full planted
-secret may appear in any finding (masked + fingerprint only). The git
+secret appears in findings IN FULL (plus fingerprint). The git
 fixture is a REAL git repo built with the git CLI: the fake key is
 committed, then deleted - it exists only in history.
 """
@@ -199,7 +199,7 @@ def test_google_share_links_verified_public():
     assert len(hits) >= 2, r.reason  # drive folder + docs sheet
 
 
-def test_git_history_secret_found_masked_with_commit():
+def test_git_history_secret_found_in_full_with_commit():
     _git_fixture()
     r = _run("gx_git_history_secrets", CANARY)
     hits = _by_key(r, "git_history_secret")
@@ -211,7 +211,8 @@ def test_git_history_secret_found_masked_with_commit():
         samples.GIT_KEY.encode()).hexdigest()
     blob = json.dumps([f.value for f in r.findings]) + json.dumps(
         [f.evidence for f in r.findings], default=str)
-    assert samples.GIT_KEY not in blob
+    assert samples.GIT_KEY in blob
+    assert ev["full_value"] == samples.GIT_KEY
 
 
 def test_azure_container_public_list():
@@ -287,15 +288,16 @@ def test_torchserve_open():
     assert hits and hits[0].evidence["model_count"] == 1
 
 
-def test_pinecone_key_masked():
+def test_pinecone_key_shown_in_full():
     r = _run("gx_pinecone_key", CANARY)
     hits = _by_key(r, "pinecone_api_key_exposed")
     assert hits, r.reason
     ev = hits[0].evidence
     assert ev["fingerprint_sha256"] == hashlib.sha256(
         samples.PINECONE_KEY.encode()).hexdigest()
-    assert samples.PINECONE_KEY not in hits[0].value
-    assert samples.PINECONE_KEY not in json.dumps(ev, default=str)
+    assert samples.PINECONE_KEY in hits[0].value
+    assert samples.PINECONE_KEY in json.dumps(ev, default=str)
+    assert ev["full_value"] == samples.PINECONE_KEY
 
 
 def test_training_data_refs():

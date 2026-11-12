@@ -55,7 +55,7 @@ from ..classifier import domain_from_target
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .gitleaks_scan import RULES as _GIT_RULES
-from .secretutils import is_placeholder, redact
+from .secretutils import is_placeholder
 
 AI_IDS: List[str] = [
     "ai_llms_index",
@@ -439,11 +439,12 @@ class AiLlmsSecrets(_AiPlugin):
                     fp = _fingerprint(val)
                     emit(self.ai_finding(
                         "leak", "ai_llms_secret",
-                        f"{sev.upper()}: {name} {redact(val)} in "
+                        f"{sev.upper()}: {name} {val} in "
                         f"AI-facing document {url}",
                         url, "high" if sev in ("critical", "high")
                         else "medium",
-                        fingerprint_sha256=fp, rule=name), (fp, url))
+                        fingerprint_sha256=fp, rule=name,
+                        full_value=val), (fp, url))
         return self._ok(findings,
                         f"mined {len(texts)} AI-facing documents, "
                         f"{md_fetched} linked .md docs fetched")

@@ -24,7 +24,7 @@ This pack (5 detectors, one shared discovery pass per run):
 - xml_secrets        - secrets/credentials/PII inside any discovered
                        XML doc: gitleaks RULES (same engine as the JS
                        scanners) + credential elements/attributes +
-                       connection strings, all masked + fingerprinted.
+                       connection strings, full values shown + fingerprinted.
 - xml_sitemap_paths  - sitemap contents from EVERY source (path
                        probes, robots.txt Sitemap: lines, index
                        children one level deep): sensitive-path URLs
@@ -65,7 +65,7 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .cryptopack_util import collect_texts
 from .gitleaks_scan import RULES as _GIT_RULES
 from .privfind import v_iban, v_ssn
-from .secretutils import is_placeholder, redact
+from .secretutils import is_placeholder
 
 XML_IDS: List[str] = [
     "xml_secrets",
@@ -488,12 +488,13 @@ class XmlSecrets(_XmlPlugin):
                     fp = _fingerprint(val)
                     emit(self.xml_finding(
                         "leak", "xml_secret",
-                        f"{sev.upper()}: {name} {redact(val)} in XML "
+                        f"{sev.upper()}: {name} {val} in XML "
                         f"document {url}",
                         url, "high" if sev in ("critical", "high")
                         else "medium",
                         confidence=conf, pattern=name,
-                        fingerprint_sha256=fp, redacted=True),
+                        fingerprint_sha256=fp, full_value=val,
+                        redacted=False),
                         ("rule", name, fp))
 
             # 2) connection strings (Server=...;Password=...)
@@ -502,9 +503,10 @@ class XmlSecrets(_XmlPlugin):
                 emit(self.xml_finding(
                     "leak", "xml_connection_string",
                     f"CRITICAL: connection string with password "
-                    f"{redact(pwd)} exposed in XML document {url}",
+                    f"{pwd} exposed in XML document {url}",
                     url, "high", confidence=92, password_included=True,
-                    fingerprint_sha256=fp, redacted=True),
+                    fingerprint_sha256=fp, full_value=pwd,
+                    redacted=False),
                     ("connstr", fp))
 
             # 3) credential attributes: password="..." / api-key="..."
@@ -516,10 +518,10 @@ class XmlSecrets(_XmlPlugin):
                 emit(self.xml_finding(
                     "leak", "xml_credential_attribute",
                     f"HIGH: credential in XML attribute "
-                    f"{m.group(1)}=\"{redact(val)}\" in {url}",
+                    f"{m.group(1)}=\"{val}\" in {url}",
                     url, "high", confidence=88,
                     attribute=m.group(1), fingerprint_sha256=fp,
-                    redacted=True),
+                    full_value=val, redacted=False),
                     ("attr", m.group(1).lower(), fp))
 
             # 4) credential elements (tree walk when parseable)
@@ -535,11 +537,11 @@ class XmlSecrets(_XmlPlugin):
                                 emit(self.xml_finding(
                                     "leak", "xml_connection_string",
                                     f"CRITICAL: connection string "
-                                    f"with password {redact(pwd)} in "
+                                    f"with password {pwd} in "
                                     f"<{name}> in {url}",
                                     url, "high", confidence=94,
                                     fingerprint_sha256=fp,
-                                    redacted=True),
+                                    full_value=pwd, redacted=False),
                                     ("connstr", fp))
                         continue
                     if name in _CRED_ELEMENTS:
@@ -551,9 +553,10 @@ class XmlSecrets(_XmlPlugin):
                         emit(self.xml_finding(
                             "leak", "xml_credential_element",
                             f"HIGH: credential in XML element "
-                            f"<{name}>: {redact(val)} in {url}",
+                            f"<{name}>: {val} in {url}",
                             url, "high", confidence=90, element=name,
-                            fingerprint_sha256=fp, redacted=True),
+                            fingerprint_sha256=fp, full_value=val,
+                            redacted=False),
                             ("elem", name, fp))
 
             # 5) PII: checksum/format-validated, like the pf pack

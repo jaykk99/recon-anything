@@ -300,17 +300,20 @@ def test_canary_detector_fires(pid, key):
     assert key in keys, f"{pid}: expected {key}, got {keys}"
 
 
-def test_canary_no_full_secrets_anywhere():
+def test_canary_full_secrets_shown_tin_stays_masked():
     findings = asyncio.run(_run_plugins(list(CANARY_EXPECT)))
     blob = ""
     for pid, fs in findings.items():
         for f in fs:
             blob += f.value + " " + json.dumps(f.evidence or {},
                                                default=str) + "\n"
-    for secret in (SK_LIVE, SQUARE_TOKEN, WHSEC, DOC_SECRET, MOBILE_KEY,
-                   FAKE_TIN):
-        assert secret not in blob, f"full secret leaked: {secret[:8]}..."
-    # and the masked forms ARE what got reported
+    # Credential secrets are shown IN FULL since 2026-10-29 (Jay's
+    # order reversing the masked-only rule).
+    for secret in (SK_LIVE, SQUARE_TOKEN, WHSEC, DOC_SECRET, MOBILE_KEY):
+        assert secret in blob, f"full secret not shown: {secret[:8]}..."
+    # The TIN is personal data, not a credential: it stays masked.
+    assert FAKE_TIN not in blob
+    # and the masked forms are still carried as metadata
     assert "sk_liv...8f9a0"[:6] in blob or "sk_liv" in blob
 
 

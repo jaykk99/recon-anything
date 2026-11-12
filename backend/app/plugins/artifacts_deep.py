@@ -822,14 +822,14 @@ class _ArchiveBase(_DeepArtifact):
                         "leak", f"{self.KEY}_config_secret",
                         f"Hardcoded secret in {entry[0]} inside the "
                         f"archive at {url}: {pattern} = "
-                        f"{redact(raw)} "
+                        f"{raw} "
                         f"(sha256 {_fingerprint(raw)[:16]}...) - "
-                        f"read from one bounded config entry, value "
-                        f"masked",
+                        f"read from one bounded config entry",
                         source=self.id, source_url=url, confidence=94,
                         evidence=_ev(
                             self.id, config_entry=entry[0],
                             pattern=pattern, masked_value=redact(raw),
+                            full_value=raw,
                             sha256=_fingerprint(raw))))
                 if hits:
                     break

@@ -1,8 +1,10 @@
-"""Tests for masked secret identification.
+"""Tests for secret identification with full values shown.
 
 All values in this file are invented fakes for testing only. No real
-secret appears here, and no test asserts on a full secret value - the
-point of the feature is that full values are never carried.
+secret appears here. Since Jay's 2026-10-29 order (reversing the
+2026-10-27 masked-only rule), findings carry the full found value in
+``full_value``, in the context snippet, and in the finding text, with
+the fingerprint and masked preview kept as extra metadata.
 """
 import asyncio
 import hashlib
@@ -14,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.plugins.secret_identity import (  # noqa: E402
-    blank_context, contains_full_secret, fingerprint, identify_finding,
+    contains_full_secret, context_snippet, fingerprint, identify_finding,
     mask_value, locate)
 from app.plugins.secret_identity import SecretIdentityPlugin  # noqa: E402
 
@@ -34,7 +36,9 @@ def test_fingerprint_is_deterministic_and_sha256():
     assert fingerprint(FAKE_VALUE) != fingerprint(FAKE_VALUE + "x")
 
 
-def test_mask_never_returns_full_value():
+def test_mask_value_is_only_a_preview():
+    # The masked preview still exists as metadata; it is no longer the
+    # only form of the value a finding carries.
     masked = mask_value(FAKE_VALUE)
     assert masked != FAKE_VALUE
     assert FAKE_VALUE not in masked
@@ -42,18 +46,19 @@ def test_mask_never_returns_full_value():
     assert masked.endswith(FAKE_VALUE[-4:])
 
 
-def test_locate_and_blank_context():
+def test_locate_and_context_snippet():
     text = "line one\nline two " + FAKE_VALUE + " tail\n"
     line, column = locate(text, FAKE_VALUE)
     assert line == 2
     assert column > 0
-    ctx = blank_context(text, FAKE_VALUE)
-    assert FAKE_VALUE not in ctx
-    assert "[REDACTED]" in ctx
+    ctx = context_snippet(text, FAKE_VALUE)
+    # Context is shown exactly as found: the value is visible in it.
+    assert FAKE_VALUE in ctx
+    assert "[REDACTED]" not in ctx
     assert "line two" in ctx
 
 
-def test_identify_finding_carries_no_full_value():
+def test_identify_finding_carries_full_value():
     ev = identify_finding(
         source="canary page", source_url="https://canary.test/",
         secret_type="canary_api_key", secret=FAKE_VALUE,
@@ -61,14 +66,15 @@ def test_identify_finding_carries_no_full_value():
         derived_public_wallet="canary-public-wallet-label",
         balance="0 (canary, not a real balance)")
     assert ev["secret_type"] == "canary_api_key"
+    assert ev["full_value"] == FAKE_VALUE
     assert ev["length"] == len(FAKE_VALUE)
     assert ev["masked_value"] == mask_value(FAKE_VALUE)
     assert ev["fingerprint"] == fingerprint(FAKE_VALUE)
     assert ev["line"] == 3
     assert ev["derived_public_wallet"] == "canary-public-wallet-label"
-    assert ev["full_value_included"] is False
-    assert not contains_full_secret(ev, FAKE_VALUE)
-    assert FAKE_VALUE not in ev["context_blanked"]
+    assert ev["full_value_included"] is True
+    assert contains_full_secret(ev, FAKE_VALUE)
+    assert FAKE_VALUE in ev["context"]
 
 
 def test_plugin_canary_through_real_pipeline():
@@ -76,7 +82,7 @@ def test_plugin_canary_through_real_pipeline():
 
     This exercises the real Ctx/fetch path (not a unit stub of the
     plugin's own helpers): the plugin fetches the page, finds the
-    assignment, and emits a masked, fingerprinted finding.
+    assignment, and emits a finding showing the full value.
     """
     import httpx
     from app.cache import Cache
@@ -110,14 +116,15 @@ def test_plugin_canary_through_real_pipeline():
     assert finding.plugin_id == "secret_identity"
     ev = finding.evidence
     assert ev["secret_type"] == "canary_api_key"
+    assert ev["full_value"] == FAKE_VALUE
     assert ev["fingerprint"] == fingerprint(FAKE_VALUE)
     assert ev["line"] == 3
     assert ev["source_url"] == "https://canary.test/"
-    # Nothing in the whole finding carries the full fake value.
-    assert not contains_full_secret(finding.value, FAKE_VALUE)
-    assert not contains_full_secret(ev, FAKE_VALUE)
-    assert FAKE_VALUE not in json.dumps(finding.value)
-    assert FAKE_VALUE not in json.dumps(ev)
+    # The whole finding carries the full fake value.
+    assert contains_full_secret(finding.value, FAKE_VALUE)
+    assert contains_full_secret(ev, FAKE_VALUE)
+    assert FAKE_VALUE in json.dumps(finding.value)
+    assert FAKE_VALUE in json.dumps(ev)
 
 
 def test_matcher_identifies_by_fingerprint_without_revealing_value(tmp_path):

@@ -4,7 +4,7 @@ Every xml plugin runs through the REAL Ctx against a canary served
 via httpx MockTransport (tests/xmlpack_samples.py): each extraction
 class must fire on the canary, every plugin must stay silent on the
 clean site, and no full planted secret may appear in any finding
-(masked + fingerprint only).
+(full value shown + fingerprint; PII stays masked).
 """
 import asyncio
 import hashlib
@@ -112,27 +112,29 @@ def test_exactly_5_new_detectors_registered():
     assert len(discover()) == 1227  # 927 = master 655 + 100 BSC/BNB detectors (bsc100) + 1 ast_visual_audit plugin + 5 deep-audit detectors + 6 deep-audit batch-2 detectors + 6 recipient-first detectors + 1 auto-validator + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10) + 5 deep-audit batch-11 detectors (deep_audit11) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129) + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
 
 
-def test_connstr_password_masked_with_fingerprint():
+def test_connstr_password_shown_in_full_with_fingerprint():
     r = _run("xml_secrets", CANARY)
     hits = _by_key(r, "xml_connection_string")
     assert hits, r.reason
     assert hits[0].evidence["fingerprint_sha256"] == _fp(samples.CONN_PWD)
-    assert samples.CONN_PWD not in _blob(r)
+    assert hits[0].evidence["full_value"] == samples.CONN_PWD
+    assert samples.CONN_PWD in _blob(r)
 
 
-def test_credential_attribute_masked():
+def test_credential_attribute_shown_in_full():
     r = _run("xml_secrets", CANARY)
     hits = _by_key(r, "xml_credential_attribute")
     assert hits, r.reason
     assert hits[0].evidence["fingerprint_sha256"] == _fp(samples.ATTR_PWD)
-    assert samples.ATTR_PWD not in _blob(r)
+    assert hits[0].evidence["full_value"] == samples.ATTR_PWD
+    assert samples.ATTR_PWD in _blob(r)
 
 
-def test_api_key_element_masked():
+def test_api_key_element_shown_in_full():
     r = _run("xml_secrets", CANARY)
     fps = {f.evidence.get("fingerprint_sha256") for f in r.findings}
     assert _fp(samples.STRIPE_KEY) in fps
-    assert samples.STRIPE_KEY not in _blob(r)
+    assert samples.STRIPE_KEY in _blob(r)
 
 
 def test_js_discovered_xml_is_mined():
@@ -140,7 +142,7 @@ def test_js_discovered_xml_is_mined():
     r = _run("xml_secrets", CANARY)
     fps = {f.evidence.get("fingerprint_sha256") for f in r.findings}
     assert _fp(samples.GH_TOKEN) in fps
-    assert samples.GH_TOKEN not in _blob(r)
+    assert samples.GH_TOKEN in _blob(r)
     hosts = {f.evidence.get("host")
              for f in _by_key(r, "xml_internal_reference")}
     assert "billing.internal" in hosts
@@ -251,9 +253,15 @@ def test_clean_site_silence(pid):
                            f"{[f.key for f in r.findings]}"
 
 
-def test_no_planted_secret_anywhere():
+def test_planted_secrets_only_in_xml_secrets_findings():
+    # Full values are shown by design since 2026-10-29, but ONLY the
+    # secret-mining plugin may carry them; no other xml plugin's
+    # findings may contain a planted secret.
     for pid in XML_IDS:
         r = _run(pid, CANARY)
         blob = _blob(r)
         for secret in samples.PLANTED_SECRETS:
-            assert secret not in blob, f"{pid} leaked {secret[:6]}..."
+            if pid == "xml_secrets":
+                assert secret in blob, f"{pid} did not show {secret[:6]}..."
+            else:
+                assert secret not in blob, f"{pid} leaked {secret[:6]}..."
