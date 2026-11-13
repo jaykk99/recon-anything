@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReconAnything NN — triage scorer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3;
+          --muted:#8b949e; --green:#3fb950; --red:#f85149; --amber:#d29922;
+          --blue:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:20px 24px 8px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { padding:12px 24px 40px; display:grid; gap:16px;
+         grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:8px; padding:16px; }
+  .wide { grid-column:1 / -1; }
+  .warn { background:#3a2b00; border:1px solid var(--amber); color:#ffd479;
+          border-radius:8px; padding:12px 16px; font-size:13px; }
+  .warn b { color:#fff; }
+  .metrics { display:flex; flex-wrap:wrap; gap:12px; }
+  .metric { flex:1 1 120px; background:#0d1117; border:1px solid var(--line);
+            border-radius:6px; padding:10px; }
+  .metric .v { font-size:22px; font-weight:700; }
+  .metric .k { color:var(--muted); font-size:12px; margin-top:2px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border:1px solid var(--line); padding:6px 10px; text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  .bar-row { display:grid; grid-template-columns:170px 1fr 56px; gap:8px;
+             align-items:center; font-size:12px; margin:5px 0; }
+  .bar { height:12px; background:#0d1117; border:1px solid var(--line);
+         border-radius:3px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--blue); }
+  .bar-row.neg .bar > div { background:var(--red); }
+  svg text { fill:var(--muted); font-size:10px; font-family:inherit; }
+  svg .axis { stroke:var(--line); stroke-width:1; }
+  svg .loss { stroke:var(--amber); stroke-width:2; fill:none; }
+  svg .acc { stroke:var(--green); stroke-width:2; fill:none; }
+  svg .val { stroke:var(--blue); stroke-width:2; fill:none; }
+  .node { fill:#1f6feb; stroke:#58a6ff; }
+  .edge { stroke:#30363d; stroke-width:1; }
+  form { display:flex; gap:8px; flex-wrap:wrap; }
+  input[type=text] { flex:1 1 260px; background:#0d1117; color:var(--text);
+    border:1px solid var(--line); border-radius:6px; padding:9px 10px;
+    font-size:14px; }
+  button { background:#1f6feb; color:#fff; border:0; border-radius:6px;
+           padding:9px 16px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  code { background:#0d1117; border:1px solid var(--line); border-radius:4px;
+         padding:1px 5px; font-size:12px; }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:6px;
+        padding:12px; overflow:auto; font-size:12px; }
+  .pill { display:inline-block; border-radius:20px; padding:2px 10px;
+          font-size:12px; font-weight:600; }
+  .pill.good { background:#12261a; color:var(--green); }
+  .pill.bad { background:#2d1215; color:var(--red); }
+  .muted { color:var(--muted); font-size:12px; }
+  #score-status { margin-top:10px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ReconAnything NN — plugin-finding triage scorer</h1>
+  <div class="sub">Pure-stdlib MLP. Ranks findings by how much they look like past
+  candidates that survived triage. <span id="trained-at"></span></div>
+</header>
+<main>
+  <div class="warn wide"><b>TRIAGE ONLY.</b>
+  This network never verifies a vulnerability and never predicts
+  <b>VERIFIED_REAL</b> — there are zero verified-real positives in the
+  training data. A high score means “worth a live probe”, nothing more.
+  A low score means “looks like the false positives we have seen”.
+  Detection only: scoring never sends transactions or takes funds.</div>
+
+  <section class="card wide">
+    <h2>Test-set metrics</h2>
+    <div class="metrics" id="metrics"></div>
+    <p class="muted" id="metric-note"></p>
+  </section>
+
+  <section class="card">
+    <h2>Network architecture</h2>
+    <div id="arch"></div>
+    <p class="muted" id="arch-note"></p>
+  </section>
+
+  <section class="card">
+    <h2>Training curves</h2>
+    <div id="curves"></div>
+    <p class="muted">Amber: training loss (left axis). Green: training accuracy.
+    Blue: validation accuracy. One point per epoch.</p>
+  </section>
+
+  <section class="card">
+    <h2>Confusion matrix (test set)</h2>
+    <div id="confusion"></div>
+    <p class="muted">Positive class = worth-validating. Rows are the true
+    label, columns are what the network predicted.</p>
+  </section>
+
+  <section class="card">
+    <h2>Feature importance</h2>
+    <div id="importance"></div>
+    <p class="muted">Grouped permutation importance on the test set: ROC AUC
+    lost when a feature group is shuffled. Higher = the network relies on
+    it more. Negative = shuffling it helped (noise).</p>
+  </section>
+
+  <section class="card wide">
+    <h2>Score a target</h2>
+    <form id="score-form">
+      <input type="text" id="score-target" placeholder="bsc:0x... or https://example.com or example.com" spellcheck="false">
+      <button type="submit" id="score-btn">Score it</button>
+    </form>
+    <div id="score-status" class="muted">Runs the plugin set against the target
+    and ranks every finding with the network. Needs the backend running
+    (<code>POST /api/nn/score</code>); without it, use the CLI:
+    <code>python -m app.nn.score --target bsc:0x...</code></div>
+    <div id="score-results"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Training data</h2>
+    <div id="dataset" class="muted"></div>
+    <h2 style="margin-top:16px">Limits</h2>
+    <ul id="limits" class="muted"></ul>
+  </section>
+</main>
+
+<!-- NN-DATA-START -->
+<script type="application/json" id="nn-data">
+{
+  "trained_at": "2026-11-13T15:35:38.847001+00:00",
+  "layers": [
+    81,
+    32,
+    16,
+    1
+  ],
+  "n_features": 81,
+  "feature_names": [
+    "plugin:unchecked_math_user_input",
+    "plugin:contract_logic",
+    "plugin:uups_authorize_upgrade_missing",
+    "plugin:recipient_mint_to_caller",
+    "plugin:recipient_sig_value_to_self",
+    "plugin:cross_function_guard_sibling",
+    "plugin:recipient_bridge_release_unproven",
+    "plugin:recipient_overdraw_withdraw",
+    "plugin:bridge_withdrawer_identity_spoof",
+    "plugin:recipient_unbacked_claim",
+    "plugin:erc2771_msg_sender_unbound",
+    "plugin:eip712_separator_unbound",
+    "plugin:bridge_proof_length_unvalidated",
+    "plugin:bridge_proof_nullifier_missing",
+    "plugin:recipient_rescue_to_param",
+    "plugin:fee_on_transfer_overcredit",
+    "plugin:crypto_drain_scanner",
+    "plugin:empty_signature_accepted",
+    "plugin:bridge_replay_unbound_digest",
+    "plugin:bridge_receiver_sender_unchecked",
+    "plugin:weak_randomness_value_outcome",
+    "plugin:OTHER",
+    "key:unchecked_math_user_input",
+    "key:access_control_flaw",
+    "key:uups_authorize_upgrade_missing",
+    "key:recipient_mint_to_caller",
+    "key:recipient_sig_value_to_self",
+    "key:cross_function_guard_sibling",
+    "key:recipient_bridge_release_unproven",
+    "key:recipient_overdraw_withdraw",
+    "key:bridge_withdrawer_identity_spoof",
+    "key:recipient_unbacked_claim",
+    "key:erc2771_msg_sender_unbound",
+    "key:eip712_separator_unbound",
+    "key:bridge_proof_length_unvalidated",
+    "key:bridge_proof_nullifier_missing",
+    "key:recipient_rescue_to_param",
+    "key:fee_on_transfer_overcredit",
+    "key:unprotected_drain",
+    "key:empty_signature_accepted",
+    "key:bridge_replay_unbound_digest",
+    "key:bridge_receiver_sender_unchecked",
+    "key:weak_randomness_value_outcome",
+    "key:OTHER",
+    "severity",
+    "bounty_value",
+    "confidence",
+    "recipient:CALLER",
+    "recipient:CALLER-SUPPLIED",
+    "recipient:FIXED",
+    "recipient:HOLDER-SELF",
+    "recipient:OTHER",
+    "chain:bsc",
+    "chain:ethereum",
+    "chain:base",
+    "chain:arbitrum",
+    "chain:polygon",
+    "chain:other",
+    "source:Sourcify v2",
+    "source:Blockscout",
+    "source:other",
+    "bytecode_only_present",
+    "bytecode_only_true",
+    "detector_outcome_present",
+    "gate_present",
+    "gate_no_caller_gate",
+    "gate_guard_mention",
+    "role:implementation",
+    "role:standalone",
+    "role:proxy_shell",
+    "role:other",
+    "report:candidate",
+    "report:trigger_only",
+    "report:other",
+    "proxy_present",
+    "implementation_present",
+    "function_present",
+    "function_len",
+    "value_len",
+    "risk",
+    "evidence_count"
+  ],
+  "dataset": {
+    "candidates": 727,
+    "candidates_torn_lines": 0,
+    "batch_rows": 4689,
+    "batch_torn_lines": 22,
+    "batch_findings": 248713,
+    "joined_with_evidence": 725,
+    "without_batch_match": 0,
+    "excluded_verified_real_rows": 2,
+    "train_rows": 725,
+    "n_positive": 620,
+    "n_negative": 105
+  },
+  "train_rows": 580,
+  "test_rows": 145,
+  "train_metrics": {
+    "n": 580,
+    "n_positive": 496,
+    "n_negative": 84,
+    "threshold": 0.5,
+    "accuracy": 0.9362068965517242,
+    "majority_baseline_accuracy": 0.8551724137931035,
+    "roc_auc": 0.983906970046083,
+    "confusion": {
+      "tn": 80,
+      "fp": 4,
+      "fn": 33,
+      "tp": 463
+    },
+    "precision_worth_validating": 0.9914346895074947,
+    "recall_worth_validating": 0.9334677419354839,
+    "f1_worth_validating": 0.9615784008307373,
+    "precision_likely_fp": 0.7079646017699115,
+    "recall_likely_fp": 0.9523809523809523,
+    "f1_likely_fp": 0.8121827411167513
+  },
+  "test_metrics": {
+    "n": 145,
+    "n_positive": 124,
+    "n_negative": 21,
+    "threshold": 0.5,
+    "accuracy": 0.8896551724137931,
+    "majority_baseline_accuracy": 0.8551724137931035,
+    "roc_auc": 0.978110599078341,
+    "confusion": {
+      "tn": 21,
+      "fp": 0,
+      "fn": 16,
+      "tp": 108
+    },
+    "precision_worth_validating": 1.0,
+    "recall_worth_validating": 0.8709677419354839,
+    "f1_worth_validating": 0.9310344827586207,
+    "precision_likely_fp": 0.5675675675675675,
+    "recall_likely_fp": 1.0,
+    "f1_likely_fp": 0.7241379310344828
+  },
+  "history": {
+    "loss": [
+      0.3244271286743218,
+      0.27059132238254735,
+      0.23627155843299127,
+      0.21570524600012853,
+      0.20169685623795042,
+      0.1917151483516543,
+      0.18545581871637493,
+      0.17815097380835132,
+      0.17482006549635296,
+      0.16925788246149076,
+      0.1650517324917193,
+      0.16283147763302097,
+      0.15931989154312323,
+      0.15460481559479497,
+      0.15207600447810274,
+      0.15271012323170957,
+      0.14807297399512664,
+      0.14985261306150593,
+      0.14427580721276723,
+      0.1425004037868661,
+      0.14144462935210836,
+      0.1524068949703834,
+      0.15560898602667433,
+      0.13714127479616978,
+      0.13596506461874425,
+      0.13483021741163678,
+      0.13378238902819886,
+      0.13400863251535394,
+      0.14275099023728186,
+      0.13230103643253666,
+      0.13190854622091192,
+      0.14406747964216884,
+      0.1295029695225253,
+      0.12867795605139362,
+      0.1291119488641805,
+      0.12812091292401645,
+      0.16333918551145765,
+      0.12671195973590474,
+      0.1289744305589224,
+      0.1251179842073407,
+      0.12477937210242092,
+      0.12532139947102078,
+      0.12443773075679972,
+      0.12642347683403682,
+      0.12978145240827124,
+      0.12353174129358005,
+      0.12242934533847925,
+      0.12648790270114957,
+      0.1293220092013192,
+      0.1209514620982366,
+      0.12134526801236457,
+      0.12035959107056418,
+      0.12003232604853914,
+      0.11978497548313133,
+      0.13255992066635897,
+      0.1195711350097375,
+      0.11864249665248974,
+      0.1185306275050522,
+      0.13113226821938417,
+      0.14025343852372746
+    ],
+    "train_acc": [
+      0.8551724137931035,
+      0.8741379310344828,
+      0.8810344827586207,
+      0.8810344827586207,
+      0.9155172413793103,
+      0.9155172413793103,
+      0.9103448275862069,
+      0.9120689655172414,
+      0.9086206896551724,
+      0.9120689655172414,
+      0.9241379310344827,
+      0.9206896551724137,
+      0.9224137931034483,
+      0.9310344827586207,
+      0.9362068965517242,
+      0.9293103448275862,
+      0.9327586206896552,
+      0.9155172413793103,
+      0.9413793103448276,
+      0.9431034482758621,
+      0.9413793103448276,
+      0.9293103448275862,
+      0.9224137931034483,
+      0.9448275862068966,
+      0.946551724137931,
+      0.946551724137931,
+      0.946551724137931,
+      0.9448275862068966,
+      0.9344827586206896,
+      0.9448275862068966,
+      0.9413793103448276,
+      0.9241379310344827,
+      0.946551724137931,
+      0.9482758620689655,
+      0.9431034482758621,
+      0.9482758620689655,
+      0.9206896551724137,
+      0.9482758620689655,
+      0.9431034482758621,
+      0.9482758620689655,
+      0.9482758620689655,
+      0.946551724137931,
+      0.946551724137931,
+      0.9448275862068966,
+      0.946551724137931,
+      0.946551724137931,
+      0.9482758620689655,
+      0.95,
+      0.9413793103448276,
+      0.9482758620689655,
+      0.946551724137931,
+      0.95,
+      0.946551724137931,
+      0.946551724137931,
+      0.9362068965517242,
+      0.946551724137931,
+      0.946551724137931,
+      0.946551724137931,
+      0.9379310344827586,
+      0.9362068965517242
+    ],
+    "val_acc": [
+      0.8551724137931035,
+      0.8758620689655172,
+      0.896551724137931,
+      0.903448275862069,
+      0.9172413793103448,
+      0.9172413793103448,
+      0.9103448275862069,
+      0.9241379310344827,
+      0.9172413793103448,
+      0.9172413793103448,
+      0.9172413793103448,
+      0.9172413793103448,
+      0.9172413793103448,
+      0.9103448275862069,
+      0.9103448275862069,
+      0.9379310344827586,
+      0.9172413793103448,
+      0.903448275862069,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9172413793103448,
+      0.9310344827586207,
+      0.9310344827586207,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9172413793103448,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.8827586206896552,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.8827586206896552,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.896551724137931,
+      0.9172413793103448,
+      0.9241379310344827,
+      0.9103448275862069,
+      0.9310344827586207,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.8896551724137931,
+      0.9241379310344827,
+      0.9241379310344827,
+      0.9172413793103448,
+      0.8896551724137931,
+      0.8896551724137931
+    ]
+  },
+  "feature_importance": [
+    {
+      "group": "proxy_impl",
+      "auc_drop": 0.015
+    },
+    {
+      "group": "bytecode_signals",
+      "auc_drop": 0.0138
+    },
+    {
+      "group": "contract_role",
+      "auc_drop": 0.0123
+    },
+    {
+      "group": "gate_analysis",
+      "auc_drop": 0.0119
+    },
+    {
+      "group": "source_origin",
+      "auc_drop": 0.01
+    },
+    {
+      "group": "report_class",
+      "auc_drop": 0.0084
+    },
+    {
+      "group": "recipient_class",
+      "auc_drop": 0.0046
+    },
+    {
+      "group": "plugin",
+      "auc_drop": 0.0035
+    },
+    {
+      "group": "chain",
+      "auc_drop": 0.0023
+    },
+    {
+      "group": "key",
+      "auc_drop": 0.0023
+    },
+    {
+      "group": "function",
+      "auc_drop": 0.0012
+    },
+    {
+      "group": "bounty_value",
+      "auc_drop": 0.0004
+    },
+    {
+      "group": "confidence",
+      "auc_drop": 0.0
+    },
+    {
+      "group": "evidence_count",
+      "auc_drop": 0.0
+    },
+    {
+      "group": "value_len",
+      "auc_drop": -0.0006
+    },
+    {
+      "group": "risk",
+      "auc_drop": -0.0012
+    },
+    {
+      "group": "severity",
+      "auc_drop": -0.0012
+    }
+  ],
+  "limits": [
+    "Triage only. The model ranks findings by how much they look like past candidates that survived triage. It does not verify anything.",
+    "Zero verified-real positives exist in the training data, so the model never predicts VERIFIED_REAL and must never be used to claim one. A high score means 'worth a live probe', nothing more.",
+    "Label skew: the training set is about 85% worth-validating and 15% likely-false-positive. Accuracy near the majority baseline means the model learned nothing; judge it by minority-class recall and ROC AUC instead.",
+    "Findings from plugins or chains unseen in training fall into the OTHER bucket; the model has no opinion about them beyond the generic features."
+  ],
+  "seed": 42,
+  "epochs": 60,
+  "lr": 0.05
+}
+</script>
+<!-- NN-DATA-END -->
+
+<script>
+"use strict";
+async function loadData() {
+  // Served over HTTP: prefer the fresh file. Opened as file:// (or the
+  // file is missing): fall back to the metrics embedded at train time.
+  try {
+    const r = await fetch("viewer-data.json", {cache: "no-store"});
+    if (r.ok) return await r.json();
+  } catch (e) { /* file:// or no backend: use embedded data */ }
+  try {
+    return JSON.parse(document.getElementById("nn-data").textContent || "null");
+  } catch (e) { return null; }
+}
+function el(id) { return document.getElementById(id); }
+function fmt(x, d) { return (x === null || x === undefined) ? "n/a" : Number(x).toFixed(d === undefined ? 3 : d); }
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderMetrics(d) {
+  const t = d.test_metrics, tr = d.train_metrics;
+  const cards = [
+    ["Test accuracy", fmt(t.accuracy), "majority baseline " + fmt(t.majority_baseline_accuracy)],
+    ["ROC AUC (test)", fmt(t.roc_auc), "0.5 = chance, 1.0 = perfect ranking"],
+    ["Worth-validating recall", fmt(t.recall_worth_validating), "precision " + fmt(t.precision_worth_validating)],
+    ["Likely-FP recall", fmt(t.recall_likely_fp), "precision " + fmt(t.precision_likely_fp)],
+    ["Train accuracy", fmt(tr.accuracy), "epochs " + d.epochs],
+    ["Test rows", String(d.test_rows), "train rows " + d.train_rows],
+  ];
+  el("metrics").innerHTML = cards.map(c =>
+    '<div class="metric"><div class="v">' + c[1] + '</div><div class="k">' +
+    esc(c[0]) + '<br>' + esc(c[2]) + '</div></div>').join("");
+  el("metric-note").textContent =
+    "Test accuracy near the majority baseline (" + fmt(t.majority_baseline_accuracy) +
+    ") would mean the network learned nothing. Judge it by likely-FP recall and ROC AUC.";
+  el("trained-at").textContent = "Trained " + esc(d.trained_at || "unknown") +
+    " · " + d.n_features + " features · layers " + d.layers.join("-");
+}
+
+function renderArch(d) {
+  const layers = d.layers, W = 560, H = 190, pad = 30;
+  const xs = layers.map((_, i) => pad + i * (W - 2 * pad) / Math.max(1, layers.length - 1));
+  const maxN = Math.max.apply(null, layers);
+  function ys(n) {
+    const out = [];
+    const shown = Math.min(n, 8);
+    for (let i = 0; i < shown; i++)
+      out.push(pad + (H - 2 * pad) * (shown === 1 ? 0.5 : i / (shown - 1)));
+    return out;
+  }
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%">';
+  const pos = layers.map((n, i) => ys(n).map(y => [xs[i], y]));
+  for (let l = 0; l < pos.length - 1; l++)
+    for (const a of pos[l]) for (const b of pos[l + 1])
+      s += '<line class="edge" x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '"/>';
+  pos.forEach((layer, l) => layer.forEach(p =>
+    s += '<circle class="node" cx="' + p[0] + '" cy="' + p[1] + '" r="5"/>'));
+  layers.forEach((n, i) =>
+    s += '<text x="' + xs[i] + '" y="' + (H - 6) + '" text-anchor="middle">' + n + '</text>');
+  s += "</svg>";
+  el("arch").innerHTML = s;
+  el("arch-note").textContent =
+    "Input " + d.n_features + " features (plugin, key, severity, recipient class, " +
+    "chain, source origin, bytecode signals, gate analysis, contract role, " +
+    "report class, value length, ...). Hidden layers tanh, output sigmoid. " +
+    "Layers with more than 8 neurons are drawn as 8.";
+}
+
+function lineChart(series, W, H) {
+  // series: [{pts:[...], cls:"loss"|"acc"|"val", max: number|null}]
+  const padL = 44, padB = 20, padT = 8, padR = 8;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%">';
+  s += '<line class="axis" x1="' + padL + '" y1="' + padT + '" x2="' + padL + '" y2="' + (padT + ih) + '"/>';
+  s += '<line class="axis" x1="' + padL + '" y1="' + (padT + ih) + '" x2="' + (padL + iw) + '" y2="' + (padT + ih) + '"/>';
+  for (const [cls, pts, max] of series) {
+    if (!pts || pts.length < 2) continue;
+    const mx = max === null ? Math.max.apply(null, pts) : max;
+    const mn = 0;
+    const step = iw / (pts.length - 1);
+    const d = pts.map((v, i) =>
+      (i === 0 ? "M" : "L") + (padL + i * step).toFixed(1) + "," +
+      (padT + ih - (v - mn) / Math.max(1e-9, mx - mn) * ih).toFixed(1)).join(" ");
+    s += '<path class="' + cls + '" d="' + d + '"/>';
+  }
+  s += '<text x="4" y="' + (padT + 4) + '">1.0</text>';
+  s += '<text x="4" y="' + (padT + ih) + '">0</text>';
+  s += "</svg>";
+  return s;
+}
+function renderCurves(d) {
+  const h = d.history || {};
+  el("curves").innerHTML = lineChart([
+    ["loss", h.loss || [], null],
+    ["acc", h.train_acc || [], 1],
+    ["val", h.val_acc || [], 1],
+  ], 560, 200);
+}
+
+function renderConfusion(d) {
+  const cm = d.test_metrics.confusion;
+  el("confusion").innerHTML =
+    "<table><tr><th></th><th>Predicted worth-validating</th><th>Predicted likely-FP</th></tr>" +
+    "<tr><th>Actually worth-validating</th><td>" + cm.tp + "</td><td>" + cm.fn + "</td></tr>" +
+    "<tr><th>Actually likely-FP</th><td>" + cm.fp + "</td><td>" + cm.tn + "</td></tr></table>";
+}
+
+function renderImportance(d) {
+  const imp = d.feature_importance || [];
+  const max = Math.max.apply(null, imp.map(x => Math.abs(x.auc_drop)).concat([0.001]));
+  el("importance").innerHTML = imp.map(x => {
+    const w = Math.abs(x.auc_drop) / max * 100;
+    return '<div class="bar-row' + (x.auc_drop < 0 ? " neg" : "") + '">' +
+      "<span>" + esc(x.group) + "</span>" +
+      '<div class="bar"><div style="width:' + w.toFixed(1) + '%"></div></div>' +
+      "<span>" + fmt(x.auc_drop) + "</span></div>";
+  }).join("") || '<p class="muted">No importance data yet.</p>';
+}
+
+function renderDataset(d) {
+  const s = d.dataset || {};
+  el("dataset").innerHTML =
+    "Candidates: " + (s.candidates ?? "n/a") + " rows (" +
+    (s.n_positive ?? "?") + " worth-validating / " + (s.n_negative ?? "?") +
+    " likely-false-positive). Joined with batch evidence: " +
+    (s.joined_with_evidence ?? "?") + "; without a batch match: " +
+    (s.without_batch_match ?? "?") + ". Excluded VERIFIED_REAL rows: " +
+    (s.excluded_verified_real_rows ?? "?") + " (adjudicated simulation-path " +
+    "false positives; real verified count is 0). Batch rows read: " +
+    (s.batch_rows ?? "?") + " (" + (s.batch_torn_lines ?? 0) + " torn lines skipped).";
+  el("limits").innerHTML = (d.limits || []).map(x => "<li>" + esc(x) + "</li>").join("");
+}
+
+function renderEmpty() {
+  document.querySelectorAll("#metrics,#arch,#curves,#confusion,#importance,#dataset")
+    .forEach(n => n.innerHTML = "");
+  el("metric-note").textContent =
+    "No training run yet. Train it with: python -m app.nn.train " +
+    "(from backend/, with the candidates file present).";
+}
+
+el("score-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const target = el("score-target").value.trim();
+  const btn = el("score-btn"), status = el("score-status"), out = el("score-results");
+  if (!target) return;
+  btn.disabled = true;
+  status.textContent = "Running plugins against " + target + " — this can take a few minutes for contracts…";
+  out.innerHTML = "";
+  try {
+    const r = await fetch("/api/nn/score", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({target: target}),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const rec = await r.json();
+    status.textContent = "Plugins run: " + rec.plugins_run.length +
+      " · findings: " + rec.findings_count +
+      (rec.notes && rec.notes.length ? " · " + rec.notes.length + " notes" : "");
+    if (!rec.findings.length) {
+      out.innerHTML = "<p class='muted'>No findings. Nothing to rank.</p>";
+      return;
+    }
+    let h = "<table><tr><th>Score</th><th>Label</th><th>Plugin / key</th><th>Top features</th></tr>";
+    for (const f of rec.findings.slice(0, 50)) {
+      const pill = f.nn_label === "worth-validating" ? "good" : "bad";
+      h += "<tr><td>" + fmt(f.nn_score) + "</td><td><span class='pill " + pill + "'>" +
+        esc(f.nn_label || "") + "</span></td><td>" + esc(f.plugin) + " / " + esc(f.key) +
+        "</td><td class='muted'>" + (f.nn_top_features || []).map(t =>
+          esc(t.feature) + " " + (t.direction === "up" ? "↑" : "↓")).join(", ") + "</td></tr>";
+    }
+    out.innerHTML = h + "</table>";
+  } catch (e) {
+    status.innerHTML = "No backend score endpoint reachable (" + esc(e.message) +
+      "). Run it from a terminal instead:<br><code>python -m app.nn.score --target " +
+      esc(target) + "</code>";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadData().then(d => {
+  if (!d || !d.test_metrics) { renderEmpty(); return; }
+  renderMetrics(d); renderArch(d); renderCurves(d);
+  renderConfusion(d); renderImportance(d); renderDataset(d);
+});
+</script>
+</body>
+</html>

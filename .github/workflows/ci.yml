@@ -83,3 +83,8 @@ jobs:
 
       - name: Scanner resilience (RPC skip, durable checkpoints, batch lock)
         run: pytest tests/test_scanner_resilience.py -q
+
+      - name: NN triage scorer (MLP math, features, pipeline, viewer)
+        run: pytest tests/test_nn_mlp.py tests/test_nn_features.py tests/test_nn_pipeline.py tests/test_nn_viewer.py tests/test_nn_train.py -q
+        # test_nn_train skips itself on CI (no scanner data there); the
+        # viewer test reads the metrics embedded at train time.
