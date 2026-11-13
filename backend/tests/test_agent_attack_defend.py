@@ -7,7 +7,7 @@ detector's own kind + code evidence; the timelock / gated
 variant MUST stay silent; every clean control MUST stay silent
 under ALL detectors. The fork harness MUST refuse any broadcast
 hypothesis and MUST always report UNVERIFIED. The registry
-discovers exactly 1428 plugins including all five new ones.
+discovers exactly 1433 plugins including all five new ones.
 """
 import json
 import os
@@ -268,10 +268,10 @@ def test_five_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1428():
+def test_registry_count_1433():
     reg = discover()
-    assert len(reg) == 1428, \
-        f"registry size {len(reg)}, expected 1428"
+    assert len(reg) == 1433, \
+        f"registry size {len(reg)}, expected 1433"
 
 
 # ---------------------------------------------------------------------------

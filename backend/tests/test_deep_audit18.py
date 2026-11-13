@@ -7,7 +7,7 @@ FIXED-recipient variant MUST fire trigger-only at low severity
 vuln shapes MUST fire candidate; every clean control MUST stay
 silent; every other batch's fixtures (12-17) MUST stay silent
 under this detector (no cross-batch noise); the registry
-discovers exactly 1366 plugins including this one.
+discovers exactly 1433 plugins including this one.
 """
 import os
 import sys
@@ -41,10 +41,10 @@ def test_one_plugin_registered():
     assert PID in reg, f"{PID} missing from registry"
 
 
-def test_registry_count_1366():
+def test_registry_count_1433():
     reg = discover()
-    assert len(reg) == 1366, \
-        f"registry size {len(reg)}, expected 1366"
+    assert len(reg) == 1433, \
+        f"registry size {len(reg)}, expected 1433"
 
 
 def test_vuln_fires_candidate_with_evidence():
