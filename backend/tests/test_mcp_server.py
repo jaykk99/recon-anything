@@ -46,6 +46,12 @@ EXPECTED_TOOLS = {
     "recon_list_schedules", "recon_create_schedule",
     "recon_delete_schedule", "recon_breachwatch",
     "recon_breachwatch_check", "recon_agentdata", "recon_hunters",
+    # v2.2: agent write / terminal / browser / crazy tools
+    "agent_write_poc", "agent_write_report", "agent_cast",
+    "agent_forge", "agent_anvil", "agent_slither", "agent_mythril",
+    "agent_fetch", "agent_search", "agent_explorer", "agent_fuzz",
+    "agent_simulate", "agent_time_travel", "agent_deploy_fork",
+    "agent_multicall",
 }
 
 
@@ -512,7 +518,7 @@ def test_standalone_keyless_localhost_without_key(monkeypatch):
                                      "method": "initialize",
                                      "params": {}})
             assert r.status_code == 200
-            assert r.json()["result"]["serverInfo"]["version"] == "2.0.0"
+            assert r.json()["result"]["serverInfo"]["version"] == "2.2.0"
             assert c.get("/").json()["auth"].startswith("none")
     finally:
         mcp_server._keyless_local_bind = False
@@ -567,7 +573,7 @@ def test_stdio_transport_handshake(tmp_path):
     out = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
     by_id = {m.get("id"): m for m in out}
     assert by_id[1]["result"]["serverInfo"] == {
-        "name": "recon-anything", "version": "2.0.0"}
+        "name": "recon-anything", "version": "2.2.0"}
     tools = by_id[2]["result"]["tools"]
     assert {t["name"] for t in tools} == EXPECTED_TOOLS
     health = by_id[3]["result"]
