@@ -260,8 +260,14 @@ def analyze_bsc_source(src: str, spec: DetectorSpec,
             return []
         if spec.forbid_all and _all(spec.forbid_all, scoped):
             return []
+        # Evidence starts at the first pattern that actually
+        # matched, so the snip shows the flagged surface instead
+        # of the head of the file (contract-scope detectors
+        # previously snipped from offset 0 whenever spec.need
+        # was empty).
         m = None
-        for p in spec.need:
+        for p in (spec.need + spec.need_any + spec.contract_need
+                  + spec.contract_need_any):
             m = re.search(p, scoped)
             if m:
                 break
