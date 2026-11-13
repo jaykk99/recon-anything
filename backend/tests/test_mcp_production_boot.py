@@ -32,7 +32,7 @@ http = httpx.Client(trust_env=False)
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "test-service-key-123"
-# Full current tool set (v2 + v2.1 agent tools). The v1-era
+# Full current tool set (v2 + v2.1 + v2.2 agent tools). The v1-era
 # 9-tool set went stale when v2 landed and this test red-lit
 # on master; asserting the real set keeps the boot check
 # meaningful.
@@ -52,6 +52,12 @@ EXPECTED_TOOLS = {
     "recon_agentdata", "recon_hunters",
     "agent_scan", "agent_probe", "agent_fork", "agent_trace",
     "agent_watch",
+    # v2.2: agent write / terminal / browser / crazy tools
+    "agent_write_poc", "agent_write_report", "agent_cast",
+    "agent_forge", "agent_anvil", "agent_slither", "agent_mythril",
+    "agent_fetch", "agent_search", "agent_explorer", "agent_fuzz",
+    "agent_simulate", "agent_time_travel", "agent_deploy_fork",
+    "agent_multicall",
 }
 
 
