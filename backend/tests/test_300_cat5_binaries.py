@@ -300,7 +300,7 @@ def test_all_cat5_plugins_registered():
     reg = discover()
     for pid in IDS:
         assert pid in reg, f"{pid} missing"
-    assert len(reg) == 1424
+    assert len(reg) == 1428
 
 
 @pytest.mark.parametrize("pid", IDS)
