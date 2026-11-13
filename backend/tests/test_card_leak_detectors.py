@@ -140,7 +140,7 @@ def test_both_detectors_registered():
     reg = discover()
     assert "exposed_card_number_leak" in reg
     assert "cc_to_crypto_onramp" in reg
-    assert len(reg) == 1363  # 1361 master + 2 card-leak detectors
+    assert len(reg) == 1413  # 1361 master + 2 card-leak detectors
 
 
 def test_card_leak_fires_two():
