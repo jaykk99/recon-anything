@@ -1,7 +1,7 @@
 """Phase 2C/2D deep analysis layers (Jay, Nov 4): go deeper than
 surface recon, for ALL targets, not just candidates.
 
-Four registry plugins share this module:
+Five registry plugins share this module:
 
 1. cross_contract_call_graph - from the target's verified source,
    extract external call targets (hardcoded addresses, interface-
@@ -47,6 +47,15 @@ Four registry plugins share this module:
    false-positive or a pattern confirmation; a live VERIFIED-style
    verdict still requires the read-only probe standard, so the
    strongest label emitted here is "tool-confirmed pattern".
+5. call_graph_multihop (Wave 1.2) - the layer-1 graph taken 2-3
+   hops: BFS over verified callee sources, gate checked at EVERY
+   hop from live eth_getStorageAt (owner/paused) as well as source,
+   caller-supplied address params traced through each forward, and
+   the terminal recipient classified (value-flow end). Emits
+   call_graph_gate_bypass_multihop,
+   call_graph_caller_supplied_route_multihop and
+   call_graph_value_sink_multihop as candidates (UNVERIFIED until
+   the validator live-probes them).
 
 SYNERGY (Phase 2D) runs through the EXISTING plumbing only -
 ctx.shared, the same per-run bus every plugin already uses. The
@@ -103,6 +112,8 @@ from . import toolbox as tb
 MAX_ADDRESSES = 4
 MAX_CHAIN_PAIRS = 4
 MAX_CALLEES = 4
+MAX_HOPS = 3          # contracts in one multihop path
+MAX_GRAPH_NODES = 12  # contracts fetched per target
 
 EIP1967_ADMIN_SLOT = (
     "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103")
@@ -571,6 +582,336 @@ def analyze_call_graph(target_src: str,
 
 
 # ---------------------------------------------------------------------------
+# Layer 1b pure analysis: multi-hop cross-contract call graph (Wave 1.2)
+#
+# Layer 1 follows ONE level: target -> callee. This layer follows the
+# value 2-3 hops: target -> relay -> sink (and one level further),
+# because composer / vault bugs are gate bypasses THROUGH a chain:
+# a gated entry in A, an ungated forwarder in B, and the drain in C.
+# Gates are checked at EVERY hop from source AND from live storage
+# (eth_getStorageAt owner/paused, supplied per hop by the plugin),
+# caller-supplied address params are traced through each forward,
+# and the terminal recipient is classified (value-flow end).
+# Findings are candidates (UNVERIFIED) - static analysis never
+# stamps VERIFIED_REAL; the validator live-probes them.
+# ---------------------------------------------------------------------------
+
+def _address_params(signature: str) -> List[str]:
+    """Address-typed parameter names of a function signature."""
+    i = signature.find("(")
+    if i < 0:
+        return []
+    inner = signature[i + 1:cd._matching(signature, i)]
+    names: List[str] = []
+    for part in cd._split_top(inner):
+        toks = [t for t in part.split() if t not in cd._PARAM_ATTRS]
+        if len(toks) >= 2 and "address" in part:
+            names.append(toks[-1])
+    return names
+
+
+def _forwards_address_param(fn: Dict[str, Any]) -> bool:
+    """True when the function body passes one of its own address
+    parameters into a further call, so a caller-supplied value keeps
+    flowing instead of being replaced by a stored address. Same
+    approximation as the 1-level route check: a parameter name
+    referenced in the body."""
+    params = _address_params(fn.get("signature", ""))
+    if not params:
+        return False
+    body = fn.get("text", "")
+    return any(re.search(r"\b" + re.escape(p) + r"\b", body)
+               for p in params)
+
+
+def _is_sink_fn(fn: Dict[str, Any]) -> bool:
+    """A hop is a value sink when its function moves funds: a
+    transfer/send/call-with-value/selfdestruct, or a sensitive
+    name (withdraw/sweep/drain/mint/...) that the fund-move scan
+    would miss on a bare external call."""
+    if "{" not in fn.get("text", ""):
+        return False
+    return bool(cd._fund_moves(fn["text"])) or bool(
+        _SENSITIVE_CALLEE_RE.search(fn["name"]))
+
+
+def _hop_label(hop: Dict[str, Any]) -> str:
+    gate = "gated" if hop["gated"] else "UNGATED"
+    live = ""
+    if hop["live_paused"] is True:
+        live = ", live paused=true"
+    elif hop["live_paused"] is False:
+        live = ", live paused=false"
+    name = hop["contract"] or "?"
+    return f"{name}.{hop['function']} ({gate}{live})"
+
+
+def _render_path(path: List[Dict[str, Any]]) -> str:
+    out = _hop_label(path[0])
+    for hop in path[1:]:
+        out += f" --[{hop['via']}]--> " + _hop_label(hop)
+    return out
+
+
+def analyze_call_graph_multihop(
+        target_addr: str, target_src: str,
+        sources: Dict[str, Optional[Dict[str, Any]]],
+        contract_name: str = "",
+        storage_by_addr: Optional[Dict[str, Dict[str, Any]]] = None,
+        max_hops: int = MAX_HOPS
+        ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]],
+                   List[Dict[str, Any]]]:
+    """Multi-hop value paths out of one target.
+
+    ``sources`` maps lowercase address -> verified-source meta (or
+    None when the fetch failed) for every contract the walk may
+    touch, including the target's direct callees and THEIR callees.
+    ``storage_by_addr`` maps lowercase address -> {"paused":
+    bool|None, "owner": str|None} live gate values (the plugin fills
+    this from eth_getStorageAt at EACH hop; absent -> the gate is
+    judged from source alone and the evidence says live state was
+    unavailable for that hop).
+
+    Returns (findings, paths, edges). A path is a list of hop dicts
+    [{address, contract, function, gated, live_paused, live_owner,
+    code, via, forwards_param, recipient, moves}] ending at the sink
+    hop whose function moves funds. ``edges`` covers every edge the
+    walk saw, including DEGRADED ones whose callee source could not
+    be fetched (the path through them stops there - never faked).
+    """
+    storage_by_addr = storage_by_addr or {}
+    t_scope = cl._Scope(target_src, contract_name)
+    t_fns = {fn["name"]: fn for fn in t_scope.functions}
+    nodes: Dict[str, Optional[Dict[str, Any]]] = {
+        target_addr.lower(): {"source": target_src,
+                              "contract": contract_name,
+                              "scope": t_scope, "fns": t_fns}}
+
+    def _node(addr_lower: str) -> Optional[Dict[str, Any]]:
+        if addr_lower in nodes:
+            return nodes[addr_lower]
+        meta = sources.get(addr_lower)
+        if meta is None:
+            nodes[addr_lower] = None
+            return None
+        src = meta.get("source", "")
+        scope = cl._Scope(src, meta.get("contract_name", ""))
+        entry = {"source": src, "contract": meta.get("contract_name", ""),
+                 "scope": scope,
+                 "fns": {fn["name"]: fn for fn in scope.functions}}
+        nodes[addr_lower] = entry
+        return entry
+
+    all_edges: List[Dict[str, Any]] = []
+    seen_edge_keys = set()
+
+    def _edges_for(addr_lower: str,
+                   node: Dict[str, Any]) -> List[Dict[str, Any]]:
+        edges = extract_call_edges(node["source"], node["contract"])
+        out = []
+        for e in edges:
+            key = (addr_lower, e["from_fn"], e["to_addr"].lower(),
+                   e["to_fn"])
+            e = dict(e)
+            e["status"] = "ran" if sources.get(
+                e["to_addr"].lower()) else "degraded"
+            if key not in seen_edge_keys:
+                seen_edge_keys.add(key)
+                all_edges.append(e)
+            out.append(e)
+        return out
+
+    def _make_hop(addr: str, node: Dict[str, Any],
+                  fn: Dict[str, Any], via: str) -> Dict[str, Any]:
+        live = storage_by_addr.get(addr.lower()) or {}
+        return {"address": addr, "contract": node["contract"],
+                "function": fn["name"],
+                "gated": cl._gated_deep(fn, node["scope"]),
+                "live_paused": live.get("paused"),
+                "live_owner": live.get("owner"),
+                "code": cc._snip(fn["text"]),
+                "via": via,
+                "forwards_param": _forwards_address_param(fn),
+                "recipient": "", "moves": []}
+
+    paths: List[List[Dict[str, Any]]] = []
+
+    def _descend(addr_lower: str, fn_name: str, addr_display: str,
+                 via: str, hops: List[Dict[str, Any]],
+                 visited: set) -> None:
+        node = _node(addr_lower)
+        if node is None:
+            return
+        fn = node["fns"].get(fn_name)
+        if fn is None or "{" not in fn.get("text", ""):
+            return
+        if cd._is_skippable(fn.get("signature", ""), fn.get("text", "")):
+            return
+        hop = _make_hop(addr_display, node, fn, via)
+        path = hops + [hop]
+        if _is_sink_fn(fn):
+            hop["moves"] = [m["kind"] for m in cd._fund_moves(fn["text"])]
+            recipient, _rd = cl.classify_recipient(fn["text"])
+            hop["recipient"] = recipient
+            paths.append(path)
+            return  # value leaves here; do not extend past a sink
+        if len(path) >= max_hops:
+            return
+        for e in _edges_for(addr_lower, node):
+            if e["from_fn"] != fn_name:
+                continue
+            nxt = e["to_addr"].lower()
+            if nxt in visited:
+                continue
+            _descend(nxt, e["to_fn"], e["to_addr"], e["via"], path,
+                     visited | {nxt})
+
+    target_node = nodes[target_addr.lower()]
+    for e in _edges_for(target_addr.lower(), target_node):
+        entry_fn = t_fns.get(e["from_fn"])
+        if entry_fn is None or "{" not in entry_fn.get("text", ""):
+            continue
+        if cd._is_skippable(entry_fn.get("signature", ""),
+                            entry_fn.get("text", "")):
+            continue
+        entry_hop = _make_hop(target_addr, target_node, entry_fn,
+                              "entry")
+        nxt = e["to_addr"].lower()
+        if nxt in {target_addr.lower()}:
+            continue
+        _descend(nxt, e["to_fn"], e["to_addr"], e["via"], [entry_hop],
+                 {target_addr.lower(), nxt})
+
+    findings: List[Dict[str, Any]] = []
+    for path in paths:
+        entry, rest = path[0], path[1:]
+        sink = path[-1]
+        recipient = sink["recipient"]
+        blocked = next((h for h in path if h["live_paused"] is True),
+                       None)
+        renounced = next(
+            (h for h in path
+             if h["gated"] and (h["live_owner"] or "") == ZERO), None)
+        later_ungated = [h for h in rest if not h["gated"]]
+        forwarded_all = all(h["forwards_param"] for h in path[:-1])
+        rendered = _render_path(path)
+        live_note = ""
+        if blocked is not None:
+            live_note = (
+                f" Live storage blocks this path right now: "
+                f"paused=true at {blocked['contract']}."
+                f"{blocked['function']} ({blocked['address']}) - "
+                f"reported as trigger-only, not as an open path.")
+        elif any(h["live_paused"] is None for h in path):
+            missing = ", ".join(
+                f"{h['contract']}.{h['function']}"
+                for h in path if h["live_paused"] is None)
+            live_note = (
+                f" Live paused state was unavailable for {missing}, "
+                f"so the gate verdict there rests on source alone.")
+        if renounced is not None:
+            live_note += (
+                f" Live owner is address(0) at "
+                f"{renounced['contract']}.{renounced['function']} "
+                f"(renounced gate holder).")
+        base = {"function": entry["function"],
+                "callee": sink["address"],
+                "callee_function": sink["function"],
+                "recipient": recipient, "path": path,
+                "hops": len(path), "code": entry["code"],
+                "callee_code": sink["code"]}
+        sev = "high"
+        report_class = "candidate"
+        if blocked is not None:
+            sev, report_class = "low", "trigger_only"
+        # (a) gated entry, ungated hop later, sink moves funds
+        if entry["gated"] and later_ungated:
+            rc, sv = report_class, sev
+            if recipient in ("FIXED", "HOLDER-SELF"):
+                rc, sv = "trigger_only", "low"
+            findings.append(dict(
+                base, kind="call_graph_gate_bypass_multihop",
+                severity=sv, report_class=rc,
+                detail=(
+                    f"multi-hop gate bypass ({len(path)} hops): "
+                    f"{rendered}. '{entry['function']}' is gated in "
+                    f"the target, but the value path runs through "
+                    f"UNGATED '{sink['function']}' on "
+                    f"{sink['address']}, which moves funds to "
+                    f"{recipient}. Anyone who can reach the "
+                    f"intermediate contract directly skips the "
+                    f"entry gate entirely.{live_note}")))
+        # (b) caller-supplied recipient forwarded through every hop
+        if recipient == "CALLER-SUPPLIED" and not sink["gated"] \
+                and forwarded_all:
+            findings.append(dict(
+                base, kind="call_graph_caller_supplied_route_multihop",
+                severity=sev, report_class=report_class,
+                detail=(
+                    f"caller-supplied value route ({len(path)} hops): "
+                    f"{rendered}. A caller-supplied address is "
+                    f"forwarded through every hop into "
+                    f"'{sink['function']}' on {sink['address']}, "
+                    f"whose value destination is that supplied "
+                    f"address (recipient CALLER-SUPPLIED). The "
+                    f"caller chooses who gets paid.{live_note}")))
+        # (c) value-flow end: terminal recipient, reached through an
+        # ungated hop after the entry
+        if recipient in ("CALLER-SUPPLIED", "CALLER", "FIXED",
+                         "HOLDER-SELF") and later_ungated:
+            rc, sv = report_class, sev
+            if recipient in ("FIXED", "HOLDER-SELF"):
+                rc, sv = "trigger_only", "low"
+            findings.append(dict(
+                base, kind="call_graph_value_sink_multihop",
+                severity=sv, report_class=rc,
+                detail=(
+                    f"multi-hop value sink ({len(path)} hops): "
+                    f"{rendered}. Value ultimately lands at a "
+                    f"{recipient} destination in "
+                    f"'{sink['function']}' on {sink['address']}', "
+                    f"reached through an ungated hop after the "
+                    f"entry.{live_note}")))
+    return findings, paths, all_edges
+
+
+async def _read_hop_storage(ctx: Ctx, chain: cc.ChainConfig,
+                            addr: str, meta: Dict[str, Any]
+                            ) -> Dict[str, Any]:
+    """Live owner/paused for ONE hop contract, from its source
+    layout. Batched eth_getStorageAt when a live HTTP client is
+    present, per-slot reads otherwise (same contract as the
+    storage plugin: identical words either way). Read-only."""
+    layout = state_layout(meta.get("source", ""),
+                          meta.get("contract_name", ""))
+    vars_ = [v for v in layout if _INTERESTING.search(v["name"])]
+    slots = [slot_hex(v["slot"]) for v in vars_]
+    words: Dict[str, Any] = {}
+    if getattr(ctx, "http", None) is not None:
+        try:
+            words = await cc.rpc_get_storage_batch(ctx, chain, addr,
+                                                   slots) or {}
+        except Exception:
+            words = {}
+    out: Dict[str, Any] = {"paused": None, "owner": None}
+    for var, slot in zip(vars_, slots):
+        word = words.get(slot)
+        if word is None:
+            try:
+                word = await cc.rpc_get_storage_at(ctx, chain, addr,
+                                                   slot)
+            except Exception:
+                word = None
+        val = decode_word(word, var["type"])
+        low = var["name"].lower()
+        if "owner" in low and isinstance(val, str):
+            out["owner"] = val
+        if "paus" in low and isinstance(val, bool):
+            out["paused"] = val
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Layer 3 pure analysis: bytecode deep
 # ---------------------------------------------------------------------------
 
@@ -679,6 +1020,12 @@ _CLAIM_WORDS = {
     "reentrancy": ("reentrancy",),
     "integer_overflow": ("overflow", "underflow", "arithmetic"),
     "call_graph_gate_bypass": ("access", "owner", "unprotected"),
+    "call_graph_gate_bypass_multihop": ("access", "owner",
+                                        "unprotected"),
+    "call_graph_caller_supplied_route_multihop": ("access", "owner",
+                                                  "unprotected"),
+    "call_graph_value_sink_multihop": ("access", "owner",
+                                       "unprotected"),
 }
 
 
@@ -840,6 +1187,173 @@ class CrossContractCallGraphPlugin(_DeepBase):
                          "storage": "ran" if rec.get("storage") else "absent"}
                 findings.append(self._coverage(chain, addr, depth, rec))
         res = self._ok(findings, f"call-graph: {len(findings)} finding(s)")
+        res.duration_ms = int((time.monotonic() - t0) * 1000)
+        return res
+
+
+class CallGraphMultihopPlugin(_DeepBase):
+    id = "call_graph_multihop"
+    label = "Cross-Contract Call Graph, Multi-Hop (Deep)"
+    description = ("Follows the target's external calls 2-3 hops "
+                   "deep: BFS over verified callee sources, checks "
+                   "the gate at EVERY hop from live eth_getStorageAt "
+                   "(owner/paused) as well as source, traces "
+                   "caller-supplied address params through each "
+                   "forward, and classifies the terminal recipient "
+                   "(value-flow end). Emits gate-bypass, "
+                   "caller-supplied-route and value-sink findings as "
+                   "candidates (UNVERIFIED until the validator "
+                   "live-probes them). Read-only.")
+
+    async def run(self, target: Target, ctx: Ctx) -> PluginResult:
+        t0 = time.monotonic()
+        work = collect_targets(target, ctx)
+        if not work:
+            res = self._skipped(
+                "no contract address for multi-hop call-graph analysis")
+            res.duration_ms = int((time.monotonic() - t0) * 1000)
+            return res
+        findings: List[Finding] = []
+        key = self._key(ctx)
+        for hint, addr in work:
+            for chain, _code in await resolve_chain_code(ctx, hint, addr):
+                rec = get_record(ctx, chain.id, addr)
+                src = await cc.fetch_verified_source(ctx, chain, addr, key)
+                if not src:
+                    depth = {"call_graph_multihop": "degraded_no_source",
+                             "storage": "absent" if not rec.get("storage")
+                             else "ran"}
+                    rec["depth"]["call_graph_multihop"] = \
+                        "degraded_no_source"
+                    findings.append(self._coverage(chain, addr, depth, rec))
+                    continue
+                rec["sources"]["self"] = src.get("contract_name", "")
+                # BFS fetch, level by level: target edges -> L1
+                # sources -> L1 edges -> L2 sources. A 3-contract
+                # path needs L2 sources, so MAX_HOPS - 1 expansions.
+                sources: Dict[str, Optional[Dict[str, Any]]] = {}
+                display: Dict[str, str] = {addr.lower(): addr}
+                node_srcs: Dict[str, Optional[Dict[str, Any]]] = {
+                    addr.lower(): src}
+                cur = [addr]
+                for _level in range(MAX_HOPS - 1):
+                    nxt: List[str] = []
+                    for a in cur:
+                        meta = node_srcs.get(a.lower())
+                        if meta is None:
+                            continue
+                        for e in extract_call_edges(
+                                meta["source"],
+                                meta.get("contract_name", "")
+                                )[:MAX_CALLEES]:
+                            ca = e["to_addr"]
+                            if ca.lower() in node_srcs:
+                                continue
+                            if ca.lower() == addr.lower():
+                                continue
+                            try:
+                                fetched = await cc.fetch_verified_source(
+                                    ctx, chain, ca, key)
+                            except Exception:
+                                fetched = None
+                            sources[ca.lower()] = fetched
+                            node_srcs[ca.lower()] = fetched
+                            display[ca.lower()] = ca
+                            nxt.append(ca)
+                            if len(sources) >= MAX_GRAPH_NODES:
+                                break
+                        if len(sources) >= MAX_GRAPH_NODES:
+                            break
+                    cur = nxt
+                    if not cur or len(sources) >= MAX_GRAPH_NODES:
+                        break
+                # Live storage gates at EACH hop (not just the first).
+                storage_by_addr: Dict[str, Dict[str, Any]] = {}
+                for a_lower, meta in node_srcs.items():
+                    if meta is None:
+                        continue
+                    storage_by_addr[a_lower] = await _read_hop_storage(
+                        ctx, chain, display.get(a_lower, a_lower), meta)
+                hits, paths, edges = analyze_call_graph_multihop(
+                    addr, src["source"], sources,
+                    src.get("contract_name", ""), storage_by_addr)
+                rec["call_graph_multihop"] = {
+                    "paths": paths, "edges": edges,
+                    "nodes": sorted(node_srcs.keys())}
+                rec["depth"]["call_graph_multihop"] = "ran"
+                rec["depth"]["multihop_nodes"] = len(node_srcs)
+                rec["depth"]["multihop_paths"] = len(paths)
+                rec["depth"]["multihop_max_depth"] = max(
+                    (len(p) for p in paths), default=0)
+                rec["depth"]["multihop_degraded_edges"] = sum(
+                    1 for e in edges if e.get("status") == "degraded")
+                url = cc.explorer_url(chain, addr)
+                for item in hits:
+                    cand = {"function": item["function"],
+                            "code": item["code"], "gated": True,
+                            "recipient": item["recipient"],
+                            "check": item["kind"],
+                            "severity": item["severity"]}
+                    adj = apply_storage_gate(rec, cand)
+                    sev = adj["severity"] if adj["adjustment"] == \
+                        "downgraded_paused" else item["severity"]
+                    path = sp.build_step_path(cand, rec)
+                    corr = sp.corroborate(
+                        item["kind"], "flags", "flags"
+                        if item["recipient"] != "UNRESOLVED" else "silent",
+                        other_lane="recipient_dataflow")
+                    ev = {"severity": sev, "address": addr,
+                          "chain": chain.id, "function": item["function"],
+                          "callee": item["callee"],
+                          "callee_function": item["callee_function"],
+                          "code": item["code"],
+                          "callee_code": item["callee_code"],
+                          "detail": item["detail"],
+                          "recipient": item["recipient"],
+                          "report_class": item["report_class"],
+                          "path": item["path"], "hops": item["hops"],
+                          "hop_storage": {
+                              h["address"]: {
+                                  "paused": h["live_paused"],
+                                  "owner": h["live_owner"]}
+                              for h in item["path"]},
+                          "storage_gate": adj, "steps": path["steps"],
+                          "path_verdict": path["verdict"],
+                          "corroboration": [corr],
+                          "depth": dict(rec["depth"]),
+                          "remediation": _REMEDIATION}
+                    findings.append(self._f(
+                        "web3", item["kind"],
+                        f"{sev.upper()}: {item['kind'].replace('_', ' ')}"
+                        f": {addr} -> {item['callee']} on {chain.name} "
+                        f"({item['hops']} hops)\n\n{item['detail']}\n\n"
+                        f"Target code:\n{item['code']}\n\nCallee code:\n"
+                        f"{item['callee_code']}",
+                        source="cross-contract call graph (multi-hop)",
+                        source_url=url,
+                        confidence=85 if sev == "high" else 60,
+                        passive=True, evidence=ev))
+                    rec["candidates"].append(cand)
+                    ctx.publish("deep_candidates", {
+                        "address": addr, "chain": chain.id,
+                        "source": src["source"],
+                        "contract_name": src.get("contract_name", ""),
+                        "function": item["function"],
+                        "check": item["kind"],
+                        "recipient": item["recipient"],
+                        "severity": sev, "code": item["code"],
+                        "gated": True})
+                depth = {"call_graph_multihop": "ran",
+                         "nodes": len(node_srcs), "paths": len(paths),
+                         "max_depth": rec["depth"].get(
+                             "multihop_max_depth", 0),
+                         "degraded_edges": rec["depth"].get(
+                             "multihop_degraded_edges", 0),
+                         "storage": "ran" if rec.get("storage")
+                         else "absent"}
+                findings.append(self._coverage(chain, addr, depth, rec))
+        res = self._ok(findings,
+                       f"call-graph-multihop: {len(findings)} finding(s)")
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res
 
