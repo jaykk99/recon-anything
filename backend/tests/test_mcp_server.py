@@ -55,6 +55,9 @@ EXPECTED_TOOLS = {
     # v2.1: agent attack/defend tools
     "agent_scan", "agent_probe", "agent_fork", "agent_trace",
     "agent_watch",
+    # v2.3: investigator loop (Wave 1.1)
+    "investigate", "investigation_status", "validate_candidate",
+    "bounty_pack",
 }
 
 
