@@ -75,6 +75,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -494,6 +495,51 @@ def health():
         "plugins": ph["registered"],
         "plugins_healthy": ph["healthy"],
     }
+
+
+# -- phone pair code + thin client --------------------------------------
+# The local launcher (local-run/start-common.sh) generates a 6-digit pair
+# code at boot, exports it as RECON_PAIR_CODE, and prints the one-line
+# phone command carrying it. A phone exchanges the code exactly once
+# for the access code (GET /api/pair) and fetches the stdlib-only
+# client (GET /recon-client.py), so Termux needs no clone, venv, or
+# Node: it drives this Linux box's backend over the LAN.
+# The code lives 10 minutes, dies after one success, and locks out
+# after 5 wrong guesses. Anyone on the same LAN can fetch the client
+# script itself (it carries no secret); only the code unlocks the
+# access code, and the code is printed on the server's own terminal.
+_PAIR_STATE = {"started": time.time(), "attempts": 0, "used": False}
+
+
+@app.get("/api/pair")
+def api_pair(code: str = Query("")):
+    """Exchange a short-lived pair code for the access code, once."""
+    expected = os.environ.get("RECON_PAIR_CODE", "")
+    if not expected or not config.ACCESS_CODE:
+        raise HTTPException(
+            400, "pairing is not enabled on this server "
+            "(no pair code or no access code configured)")
+    if _PAIR_STATE["used"] or time.time() - _PAIR_STATE["started"] > 600:
+        raise HTTPException(403, "pair code expired")
+    if code != expected:
+        _PAIR_STATE["attempts"] += 1
+        if _PAIR_STATE["attempts"] >= 5:
+            _PAIR_STATE["used"] = True
+        raise HTTPException(403, "bad pair code")
+    _PAIR_STATE["used"] = True
+    return {"access_code": config.ACCESS_CODE}
+
+
+@app.get("/recon-client.py")
+def serve_recon_client(request: Request):
+    """Serve the thin Termux client with this server's address baked in
+    (taken from the Host header the phone used to reach it)."""
+    path = Path(__file__).resolve().parents[2] / "local-run" / "recon-client.py"
+    if not path.is_file():
+        raise HTTPException(404, "recon client not installed on this server")
+    host = request.headers.get("host", "127.0.0.1:8000")
+    text = path.read_text().replace("__DEFAULT_SERVER__", f"http://{host}")
+    return PlainTextResponse(text)
 
 
 # -- MCP server ------------------------------------------------------------
