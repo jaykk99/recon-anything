@@ -1264,6 +1264,10 @@ function RunPageInner({ params }: { params: { id: string } }) {
         pathCount={attackPaths(findings).length}
         onOpen={() => setTab("paths")} />
 
+      {/* Suggested fixes: LLM-drafted fix + regression test for the
+          top neural-ranked findings (backend app/remediation.py). */}
+      <FixesPanel runId={id} />
+
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
       <div className="flex gap-2 text-sm overflow-x-auto pb-1">
@@ -2020,6 +2024,76 @@ function ExposureBanner({ exposure, pathCount, onOpen }:
           className="chip px-4 py-2.5 min-h-[44px] text-rose-200 border border-rose-500/40 bg-rose-950/30 whitespace-nowrap">
           ⚡ {pathCount} attack path{pathCount === 1 ? "" : "s"} →
         </button>
+      )}
+    </div>
+  );
+}
+
+// ---- Suggested fixes panel ---------------------------------------------
+interface FixDraft {
+  id: number; key: string; plugin: string; score: number; status: string;
+  fix?: string; test?: string; error?: string; test_check?: string;
+}
+
+function FixesPanel({ runId }: { runId: string }) {
+  const [drafts, setDrafts] = useState<FixDraft[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    api<{ results: FixDraft[] }>(`/api/runs/${runId}/remediation`)
+      .then((d) => setDrafts(d.results || []))
+      .catch(() => setDrafts([]));
+  }, [runId]);
+
+  const generate = async () => {
+    setBusy(true); setErr("");
+    try {
+      const d = await api<{ results: FixDraft[] }>(
+        `/api/runs/${runId}/remediation?min_score=40&limit=5`, { method: "POST" });
+      setDrafts(d.results || []); setOpen(true);
+    } catch (e) {
+      setErr(String((e as Error).message || e).replace(/^HTTP \d+: /, ""));
+    } finally { setBusy(false); }
+  };
+
+  const n = drafts?.length || 0;
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <button onClick={() => setOpen(!open)} disabled={!n}
+          className="font-semibold text-sm text-left flex-1 min-w-[160px] min-h-[44px]">
+          🛠 Suggested fixes {n ? `(${n})` : ""}
+          <span className="block text-xs text-slate-500 font-normal">
+            Drafted fix + regression test for the top neural-ranked findings. Review before applying.
+          </span>
+        </button>
+        <button onClick={generate} disabled={busy}
+          className="chip px-4 py-2.5 min-h-[44px] border border-sky-500/40 bg-sky-950/30 text-sky-200 whitespace-nowrap">
+          {busy ? "drafting..." : n ? "Redraft" : "Draft fixes"}
+        </button>
+      </div>
+      {err && <div className="text-xs text-amber-300 mt-2">{err}</div>}
+      {open && n > 0 && (
+        <div className="mt-3 space-y-2 min-w-0">
+          {drafts!.map((d) => (
+            <details key={`${d.id}-${d.key}`} className="border border-slate-700/60 rounded p-2 min-w-0 overflow-hidden">
+              <summary className="cursor-pointer text-sm">
+                <span className="font-mono">{d.key}</span>
+                <span className="text-slate-500 text-xs ml-2">
+                  score {d.score} · {d.status} · test {d.test_check || "n/a"}
+                </span>
+              </summary>
+              <div className="text-xs uppercase text-slate-500 mt-2">Fix</div>
+              <pre className="whitespace-pre-wrap text-sm text-slate-200">{d.fix || d.error || "(none)"}</pre>
+              {d.test && (<>
+                <div className="text-xs uppercase text-slate-500 mt-2">Regression test</div>
+                <pre className="whitespace-pre text-xs text-slate-300 overflow-x-auto max-w-full">{d.test}</pre>
+              </>)}
+            </details>
+          ))}
+        </div>
       )}
     </div>
   );

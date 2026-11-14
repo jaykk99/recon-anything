@@ -20,10 +20,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen">
-        <header className="border-b border-slate-800 px-6 py-3 flex items-center gap-3">
+        <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
           <a href="/" className="text-xl font-bold text-sky-300">ReconAnything</a>
-          <span className="text-xs text-slate-500">universal recon, passive by default</span>
-          <nav className="ml-auto flex gap-4 text-sm text-slate-400">
+          <span className="hidden sm:inline text-xs text-slate-500">universal recon, passive by default</span>
+          <nav className="ml-auto flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-400 min-w-0">
             {ghAnon ? (
               <a href="/api/auth/github" className="text-sky-300 hover:text-sky-200">
                 Sign in with GitHub

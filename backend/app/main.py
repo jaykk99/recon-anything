@@ -1017,6 +1017,62 @@ async def api_finding_retest(run_id: str, finding_id: int,
         raise HTTPException(e.status_code, e.detail, headers=headers)
 
 
+@app.get("/api/runs/{run_id}/remediation", dependencies=[Depends(gate)])
+def api_remediation_get(run_id: str, request: Request):
+    """Stored fix + regression-test drafts for this run (app/remediation.py),
+    or an empty list when none were generated yet."""
+    session = get_session()
+    try:
+        run = _owned_run(session, run_id, request)
+        return (run.summary or {}).get("remediation") or {"results": []}
+    finally:
+        session.close()
+
+
+@app.post("/api/runs/{run_id}/remediation", dependencies=[Depends(gate)])
+async def api_remediation_generate(run_id: str, request: Request,
+                                   min_score: int = 40, limit: int = 5):
+    """Draft fixes + regression tests for the run's top neural-ranked
+    findings and store them on the run. Uses masked findings; drafts are
+    suggestions only - nothing is applied or executed."""
+    import asyncio as _asyncio
+    from . import remediation as _rem
+    limit = max(1, min(int(limit), 10))
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        rows = findings_dump(session, run_id, show_secrets=False)
+    finally:
+        session.close()
+    try:
+        complete = _rem.get_completer()
+    except RuntimeError as e:
+        raise HTTPException(503, f"no LLM provider configured: {e}")
+    results = await _asyncio.to_thread(
+        _rem.run_pipeline, rows, complete, min_score, limit)
+    for r in results:  # same compile-only check the CLI workflow uses
+        if r.get("test"):
+            try:
+                compile(r["test"], "<draft>", "exec")
+                r["test_check"] = "compiles"
+            except SyntaxError as e:
+                r["test_check"] = f"syntax error line {e.lineno}"
+        else:
+            r["test_check"] = "missing"
+    payload = {"generated_at": dt.datetime.utcnow().isoformat() + "Z",
+               "min_score": min_score, "results": results}
+    session = get_session()
+    try:
+        run = _owned_run(session, run_id, request)
+        summary = dict(run.summary or {})
+        summary["remediation"] = payload
+        run.summary = summary  # reassign so the JSON column is saved
+        session.commit()
+    finally:
+        session.close()
+    return payload
+
+
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])
 def api_graph(run_id: str, request: Request):
     session = get_session()
@@ -1052,7 +1108,6 @@ def api_apimap(run_id: str, request: Request):
     ``groups``: pages, api_routes, forms, js_endpoints, websockets,
     graphql. Each entry: {url, method, status, auth, params, note}.
     """
-    from urllib.parse import urlparse
     session = get_session()
     try:
         _owned_run(session, run_id, request)
@@ -1242,7 +1297,6 @@ async def api_fetch_file(run_id: str, request: Request,
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(400, "only http/https allowed")
-    import httpx
     try:
         async with net.async_client(timeout=20, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "ReconAnything/1.0"})
@@ -1377,7 +1431,6 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
     import asyncio
     import re
     import time as _time
-    import httpx
 
     session = get_session()
     try:
@@ -1462,7 +1515,6 @@ async def api_probe_port(run_id: str, request: Request,
     """
     import asyncio
     import re
-    import httpx
 
     host = host.strip().lower().rstrip(".")
     if not re.match(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$", host) or not (1 <= port <= 65535):
