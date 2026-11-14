@@ -485,6 +485,32 @@ def test_mythril_adapter_missing_binary_is_honest(monkeypatch):
     assert contract_sim.find_mythril() is None
 
 
+def test_find_mythril_ignores_stale_shebang_binary(tmp_path,
+                                                   monkeypatch):
+    # Regression: a venv script committed with a shebang pointing
+    # at a deleted worktree path looks like a file and keeps its
+    # executable bit, but execs to ENOENT. It must count as
+    # absent, not as a found binary.
+    stale = tmp_path / "myth"
+    stale.write_text(
+        "#!/home/hatch/workspace/wt/no-such-worktree/"
+        ".venv-mythril/bin/python3\n")
+    stale.chmod(0o755)
+    assert contract_sim._binary_runnable(stale) is False
+    monkeypatch.setenv("RECON_MYTHRIL_BIN", str(stale))
+    assert contract_sim.find_mythril() is None
+
+
+def test_find_mythril_accepts_runnable_env_binary(tmp_path,
+                                                  monkeypatch):
+    good = tmp_path / "myth"
+    good.write_text("#!/usr/bin/env python3\n")
+    good.chmod(0o755)
+    assert contract_sim._binary_runnable(good) is True
+    monkeypatch.setenv("RECON_MYTHRIL_BIN", str(good))
+    assert contract_sim.find_mythril() == str(good)
+
+
 # ---------------------------------------------------------------------------
 # 4. Registry
 # ---------------------------------------------------------------------------

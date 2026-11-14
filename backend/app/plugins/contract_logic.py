@@ -949,6 +949,50 @@ def _recip_combine(classes: List[str]) -> str:
     return "UNRESOLVED"
 
 
+def _recip_expand_locals(expr: str, locals_: Dict[str, str],
+                         _rounds: int = 4) -> str:
+    """Substitute known locals into `expr` (bounded rounds, so a
+    self-referential definition cannot loop). Used to see what an
+    index expression is really made of: `rand` in
+    `participants[rand % n]` expands to its keccak256(...)
+    definition, which carries msg.sender."""
+    out = expr
+    for _ in range(_rounds):
+        names = [n for n in locals_ if re.search(
+            r"\b" + re.escape(n) + r"\b", out)]
+        if not names:
+            return out
+        pat = re.compile(r"\b(" + "|".join(
+            re.escape(n) for n in sorted(names, key=len,
+                                         reverse=True)) + r")\b")
+        new = pat.sub(lambda m: "(" + locals_[m.group(1)] + ")",
+                      out)
+        if new == out:
+            return out
+        out = new
+    return out
+
+
+def _recip_index_sender(expr: str,
+                        locals_: Dict[str, str]) -> Optional[str]:
+    """How the index of a state-array/mapping destination relates
+    to the caller: "derived" when an index is built from
+    msg.sender inside a larger expression (a draw the caller
+    influences), else None. A BARE msg.sender index is NOT
+    caller-controlled here: `users[msg.sender].wallet` is a
+    stored wallet looked up by the caller key, and the repo's
+    adjudicated convention (test_validator_v2_recipient) keeps
+    that FIXED - the caller cannot redirect it in this call."""
+    for m in re.finditer(r"\[([^\]]*)\]", expr):
+        idx = _recip_expand_locals(m.group(1), locals_).strip()
+        if re.fullmatch(r"msg\.sender|_msgSender\(\)|caller\(\)|"
+                        r"tx\.origin", idx):
+            continue  # bare caller key: stored entry, FIXED
+        if _RECIP_SENDER.search(idx):
+            return "derived"
+    return None
+
+
 def _recip_class_expr(expr: str, params: List[str],
                       addr_params: List[str], locals_: Dict[str, str],
                       all_params: set, _depth: int = 0) -> str:
@@ -997,6 +1041,19 @@ def _recip_class_expr(expr: str, params: List[str],
                     all_params, _depth + 1)
             if base in all_params:
                 return "SENDER"
+            # State array / mapping indexed by a caller-DERIVED
+            # value: the picked entry is not a stored project
+            # wallet. `participants[rand % n]` where rand is
+            # seeded from msg.sender (lottery / raffle draw)
+            # lands value at whichever participant the draw
+            # picks - a stranger can be that participant and
+            # the caller influences the draw, so this is not
+            # FIXED; the recipient is unresolved (candidate,
+            # not proven caller). A bare msg.sender index stays
+            # FIXED per the stored-wallet convention above.
+            if "[" in e:
+                if _recip_index_sender(e, locals_) == "derived":
+                    return "UNRESOLVED"
             return "FIXED"  # state struct / array / mapping
     if _RECIP_SENDER.search(e):
         return "SENDER"

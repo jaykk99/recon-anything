@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import recipient_first_fixtures as fx  # noqa: E402
 from app.plugins import contract_chain as cc  # noqa: E402
+from app.plugins import contract_logic as cl  # noqa: E402
 from app.plugins.base import Target  # noqa: E402
 from app.plugins.recipient_first import SPECS, \
     analyze_recipient_source  # noqa: E402
@@ -155,3 +156,77 @@ def test_plugin_run_no_source_skips(monkeypatch):
     _patch(monkeypatch, None)
     res = asyncio.run(discover()[pid]().run(_target(), FakeCtx()))
     assert [f for f in res.findings if f.key == pid] == []
+
+
+# ---------------------------------------------------------------------------
+# Caller-influenced index into a state array (regression: the
+# deep_audit8 weak_randomness_value_outcome vuln fixture was
+# misclassified FIXED, hence trigger-only, because the winner is
+# read through the state array `participants`).
+# ---------------------------------------------------------------------------
+
+_DRAWN_WINNER = """
+contract Lottery {
+    address[] public participants;
+    function drawWinner() public {
+        uint256 rand = uint256(keccak256(abi.encodePacked(
+            block.timestamp, block.prevrandao, msg.sender)));
+        address winner = participants[rand % participants.length];
+        token.transfer(winner, 100);
+    }
+}
+"""
+
+_BARE_SENDER_INDEX = """
+contract UserPayout {
+    mapping(address => address) public users;
+    function pay() public {
+        token.transfer(users[msg.sender], 100);
+    }
+}
+"""
+
+_PLAIN_INDEX = """
+contract RoundPayout {
+    address[] public participants;
+    function pay(uint256 i) public {
+        token.transfer(participants[i], 100);
+    }
+}
+"""
+
+_FIXED_WALLET = """
+contract TreasuryPayout {
+    address public treasury;
+    function pay() public {
+        token.transfer(treasury, 100);
+    }
+}
+"""
+
+
+def test_drawn_winner_index_not_fixed():
+    # Winner drawn by msg.sender-seeded randomness: a stranger
+    # can be the picked participant and the caller influences
+    # the draw, so the destination is not a fixed project wallet.
+    recipient, _ = cl.classify_recipient(_DRAWN_WINNER)
+    assert recipient == "UNRESOLVED", recipient
+
+
+def test_bare_sender_index_stays_fixed():
+    # Convention boundary (test_validator_v2_recipient):
+    # `users[msg.sender]` is a STORED wallet looked up by the
+    # caller key, not a caller-chosen destination.
+    recipient, _ = cl.classify_recipient(_BARE_SENDER_INDEX)
+    assert recipient == "FIXED", recipient
+
+
+def test_plain_index_stays_fixed():
+    # An index no caller controls: still a stored address.
+    recipient, _ = cl.classify_recipient(_PLAIN_INDEX)
+    assert recipient == "FIXED", recipient
+
+
+def test_plain_state_var_stays_fixed():
+    recipient, _ = cl.classify_recipient(_FIXED_WALLET)
+    assert recipient == "FIXED", recipient

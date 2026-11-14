@@ -937,6 +937,35 @@ def symbolic_enabled() -> bool:
     return os.environ.get("RECON_SIM_SYMBOLIC", "") == "1"
 
 
+def _binary_runnable(path: Path) -> bool:
+    """True when `path` can actually execute. A venv script
+    committed with a stale absolute shebang (a deleted worktree
+    path) still looks like a file and still has its executable
+    bit, but execs to ENOENT - treat it as absent so the search
+    falls through to the operator's working install instead of
+    reporting a binary that can never run."""
+    try:
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        with open(path, "rb") as fh:
+            first = fh.readline(2048)
+        if not first.startswith(b"#!"):
+            return True  # ELF / non-script binary
+        shebang = first[2:].decode("utf-8", "replace").strip()
+        if not shebang:
+            return False
+        parts = shebang.split()
+        interp = parts[0]
+        if os.path.basename(interp) == "env" and len(parts) > 1:
+            interp = parts[1]
+        if os.path.isabs(interp):
+            return (Path(interp).is_file()
+                    and os.access(interp, os.X_OK))
+        return shutil.which(interp) is not None
+    except OSError:
+        return False
+
+
 def find_mythril() -> Optional[str]:
     """Locate an EXTERNAL Mythril binary, or None when absent.
 
@@ -952,7 +981,7 @@ def find_mythril() -> Optional[str]:
     """
     env = os.environ.get("RECON_MYTHRIL_BIN")
     if env:
-        return env if Path(env).is_file() else None
+        return env if _binary_runnable(Path(env)) else None
     candidates = [
         Path(__file__).resolve().parents[3]
         / ".venv-mythril" / "bin" / "myth",
@@ -963,9 +992,10 @@ def find_mythril() -> Optional[str]:
         Path.home() / "workspace" / "tools" / "audit" / "bin" / "myth",
     ]
     for cand in candidates:
-        if cand.is_file():
+        if _binary_runnable(cand):
             return str(cand)
-    return shutil.which("myth")
+    found = shutil.which("myth")
+    return found if found and _binary_runnable(Path(found)) else None
 
 
 def _discover_solc() -> Optional[str]:
