@@ -1,0 +1,930 @@
+{
+  "n_pool_rows": 725,
+  "n_real_rows": 620,
+  "iterations": 2000,
+  "budgets": [
+    1,
+    3,
+    6
+  ],
+  "solution": {
+    "iterations": 2000,
+    "attacker_mix": {
+      "math": 0.999953354166667,
+      "logic": 9.32916666666392e-06,
+      "other": 9.32916666666392e-06,
+      "upgrade": 9.32916666666392e-06,
+      "mint": 9.32916666666392e-06,
+      "bridge": 9.32916666666392e-06
+    },
+    "defender_mix": {
+      "math": {
+        "none": 0.0010762936757311077,
+        "owner_rotation": 8.33333333333314e-05,
+        "burner_wallet": 8.33333333333314e-05,
+        "proxy_hop": 8.33333333333314e-05,
+        "redeploy": 0.9985903729909352,
+        "timestamp_jitter": 8.33333333333314e-05
+      },
+      "logic": {
+        "none": 0.9990756751914855,
+        "owner_rotation": 0.00012009803921568215,
+        "burner_wallet": 0.00012009803921568215,
+        "proxy_hop": 8.333333333333048e-05,
+        "redeploy": 8.333333333333048e-05,
+        "timestamp_jitter": 0.0005174620634163876
+      },
+      "other": {
+        "none": 0.9990756751914854,
+        "owner_rotation": 0.0001200980392156855,
+        "burner_wallet": 0.0001200980392156855,
+        "proxy_hop": 8.33333333333328e-05,
+        "redeploy": 8.33333333333328e-05,
+        "timestamp_jitter": 0.000517462063416402
+      },
+      "upgrade": {
+        "none": 0.9990756751914854,
+        "owner_rotation": 0.00012009803921568367,
+        "burner_wallet": 0.00012009803921568367,
+        "proxy_hop": 8.333333333333153e-05,
+        "redeploy": 8.333333333333153e-05,
+        "timestamp_jitter": 0.0005174620634163942
+      },
+      "mint": {
+        "none": 0.9990756751914855,
+        "owner_rotation": 0.00012009803921568997,
+        "burner_wallet": 0.00012009803921568997,
+        "proxy_hop": 8.33333333333359e-05,
+        "redeploy": 8.33333333333359e-05,
+        "timestamp_jitter": 0.0005174620634164213
+      },
+      "bridge": {
+        "none": 0.9990756751914854,
+        "owner_rotation": 0.00012009803921568695,
+        "burner_wallet": 0.00012009803921568695,
+        "proxy_hop": 8.333333333333382e-05,
+        "redeploy": 8.333333333333382e-05,
+        "timestamp_jitter": 0.0005174620634164083
+      }
+    },
+    "game_value": 0.3855544756046856,
+    "exploitability": 0.00035421138135066643
+  },
+  "cells": {
+    "budget1/cfr-mix": {
+      "policy": "cfr-mix",
+      "budget": 1,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.7822236067876415,
+      "expected_finds": 484.9786362083377,
+      "expected_probes": 725.0,
+      "mean_probes_per_target": 1.0,
+      "finds_per_100_probes": 66.89360499425348,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 484.9786362083377,
+          "finds_per_100_probes": 66.89360499425348
+        },
+        "empirical": {
+          "expected_finds": 484.97847481375385,
+          "finds_per_100_probes": 66.89358273293156
+        },
+        "cfr": {
+          "expected_finds": 242.82166261942857,
+          "finds_per_100_probes": 33.49264311992118
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 484.97737677083705,
+          "coverage": 0.9999533541666743
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.0004384708333314835,
+          "coverage": 9.329166666627309e-06
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.00027054583333219195,
+          "coverage": 9.329166666627309e-06
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0003358499999985831,
+          "coverage": 9.329166666627309e-06
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.00012127916666615501,
+          "coverage": 9.329166666627309e-06
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 9.329166666627309e-05,
+          "coverage": 9.329166666627309e-06
+        }
+      }
+    },
+    "budget1/cfr-rank": {
+      "policy": "cfr-rank",
+      "budget": 1,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.782258064516129,
+      "expected_finds": 485.0,
+      "expected_probes": 725.0,
+      "mean_probes_per_target": 1.0,
+      "finds_per_100_probes": 66.89655172413794,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 485.0,
+          "finds_per_100_probes": 66.89655172413794
+        },
+        "empirical": {
+          "expected_finds": 485.0,
+          "finds_per_100_probes": 66.89655172413794
+        },
+        "cfr": {
+          "expected_finds": 242.83173038303286,
+          "finds_per_100_probes": 33.49403177697005
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0,
+          "coverage": 0.0
+        }
+      }
+    },
+    "budget1/static29": {
+      "policy": "static29",
+      "budget": 1,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.0467741935483871,
+      "expected_finds": 29.0,
+      "expected_probes": 725.0,
+      "mean_probes_per_target": 1.0,
+      "finds_per_100_probes": 4.0,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 29.0,
+          "finds_per_100_probes": 4.0
+        },
+        "empirical": {
+          "expected_finds": 29.0,
+          "finds_per_100_probes": 4.0
+        },
+        "cfr": {
+          "expected_finds": 28.99844338235292,
+          "finds_per_100_probes": 3.999785294117644
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 29.0,
+          "coverage": 1.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0,
+          "coverage": 0.0
+        }
+      }
+    },
+    "budget1/yield": {
+      "policy": "yield",
+      "budget": 1,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.782258064516129,
+      "expected_finds": 485.0,
+      "expected_probes": 725.0,
+      "mean_probes_per_target": 1.0,
+      "finds_per_100_probes": 66.89655172413794,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 485.0,
+          "finds_per_100_probes": 66.89655172413794
+        },
+        "empirical": {
+          "expected_finds": 485.0,
+          "finds_per_100_probes": 66.89655172413794
+        },
+        "cfr": {
+          "expected_finds": 242.83173038303286,
+          "finds_per_100_probes": 33.49403177697005
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0,
+          "coverage": 0.0
+        }
+      }
+    },
+    "budget1/random": {
+      "policy": "random",
+      "budget": 1,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.16666666666666788,
+      "expected_finds": 103.33333333333408,
+      "expected_probes": 725.0,
+      "mean_probes_per_target": 1.0,
+      "finds_per_100_probes": 14.252873563218495,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 103.33333333333408,
+          "finds_per_100_probes": 14.252873563218495
+        },
+        "empirical": {
+          "expected_finds": 100.45000000000071,
+          "finds_per_100_probes": 13.855172413793202
+        },
+        "cfr": {
+          "expected_finds": 62.96994207364288,
+          "finds_per_100_probes": 8.68550925153695
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 80.83333333333344,
+          "coverage": 0.16666666666666688
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 7.8333333333333375,
+          "coverage": 0.16666666666666677
+        },
+        "other": {
+          "targets": 29,
+          "reached": 4.833333333333332,
+          "coverage": 0.16666666666666663
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 6.000000000000001,
+          "coverage": 0.16666666666666669
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 2.1666666666666656,
+          "coverage": 0.16666666666666657
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 1.666666666666666,
+          "coverage": 0.1666666666666666
+        }
+      }
+    },
+    "budget3/cfr-mix": {
+      "policy": "cfr-mix",
+      "budget": 3,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.7822641585116112,
+      "expected_finds": 485.003778277199,
+      "expected_probes": 1201.01605657618,
+      "mean_probes_per_target": 1.6565738711395588,
+      "finds_per_100_probes": 40.38278885794691,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 485.003778277199,
+          "finds_per_100_probes": 40.38278885794691
+        },
+        "empirical": {
+          "expected_finds": 485.0032940979657,
+          "finds_per_100_probes": 40.382748543812006
+        },
+        "cfr": {
+          "expected_finds": 242.83550832222926,
+          "finds_per_100_probes": 20.219172507526444
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 484.9999999999466,
+          "coverage": 0.99999999999989
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.001315400228329544,
+          "coverage": 2.7987238900628597e-05
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0008116299281182293,
+          "coverage": 2.7987238900628597e-05
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0010075406004226295,
+          "coverage": 2.7987238900628597e-05
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.00036383410570817176,
+          "coverage": 2.7987238900628597e-05
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.00027987238900628597,
+          "coverage": 2.7987238900628597e-05
+        }
+      }
+    },
+    "budget3/cfr-rank": {
+      "policy": "cfr-rank",
+      "budget": 3,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.9161290322580645,
+      "expected_finds": 568.0,
+      "expected_probes": 1132.0,
+      "mean_probes_per_target": 1.5613793103448277,
+      "finds_per_100_probes": 50.17667844522968,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 568.0,
+          "finds_per_100_probes": 50.17667844522968
+        },
+        "empirical": {
+          "expected_finds": 550.6999999999995,
+          "finds_per_100_probes": 48.64840989399289
+        },
+        "cfr": {
+          "expected_finds": 325.8237249908733,
+          "finds_per_100_probes": 28.783014575165485
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 36.0,
+          "coverage": 1.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0,
+          "coverage": 0.0
+        }
+      }
+    },
+    "budget3/static29": {
+      "policy": "static29",
+      "budget": 3,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.13870967741935483,
+      "expected_finds": 86.0,
+      "expected_probes": 1974.0,
+      "mean_probes_per_target": 2.722758620689655,
+      "finds_per_100_probes": 4.356636271529888,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 86.0,
+          "finds_per_100_probes": 4.356636271529888
+        },
+        "empirical": {
+          "expected_finds": 81.29999999999998,
+          "finds_per_100_probes": 4.118541033434649
+        },
+        "cfr": {
+          "expected_finds": 85.99377083333343,
+          "finds_per_100_probes": 4.3563207109084825
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 29.0,
+          "coverage": 1.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 10.0,
+          "coverage": 1.0
+        }
+      }
+    },
+    "budget3/yield": {
+      "policy": "yield",
+      "budget": 3,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.9161290322580645,
+      "expected_finds": 568.0,
+      "expected_probes": 1132.0,
+      "mean_probes_per_target": 1.5613793103448277,
+      "finds_per_100_probes": 50.17667844522968,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 568.0,
+          "finds_per_100_probes": 50.17667844522968
+        },
+        "empirical": {
+          "expected_finds": 550.6999999999995,
+          "finds_per_100_probes": 48.64840989399289
+        },
+        "cfr": {
+          "expected_finds": 325.8237249908733,
+          "finds_per_100_probes": 28.783014575165485
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 36.0,
+          "coverage": 1.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0,
+          "coverage": 0.0
+        }
+      }
+    },
+    "budget3/random": {
+      "policy": "random",
+      "budget": 3,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.4212962962962994,
+      "expected_finds": 261.2037037037056,
+      "expected_probes": 1832.6388888889142,
+      "mean_probes_per_target": 2.5277777777778128,
+      "finds_per_100_probes": 14.252873563218298,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 261.2037037037056,
+          "finds_per_100_probes": 14.252873563218298
+        },
+        "empirical": {
+          "expected_finds": 253.91527777777924,
+          "finds_per_100_probes": 13.855172413792992
+        },
+        "cfr": {
+          "expected_finds": 159.17402024170553,
+          "finds_per_100_probes": 8.685509251536674
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 204.3287037037045,
+          "coverage": 0.42129629629629795
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 19.800925925925924,
+          "coverage": 0.4212962962962962
+        },
+        "other": {
+          "targets": 29,
+          "reached": 12.217592592592583,
+          "coverage": 0.42129629629629595
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 15.166666666666654,
+          "coverage": 0.42129629629629595
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 5.476851851851849,
+          "coverage": 0.4212962962962961
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 4.212962962962962,
+          "coverage": 0.42129629629629617
+        }
+      }
+    },
+    "budget6/cfr-mix": {
+      "policy": "cfr-mix",
+      "budget": 6,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.782270252336711,
+      "expected_finds": 485.0075564487608,
+      "expected_probes": 1914.9894128697665,
+      "mean_probes_per_target": 2.6413647074065745,
+      "finds_per_100_probes": 25.326905370298512,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 485.0075564487608,
+          "finds_per_100_probes": 25.326905370298512
+        },
+        "empirical": {
+          "expected_finds": 485.00658810384544,
+          "finds_per_100_probes": 25.326854803704833
+        },
+        "cfr": {
+          "expected_finds": 242.83928615574567,
+          "finds_per_100_probes": 12.680972778425515
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 0.002630763642238354,
+          "coverage": 5.597369451570966e-05
+        },
+        "other": {
+          "targets": 29,
+          "reached": 0.0016232371409555801,
+          "coverage": 5.597369451570966e-05
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0020150530025655478,
+          "coverage": 5.597369451570966e-05
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 0.0007276580287042256,
+          "coverage": 5.597369451570966e-05
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 0.0005597369451570966,
+          "coverage": 5.597369451570966e-05
+        }
+      }
+    },
+    "budget6/cfr-rank": {
+      "policy": "cfr-rank",
+      "budget": 6,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 1.0,
+      "expected_finds": 620.0,
+      "expected_probes": 1361.0,
+      "mean_probes_per_target": 1.8772413793103448,
+      "finds_per_100_probes": 45.5547391623806,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 620.0,
+          "finds_per_100_probes": 45.5547391623806
+        },
+        "empirical": {
+          "expected_finds": 602.6999999999992,
+          "finds_per_100_probes": 44.28361498897864
+        },
+        "cfr": {
+          "expected_finds": 377.8196524418521,
+          "finds_per_100_probes": 27.760444705499786
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 29.0,
+          "coverage": 1.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 36.0,
+          "coverage": 1.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 13.0,
+          "coverage": 1.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 10.0,
+          "coverage": 1.0
+        }
+      }
+    },
+    "budget6/static29": {
+      "policy": "static29",
+      "budget": 6,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.1596774193548387,
+      "expected_finds": 99.0,
+      "expected_probes": 3581.0,
+      "mean_probes_per_target": 4.939310344827586,
+      "finds_per_100_probes": 2.7645908963976544,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 99.0,
+          "finds_per_100_probes": 2.7645908963976544
+        },
+        "empirical": {
+          "expected_finds": 94.30000000000001,
+          "finds_per_100_probes": 2.6333426417201906
+        },
+        "cfr": {
+          "expected_finds": 98.99244852941192,
+          "finds_per_100_probes": 2.7643800203689453
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 29.0,
+          "coverage": 1.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 0.0,
+          "coverage": 0.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 13.0,
+          "coverage": 1.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 10.0,
+          "coverage": 1.0
+        }
+      }
+    },
+    "budget6/yield": {
+      "policy": "yield",
+      "budget": 6,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 1.0,
+      "expected_finds": 620.0,
+      "expected_probes": 1361.0,
+      "mean_probes_per_target": 1.8772413793103448,
+      "finds_per_100_probes": 45.5547391623806,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 620.0,
+          "finds_per_100_probes": 45.5547391623806
+        },
+        "empirical": {
+          "expected_finds": 602.6999999999992,
+          "finds_per_100_probes": 44.28361498897864
+        },
+        "cfr": {
+          "expected_finds": 377.8196524418521,
+          "finds_per_100_probes": 27.760444705499786
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 485.0,
+          "coverage": 1.0
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 47.0,
+          "coverage": 1.0
+        },
+        "other": {
+          "targets": 29,
+          "reached": 29.0,
+          "coverage": 1.0
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 36.0,
+          "coverage": 1.0
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 13.0,
+          "coverage": 1.0
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 10.0,
+          "coverage": 1.0
+        }
+      }
+    },
+    "budget6/random": {
+      "policy": "random",
+      "budget": 6,
+      "n_rows": 725,
+      "n_real_rows": 620,
+      "coverage": 0.6651020233196091,
+      "expected_finds": 412.36325445815766,
+      "expected_probes": 2893.193801440304,
+      "mean_probes_per_target": 3.9906121399176606,
+      "finds_per_100_probes": 14.25287356321837,
+      "evasion_adjusted": {
+        "none": {
+          "expected_finds": 412.36325445815766,
+          "finds_per_100_probes": 14.25287356321837
+        },
+        "empirical": {
+          "expected_finds": 400.85698945472916,
+          "finds_per_100_probes": 13.85517241379311
+        },
+        "cfr": {
+          "expected_finds": 251.28861528899012,
+          "finds_per_100_probes": 8.685509251536914
+        }
+      },
+      "per_lane": {
+        "math": {
+          "targets": 485,
+          "reached": 322.574481310011,
+          "coverage": 0.6651020233196103
+        },
+        "logic": {
+          "targets": 47,
+          "reached": 31.25979509602194,
+          "coverage": 0.6651020233196158
+        },
+        "other": {
+          "targets": 29,
+          "reached": 19.287958676268858,
+          "coverage": 0.6651020233196158
+        },
+        "upgrade": {
+          "targets": 36,
+          "reached": 23.943672839506167,
+          "coverage": 0.6651020233196158
+        },
+        "mint": {
+          "targets": 13,
+          "reached": 8.646326303155005,
+          "coverage": 0.6651020233196158
+        },
+        "bridge": {
+          "targets": 10,
+          "reached": 6.651020233196157,
+          "coverage": 0.6651020233196158
+        }
+      }
+    }
+  }
+}
