@@ -52,10 +52,10 @@ def test_six_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1433():
+def test_registry_count_1437():
     reg = discover()
-    assert len(reg) == 1433, \
-        f"registry size {len(reg)}, expected 1433"
+    assert len(reg) == 1437, \
+        f"registry size {len(reg)}, expected 1437"
 
 
 def test_vuln_fires_candidate_with_evidence():
