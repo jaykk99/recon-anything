@@ -1,0 +1,174 @@
+{
+ "findings_used": [
+  {
+   "queue": "zeroday_tail",
+   "chain": "arbitrum",
+   "address": "0x15f7ad22caa786b1237b27d4324c7e4a93c5e66b",
+   "symbol": null,
+   "plugin": "recipient_mint_to_caller",
+   "key": "recipient_mint_to_caller",
+   "severity": "high",
+   "recipient_class": "CALLER",
+   "function": "mint",
+   "validation": {
+    "address": "0x15f7ad22caa786b1237b27d4324c7e4a93c5e66b",
+    "chain": "arbitrum",
+    "function": "",
+    "kind": "recipient_mint_to_caller",
+    "verdict": "UNVERIFIED",
+    "reason": "no value destination could be classified in the flagged function",
+    "recipient": null,
+    "gated": null,
+    "value": null,
+    "missing": [
+     "recipient destination"
+    ],
+    "evidence": {}
+   },
+   "live_probe": {
+    "status": "transport_error",
+    "detail": "no encodable signature for probe",
+    "via": "cast eth_call (live)"
+   },
+   "found_at": "2026-11-04T17:03:54.060021+00:00"
+  },
+  {
+   "queue": "zeroday_tail",
+   "chain": "arbitrum",
+   "address": "0x13a78809528b02ad5e7c42f39232d332761dfb1d",
+   "symbol": null,
+   "plugin": "contract_logic",
+   "key": "access_control_flaw",
+   "severity": "high",
+   "recipient_class": "CALLER-SUPPLIED",
+   "function": "withdraw",
+   "validation": {
+    "address": "0x13a78809528b02ad5e7c42f39232d332761dfb1d",
+    "chain": "arbitrum",
+    "function": "",
+    "kind": "access_control_flaw",
+    "verdict": "UNVERIFIED",
+    "reason": "no value destination could be classified in the flagged function",
+    "recipient": null,
+    "gated": null,
+    "value": null,
+    "missing": [
+     "recipient destination"
+    ],
+    "evidence": {}
+   },
+   "live_probe": {
+    "status": "transport_error",
+    "detail": "no encodable signature for probe",
+    "via": "cast eth_call (live)"
+   },
+   "found_at": "2026-11-04T17:03:20.831348+00:00"
+  },
+  {
+   "queue": "bnb_tier3",
+   "chain": "bsc",
+   "address": "0xc19d38925f9f645337b1d1f37baf3c0647a48e50",
+   "symbol": "gaib",
+   "plugin": "uups_authorize_upgrade_missing",
+   "key": "uups_authorize_upgrade_missing",
+   "severity": "high",
+   "recipient_class": "CALLER-SUPPLIED",
+   "function": "_authorizeUpgrade",
+   "bytecode_only": false,
+   "validation": {
+    "address": "0xc19d38925f9f645337b1d1f37baf3c0647a48e50",
+    "chain": "bsc",
+    "function": "_authorizeUpgrade",
+    "kind": "uups_authorize_upgrade_missing",
+    "verdict": "UNVERIFIED",
+    "reason": "function '_authorizeUpgrade' not found in the verified source for this contract",
+    "recipient": null,
+    "gated": null,
+    "value": null,
+    "missing": [
+     "flagged function in verified source"
+    ],
+    "evidence": {}
+   },
+   "live_probe": {
+    "status": "transport_error",
+    "detail": "no encodable signature for probe",
+    "via": "cast eth_call (live)"
+   },
+   "found_at": "2026-11-07T03:06:23.366787+00:00"
+  }
+ ],
+ "started": "2026-11-14T08:39:11+0000",
+ "advise_with_llm": {
+  "candidates": [
+   {
+    "id": "phpinfo",
+    "name": "phpinfo() page exposed (config disclosure)",
+    "severity": "high",
+    "confidence": 95,
+    "confidence_basis": "direct evidence: phpinfo() markers in response",
+    "needs_manual_verification": false,
+    "why_viable": "Your scan confirmed a live phpinfo() page: full PHP config, loaded extensions, server paths and environment variables are public.",
+    "poc_code": "# Safe detection only: confirm the page (read-only)\ncurl -s https://example.com/phpinfo.php | grep -ci \"phpinfo()\"\n# >= 1 with a <title>phpinfo()</title> = exposed",
+    "poc_lang": "sh",
+    "dry_run_steps": [
+     "GET the phpinfo URL (read-only).",
+     "Look for <title>phpinfo()</title> and PHP Version markers.",
+     "Report immediately. Do not harvest the disclosed paths."
+    ],
+    "remediation": "Delete the phpinfo file from production now.",
+    "evidence_count": 1,
+    "evidence_refs": [
+     {
+      "id": null,
+      "plugin": "audit",
+      "key": "phpinfo_exposed",
+      "value": "phpinfo"
+     }
+    ],
+    "llm_analysis": {
+     "ranking": {
+      "text": "1. `phpinfo_exposed` (Most Promising): High-value target for infrastructure reconnaissance and environment leakage.\n   - Missing Evidence: The actual HTTP response body containing `phpinfo()` output.\n   - Read-only Check: `GET /path/to/file.php` (or similar) and inspect the response body for `phpinfo()` signature.\n\n2. `audit` (Least Promising): Too generic to be actionable without context.\n   - Missing Evidence: The specific vulnerability type, affected component, and impact.\n   - Read-only Check: N/A (Cannot formulate a check without knowing what \"audit\" means in this context).",
+      "model": "meromero-26b"
+     },
+     "explanation": "**What it is:** Someone accidentally left a hidden page that shows your server\u2019s entire PHP setup\u2014like a digital blueprint of your system.\n\n**Who abuses it:** Hackers scan for this; once found, they know exactly how to break in.\n\n**Damage:** Full system takeover, data theft, or ransomware\u2014because attackers now know your software, paths, and secrets.\n\n**UNVERIFIED proof:** Load the URL in a browser. If you see a page titled \"PHPINFO()\" with lines like \"Configuration\" and \"Environment,\" it\u2019s real.",
+     "model": "heretic-31b"
+    }
+   }
+  ],
+  "llm": {
+   "enabled": true,
+   "error": null
+  }
+ },
+ "advise_with_llm_seconds": 27.3,
+ "stress_hypothesis": {
+  "text": "- **Coherent payout path**: No. The `mint` function with `recipient: CALLER` is standard behavior for many token contracts; no automatic payout mechanism exists without additional logic.\n- **Cheapest kill check**: `eth_call` to `mint` on a test fork with a non-zero allowance check\u2014verify if the contract reverts or requires external state beyond caller balance.\n- **Benign explanation**: The contract is a standard ERC-20/ERC-721 mint function where `CALLER` means the minter receives tokens, not a hidden payout vector.\n- **Next test**: Fork Arbitrum at current block, `eth_call` `mint` with zero allowance\u2014observe if it reverts or succeeds cleanly.",
+  "model": "heretic-31b",
+  "error": null
+ },
+ "stress_seconds": 14.4,
+ "draft_detector": {
+  "code": "import re\n\ndef detect(source: str) -> dict:\n    \"\"\"Analyzes source for unguarded mint functions.\"\"\"\n    # Check for mint function body containing recipient assignment to msg.sender\n    mint_pattern = re.compile(r'function\\s+mint\\s*\\(.*?\\)\\s*\\{[^}]*?(\\w+)\\s*=\\s*msg\\.sender;[^}]*?\\}', re.DOTALL)\n    \n    # Check for common access control guards\n    guard_pattern = re.compile(r'(require|revert|if\\s+.*?\\s*msg\\.sender\\s*!=\\s*msg\\.sender|onlyOwner|onlyMinter)', re.IGNORECASE)\n\n    match = mint_pattern.search(source)\n    if match:\n        # If mint is found, verify no guard exists in the entire source\n        if not guard_pattern.search(source):\n            return {\n                'flagged': True, \n                'reason': f\"Unguarded mint detected: '{match.group(1)}' assigned to msg.sender without visible access control.\"\n            }\n            \n    return {'flagged': False, 'reason': 'No unguarded mint pattern identified.'}",
+  "model": "meromero-26b",
+  "error": null
+ },
+ "detector_seconds": 9.4,
+ "crypto_ranking": {
+  "model": "heretic-31b",
+  "seconds": 11.1,
+  "tried": [
+   {
+    "backend": "meromero-26b",
+    "error": "Remote end closed connection without response",
+    "seconds": 2.8
+   },
+   {
+    "backend": "heretic-31b",
+    "seconds": 8.3,
+    "chars": 1119
+   }
+  ],
+  "text": "1. **uups_authorize_upgrade_missing** (BSC, 0xc19d...48e50) - Most promising. UUPS upgradeability flaws are high-value and the missing function is a clear red flag.  \n   **Missing evidence**: Verified source code mismatch.  \n   **Check**: `eth_call` to `supportsInterface(0x80ac58cd)` (ERC-721) or `supportsInterface(0x165a8926)` (ERC-165) to confirm upgradeable proxy; then `eth_getCode` to check implementation contract for `_authorizeUpgrade`.\n\n2. **access_control_flaw** (Arbitrum, 0x13a7...dfb1d) - High promise. Withdrawal functions often mishandle access control.  \n   **Missing evidence**: No value destination classification.  \n   **Check**: `eth_call` to `withdraw()` with non-zero `msg.value` from non-owner address; observe if it reverts or succeeds.\n\n3. **recipient_mint_to_caller** (Arbitrum, 0x15f7...e66b) - Lower promise. Mint functions are common and often legitimately open.  \n   **Missing evidence**: Recipient class ambiguity.  \n   **Check**: `eth_call` to `mint()` with caller as recipient; verify if recipient is caller-controlled or contract-controlled via `msg.sender` vs `address(this)` logic."
+ }
+}

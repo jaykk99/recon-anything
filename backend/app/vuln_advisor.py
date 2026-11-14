@@ -999,6 +999,54 @@ def advise_with_pack(findings: List[Dict], run_summary: Dict,
 
 
 # ---------------------------------------------------------------------------
+# LLM advisor (2026-11-14, feat/llm-advisor): the smartest reliable
+# free/keyless model reasons over the heuristic candidates. Winner by
+# live measurement: meromero-26b (AI Horde, anonymous keyless), fallback
+# chain heretic-31b -> rocinante-12b -> ovh-gpt-oss-120b -> kilo-free ->
+# llm7-gpt-oss-20b -> Bro gateway -> local Dolphin 3B. See
+# app/llm_advisor/EVAL_2026-11-14.md for the numbers. Enrichment NEVER
+# changes verified / confidence / needs_manual_verification: the LLM
+# reasons, it does not prove. Fail-soft: any LLM failure leaves the
+# heuristic candidates untouched.
+# ---------------------------------------------------------------------------
+
+def advise_with_llm(findings: List[Dict], run_summary: Dict,
+                    max_candidates: int = 3) -> Dict:
+    """Heuristic candidates + LLM reasoning over the top ones.
+
+    Returns {"candidates": [...], "llm": {"enabled": bool, "error": str|None}}.
+    Each enriched candidate carries llm_analysis {ranking, explanation,
+    model} or {error}. Never raises for LLM reasons. Disabled entirely
+    when RECON_LLM_OFF=1 (then llm.enabled is False and candidates are
+    plain heuristic ones).
+    """
+    import os as _os
+    from app.llm_advisor import enrich_candidates
+
+    cands = advise(findings, run_summary)
+    if _os.environ.get("RECON_LLM_OFF") == "1":
+        return {"candidates": cands,
+                "llm": {"enabled": False, "error": "disabled by RECON_LLM_OFF=1"}}
+    try:
+        enrich_candidates(cands, findings, max_candidates=max_candidates)
+        # Enabled only if the model actually produced text somewhere;
+        # an error-only llm_analysis does not count.
+        def _has_text(c):
+            la = c.get("llm_analysis") or {}
+            return bool(la.get("explanation") or
+                        (la.get("ranking") or {}).get("text"))
+        enabled = any(_has_text(c) for c in cands)
+        err = None
+        if not enabled:
+            err = "LLM returned nothing usable; heuristic candidates unchanged"
+        return {"candidates": cands,
+                "llm": {"enabled": enabled, "error": err}}
+    except Exception as e:  # noqa: BLE001 - enrichment must never break advise
+        return {"candidates": cands,
+                "llm": {"enabled": False, "error": str(e)[:200]}}
+
+
+# ---------------------------------------------------------------------------
 # Safe-test simulator: dry-run terminal output for a candidate.
 # No network calls happen here; it narrates what a safe check would do.
 # ---------------------------------------------------------------------------

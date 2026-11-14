@@ -1197,12 +1197,14 @@ async def api_fetch_file(run_id: str, request: Request,
 
 
 @app.get("/api/runs/{run_id}/vulns", dependencies=[Depends(gate)])
-def api_vulns(run_id: str, request: Request):
+def api_vulns(run_id: str, request: Request, llm: bool = False):
     """Possible-vulnerabilities advisor: ranked attack paths from scan findings.
 
-    Heuristic only (no LLM). PoCs are detection-only and non-destructive.
+    Heuristic only (no LLM) by default. PoCs are detection-only and non-destructive.
+    Pass ?llm=1 to also run the LLM advisor over the top candidates
+    (meromero-26b first, keyless chain; reasoning only, never verification).
     """
-    from .vuln_advisor import advise
+    from .vuln_advisor import advise, advise_with_llm
     session = get_session()
     try:
         run = _owned_run(session, run_id, request)
@@ -1212,6 +1214,8 @@ def api_vulns(run_id: str, request: Request):
             "targets": [{"raw": t.raw, "type": t.type,
                          "normalized": t.normalized} for t in targets],
         }
+        if llm:
+            return {"run_id": run_id, **advise_with_llm(rows, summary)}
         return {"run_id": run_id, "candidates": advise(rows, summary)}
     finally:
         session.close()
