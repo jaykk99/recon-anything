@@ -28,8 +28,17 @@ def test_train_on_real_candidates(tmp_path):
     assert result["train_rows"] + result["test_rows"] >= 700
     assert result["dataset"]["n_positive"] > 500
     assert result["dataset"]["n_negative"] > 50
-    # The 2 VERIFIED_REAL rows are excluded, never trained on.
-    assert result["dataset"]["excluded_verified_real_rows"] == 2
+    # VERIFIED_REAL rows are excluded, never trained on. The count
+    # comes from the live file, not a constant: the Nov 12 file had
+    # 2; the Nov 14 08:53 UTC re-adjudication closed both as
+    # FALSE_POSITIVE, so the current file has 0.
+    import json
+    n_vr = 0
+    with open(CANDIDATES, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip() and json.loads(line).get("verdict") == "VERIFIED_REAL":
+                n_vr += 1
+    assert result["dataset"]["excluded_verified_real_rows"] == n_vr
     tm = result["test_metrics"]
     assert 0.0 <= tm["accuracy"] <= 1.0
     assert 0.0 <= tm["roc_auc"] <= 1.0

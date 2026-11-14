@@ -210,6 +210,14 @@ async def _run_plugins(plugin_ids, target_raw, target_type,
                 continue
             for f in res.findings or []:
                 findings.append(_finding_to_dict(pid, f))
+    # v2 spec count input: how many findings each plugin produced in
+    # this run, stamped on every finding it produced.
+    counts: dict = {}
+    for f in findings:
+        counts[f.get("plugin") or "OTHER"] = counts.get(
+            f.get("plugin") or "OTHER", 0) + 1
+    for f in findings:
+        f["plugin_finding_count"] = counts[f.get("plugin") or "OTHER"]
     return findings, plugins_run
 
 
