@@ -29,14 +29,29 @@ BATCHES = os.environ.get(
                     reason="no real candidates file on this machine")
 def test_train_on_real_candidates(tmp_path):
     batches = BATCHES if os.path.exists(BATCHES) else None
+    # The live candidates file changes as the scanner runs: count the
+    # VERIFIED_REAL rows in it now instead of pinning a stale number
+    # (it was 2 when this test was written; the scanner has since
+    # re-validated them away).
+    import json
+    expected_excluded = 0
+    with open(CANDIDATES, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if (row.get("validation") or {}).get("verdict") == "VERIFIED_REAL":
+                expected_excluded += 1
     result = train(CANDIDATES, batches, str(tmp_path),
                    epochs=15, hidden="16,8", seed=42,
                    write_tries=3, write_delay=1.0)
     assert result["train_rows"] + result["test_rows"] >= 700
     assert result["dataset"]["n_positive"] > 500
     assert result["dataset"]["n_negative"] > 50
-    # The 2 VERIFIED_REAL rows are excluded, never trained on.
-    assert result["dataset"]["excluded_verified_real_rows"] == 2
+    # The VERIFIED_REAL rows are excluded, never trained on.
+    assert result["dataset"]["excluded_verified_real_rows"] == \
+        expected_excluded
     tm = result["test_metrics"]
     assert 0.0 <= tm["accuracy"] <= 1.0
     assert 0.0 <= tm["roc_auc"] <= 1.0

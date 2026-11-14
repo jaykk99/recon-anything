@@ -82,19 +82,22 @@ run's own call-graph finding on every finding (same shape).
 
 ## What the training data actually contains (measured 2026-11-14)
 
-- Own rows: 725 (727 candidates minus 2 excluded `VERIFIED_REAL`).
-  610 distinct targets; every target has >=1 call-graph finding.
+- Own rows at train time: **723** (727 candidates at the first probe,
+  723 when training ran — the live scanner file changed underneath:
+  the 2 `VERIFIED_REAL` rows were re-validated away and 2 more rows
+  left the file; see "Evaluation protocol"). 610 distinct targets;
+  every target has >=1 call-graph finding.
 - Call-graph findings in batches: 3,888. Callees distribution:
   0 in 2,437 findings, 1 in 110, 2 in 3, unusable (no callee count
   in the depth record) in 1,338.
 - **1,337 targets have ONLY unusable depth records** — their graphs
   are unknown, and no record is stamped for them.
-- Rows with a call-graph record: **269 of 725**. Rows with a
-  non-empty graph (>0 callees or multihop edges): **7 of 725**
+- Rows with a call-graph record: **267 of 723**. Rows with a
+  non-empty graph (>0 callees or multihop edges): **7 of 723**
   (max 1 callee each).
 - The other rows get TDA features from proxy/implementation edges:
-  534 of 725 own rows have a 2-node proxy graph; the rest read
-  all-zero (no graph evidence at all).
+  534 of 725 own rows (first probe) have a 2-node proxy graph; the
+  rest read all-zero (no graph evidence at all).
 - **Cycles: zero.** No training row has `betti1 > 0` or `has_cycle`.
   Every training graph is empty, a single node, or a single edge.
   The cycle and filtration features are constant (all zero) on this
@@ -113,13 +116,22 @@ retrain: the same code will pick them up with no changes.
 ## Evaluation protocol
 
 Fixed own-test holdout, the same protocol the v1/v2 numbers were
-reported on: Jay's own 725 rows are split first (stratified, seed
-42, test_frac 0.2 -> **145 test rows: 124 worth-validating, 21
-likely-false-positive**, majority baseline 0.8552). Training uses
-own-train (580) + all 1,922 external rows (2,502 total). The test
-set is Jay's own data only, so the easier external rows cannot
-inflate the score. Both arms below use identical settings:
-60 epochs, hidden 64,32, lr 0.05, seed 42.
+reported on: Jay's own rows are split first (stratified, seed 42,
+test_frac 0.2). At train time the own set was 723 rows, so the
+holdout was **144 test rows: 123 worth-validating, 21
+likely-false-positive**, majority baseline 0.8542 (the task's
+"145-row holdout" was the file state at the first probe: 725 own
+rows, 124 pos / 21 neg, baseline 0.8552 — the live candidates file
+lost 4 rows and its 2 `VERIFIED_REAL` rows between the probe and the
+training run). Both arms below ran on the identical current file and
+the identical split, so the control-vs-TDA comparison is valid
+whatever the file state; do not compare the holdout numbers with the
+published v1/v2 rows below except as a rough reference, since those
+were measured on the 145-row file state. Training uses own-train
+(579) + all 1,922 external rows (2,501 total). The test set is Jay's
+own data only, so the easier external rows cannot inflate the score.
+Both arms below use identical settings: 60 epochs, hidden 64,32,
+lr 0.05, seed 42.
 
 `python -m app.nn.train --own-holdout --external <path>` trains the
 TDA model; `--no-tda` trains the v2 control on the same split.
@@ -130,19 +142,33 @@ TDA model; `--no-tda` trains the v2 control on the same split.
 |---|---|---|---|---|---|---|
 | v1 (published) | 81-32-16-1 | 0.8897 | 0.9781 | — | — | — |
 | v2 (published) | 255-64-32-1 | 0.9103 | 0.9697 | — | — | — |
-| v2 control (this branch, reproduced) | 255-64-32-1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| TDA (this branch) | 271-64-32-1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| v2 control (this branch, reproduced) | 255-64-32-1 | 0.8889 | 0.9559 | 0.9919 | 0.2857 | 122 / 15 / 1 / 6 |
+| TDA (this branch) | 271-64-32-1 | 0.8958 | 0.9582 | 1.0000 | 0.2857 | 123 / 15 / 0 / 6 |
 
-Published v1/v2 numbers are quoted from the NN scorer work (own
-holdout); the v2 control row is the apples-to-apples reproduction
-run on this branch with the same split and seed. The shipped v2
-weights on `feat/nn-scorer` report higher numbers (acc 0.9811, AUC
-0.9978) because they were evaluated on the 530-row COMBINED split,
-which mixes in the easier external rows — do not compare those with
-the holdout numbers above.
+Published v1/v2 numbers are quoted from the NN scorer work (145-row
+own holdout); the v2 control row is the apples-to-apples reproduction
+run on this branch with the same split and seed on the current
+144-row holdout. The shipped v2 weights on `feat/nn-scorer` report
+higher numbers (acc 0.9811, AUC 0.9978) because they were evaluated
+on the 530-row COMBINED split, which mixes in the easier external
+rows — do not compare those with the holdout numbers above.
 
-Verdict: _TBD once both arms finish._ (Expected: no meaningful
-delta — see "What the training data actually contains".)
+TDA permutation importance on the holdout: the `tda` group scores an
+AUC drop of **-0.0008** — shuffling the whole TDA block slightly
+IMPROVES the AUC. The block carries no signal on this data.
+
+Verdict: **TDA does not beat v2.** The delta is exactly one test
+row (acc +0.0069, AUC +0.0023, FP recall unchanged at 0.2857, WV
+recall +0.0081 from one fewer false negative). That is noise, not a
+win — exactly as the coverage section predicts: with zero cycles and
+7 non-empty graphs in 723 rows, the TDA block has nothing to learn
+from. The features, wiring, and tests are correct and live for
+targets whose call-graph plugin returns real edges; on the current
+data they add nothing. Do not ship the TDA model as an improvement
+over v2 — ship it (or don't) on the strength of the features being
+available for richer graphs, not on these numbers. Neither arm is
+100% (train acc 0.982–0.983 vs test 0.889–0.896 — the usual
+train/test gap, no overfit flag to raise beyond that).
 
 ## Wiring
 
