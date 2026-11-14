@@ -62,7 +62,12 @@ def test_authorized_plan_runs_active_steps(tmp_path):
     assert seen["inv"] == "r1" and seen["cmd"].startswith("dig")
 
 
-def test_unauthorized_target_blocks_active_even_if_flag_set(tmp_path):
+def test_unauthorized_target_blocks_active_even_if_flag_set(tmp_path, monkeypatch):
+    # Isolate the owner allowlist: other suites persist hosts (e.g.
+    # test_agent_fold adds example.com) to the shared file, so point it at
+    # an empty temp path for this test.
+    from app.agent import allowlist
+    monkeypatch.setattr(allowlist, "ALLOWLIST_PATH", str(tmp_path / "allow.json"))
     r = _run(tmp_path, targets=["https://example.com"], authorized=True,
              findings=[_row("k", 90)], commands=["dig example.com"],
              investigate=lambda *a, **k: 1 / 0,  # must never run
