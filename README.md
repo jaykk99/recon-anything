@@ -1852,6 +1852,36 @@ the API is not at `http://localhost:8000` or is gated. From GitHub, use
 **Actions -> recon-workflow -> Run workflow** (passive; add an
 `ANTHROPIC_API_KEY` secret to enable drafting).
 
+## Neural engine: evaluate and refit
+
+```bash
+cd backend
+python -m app.nn_train --self-report                    # current model + metrics
+python -m app.nn_train --eval labels.jsonl              # score CURRENT weights on your labels
+python -m app.nn_train --corpus labels.jsonl --dry-run  # train, print metrics, write nothing
+python -m app.nn_train --corpus labels.jsonl            # refit and write app/nn_weights.json
+```
+
+`labels.jsonl` is one `{"finding": {...}, "label": 0..1}` per line. `--eval`
+needs no numpy; training does. `tests/test_nn_eval.py` pins the ranking
+properties every refit must keep: severity is monotone (info < low < medium
+< high < critical) and higher confidence never lowers a score.
+
+## Suggested fixes in the UI
+
+Each run page has a **Suggested fixes** panel: *Draft fixes* calls
+`POST /api/runs/{id}/remediation`, which drafts a fix + regression test for
+the top neural-ranked findings and stores them on the run
+(`GET /api/runs/{id}/remediation` reads them back). Needs an LLM provider on
+the server (see `.env.example`); without one the panel says so.
+
+## Profiling a run
+
+```bash
+cd backend
+python3 scripts/run_profile.py <run_id>   # wall vs plugin time, timeouts, slowest plugins
+```
+
 ## Recon -> remediation workflow
 
 After a scan, the neural engine's scores pick the findings worth acting on and
