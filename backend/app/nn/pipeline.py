@@ -155,3 +155,22 @@ def maybe_score_findings(findings, model=None):
     if not nn_enabled():
         return findings
     return attach_nn_scores(findings, model=model)
+
+
+def gnn_enabled() -> bool:
+    return os.environ.get("RECON_NN_GNN") == "1"
+
+
+def maybe_score_gnn(findings, model=None, index=None):
+    """Pipeline hook for the combined GNN + symbolic model: scores
+    only when RECON_NN_GNN=1, else no-op. Never raises, never
+    changes behaviour when disabled. Graphs are built from each
+    finding's own evidence unless a contract index is passed."""
+    if not gnn_enabled():
+        return findings
+    try:
+        from .combined import score_finding_dicts_combined
+        return score_finding_dicts_combined(findings, model=model,
+                                            index=index)
+    except Exception:
+        return findings

@@ -210,6 +210,14 @@ async def _run_plugins(plugin_ids, target_raw, target_type,
                 continue
             for f in res.findings or []:
                 findings.append(_finding_to_dict(pid, f))
+    # v2 spec count input: how many findings each plugin produced in
+    # this run, stamped on every finding it produced.
+    counts: dict = {}
+    for f in findings:
+        counts[f.get("plugin") or "OTHER"] = counts.get(
+            f.get("plugin") or "OTHER", 0) + 1
+    for f in findings:
+        f["plugin_finding_count"] = counts[f.get("plugin") or "OTHER"]
     return findings, plugins_run
 
 
@@ -257,13 +265,19 @@ async def run_target(raw: str, chain: str = "bsc",
 
 
 def score_target(raw: str, model=None, threshold: float = 0.5,
-                 **kwargs) -> dict:
+                 combined: bool = False, **kwargs) -> dict:
     """Run plugins against a target and score every finding. Returns
-    the scan record with ranked, scored findings."""
+    the scan record with ranked, scored findings. With combined=True
+    the GNN + symbolic model scores instead of the flat MLP."""
     record = asyncio.run(run_target(raw, **kwargs))
-    record["findings"] = score_finding_dicts(record["findings"],
-                                             model=model,
-                                             threshold=threshold)
+    if combined:
+        from .combined import score_finding_dicts_combined
+        record["findings"] = score_finding_dicts_combined(
+            record["findings"], model=model, threshold=threshold)
+    else:
+        record["findings"] = score_finding_dicts(record["findings"],
+                                                 model=model,
+                                                 threshold=threshold)
     return record
 
 
@@ -279,7 +293,7 @@ def _print_human(record: dict) -> None:
             print(f"  - {n}")
     print(f"{'score':>6}  {'label':<20}  plugin / key")
     for f in record["findings"][:30]:
-        score = f.get("nn_score")
+        score = f.get("combined_p", f.get("nn_score"))
         score_s = f"{score:.3f}" if isinstance(score, float) else "  n/a "
         print(f"{score_s:>6}  {str(f.get('nn_label')):<20}  "
               f"{f.get('plugin')} / {f.get('key')}")
@@ -308,15 +322,26 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout-cap", type=int, default=60,
                     help="per-plugin timeout cap in seconds")
     ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--gnn", action="store_true",
+                    help="score with the combined GNN + symbolic model "
+                         "instead of the flat MLP (needs gnn-weights.json)")
     ap.add_argument("--json", action="store_true",
                     help="print the full ranked record as JSON")
     args = ap.parse_args(argv)
 
-    model = load_model(args.weights)
-    if model is None:
-        print("no trained weights found. Train first:\n"
-              "  python -m app.nn.train", file=sys.stderr)
-        return 2
+    if args.gnn:
+        from .combined import load_combined_model
+        model = load_combined_model(args.weights)
+        if model is None:
+            print("no trained GNN weights found. Train first:\n"
+                  "  python -m app.nn.train_gnn", file=sys.stderr)
+            return 2
+    else:
+        model = load_model(args.weights)
+        if model is None:
+            print("no trained weights found. Train first:\n"
+                  "  python -m app.nn.train", file=sys.stderr)
+            return 2
 
     if args.findings:
         findings = []
@@ -326,17 +351,24 @@ def main(argv=None) -> int:
                 line = line.strip()
                 if line:
                     findings.append(json.loads(line))
+        if args.gnn:
+            from .combined import score_finding_dicts_combined
+            scored = score_finding_dicts_combined(
+                findings, model=model, threshold=args.threshold)
+        else:
+            scored = score_finding_dicts(
+                findings, model=model, threshold=args.threshold)
         record = {"target": args.findings, "kind": "findings-file",
                   "chain": None, "plugins_run": [],
                   "notes": [], "findings_count": len(findings),
-                  "findings": score_finding_dicts(
-                      findings, model=model, threshold=args.threshold)}
+                  "findings": scored}
     elif args.target:
         record = score_target(args.target, model=model, chain=args.chain,
                               plugin_set=args.plugin_set,
                               max_plugins=args.max_plugins,
                               timeout_cap_s=args.timeout_cap,
-                              threshold=args.threshold)
+                              threshold=args.threshold,
+                              combined=args.gnn)
     else:
         ap.error("give --target or --findings")
         return 2

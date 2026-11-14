@@ -1,16 +1,43 @@
 """Feature extraction: plugin finding -> fixed-length numeric vector.
 
-Every feature comes from a field that really exists in the finding
-dicts the scanner writes (see backend/app/plugins/base.py Finding and
-the rows in recon-continuous/results/batches.jsonl). Nothing is
-invented: if a field is absent, its features read as "absent" rather
-than guessed.
+V2 spec — every plugin gets its own block of inputs, not a single
+one-hot. For each plugin in the top-K vocab (plus an OTHER bucket),
+the network sees 8 inputs:
 
-Finding dict shape (scan_one / batches.jsonl):
-    plugin, key, severity, bounty_value, confidence, value,
-    recipient_class, chain, function, evidence: {source_origin,
-    bytecode_only, detector_outcome, gate_analysis, contract_role,
-    report_class, proxy_address, implementation_address, risk, ...}
+    fired            this finding came from this plugin (0/1)
+    confidence       the finding's confidence, 0-1 (0 if not fired)
+    severity         the finding's severity, ordinal 0-1
+    risk             the evidence risk, ordinal 0-1
+    count            how many findings this plugin produced on this
+                     target, scaled 0-1 (count / 8, capped)
+    gate_present     the finding reports a gate analysis (0/1)
+    gate_no_caller   the gate analysis says "no caller gate" (0/1)
+    detector_present the finding reports a detector outcome (0/1)
+
+Only the finding's own plugin block is live in any one row; the other
+blocks read all-zero ("this plugin did not produce this finding").
+That is honest: a single finding cannot evidence another plugin's
+profile, so nothing is invented for the silent plugins. The point of
+the blocks is that confidence / severity / risk / count / gate /
+detector now attach to the SPECIFIC plugin that produced the finding,
+so the network can learn per-plugin patterns (e.g. "this plugin's
+high-confidence findings are usually real, that plugin's are usually
+noise") instead of one global value shared by every plugin.
+
+The count comes from the finding dict's "plugin_finding_count" field:
+- scanner rows (data.py): how many findings the same plugin produced
+  on the same (chain, address) in batches.jsonl; 1 when the finding
+  has no batch match.
+- external rows (build_external_dataset.py): how many findings the
+  same plugin class produced in the same audit project / repo.
+- live scoring (score.py): how many findings the plugin produced in
+  the run being scored.
+Absent -> 1 (one finding). Never guessed beyond that.
+
+Everything else is per-finding as before: top finding key (one-hot),
+bounty value, recipient class, chain, source origin, bytecode-only
+flags, contract role, report class, proxy/implementation presence,
+function presence/length, value length, evidence count.
 
 Labels never leak into features: validation verdicts and live-probe
 outcomes are label-side only and are never read here.
@@ -21,6 +48,12 @@ import math
 from typing import Dict, List, Sequence, Tuple
 
 TOP_K = 24
+
+# One block of inputs per plugin. Order is fixed; feature_names()
+# emits "plugin:<id>:<field>" for every plugin in the vocab + OTHER.
+PLUGIN_BLOCK = ("fired", "confidence", "severity", "risk", "count",
+                "gate_present", "gate_no_caller", "detector_present")
+COUNT_CAP = 8.0
 
 # One-hot vocabularies for small categorical fields.
 RECIPIENT_CLASSES = ("CALLER", "CALLER-SUPPLIED", "FIXED",
@@ -77,22 +110,27 @@ class FeatureSpec:
     def dim(self) -> int:
         return len(self.feature_names())
 
+    def plugin_block_names(self) -> List[str]:
+        """All plugin blocks: top-K plugins + OTHER, 8 inputs each."""
+        names: List[str] = []
+        for p in list(self.plugins) + ["OTHER"]:
+            names += [f"plugin:{p}:{b}" for b in PLUGIN_BLOCK]
+        return names
+
     def feature_names(self) -> List[str]:
         names: List[str] = []
-        names += [f"plugin:{p}" for p in self.plugins] + ["plugin:OTHER"]
+        names += self.plugin_block_names()
         names += [f"key:{k}" for k in self.keys] + ["key:OTHER"]
-        names += (["severity", "bounty_value", "confidence"] +
+        names += (["bounty_value"] +
                   ["recipient:" + r for r in RECIPIENT_CLASSES])
         names += ["chain:" + c for c in CHAINS]
         names += ["source:" + s for s in SOURCE_ORIGINS]
-        names += (["bytecode_only_present", "bytecode_only_true",
-                   "detector_outcome_present",
-                   "gate_present", "gate_no_caller_gate", "gate_guard_mention"] +
-                  ["role:" + r for r in CONTRACT_ROLES])
+        names += ["bytecode_only_present", "bytecode_only_true"]
+        names += ["role:" + r for r in CONTRACT_ROLES]
         names += ["report:" + r for r in REPORT_CLASSES]
         names += ["proxy_present", "implementation_present",
                   "function_present", "function_len",
-                  "value_len", "risk", "evidence_count"]
+                  "value_len", "evidence_count"]
         return names
 
     def groups(self) -> Dict[str, Tuple[int, int]]:
@@ -105,31 +143,28 @@ class FeatureSpec:
             return (min(hits), max(hits) + 1)
 
         return {
-            "plugin": span("plugin:"),
+            # All plugin blocks together (fired + profile fields).
+            "plugin": (0, len(self.plugin_block_names())),
             "key": span("key:"),
-            "severity": (idx["severity"], idx["severity"] + 1),
             "bounty_value": (idx["bounty_value"], idx["bounty_value"] + 1),
-            "confidence": (idx["confidence"], idx["confidence"] + 1),
             "recipient_class": span("recipient:"),
             "chain": span("chain:"),
             "source_origin": span("source:"),
             "bytecode_signals": (idx["bytecode_only_present"],
-                                 idx["detector_outcome_present"] + 1),
-            "gate_analysis": (idx["gate_present"],
-                              idx["gate_guard_mention"] + 1),
+                                 idx["bytecode_only_true"] + 1),
             "contract_role": span("role:"),
             "report_class": span("report:"),
             "proxy_impl": (idx["proxy_present"],
                            idx["implementation_present"] + 1),
             "function": (idx["function_present"], idx["function_len"] + 1),
             "value_len": (idx["value_len"], idx["value_len"] + 1),
-            "risk": (idx["risk"], idx["risk"] + 1),
             "evidence_count": (idx["evidence_count"],
                                idx["evidence_count"] + 1),
         }
 
     def to_dict(self) -> Dict:
-        return {"plugins": self.plugins, "keys": self.keys}
+        return {"plugins": self.plugins, "keys": self.keys,
+                "spec_version": 2}
 
     @classmethod
     def from_dict(cls, data: Dict) -> "FeatureSpec":
@@ -159,17 +194,41 @@ def extract(finding: Dict, spec: FeatureSpec) -> List[float]:
     if not isinstance(ev, dict):
         ev = {}
     vec: List[float] = []
-    vec += _top_one_hot(str(finding.get("plugin") or ""), spec.plugins)
-    key = finding.get("key") or ev.get("check") or ""
-    vec += _top_one_hot(str(key), spec.keys)
-    vec.append(_ordinal(str(finding.get("severity") or ev.get("severity") or ""),
-                        SEVERITY_ORDER))
-    vec.append(_ordinal(str(finding.get("bounty_value") or ""), BOUNTY_ORDER))
+
+    # Per-plugin blocks: only the finding's own plugin block is live.
+    n_blocks = len(spec.plugins) + 1
+    plugin = str(finding.get("plugin") or "")
+    fired_idx = (spec.plugins.index(plugin) if plugin in spec.plugins
+                 else n_blocks - 1)  # OTHER block
     try:
         conf = float(finding.get("confidence") or 0)
     except (TypeError, ValueError):
         conf = 0.0
-    vec.append(max(0.0, min(1.0, conf / 100.0)))
+    conf = max(0.0, min(1.0, conf / 100.0))
+    sev = _ordinal(str(finding.get("severity") or ev.get("severity") or ""),
+                   SEVERITY_ORDER)
+    risk = _ordinal(str(ev.get("risk") or ""), SEVERITY_ORDER)
+    try:
+        count = float(finding.get("plugin_finding_count") or 1)
+    except (TypeError, ValueError):
+        count = 1.0
+    count = max(0.0, min(1.0, count / COUNT_CAP))
+    gate = str(ev.get("gate_analysis") or "")
+    gate_low = gate.lower()
+    gate_present = 1.0 if gate else 0.0
+    gate_no_caller = 1.0 if "no caller gate" in gate_low else 0.0
+    detector_present = 1.0 if ev.get("detector_outcome") not in (None, "") else 0.0
+    block_vals = [1.0, conf, sev, risk, count, gate_present,
+                  gate_no_caller, detector_present]
+    for b in range(n_blocks):
+        if b == fired_idx:
+            vec += block_vals
+        else:
+            vec += [0.0] * len(PLUGIN_BLOCK)
+
+    key = finding.get("key") or ev.get("check") or ""
+    vec += _top_one_hot(str(key), spec.keys)
+    vec.append(_ordinal(str(finding.get("bounty_value") or ""), BOUNTY_ORDER))
     vec += _one_hot(str(finding.get("recipient_class") or "OTHER"),
                     RECIPIENT_CLASSES)
     # Chain lives at row level in batch rows and inside evidence for
@@ -185,12 +244,6 @@ def extract(finding: Dict, spec: FeatureSpec) -> List[float]:
     vec.append(1.0 if bonly is not None else 0.0)
     vec.append(1.0 if bonly is True
                or str(bonly).strip().lower() == "true" else 0.0)
-    vec.append(1.0 if ev.get("detector_outcome") not in (None, "") else 0.0)
-    gate = str(ev.get("gate_analysis") or "")
-    gate_low = gate.lower()
-    vec.append(1.0 if gate else 0.0)
-    vec.append(1.0 if "no caller gate" in gate_low else 0.0)
-    vec.append(1.0 if "guard" in gate_low else 0.0)
     vec += _one_hot(str(ev.get("contract_role") or "other"),
                     CONTRACT_ROLES)
     vec += _one_hot(str(ev.get("report_class") or "other"),
@@ -202,7 +255,6 @@ def extract(finding: Dict, spec: FeatureSpec) -> List[float]:
     vec.append(min(1.0, len(fn) / 64.0))
     value = str(finding.get("value") or "")
     vec.append(min(1.0, math.log10(1.0 + len(value)) / 4.0))
-    vec.append(_ordinal(str(ev.get("risk") or ""), SEVERITY_ORDER))
     vec.append(min(1.0, len(ev) / 20.0))
     return vec
 

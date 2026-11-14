@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from operator import mul
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
@@ -72,7 +73,9 @@ class MLP:
         for w, b in zip(self.weights, self.biases):
             z = []
             for row, bias in zip(w, b):
-                z.append(sum(wi * xi for wi, xi in zip(row, acts[-1])) + bias)
+                # map(mul, ...) is the same dot product as a generator
+                # sum, in the same order, just faster in CPython.
+                z.append(sum(map(mul, row, acts[-1])) + bias)
             pres.append(z)
             if w is self.weights[-1]:
                 acts.append([_sigmoid(v) for v in z])
@@ -88,6 +91,25 @@ class MLP:
         return 1 if self.predict_proba(x) >= threshold else 0
 
     # -- training --------------------------------------------------------
+    def _deltas(self, acts, y: float):
+        """Per-layer error signals for one example (same math as
+        _backward, without materialising the gradient matrices)."""
+        n_layers = len(self.weights)
+        deltas: List[Optional[List[float]]] = [None] * n_layers
+        p = acts[-1][0]
+        deltas[-1] = [p - y]
+        for li in range(n_layers - 2, -1, -1):
+            w_next = self.weights[li + 1]
+            d_next = deltas[li + 1]
+            a = acts[li + 1]  # tanh activations of this layer
+            delta = []
+            for j in range(len(a)):
+                s = sum(map(mul, (w_next[k][j] for k in range(len(d_next))),
+                            d_next))
+                delta.append(s * _tanh_deriv(a[j]))
+            deltas[li] = delta
+        return deltas
+
     def _backward(self, acts, pres, y: float):
         """Gradients of the BCE loss for one example.
 
@@ -95,24 +117,10 @@ class MLP:
         self.weights / self.biases. Output layer: with sigmoid + BCE
         the delta is simply (p - y). Hidden layers: tanh derivative.
         """
-        n_layers = len(self.weights)
-        deltas: List[Optional[List[float]]] = [None] * n_layers
-        # Output layer.
-        p = acts[-1][0]
-        deltas[-1] = [p - y]
-        # Hidden layers, walking backwards.
-        for li in range(n_layers - 2, -1, -1):
-            w_next = self.weights[li + 1]
-            d_next = deltas[li + 1]
-            a = acts[li + 1]  # tanh activations of this layer
-            delta = []
-            for j in range(len(a)):
-                s = sum(w_next[k][j] * d_next[k] for k in range(len(d_next)))
-                delta.append(s * _tanh_deriv(a[j]))
-            deltas[li] = delta
+        deltas = self._deltas(acts, y)
         grad_w = []
         grad_b = []
-        for li in range(n_layers):
+        for li in range(len(deltas)):
             d = deltas[li]
             a_prev = acts[li]
             grad_w.append([[d[i] * a_prev[j] for j in range(len(a_prev))]
@@ -124,12 +132,15 @@ class MLP:
             epochs: int = 60, batch_size: int = 32,
             X_val: Optional[Sequence[Sequence[float]]] = None,
             y_val: Optional[Sequence[int]] = None,
-            seed: int = 42) -> Dict[str, List[float]]:
+            seed: int = 42, history_every: int = 1) -> Dict[str, List[float]]:
         """Train with mini-batch SGD. Returns per-epoch history.
 
         history = {"loss": [...], "train_acc": [...], "val_acc": [...]}
         (val_acc present only when a validation set is given). Loss is
-        mean binary cross-entropy over the training set.
+        mean binary cross-entropy over the training set. history_every
+        > 1 records loss/accuracy only every Nth epoch (and the first):
+        the weights are identical, only the reporting is sparser.
+        Sweeps pass a large value; the shipped train run uses 1.
         """
         X = [list(map(float, row)) for row in X]
         y = [float(v) for v in y]
@@ -143,7 +154,7 @@ class MLP:
         history: Dict[str, List[float]] = {
             "loss": [], "train_acc": [], "val_acc": []}
         n = len(X)
-        for _epoch in range(int(epochs)):
+        for epoch in range(int(epochs)):
             order = list(range(n))
             rng.shuffle(order)
             for start in range(0, n, max(1, int(batch_size))):
@@ -153,13 +164,23 @@ class MLP:
                 gb_acc = [[0.0] * len(b) for b in self.biases]
                 for i in idxs:
                     acts, _ = self._forward(X[i])
-                    gw, gb = self._backward(acts, [], y[i])
-                    for li in range(len(gw)):
-                        for r in range(len(gw[li])):
-                            for c in range(len(gw[li][r])):
-                                gw_acc[li][r][c] += gw[li][r][c]
-                        for r in range(len(gb[li])):
-                            gb_acc[li][r] += gb[li][r]
+                    # Fuse the gradient into the batch accumulator
+                    # directly: same d[i]*a_prev[j] products _backward
+                    # would build, without a throwaway matrix per
+                    # example.
+                    deltas = self._deltas(acts, y[i])
+                    for li in range(len(deltas)):
+                        d = deltas[li]
+                        a_prev = acts[li]
+                        gw_li = gw_acc[li]
+                        for r in range(len(d)):
+                            dr = d[r]
+                            gw_r = gw_li[r]
+                            for c in range(len(a_prev)):
+                                gw_r[c] += dr * a_prev[c]
+                        gb_li = gb_acc[li]
+                        for r in range(len(d)):
+                            gb_li[r] += d[r]
                 m = float(len(idxs))
                 for li in range(len(self.weights)):
                     for r in range(len(self.weights[li])):
@@ -169,10 +190,11 @@ class MLP:
                             self.weights[li][r][c] -= self.lr * g
                     for r in range(len(self.biases[li])):
                         self.biases[li][r] -= self.lr * (gb_acc[li][r] / m)
-            history["loss"].append(self._bce(X, y))
-            history["train_acc"].append(self.accuracy(X, y))
-            if X_val is not None and y_val is not None:
-                history["val_acc"].append(self.accuracy(X_val, y_val))
+            if epoch % max(1, int(history_every)) == 0:
+                history["loss"].append(self._bce(X, y))
+                history["train_acc"].append(self.accuracy(X, y))
+                if X_val is not None and y_val is not None:
+                    history["val_acc"].append(self.accuracy(X_val, y_val))
         return history
 
     def _bce(self, X, y) -> float:

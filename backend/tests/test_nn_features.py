@@ -30,7 +30,7 @@ def test_unknown_plugin_and_key_land_in_other():
     f["plugin"] = "never_seen_plugin_xyz"
     f["key"] = "never_seen_key_xyz"
     v = extract(f, spec)
-    assert v[names.index("plugin:OTHER")] == 1.0
+    assert v[names.index("plugin:OTHER:fired")] == 1.0
     assert v[names.index("key:OTHER")] == 1.0
 
 
@@ -38,16 +38,40 @@ def test_known_signals_present():
     spec = _spec()
     names = spec.feature_names()
     # Row 2 (index 2) is an implementation contract with a gate note.
+    # Its plugin block carries the gate/detector signals now.
+    blk = "plugin:unchecked_math_user_input:"
     v = extract(ROWS[2][0], spec)
     assert v[names.index("role:implementation")] == 1.0
-    assert v[names.index("gate_present")] == 1.0
-    assert v[names.index("gate_no_caller_gate")] == 1.0
+    assert v[names.index(blk + "gate_present")] == 1.0
+    assert v[names.index(blk + "gate_no_caller")] == 1.0
     assert v[names.index("proxy_present")] == 1.0
-    assert v[names.index("detector_outcome_present")] == 1.0
+    assert v[names.index(blk + "detector_present")] == 1.0
+    assert v[names.index(blk + "fired")] == 1.0
+    assert v[names.index(blk + "confidence")] == 0.8
     # Row 1 (index 1) has no detector outcome and no proxy.
+    blk1 = "plugin:contract_logic:"
     v2 = extract(ROWS[1][0], spec)
-    assert v2[names.index("detector_outcome_present")] == 0.0
+    assert v2[names.index(blk1 + "detector_present")] == 0.0
     assert v2[names.index("proxy_present")] == 0.0
+
+
+def test_plugin_blocks_only_fired_block_is_live():
+    spec = _spec()
+    names = spec.feature_names()
+    v = extract(ROWS[2][0], spec)
+    fired = [n for n in names
+             if n.startswith("plugin:") and n.endswith(":fired")]
+    live = [n for n in fired if v[names.index(n)] == 1.0]
+    assert live == ["plugin:unchecked_math_user_input:fired"]
+    # Count input: absent -> 1 finding -> 1/8; 8 findings -> 1.0.
+    blk = "plugin:unchecked_math_user_input:"
+    assert v[names.index(blk + "count")] == 1.0 / 8.0
+    f = dict(ROWS[2][0])
+    f["plugin_finding_count"] = 8
+    v8 = extract(f, spec)
+    assert v8[names.index(blk + "count")] == 1.0
+    f["plugin_finding_count"] = 80
+    assert extract(f, spec)[names.index(blk + "count")] == 1.0
 
 
 def test_label_side_data_never_leaks_into_features():

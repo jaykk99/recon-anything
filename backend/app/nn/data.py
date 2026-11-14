@@ -22,6 +22,13 @@ Labels (triage only):
 
 batches.jsonl has torn rows (the scanner died mid-write on some
 batches); they are skipped and counted, never fatal.
+
+External rows (load_external_rows) come from build_external_dataset.py:
+judge/audit-confirmed public findings (ScaBench, xanoutas) mapped into
+the same row shape. Their labels come from the source's own outcome
+(confirmed High/Medium = worth-validating); Low/informational audit
+findings are excluded, never relabeled, and there is no public
+negative set at scale, so the likely-FP class stays Jay's own rows.
 """
 from __future__ import annotations
 
@@ -74,8 +81,12 @@ def build_dataset(candidates_path: str,
         if limit and len(candidates) >= limit:
             break
 
-    # Index batch findings by join key for evidence enrichment.
+    # Index batch findings by join key for evidence enrichment, and
+    # count findings per (chain, address, plugin): the v2 spec gives
+    # every plugin a count input (how many findings it produced on
+    # this target). First occurrence wins for the finding itself.
     enriched: Dict[Tuple, Dict] = {}
+    plugin_counts: Dict[Tuple, int] = {}
     batch_rows = 0
     batch_torn = 0
     batch_findings = 0
@@ -91,6 +102,10 @@ def build_dataset(candidates_path: str,
                                 f.get("plugin", ""), f.get("key", ""))
                 # First occurrence wins: the finding as first scanned.
                 enriched.setdefault(key, f)
+                ckey = ((row.get("chain", "") or "").lower(),
+                        (row.get("address", "") or "").lower(),
+                        f.get("plugin", "") or "")
+                plugin_counts[ckey] = plugin_counts.get(ckey, 0) + 1
 
     rows: List[Dict] = []
     excluded = 0
@@ -118,6 +133,7 @@ def build_dataset(candidates_path: str,
                 "chain": cand.get("chain"),
                 "function": cand.get("function"),
                 "evidence": {},
+                "plugin_finding_count": 1,
             }
         else:
             # Chain lives at batch-row level, not in the finding dict:
@@ -125,6 +141,10 @@ def build_dataset(candidates_path: str,
             # (without this every training row read chain "other").
             finding = dict(finding)
             finding.setdefault("chain", cand.get("chain"))
+            ckey = ((cand.get("chain", "") or "").lower(),
+                    (cand.get("address", "") or "").lower(),
+                    cand.get("plugin", "") or "")
+            finding["plugin_finding_count"] = plugin_counts.get(ckey, 1)
         rows.append({
             "finding": finding,
             "label": label,
@@ -150,6 +170,39 @@ def build_dataset(candidates_path: str,
         "n_negative": sum(1 for r in rows if r["label"] == 0),
     }
     return {"rows": rows, "stats": stats}
+
+
+def load_external_rows(path: str) -> Tuple[List[Dict], Dict]:
+    """Load external-findings rows (built by build_external_dataset.py).
+
+    Rows are already in NN row shape (finding/label/verdict/... plus
+    origin + source provenance). Labels come from the source's own
+    outcome (judge/audit-confirmed High/Medium = worth-validating);
+    nothing here re-labels or invents fields. Returns (rows, stats).
+    """
+    rows: List[Dict] = []
+    bad = 0
+    sources: Dict[str, int] = {}
+    for row, err in load_jsonl(path):
+        if err is not None or not isinstance(row, dict):
+            bad += 1
+            continue
+        finding = row.get("finding")
+        label = row.get("label")
+        if not isinstance(finding, dict) or label not in (0, 1):
+            bad += 1
+            continue
+        rows.append(row)
+        src = ((row.get("source") or {}).get("dataset") or "unknown")
+        sources[src] = sources.get(src, 0) + 1
+    stats = {
+        "external_rows": len(rows),
+        "external_positive": sum(1 for r in rows if r["label"] == 1),
+        "external_negative": sum(1 for r in rows if r["label"] == 0),
+        "external_sources": sources,
+        "external_bad_lines": bad,
+    }
+    return rows, stats
 
 
 def stratified_split(rows: List[Dict], test_frac: float = 0.2,
