@@ -65,6 +65,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1985,6 +1986,164 @@ async def _tool_agent_watch(args: Dict) -> Dict:
         args.get("token"), args.get("prev_snapshot"))
 
 
+# ---------------------------------------------------------------------------
+# Investigator loop tools (Wave 1.1)
+#
+# investigate starts the researcher loop in a background thread and
+# returns the investigation id at once (a loop can take minutes: deep
+# scan + validator probes); investigation_status polls it.
+# validate_candidate runs the validator on one candidate on demand.
+# bounty_pack generates the audit/bounty pack for an investigation.
+# ---------------------------------------------------------------------------
+_INVESTIGATOR_THREADS: Dict[str, Any] = {}
+
+
+def _investigator_store_dir() -> str:
+    from .investigator.state import default_store_dir
+    return default_store_dir()
+
+
+def _investigate_background(inv_id: str, kwargs: Dict) -> None:
+    from .investigator import Investigation, run_investigation
+    try:
+        run_investigation(investigation_id=inv_id, **kwargs)
+    except Exception as e:  # noqa: BLE001 - a crashed loop must still
+        # leave a readable record, never a silent missing id.
+        try:
+            inv = Investigation.load(kwargs.get("store_dir") or
+                                     _investigator_store_dir(), inv_id)
+            inv.verdict = inv.verdict or "SKIPPED"
+            inv.notes.append(f"[ERROR] loop failed: {e}")
+            inv.save(kwargs.get("store_dir") or
+                     _investigator_store_dir())
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _tool_investigate(args: Dict) -> Dict:
+    from .investigator.state import new_investigation_id
+    chain = args.get("chain", "")
+    address = args.get("address", "")
+    _agent_chain_config(chain)
+    _agent_check_address(address)
+    source = args.get("source")
+    if not source:
+        # Best-effort verified-source fetch (keyless Sourcify). A miss
+        # is fine: the loop closes degraded naming the missing source.
+        try:
+            src = await asyncio.to_thread(
+                _agent_fetch_sourcify_httpx, chain, address)
+        except Exception:  # noqa: BLE001
+            src = None
+        if src and src.get("source"):
+            source = src["source"]
+    try:
+        value_usd = (float(args["value_usd"])
+                     if args.get("value_usd") is not None else None)
+    except (TypeError, ValueError):
+        raise ToolError("value_usd must be a number")
+    store_dir = _investigator_store_dir()
+    inv_id = new_investigation_id(address, chain)
+    # Create the record synchronously so the id is pollable at once;
+    # the background loop overwrites it as phases complete.
+    from .investigator import Investigation
+    _seed = Investigation(id=inv_id, address=address, chain=chain,
+                          scope=args.get("scope") or [],
+                          value_usd=value_usd)
+    _seed.transition("PICKED", "investigation started via MCP")
+    _seed.save(store_dir)
+    kwargs = {"address": address, "chain": chain, "source": source,
+              "value_usd": value_usd,
+              "scope": args.get("scope") or [],
+              "live": bool(args.get("live", False)),
+              "store_dir": store_dir,
+              "out_dir": os.path.join(store_dir, "packs")}
+    t = threading.Thread(target=_investigate_background,
+                         args=(inv_id, kwargs), daemon=True)
+    t.start()
+    _INVESTIGATOR_THREADS[inv_id] = t
+    return {"investigation_id": inv_id, "status": "started",
+            "address": address, "chain": chain,
+            "source_supplied": bool(source),
+            "poll_with": "investigation_status",
+            "note": "Loop runs in the background; poll "
+                    "investigation_status for phase/verdict. Detection "
+                    "only; fork/simulation never proves a live payout."}
+
+
+def _tool_investigation_status(args: Dict) -> Dict:
+    from .investigator import Investigation
+    inv_id = args.get("investigation_id", "")
+    if not inv_id:
+        raise ToolError("investigation_id is required")
+    store_dir = _investigator_store_dir()
+    try:
+        inv = Investigation.load(store_dir, inv_id)
+    except Exception:  # noqa: BLE001
+        raise ToolError(f"no investigation {inv_id!r} in {store_dir}")
+    return {"investigation_id": inv.id, "phase": inv.phase,
+            "verdict": inv.verdict, "address": inv.address,
+            "chain": inv.chain, "value_usd": inv.value_usd,
+            "value_band": inv.value_band,
+            "hypothesis": ({"function": (inv.hypothesis or {}).get("function"),
+                            "kind": (inv.hypothesis or {}).get("kind"),
+                            "severity": (inv.hypothesis or {}).get("severity")}
+                           if inv.hypothesis else None),
+            "candidates": len(inv.candidates),
+            "verdicts": [{"verdict": v.get("verdict"),
+                          "function": v.get("function"),
+                          "kind": v.get("kind")} for v in inv.verdicts],
+            "fork_planned": (inv.fork or {}).get("planned_count", 0),
+            "chained": inv.chained,
+            "report": inv.report,
+            "history": inv.history[-8:],
+            "notes": inv.notes[-8:]}
+
+
+async def _tool_validate_candidate(args: Dict) -> Dict:
+    from .investigator import validate_candidates
+    cand = args.get("candidate") or {}
+    if not isinstance(cand, dict):
+        raise ToolError("candidate must be an object")
+    for field in ("address", "chain"):
+        if not cand.get(field):
+            raise ToolError(f"candidate.{field} is required")
+    _agent_check_address(cand["address"])
+    verdicts = await asyncio.to_thread(validate_candidates, [cand])
+    verdict = verdicts[0] if verdicts else {}
+    return {"candidate": {"address": cand["address"],
+                          "chain": cand["chain"],
+                          "function": cand.get("function", ""),
+                          "kind": cand.get("kind", "")},
+            "verdict": verdict.get("verdict"),
+            "reason": verdict.get("reason", ""),
+            "recipient": verdict.get("recipient"),
+            "missing": verdict.get("missing", []),
+            "note": "On-demand single-candidate validation; "
+                    "VERIFIED_REAL requires the live-probe bar."}
+
+
+async def _tool_bounty_pack(args: Dict) -> Dict:
+    from .investigator import Investigation, write_pack
+    inv_id = args.get("investigation_id", "")
+    if not inv_id:
+        raise ToolError("investigation_id is required")
+    store_dir = _investigator_store_dir()
+    try:
+        inv = Investigation.load(store_dir, inv_id)
+    except Exception:  # noqa: BLE001
+        raise ToolError(f"no investigation {inv_id!r} in {store_dir}")
+    out_dir = args.get("out_dir") or os.path.join(
+        store_dir, "packs", inv_id)
+    manifest = await asyncio.to_thread(
+        write_pack, inv, out_dir, force=True)
+    if manifest is None:
+        raise ToolError("pack generation failed")
+    inv.report = manifest
+    inv.save(store_dir)
+    return manifest
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "recon_health",
@@ -2931,6 +3090,95 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["chain", "address"],
         },
         "handler": _tool_agent_watch,
+    },
+    {
+        "name": "investigate",
+        "description": "Start the investigator loop on one contract: "
+                       "pick the target value-first, read everything, "
+                       "form an attack story, test on fork, prove live "
+                       "read-only through the validator, chain to related "
+                       "contracts, and write the bounty pack. Runs in the "
+                       "background; poll investigation_status. Detection "
+                       "only; fork/simulation never proves a live payout.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "description": "ethereum, bsc, base, arbitrum, polygon"},
+                "address": {"type": "string"},
+                "source": {"type": "string",
+                           "description": "verified source text when known; "
+                                          "otherwise fetched from Sourcify"},
+                "value_usd": {"type": "number",
+                              "description": "realizable USD value; live runs "
+                                             "enforce the $100k floor"},
+                "scope": {"type": "array", "items": {"type": "string"},
+                          "description": "bounty programs / scope notes"},
+                "live": {"type": "boolean", "default": False,
+                         "description": "enforce the $100k live-path floor"},
+            },
+            "required": ["chain", "address"],
+        },
+        "handler": _tool_investigate,
+    },
+    {
+        "name": "investigation_status",
+        "description": "Phase, verdict, hypothesis, candidates, validator "
+                       "verdicts and pack location for one investigation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "investigation_id": {"type": "string"},
+            },
+            "required": ["investigation_id"],
+        },
+        "handler": _tool_investigation_status,
+    },
+    {
+        "name": "validate_candidate",
+        "description": "Run the validator on one candidate on demand "
+                       "(address, chain, function, kind, source). Returns "
+                       "VERIFIED_REAL / TRIGGER_ONLY / FALSE_POSITIVE / "
+                       "UNVERIFIED with the reason and missing evidence. "
+                       "VERIFIED_REAL requires the live-probe bar.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "candidate": {
+                    "type": "object",
+                    "properties": {
+                        "address": {"type": "string"},
+                        "chain": {"type": "string"},
+                        "function": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "source": {"type": "string"},
+                        "contract_name": {"type": "string"},
+                    },
+                    "required": ["address", "chain"],
+                },
+            },
+            "required": ["candidate"],
+        },
+        "handler": _tool_validate_candidate,
+    },
+    {
+        "name": "bounty_pack",
+        "description": "Generate the audit/bounty pack (report.md, "
+                       "findings.json, verdicts.json, manifest.json) for "
+                       "one investigation. The pack states the "
+                       "investigator verdict verbatim and never claims a "
+                       "verdict the validator did not give.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "investigation_id": {"type": "string"},
+                "out_dir": {"type": "string",
+                            "description": "override the pack directory"},
+            },
+            "required": ["investigation_id"],
+        },
+        "handler": _tool_bounty_pack,
     },
 ]
 

@@ -58,6 +58,9 @@ EXPECTED_TOOLS = {
     "agent_fetch", "agent_search", "agent_explorer", "agent_fuzz",
     "agent_simulate", "agent_time_travel", "agent_deploy_fork",
     "agent_multicall",
+    # v2.3: investigator loop (Wave 1.1)
+    "investigate", "investigation_status", "validate_candidate",
+    "bounty_pack",
 }
 
 
