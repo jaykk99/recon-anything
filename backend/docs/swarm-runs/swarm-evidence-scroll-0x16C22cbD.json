@@ -1,0 +1,970 @@
+{
+  "target": {
+    "chain": "scroll",
+    "address": "0x16C22cbDD77350b1AC88AdDA344F691c12f41960",
+    "name": "AxelarGateway",
+    "fresh_7d": true,
+    "block": 35662966,
+    "first_seen_utc": "2026-11-09T15:38:53Z",
+    "creator": "0xb1209b087e544785138784a50933d163a9087a7d",
+    "tx_hash": "0x88647f80743cfea3427b0a4cf01300e615d7e7c05268d551e6a21bd28f90ce0c"
+  },
+  "verdict": "TRIGGER_ONLY",
+  "scout": {
+    "agent": "scout",
+    "chain": "scroll",
+    "address": "0x16C22cbDD77350b1AC88AdDA344F691c12f41960",
+    "key": "scroll:0x16c22cbdd77350b1ac88adda344f691c12f41960",
+    "errors": [
+      "eth_getCode failed: all RPC endpoints failed for eth_getCode on scroll (6 attempts): https://1rpc.io/scroll: IncompleteRead: IncompleteRead(0 bytes read)"
+    ],
+    "has_code": false,
+    "bytecode_len": 0,
+    "native_balance_wei": 0,
+    "native_balance_eth": 0.0,
+    "chain_id_live": 534352,
+    "chain_id_matches": true,
+    "views": {
+      "owner": {
+        "ok": false,
+        "error": "execution reverted"
+      },
+      "totalSupply": {
+        "ok": false,
+        "error": "execution reverted"
+      },
+      "name": {
+        "ok": false,
+        "error": "execution reverted"
+      },
+      "symbol": {
+        "ok": false,
+        "error": "execution reverted"
+      },
+      "decimals": {
+        "ok": false,
+        "error": "execution reverted"
+      }
+    },
+    "source_via": "https://blockscout.scroll.io/api?module=contract&action=getsourcecode&address=0x16C22cbDD77350b1AC88AdDA344F691c12f41960",
+    "source_error": null,
+    "contract_name": "AxelarGateway",
+    "source_len": 39764,
+    "has_source": true,
+    "scan_engine": "batch_scan.scan_source(deep=True)",
+    "scan_note": "full CPU detection stack over verified source",
+    "findings": [
+      {
+        "kind": "identity",
+        "severity": "low",
+        "function": "",
+        "title": "Contract code: AxelarGateway (compiler unknown, 39764 bytes of verified source)",
+        "code": "pragma solidity ^0.8.0;\ncontract AxelarGateway is IAxelarConsensusGateway, Pausable, Implementation, EternalStorage {",
+        "detail": "contract_name=AxelarGateway; compiler=unknown; functions=54",
+        "contract_name": "AxelarGateway",
+        "compiler": "",
+        "function_count": 54,
+        "confidence": 40
+      },
+      {
+        "kind": "proxy",
+        "severity": "medium",
+        "function": "",
+        "title": "Proxy pattern: ERC1967 proxy",
+        "code": "bytes32 internal constant KEY_IMPLEMENTATION = bytes32(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);",
+        "detail": "Upgradeable/proxy structure: the code at this address can be swapped by whoever controls the proxy admin.",
+        "implementation": "",
+        "pattern": "ERC1967 proxy",
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "high",
+        "function": "isContractCallAndMintApproved",
+        "title": "Privileged function 'isContractCallAndMintApproved' can create new tokens (NO access gate found)",
+        "code": "function isContractCallAndMintApproved(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        address contractAddress,\n        bytes32 payloadHash,\n        string calldata symbol,\n        uint256 amount\n    ) external view override returns (bool) {\n        return\n            getBool(\n                _getIsContractCallApprovedWithMintKey(commandId, sourceChain, sourceAddress, contractAddress, payloadHash, symbol, amount)\n            );\n    }",
+        "detail": "category=mint; gated=False; signature: function isContractCallAndMintApproved(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        address contractAddress,\n        bytes32 payloadH",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 70
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "validateContractCall",
+        "title": "Privileged function 'validateContractCall' is access-controlled (gated) (access-gated)",
+        "code": "function validateContractCall(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        bytes32 payloadHash\n    ) external override whenNotPausedExceptForGovernance returns (bool valid) {\n        bytes32 key = _getIsContractCallApprovedKey(commandId, sourceChain, sourceAddress, msg.sender, payloadHash);\n        valid = getBool(key);\n        if (valid) {\n            _setBool(key, false);\n\n            emit ContractCallExecuted(commandId);\n        }\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function validateContractCall(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        bytes32 payloadHash\n    ) external override whenNotPausedE",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "validateContractCallAndMint",
+        "title": "Privileged function 'validateContractCallAndMint' can create new tokens (access-gated)",
+        "code": "function validateContractCallAndMint(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        bytes32 payloadHash,\n        string calldata symbol,\n        uint256 amount\n    ) external override whenNotPausedExceptForGovernance returns (bool valid) {\n        bytes32 key = _getIsContractCallApprovedWithMintKey(commandId, sourceChain, sourceAddress, msg.sender, payloadHash, symbol, amount);\n        valid = getBool(key);\n        if (valid) {\n            \n            _setBool(key, false);\n\n            emit ContractCallExecuted(commandId);\n\n            _mintToken(symbol, msg.sender, amount);\n        }\n    }",
+        "detail": "category=mint; gated=True; signature: function validateContractCallAndMint(\n        bytes32 commandId,\n        string calldata sourceChain,\n        string calldata sourceAddress,\n        bytes32 payloadHash,\n        string calldata symbol",
+        "priv_category": "mint",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "governance",
+        "title": "Privileged function 'governance' is an owner/admin control (NO access gate found)",
+        "code": "function governance() public view override returns (address) {\n        return getAddress(KEY_GOVERNANCE);\n    }",
+        "detail": "category=owner_admin; gated=False; signature: function governance() public view override returns (address)",
+        "priv_category": "owner_admin",
+        "gated": false,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "high",
+        "function": "mintLimiter",
+        "title": "Privileged function 'mintLimiter' can create new tokens (NO access gate found)",
+        "code": "function mintLimiter() public view override returns (address) {\n        return getAddress(KEY_MINT_LIMITER);\n    }",
+        "detail": "category=mint; gated=False; signature: function mintLimiter() public view override returns (address)",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 70
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "pauser",
+        "title": "Privileged function 'pauser' can pause or unpause the contract (NO access gate found)",
+        "code": "function pauser() public view override returns (address) {\n        return getAddress(KEY_PAUSER);\n    }",
+        "detail": "category=pause; gated=False; signature: function pauser() public view override returns (address)",
+        "priv_category": "pause",
+        "gated": false,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "high",
+        "function": "tokenMintLimit",
+        "title": "Privileged function 'tokenMintLimit' can create new tokens (NO access gate found)",
+        "code": "function tokenMintLimit(string memory symbol) public view override returns (uint256) {\n        return getUint(_getTokenMintLimitKey(symbol));\n    }",
+        "detail": "category=mint; gated=False; signature: function tokenMintLimit(string memory symbol) public view override returns (uint256)",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 70
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "high",
+        "function": "tokenMintAmount",
+        "title": "Privileged function 'tokenMintAmount' can create new tokens (NO access gate found)",
+        "code": "function tokenMintAmount(string memory symbol) public view override returns (uint256) {\n        return getUint(_getTokenMintAmountKey(symbol, block.timestamp / 6 hours));\n    }",
+        "detail": "category=mint; gated=False; signature: function tokenMintAmount(string memory symbol) public view override returns (uint256)",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 70
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "transferGovernance",
+        "title": "Privileged function 'transferGovernance' is an owner/admin control (access-gated)",
+        "code": "function transferGovernance(address newGovernance) external override onlyGovernance {\n        if (newGovernance == address(0)) revert InvalidGovernance();\n\n        _transferGovernance(newGovernance);\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function transferGovernance(address newGovernance) external override onlyGovernance",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "transferMintLimiter",
+        "title": "Privileged function 'transferMintLimiter' can create new tokens (access-gated)",
+        "code": "function transferMintLimiter(address newMintLimiter) external override onlyMintLimiter {\n        if (newMintLimiter == address(0)) revert InvalidMintLimiter();\n\n        _transferMintLimiter(newMintLimiter);\n    }",
+        "detail": "category=mint; gated=True; signature: function transferMintLimiter(address newMintLimiter) external override onlyMintLimiter",
+        "priv_category": "mint",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "setTokenMintLimits",
+        "title": "Privileged function 'setTokenMintLimits' can create new tokens (access-gated)",
+        "code": "function setTokenMintLimits(string[] calldata symbols, uint256[] calldata limits) external override onlyMintLimiter {\n        uint256 length = symbols.length;\n        if (length != limits.length) revert InvalidSetMintLimitsParams();\n\n        for (uint256 i; i < length; ++i) {\n            string memory symbol = symbols[i];\n            uint256 limit = limits[i];\n\n            if (tokenAddresses(symbol) == address(0)) revert TokenDoesNotExist(symbol);\n\n            _setTokenMintLimit(symbol, limit);\n        }\n    }",
+        "detail": "category=mint; gated=True; signature: function setTokenMintLimits(string[] calldata symbols, uint256[] calldata limits) external override onlyMintLimiter",
+        "priv_category": "mint",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "upgrade",
+        "title": "Privileged function 'upgrade' is access-controlled (gated) (access-gated)",
+        "code": "function upgrade(\n        address newImplementation,\n        bytes32 newImplementationCodeHash,\n        bytes calldata setupParams\n    ) external override onlyGovernance {\n        if (newImplementationCodeHash != newImplementation.codehash) revert InvalidCodeHash();\n\n        if (contractId() != IContractIdentifier(newImplementation).contractId()) revert InvalidImplementation();\n\n        emit Upgraded(newImplementation);\n\n        _setImplementation(newImplementation);\n\n        if (setupParams.length != 0) {\n            \n            (bool success, ) = newImplementation.delegatecall(abi.encodeWithSelector(IImplementation.setup.selector, setupParams));\n\n            if (!success) revert SetupFailed();\n        }\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function upgrade(\n        address newImplementation,\n        bytes32 newImplementationCodeHash,\n        bytes calldata setupParams\n    ) external override onlyGovernance",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "setPauseStatus",
+        "title": "Privileged function 'setPauseStatus' can pause or unpause the contract (access-gated)",
+        "code": "function setPauseStatus(bool isPaused) external override onlyPauserOrGovernance {\n        if (isPaused) {\n            _pause();\n        } else {\n            _unpause();\n        }\n    }",
+        "detail": "category=pause; gated=True; signature: function setPauseStatus(bool isPaused) external override onlyPauserOrGovernance",
+        "priv_category": "pause",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "transferPauser",
+        "title": "Privileged function 'transferPauser' can pause or unpause the contract (access-gated)",
+        "code": "function transferPauser(address newPauser) external override onlyPauserOrGovernance {\n        if (newPauser == address(0)) revert InvalidPauser();\n\n        _transferPauser(newPauser);\n    }",
+        "detail": "category=pause; gated=True; signature: function transferPauser(address newPauser) external override onlyPauserOrGovernance",
+        "priv_category": "pause",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "setup",
+        "title": "Privileged function 'setup' is access-controlled (gated) (access-gated)",
+        "code": "function setup(bytes calldata params) external override(IImplementation, Implementation) onlyProxy {\n        (address governance_, address mintLimiter_, bytes memory newOperatorsData) = abi.decode(params, (address, address, bytes));\n\n        if (governance_ != address(0)) _transferGovernance(governance_);\n        if (mintLimiter_ != address(0)) _transferMintLimiter(mintLimiter_);\n\n        if (newOperatorsData.length != 0) {\n            emit OperatorshipTransferred(newOperatorsData);\n\n            IAxelarAuth(authModule).transferOperatorship(newOperatorsData);\n        }\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function setup(bytes calldata params) external override(IImplementation, Implementation) onlyProxy",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "deployToken",
+        "title": "Privileged function 'deployToken' is access-controlled (gated) (access-gated)",
+        "code": "function deployToken(bytes calldata params, bytes32) external onlySelf {\n        (string memory name, string memory symbol, uint8 decimals, uint256 cap, address tokenAddress, uint256 mintLimit) = abi.decode(\n            params,\n            (string, string, uint8, uint256, address, uint256)\n        );\n\n        \n        if (tokenAddresses(symbol) != address(0)) revert TokenAlreadyExists(symbol);\n\n        _setTokenMintLimit(symbol, mintLimit);\n\n        if (tokenAddress == address(0)) {\n            \n            bytes32 salt = keccak256(abi.encodePacked(symbol));\n\n            _setTokenType(symbol, TokenType.InternalBurnableFrom);\n\n            \n            (bool success, bytes memory data) = tokenDeployer.delegatecall(\n                abi.encodeWithSelector(ITokenDeployer.deployToken.selector, name, symbol, decimals, cap, salt)\n            );\n\n            if (!success) revert TokenDeployFailed(symbol);\n\n            tokenAddress = abi.decode(data, (address));\n        } else {\n            \n            if (tokenAddress.code.length == uint256(0)) revert TokenContractDoesNotExist(tokenAddress);\n\n            \n            _setTokenType(symbol, TokenType.External);\n        }\n\n        \n        emit TokenDeployed(symbol, tokenAddress);\n\n        _setTokenAddress(symbol, tokenAddress);\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function deployToken(bytes calldata params, bytes32) external onlySelf",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "mintToken",
+        "title": "Privileged function 'mintToken' can create new tokens (access-gated)",
+        "code": "function mintToken(bytes calldata params, bytes32) external onlySelf {\n        (string memory symbol, address account, uint256 amount) = abi.decode(params, (string, address, uint256));\n\n        _mintToken(symbol, account, amount);\n    }",
+        "detail": "category=mint; gated=True; signature: function mintToken(bytes calldata params, bytes32) external onlySelf",
+        "priv_category": "mint",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "burnToken",
+        "title": "Privileged function 'burnToken' is access-controlled (gated) (access-gated)",
+        "code": "function burnToken(bytes calldata params, bytes32) external onlySelf {\n        (string memory symbol, bytes32 salt) = abi.decode(params, (string, bytes32));\n\n        address tokenAddress = tokenAddresses(symbol);\n\n        if (tokenAddress == address(0)) revert TokenDoesNotExist(symbol);\n\n        if (_getTokenType(symbol) == TokenType.External) {\n            address depositHandlerAddress = _getCreate2Address(salt, keccak256(abi.encodePacked(type(DepositHandler).creationCode)));\n\n            if (depositHandlerAddress.isContract()) return;\n\n            DepositHandler depositHandler = new DepositHandler{ salt: salt }();\n\n            (bool success, bytes memory returnData) = depositHandler.execute(\n                tokenAddress,\n                abi.encodeWithSelector(IERC20.transfer.selector, address(this), IERC20(tokenAddress).balanceOf(address(depositHandler)))\n            );\n\n            if (!success || (returnData.length != uint256(0) && !abi.decode(returnData, (bool)))) revert BurnFailed(symbol);\n\n            \n            depositHandler.destroy(address(this));\n        } else {\n            IBurnableMintableCappedERC20(tokenAddress).burn(salt);\n        }\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function burnToken(bytes calldata params, bytes32) external onlySelf",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "approveContractCall",
+        "title": "Privileged function 'approveContractCall' is access-controlled (gated) (access-gated)",
+        "code": "function approveContractCall(bytes calldata params, bytes32 commandId) external onlySelf {\n        (\n            string memory sourceChain,\n            string memory sourceAddress,\n            address contractAddress,\n            bytes32 payloadHash,\n            bytes32 sourceTxHash,\n            uint256 sourceEventIndex\n        ) = abi.decode(params, (string, string, address, bytes32, bytes32, uint256));\n\n        _setContractCallApproved(commandId, sourceChain, sourceAddress, contractAddress, payloadHash);\n        emit ContractCallApproved(commandId, sourceChain, sourceAddress, contractAddress, payloadHash, sourceTxHash, sourceEventIndex);\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function approveContractCall(bytes calldata params, bytes32 commandId) external onlySelf",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "approveContractCallWithMint",
+        "title": "Privileged function 'approveContractCallWithMint' can create new tokens (access-gated)",
+        "code": "function approveContractCallWithMint(bytes calldata params, bytes32 commandId) external onlySelf {\n        (\n            string memory sourceChain,\n            string memory sourceAddress,\n            address contractAddress,\n            bytes32 payloadHash,\n            string memory symbol,\n            uint256 amount,\n            bytes32 sourceTxHash,\n            uint256 sourceEventIndex\n        ) = abi.decode(params, (string, string, address, bytes32, string, uint256, bytes32, uint256));\n\n        _setContractCallApprovedWithMint(commandId, sourceChain, sourceAddress, contractAddress, payloadHash, symbol, amount);\n        emit ContractCallApprovedWithMint(\n            commandId,\n            sourceChain,\n            sourceAddress,\n            contractAddress,\n            payloadHash,\n            symbol,\n            amount,\n            sourceTxHash,\n            sourceEventIndex\n        );\n    }",
+        "detail": "category=mint; gated=True; signature: function approveContractCallWithMint(bytes calldata params, bytes32 commandId) external onlySelf",
+        "priv_category": "mint",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "transferOperatorship",
+        "title": "Privileged function 'transferOperatorship' is an owner/admin control (access-gated)",
+        "code": "function transferOperatorship(bytes calldata newOperatorsData, bytes32) external onlySelf {\n        emit OperatorshipTransferred(newOperatorsData);\n\n        IAxelarAuth(authModule).transferOperatorship(newOperatorsData);\n    }",
+        "detail": "category=owner_admin; gated=True; signature: function transferOperatorship(bytes calldata newOperatorsData, bytes32) external onlySelf",
+        "priv_category": "owner_admin",
+        "gated": true,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_mintToken",
+        "title": "Privileged function '_mintToken' can create new tokens (NO access gate found)",
+        "code": "function _mintToken(\n        string memory symbol,\n        address account,\n        uint256 amount\n    ) internal {\n        address tokenAddress = tokenAddresses(symbol);\n\n        if (tokenAddress == address(0)) revert TokenDoesNotExist(symbol);\n\n        _setTokenMintAmount(symbol, tokenMintAmount(symbol) + amount);\n\n        if (_getTokenType(symbol) == TokenType.External) {\n            IERC20(tokenAddress).safeTransfer(account, amount);\n        } else {\n            IBurnableMintableCappedERC20(tokenAddress).mint(account, amount);\n        }\n    }",
+        "detail": "category=mint; gated=False; signature: function _mintToken(\n        string memory symbol,\n        address account,\n        uint256 amount\n    ) internal",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_getTokenMintLimitKey",
+        "title": "Privileged function '_getTokenMintLimitKey' can create new tokens (NO access gate found)",
+        "code": "function _getTokenMintLimitKey(string memory symbol) internal pure returns (bytes32) {\n        return keccak256(abi.encodePacked(PREFIX_TOKEN_MINT_LIMIT, symbol));\n    }",
+        "detail": "category=mint; gated=False; signature: function _getTokenMintLimitKey(string memory symbol) internal pure returns (bytes32)",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_getTokenMintAmountKey",
+        "title": "Privileged function '_getTokenMintAmountKey' can create new tokens (NO access gate found)",
+        "code": "function _getTokenMintAmountKey(string memory symbol, uint256 day) internal pure returns (bytes32) {\n        return keccak256(abi.encode(PREFIX_TOKEN_MINT_AMOUNT, symbol, day));\n    }",
+        "detail": "category=mint; gated=False; signature: function _getTokenMintAmountKey(string memory symbol, uint256 day) internal pure returns (bytes32)",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_getIsContractCallApprovedWithMintKey",
+        "title": "Privileged function '_getIsContractCallApprovedWithMintKey' can create new tokens (NO access gate found)",
+        "code": "function _getIsContractCallApprovedWithMintKey(\n        bytes32 commandId,\n        string memory sourceChain,\n        string memory sourceAddress,\n        address contractAddress,\n        bytes32 payloadHash,\n        string memory symbol,\n        uint256 amount\n    ) internal pure returns (bytes32) {\n        return\n            keccak256(\n                abi.encode(\n                    PREFIX_CONTRACT_CALL_APPROVED_WITH_MINT,\n                    commandId,\n                    sourceChain,\n                    sourceAddress,\n                    contractAddress,\n                    payloadHash,\n                    symbol,\n                    amount\n                )\n            );\n    }",
+        "detail": "category=mint; gated=False; signature: function _getIsContractCallApprovedWithMintKey(\n        bytes32 commandId,\n        string memory sourceChain,\n        string memory sourceAddress,\n        address contractAddress,\n        bytes32 payl",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_setTokenMintLimit",
+        "title": "Privileged function '_setTokenMintLimit' can create new tokens (NO access gate found)",
+        "code": "function _setTokenMintLimit(string memory symbol, uint256 limit) internal {\n        emit TokenMintLimitUpdated(symbol, limit);\n\n        _setUint(_getTokenMintLimitKey(symbol), limit);\n    }",
+        "detail": "category=mint; gated=False; signature: function _setTokenMintLimit(string memory symbol, uint256 limit) internal",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_setTokenMintAmount",
+        "title": "Privileged function '_setTokenMintAmount' can create new tokens (NO access gate found)",
+        "code": "function _setTokenMintAmount(string memory symbol, uint256 amount) internal {\n        uint256 limit = tokenMintLimit(symbol);\n        if (limit > 0 && amount > limit) revert ExceedMintLimit(symbol);\n\n        _setUint(_getTokenMintAmountKey(symbol, block.timestamp / 6 hours), amount);\n    }",
+        "detail": "category=mint; gated=False; signature: function _setTokenMintAmount(string memory symbol, uint256 amount) internal",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_setContractCallApprovedWithMint",
+        "title": "Privileged function '_setContractCallApprovedWithMint' can create new tokens (NO access gate found)",
+        "code": "function _setContractCallApprovedWithMint(\n        bytes32 commandId,\n        string memory sourceChain,\n        string memory sourceAddress,\n        address contractAddress,\n        bytes32 payloadHash,\n        string memory symbol,\n        uint256 amount\n    ) internal {\n        _setBool(\n            _getIsContractCallApprovedWithMintKey(commandId, sourceChain, sourceAddress, contractAddress, payloadHash, symbol, amount),\n            true\n        );\n    }",
+        "detail": "category=mint; gated=False; signature: function _setContractCallApprovedWithMint(\n        bytes32 commandId,\n        string memory sourceChain,\n        string memory sourceAddress,\n        address contractAddress,\n        bytes32 payloadHa",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "_transferGovernance",
+        "title": "Privileged function '_transferGovernance' is an owner/admin control (NO access gate found)",
+        "code": "function _transferGovernance(address newGovernance) internal {\n        emit GovernanceTransferred(getAddress(KEY_GOVERNANCE), newGovernance);\n\n        _setAddress(KEY_GOVERNANCE, newGovernance);\n    }",
+        "detail": "category=owner_admin; gated=False; signature: function _transferGovernance(address newGovernance) internal",
+        "priv_category": "owner_admin",
+        "gated": false,
+        "confidence": 60
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "low",
+        "function": "_transferMintLimiter",
+        "title": "Privileged function '_transferMintLimiter' can create new tokens (NO access gate found)",
+        "code": "function _transferMintLimiter(address newMintLimiter) internal {\n        emit MintLimiterTransferred(getAddress(KEY_MINT_LIMITER), newMintLimiter);\n\n        _setAddress(KEY_MINT_LIMITER, newMintLimiter);\n    }",
+        "detail": "category=mint; gated=False; signature: function _transferMintLimiter(address newMintLimiter) internal",
+        "priv_category": "mint",
+        "gated": false,
+        "confidence": 40
+      },
+      {
+        "kind": "privileged_function",
+        "severity": "medium",
+        "function": "_transferPauser",
+        "title": "Privileged function '_transferPauser' can pause or unpause the contract (NO access gate found)",
+        "code": "function _transferPauser(address newPauser) internal {\n        emit PauserTransferred(getAddress(KEY_PAUSER), newPauser);\n\n        _setAddress(KEY_PAUSER, newPauser);\n    }",
+        "detail": "category=pause; gated=False; signature: function _transferPauser(address newPauser) internal",
+        "priv_category": "pause",
+        "gated": false,
+        "confidence": 60
+      },
+      {
+        "kind": "delegatecall",
+        "severity": "high",
+        "function": "upgrade",
+        "title": "delegatecall in function 'upgrade': executes other code in this contract's storage context",
+        "code": "function upgrade(\n        address newImplementation,\n        bytes32 newImplementationCodeHash,\n        bytes calldata setupParams\n    ) external override onlyGovernance {\n        if (newImplementationCodeHash != newImplementation.codehash) revert InvalidCodeHash();\n\n        if (contractId() != IContractIdentifier(newImplementation).contractId()) revert InvalidImplementation();\n\n        emit Upgraded(newImplementation);\n\n        _setImplementation(newImplementation);\n\n        if (setupParams.length != 0) {\n            \n            (bool success, ) = newImplementation.delegatecall(abi.encodeWithSelector(IImplementation.setup.selector, setupParams));\n\n            if (!success) revert SetupFailed();\n        }\n    }",
+        "detail": "delegatecall runs foreign code with this contract's storage and balance.",
+        "confidence": 70
+      },
+      {
+        "kind": "hardcoded_address",
+        "severity": "low",
+        "function": "",
+        "title": "3 hardcoded address(es) in the code: 0x360894a13ba1a3210667c828492db98dca3e2076, 0xabea6fd3db56a6e6d0242111b43ebb13d1c42709, 0x627f0c11732837b3240a2de89c0b6343512886dd",
+        "code": "bytes32 internal constant KEY_IMPLEMENTATION = bytes32(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);\nbytes32 internal constant KEY_GOVERNANCE = bytes32(0xabea6fd3db56a6e6d0242111b43ebb13d1c42709651c032c7894962023a1f909);\nbytes32 internal constant KEY_MINT_LIMITER = bytes32(0x627f0c11732837b3240a2de89c0b6343512886dd50978b99c76a68c6416a4d92);",
+        "detail": "Hardcoded addresses are fixed trust anchors: whoever controls them matters.",
+        "addresses": [
+          "0x360894a13ba1a3210667c828492db98dca3e2076",
+          "0xabea6fd3db56a6e6d0242111b43ebb13d1c42709",
+          "0x627f0c11732837b3240a2de89c0b6343512886dd"
+        ],
+        "confidence": 40
+      },
+      {
+        "kind": "secret_string",
+        "severity": "high",
+        "function": "",
+        "title": "Secret-looking string in published contract code (ethereum_private_key): 0xabea6fd3db56a6e6d0242111b43ebb13d1c42709651c032c7894962023a1f909",
+        "code": "*/\n    bytes32 internal constant KEY_GOVERNANCE = bytes32(0xabea6fd3db56a6e6d0242111b43ebb13d1c42709651c032c7894962023a1f909);",
+        "detail": "Shown in full per Jay's order. Anything in verified source is public to the whole chain; if this is a live key, rotate it and sweep funds to a fresh wallet.",
+        "secret_kind": "ethereum_private_key",
+        "secret_value": "0xabea6fd3db56a6e6d0242111b43ebb13d1c42709651c032c7894962023a1f909",
+        "confidence": 70
+      },
+      {
+        "kind": "secret_string",
+        "severity": "high",
+        "function": "",
+        "title": "Secret-looking string in published contract code (ethereum_private_key): 0x627f0c11732837b3240a2de89c0b6343512886dd50978b99c76a68c6416a4d92",
+        "code": "*/\n    bytes32 internal constant KEY_MINT_LIMITER = bytes32(0x627f0c11732837b3240a2de89c0b6343512886dd50978b99c76a68c6416a4d92);",
+        "detail": "Shown in full per Jay's order. Anything in verified source is public to the whole chain; if this is a live key, rotate it and sweep funds to a fresh wallet.",
+        "secret_kind": "ethereum_private_key",
+        "secret_value": "0x627f0c11732837b3240a2de89c0b6343512886dd50978b99c76a68c6416a4d92",
+        "confidence": 70
+      },
+      {
+        "kind": "delegatecall_untrusted",
+        "key": "delegatecall_untrusted",
+        "severity": "critical",
+        "function": "upgrade",
+        "title": "FUND DRAIN: function 'upgrade' delegatecalls to a non-hardcoded target (newImple",
+        "detail": "FUND DRAIN: function 'upgrade' delegatecalls to a non-hardcoded target (newImplementation). If the target address is attacker-controllable the contract's logic can be hijacked (storage lives in the caller).",
+        "code": "",
+        "plugin": "contract_audit"
+      },
+      {
+        "kind": "missing_access_control",
+        "key": "missing_access_control",
+        "severity": "medium",
+        "function": "execute",
+        "title": "Public/external function 'execute' changes state with no access control (no only",
+        "detail": "Public/external function 'execute' changes state with no access control (no onlyOwner/onlyRole/require(msg.sender)). Anyone can call it.",
+        "code": "",
+        "plugin": "contract_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "transferGovernance",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'transferGovernance' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function transferGovernance(address newGovernance) external override onlyGovernance {\n        if (newGovernance == address(0)) revert InvalidGovernance();\n\n        _transferGovernance(newGovernance);\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "transferMintLimiter",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'transferMintLimiter' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function transferMintLimiter(address newMintLimiter) external override onlyMintLimiter {\n        if (newMintLimiter == address(0)) revert InvalidMintLimiter();\n\n        _transferMintLimiter(newMintLimiter);\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "setTokenMintLimits",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'setTokenMintLimits' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function setTokenMintLimits(string[] calldata symbols, uint256[] calldata limits) external override onlyMintLimiter {\n        uint256 length = symbols.length;\n        if (length != limits.length) revert InvalidSetMintLimitsParams();\n\n        for (uint256 i; i < length; ++i) {\n            string memory symbol = symbols[i];\n            uint256 limit = limits[i];\n\n            if (tokenAddresses(symbol) == address(0)) revert TokenDoesNotExist(symbol);\n\n            _setTokenMintLimit(symbol, limit);\n        }\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "transferPauser",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'transferPauser' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function transferPauser(address newPauser) external override onlyPauserOrGovernance {\n        if (newPauser == address(0)) revert InvalidPauser();\n\n        _transferPauser(newPauser);\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "mintToken",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'mintToken' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function mintToken(bytes calldata params, bytes32) external onlySelf {\n        (string memory symbol, address account, uint256 amount) = abi.decode(params, (string, address, uint256));\n\n        _mintToken(symbol, account, amount);\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "burnToken",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'burnToken' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function burnToken(bytes calldata params, bytes32) external onlySelf {\n        (string memory symbol, bytes32 salt) = abi.decode(params, (string, bytes32));\n\n        address tokenAddress = tokenAddresses(symbol);\n\n        if (tokenAddress == address(0)) revert TokenDoesNotExist(symbol);\n\n        if (_getTokenType(symbol) == TokenType.External) {\n            address depositHandlerAddress = _getCreate2Address(salt, keccak256(abi.encodePacked(type(DepositHandler).creationCode)));\n\n            if (depositHandlerAddress.isContract()) return;\n\n            DepositHandler depositHandler = new DepositHandler{ salt: salt }();\n\n            (bool success, bytes memory returnData) = depositHandler.execute(\n                tokenAddress,\n                abi.encodeWithSelector(IERC20.transfer.selector, address(this), IERC20(tokenAddress).balanceOf(address(depositHandler)))\n            );\n\n            if (!success || (returnData.length != uint256(0) && !abi.decode(returnData, (bool)))) revert BurnFailed(symbol);\n\n            \n            depositHandler.destroy(address(this));\n        } else {\n            IBurnableMintableCappedERC20(tokenAddress).burn(salt);\n        }\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "approveContractCallWithMint",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'approveContractCallWithMint' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function approveContractCallWithMint(bytes calldata params, bytes32 commandId) external onlySelf {\n        (\n            string memory sourceChain,\n            string memory sourceAddress,\n            address contractAddress,\n            bytes32 payloadHash,\n            string memory symbol,\n            uint256 amount,\n            bytes32 sourceTxHash,\n            uint256 sourceEventIndex\n        ) = abi.decode(params, (string, string, address, bytes32, string, uint256, bytes32, uint256));\n\n        _setContractCallApprovedWithMint(commandId, sourceChain, sourceAddress, contractAddress, payloadHash, symbol, amount);\n        emit ContractCallApprovedWithMint(\n            commandId,\n            sourceChain,\n            sourceAddress,\n            contractAddress,\n            payloadHash,\n            symbol,\n            amount,\n            sourceTxHash,\n            sourceEventIndex\n        );\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "pause_coverage_missing",
+        "key": "pause_coverage_missing",
+        "severity": "medium",
+        "confidence": null,
+        "function": "transferOperatorship",
+        "title": "Pause machinery does not cover a value-moving function: the contract has pause /",
+        "detail": "Pause machinery does not cover a value-moving function: the contract has pause / Pausable machinery, but this public / external function moves value (transfer / withdraw / mint / burn / redeem / claim shape) with no whenNotPaused, _requireNotPaused or paused-condition guard. During an incident the emergency pause will not stop this operation. Observed: 'transferOperatorship' moves value with no pause guard while the contract carries pause machinery. Recipient analysis: recipient classified UNRESOLVED (no value destination found in function) - a stranger can receive value or control here, classified CANDIDATE under the receive rule.",
+        "code": "function transferOperatorship(bytes calldata newOperatorsData, bytes32) external onlySelf {\n        emit OperatorshipTransferred(newOperatorsData);\n\n        IAxelarAuth(authModule).transferOperatorship(newOperatorsData);\n    }",
+        "plugin": "deep_audit"
+      },
+      {
+        "kind": "guard_convention_break",
+        "key": "guard_convention_break",
+        "severity": "high",
+        "confidence": 62,
+        "function": "execute",
+        "title": "public state-changing function 'execute' uses no access guard, breaking the cont",
+        "detail": "public state-changing function 'execute' uses no access guard, breaking the contract's own convention: 2 sibling function(s) (upgrade, deployToken) are guarded by an access guard (each guarded sibling uses one)",
+        "code": "function execute(bytes calldata input) external override {\n        (bytes memory data, bytes memory proof) = abi.decode(input, (bytes, bytes));\n\n        bytes32 messageHash = ECDSA.toEthSignedMessageHash(keccak256(data));\n\n        \n        \n        bool allowOperatorshipTransfer = IAxelarAuth(authModule).validateProof(messageHash, proof);\n\n        uint256 chainId;\n        bytes32[] memory commandIds;\n        string[] memory commands;\n        bytes[] memory params;\n\n        (chainId, commandIds, commands, params) = abi.decode(data, (uint256, bytes32[], string[], bytes[]));\n\n        if (chainId != block.chainid) revert InvalidChainId();\n\n        uint256 commandsLength = commandIds.length;\n\n        if (commandsLength != commands.length || commandsLength != params.length) revert InvalidCommands();\n\n        for (uint256 i; i < commandsLength; ++i) {\n            bytes32 commandId = commandIds[i];\n\n            \n            if (isCommandExecuted(commandId)) continue;\n\n            bytes4 commandSelector;\n            bytes32 commandHash = keccak256(abi.encodePacked(commands[i]));\n\n            if (commandHash == SELECTOR_DEPLOY_TOKEN) {\n                commandSelector = AxelarGateway.deployToken.selector;\n            } else if (commandHash == SELECTOR_MINT_TOKEN) {\n                commandSelector = AxelarGateway.mintToken.selector;\n            } else if (commandHash == SELECTOR_APPROVE_CO\n// ... [truncated]",
+        "plugin": "deep_audit"
+      }
+    ],
+    "findings_count": 48,
+    "worst_severity": "critical",
+    "related_addresses": [],
+    "related_dropped": [
+      {
+        "address": "0x360894a13ba1a3210667c828492db98dca3e2076",
+        "reason": "no code at address"
+      },
+      {
+        "address": "0xabea6fd3db56a6e6d0242111b43ebb13d1c42709",
+        "reason": "no code at address"
+      },
+      {
+        "address": "0x627f0c11732837b3240a2de89c0b6343512886dd",
+        "reason": "no code at address"
+      }
+    ],
+    "elapsed_s": 97.908
+  },
+  "hypothesis": {
+    "story": "Stranger calls upgrade() on the target; the delegatecall_untrusted finding says value moves to unknown.",
+    "kind": "story",
+    "finding_kind": "delegatecall_untrusted",
+    "function": "upgrade",
+    "recipient": "unknown",
+    "severity": "critical",
+    "next_test": "fork_sequence",
+    "engine": "swarm-hypothesis-fallback",
+    "agent": "hypothesizer",
+    "findings_considered": 48
+  },
+  "fork": {
+    "agent": "forktester",
+    "address": "0x16C22cbDD77350b1AC88AdDA344F691c12f41960",
+    "key": "scroll:0x16c22cbdd77350b1ac88adda344f691c12f41960",
+    "planned": [
+      {
+        "setup": null,
+        "target": "upgrade"
+      },
+      {
+        "setup": "governance",
+        "target": "callContract"
+      },
+      {
+        "setup": "governance",
+        "target": "callContractWithToken"
+      },
+      {
+        "setup": "governance",
+        "target": "isContractCallApproved"
+      },
+      {
+        "setup": "governance",
+        "target": "isContractCallAndMintApproved"
+      },
+      {
+        "setup": "governance",
+        "target": "validateContractCall"
+      },
+      {
+        "setup": "governance",
+        "target": "validateContractCallAndMint"
+      },
+      {
+        "setup": "governance",
+        "target": "mintLimiter"
+      },
+      {
+        "setup": "governance",
+        "target": "tokenMintLimit"
+      }
+    ],
+    "planned_count": 9,
+    "executed": true,
+    "executed_count": 17,
+    "outcomes": [
+      {
+        "sequence": {
+          "setup": null,
+          "target": "upgrade"
+        },
+        "role": "target",
+        "function": "upgrade",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "callContract"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "callContract"
+        },
+        "role": "target",
+        "function": "callContract",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "callContractWithToken"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "callContractWithToken"
+        },
+        "role": "target",
+        "function": "callContractWithToken",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "isContractCallApproved"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "isContractCallApproved"
+        },
+        "role": "target",
+        "function": "isContractCallApproved",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "isContractCallAndMintApproved"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "isContractCallAndMintApproved"
+        },
+        "role": "target",
+        "function": "isContractCallAndMintApproved",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "validateContractCall"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "validateContractCall"
+        },
+        "role": "target",
+        "function": "validateContractCall",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "validateContractCallAndMint"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "validateContractCallAndMint"
+        },
+        "role": "target",
+        "function": "validateContractCallAndMint",
+        "called": false,
+        "reason": "arguments unknowable"
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "mintLimiter"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "mintLimiter"
+        },
+        "role": "target",
+        "function": "mintLimiter",
+        "called": true,
+        "calldata": "0xc82fe87a",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "tokenMintLimit"
+        },
+        "role": "setup",
+        "function": "governance",
+        "called": true,
+        "calldata": "0x5aa6e675",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "sequence": {
+          "setup": "governance",
+          "target": "tokenMintLimit"
+        },
+        "role": "target",
+        "function": "tokenMintLimit",
+        "called": true,
+        "calldata": "0x269eb65e00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000",
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null,
+        "raw": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    ],
+    "sim_derived": true,
+    "state_carried_between_steps": false,
+    "engine": "state_override",
+    "note": "no local EVM installed; each step ran as a live eth_call from the stranger against the public RPC (balance override only). State did NOT carry between steps: per-step execution check, not a sequence simulation, and never proof.",
+    "elapsed_s": 13.893
+  },
+  "probe": {
+    "agent": "liveprober",
+    "address": "0x16C22cbDD77350b1AC88AdDA344F691c12f41960",
+    "key": "scroll:0x16c22cbdd77350b1ac88adda344f691c12f41960",
+    "sender": "0x000000000000000000000000000000000000dEaD",
+    "probes": [
+      {
+        "signature": "owner()",
+        "calldata": "0x8da5cb5b",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "ok": false,
+        "error": "execution reverted"
+      },
+      {
+        "signature": "paused()",
+        "calldata": "0x5c975abb",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "ok": true,
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "signature": "implementation()",
+        "calldata": "0x5c60da1b",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "ok": true,
+        "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "signature": "authModule()",
+        "calldata": "0x64940c56",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "ok": true,
+        "result": "0x0000000000000000000000003d3c73e91b1b0c243f1437f2d8363b1d5b093bd0"
+      },
+      {
+        "signature": "totalSupply()",
+        "calldata": "0x18160ddd",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "ok": false,
+        "error": "execution reverted"
+      },
+      {
+        "signature": "upgrade()",
+        "calldata": "0xd55ec697",
+        "from": "0x000000000000000000000000000000000000dEaD",
+        "hypothesis_function": true,
+        "ok": false,
+        "error": "execution reverted"
+      }
+    ],
+    "candidates": [],
+    "verdicts": [],
+    "verdict": "TRIGGER_ONLY",
+    "errors": [],
+    "trigger_only_reason": "recipient class UNKNOWN is trigger-only: only CALLER / CALLER-SUPPLIED count as real",
+    "elapsed_s": 9.494
+  },
+  "metrics": {
+    "target_elapsed_s": 121.296
+  }
+}

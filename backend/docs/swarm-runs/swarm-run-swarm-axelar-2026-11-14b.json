@@ -1,0 +1,16 @@
+{
+  "run_id": "swarm-axelar-2026-11-14b",
+  "targets_queued": 1,
+  "targets_rejected": 0,
+  "targets_attempted": 1,
+  "targets_completed": 1,
+  "targets_errored": 0,
+  "findings_total": 48,
+  "candidates_total": 0,
+  "verified_real": 0,
+  "trigger_only": 1,
+  "elapsed_s": 121.313,
+  "seconds_per_target": 121.313,
+  "bounty_floor_usd": 100000.0,
+  "max_concurrent_targets": 1
+}
