@@ -181,7 +181,7 @@ def test_exactly_4_new_detectors_registered():
     got = sorted(k for k in discover() if k.endswith("_leaked_api_key"))
     assert got == sorted(EXCHANGE_KEY_IDS)
     assert len(got) == 4
-    assert len(discover()) == 1433  # 1424 master + 4 exchange-key-leak plugins
+    assert len(discover()) == 1438  # 1424 master + 4 exchange-key-leak plugins
 
 
 def test_binance_fires_actionable():
