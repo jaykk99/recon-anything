@@ -1862,6 +1862,31 @@ python -m app.nn_train --corpus labels.jsonl --dry-run  # train, print metrics, 
 python -m app.nn_train --corpus labels.jsonl            # refit and write app/nn_weights.json
 ```
 
+### Training on real outcomes
+
+Open any finding on a run page and give it a verdict: **Real**, **Real, not
+worth fixing**, **False positive** or **Unsure**. Each verdict is stored with
+a masked snapshot of the finding (`finding_feedback` table) and becomes a
+training label: real 1.0, not worth fixing 0.3, false positive 0.0 (unsure is
+never used).
+
+```bash
+curl -s -H "X-Access-Code: $CODE" localhost:8000/api/feedback/stats   # counts + how the current model ranks your labels
+curl -s -H "X-Access-Code: $CODE" localhost:8000/api/feedback/export > labels.jsonl
+cd backend
+python -m app.nn_train --with-feedback labels.jsonl --dry-run   # see what would change
+python -m app.nn_train --with-feedback labels.jsonl             # promote if the gate passes
+```
+
+`--with-feedback` mixes your labels into the distilled corpus (each repeated
+`--feedback-weight` times, default 5). New weights only replace the shipped
+ones if they pass the **promotion gate**: the severity and confidence ordering
+still holds, and the candidate ranks your held-out labels no worse than the
+current model. Otherwise nothing is written and the command exits 3 with the
+reasons (`--force` overrides). With only a handful of labels the gate will
+usually, and correctly, refuse; collect a few hundred before expecting a
+promotion.
+
 `labels.jsonl` is one `{"finding": {...}, "label": 0..1}` per line. `--eval`
 needs no numpy; training does. `tests/test_nn_eval.py` pins the ranking
 properties every refit must keep: severity is monotone (info < low < medium
