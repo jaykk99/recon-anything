@@ -1,0 +1,12 @@
+eval: own-holdout  registry plugins: 24
+rows: train=2501 test=144 (pos 2246 / neg 399)
+features: 301  layers: [301, 64, 32, 1]
+train acc 0.993  test acc 0.903  majority baseline 0.854
+test ROC AUC 0.957
+worth-validating: precision 0.936 recall 0.951
+likely-false-positive: precision 0.684 recall 0.619
+confusion (test): tp=117 fp=8 fn=6 tn=13
+feature importance (AUC drop): bounty_value=0.104, plugin=0.045, contract_role=0.035, contract_aggregates=0.030, report_class=0.028, proxy_impl=0.017
+LIMITS: triage only; zero verified-real positives; never predicts VERIFIED_REAL.
+weights: ../nn-logs/v3-c-topk-ctx/weights.json
+viewer data: ../nn-logs/v3-c-topk-ctx/viewer-data.json

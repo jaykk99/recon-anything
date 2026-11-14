@@ -1,0 +1,21 @@
+STATS {
+ "candidates": 723,
+ "candidates_torn_lines": 0,
+ "batch_rows": 4689,
+ "batch_torn_lines": 22,
+ "batch_findings": 248713,
+ "joined_with_evidence": 723,
+ "without_batch_match": 0,
+ "excluded_verified_real_rows": 0,
+ "train_rows": 723,
+ "n_positive": 617,
+ "n_negative": 106,
+ "context_contracts": 4681,
+ "deployer_joins": 0,
+ "transition_joins": 2
+}
+SPEC dim 11571 plugins 1433 keys 22
+rows with batch context: 723 of 723
+nonzero-count histogram (top 10): [(43, 460), (32, 47), (33, 44), (42, 40), (35, 23), (40, 19), (37, 19), (36, 17), (39, 14), (34, 10)]
+SAMPLE-ROW ethereum 0xe343167631d89b6ffc58b88d6b7fb0228795491d uups_authorize_upgrade_missing {"n_findings": 53, "n_plugins": 16, "n_keys": 24, "n_functions": 7, "max_conf": 100.0, "mean_conf": 84.26415094339623, "plugin_share": 0.018867924528301886, "has_source": true, "has_proxy": true, "has_impl": true, "function_count": 2.0, "code_len": 209, "stake_usd": 20079738.44, "n_batches": 2, "first_seen": "2026-11-04T16:29:04.772128+00:00", "span_days": 4.6758464530671295, "callgraph_n": 2, "n_proxy_addrs": 1, "n_impl_addrs": 1, "deployer_present": false, "deployer_contracts": 0, "creator_chains": 0, "deployer_fresh_7d": false, "deployer_verified": false, "deployer_age_days": null, "owner_events": 6, "owner_changed": true, "owner_now_null": true, "owner_stake_usd": 20079738.44}
+CHECK-DONE

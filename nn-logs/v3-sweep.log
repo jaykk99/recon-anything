@@ -1,0 +1,29 @@
+=== SWEEP v3-a-64-32-120 hidden=64,32 epochs=120 09:39:19 ===
+eval: own-holdout  registry plugins: 1433
+rows: train=2501 test=144 (pos 2246 / neg 399)
+features: 11573  layers: [11573, 64, 32, 1]
+train acc 0.993  test acc 0.882  majority baseline 0.854
+test ROC AUC 0.955
+worth-validating: precision 0.914 recall 0.951
+likely-false-positive: precision 0.625 recall 0.476
+confusion (test): tp=117 fp=11 fn=6 tn=10
+feature importance (AUC drop): bounty_value=0.138, proxy_impl=0.074, contract_role=0.062, contract_aggregates=0.047, report_class=0.029, plugin=0.028
+LIMITS: triage only; zero verified-real positives; never predicts VERIFIED_REAL.
+weights: ../nn-logs/v3-a-64-32-120/weights.json
+viewer data: ../nn-logs/v3-a-64-32-120/viewer-data.json
+=== DONE v3-a-64-32-120 exit=0 09:55:12 ===
+=== SWEEP v3-b-32-16-120 hidden=32,16 epochs=120 09:55:12 ===
+eval: own-holdout  registry plugins: 1433
+rows: train=2501 test=144 (pos 2246 / neg 399)
+features: 11573  layers: [11573, 32, 16, 1]
+train acc 0.994  test acc 0.882  majority baseline 0.854
+test ROC AUC 0.954
+worth-validating: precision 0.914 recall 0.951
+likely-false-positive: precision 0.625 recall 0.476
+confusion (test): tp=117 fp=11 fn=6 tn=10
+feature importance (AUC drop): bounty_value=0.134, proxy_impl=0.055, contract_aggregates=0.041, contract_role=0.037, plugin=0.033, report_class=0.029
+LIMITS: triage only; zero verified-real positives; never predicts VERIFIED_REAL.
+weights: ../nn-logs/v3-b-32-16-120/weights.json
+viewer data: ../nn-logs/v3-b-32-16-120/viewer-data.json
+=== DONE v3-b-32-16-120 exit=0 09:59:10 ===
+=== SWEEP ALL DONE 09:59:10 ===
