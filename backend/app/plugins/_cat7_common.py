@@ -27,7 +27,7 @@ import re
 import zipfile
 from typing import Dict, List, Optional
 
-from .base import Cost, Plugin, PluginResult, Target
+from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 MAX_FILE_BYTES = 96 * 1024 * 1024
 MAX_MEMBER_BYTES = 16 * 1024 * 1024

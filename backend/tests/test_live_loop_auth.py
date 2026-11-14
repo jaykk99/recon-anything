@@ -46,6 +46,7 @@ def client():
 def signin_mode(monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setenv("RECON_SESSION_SECRET", "test-session-secret-not-for-prod")
     monkeypatch.setattr(config, "ACCESS_CODE", CODE)
     yield
     monkeypatch.setattr(config, "ACCESS_CODE", "")

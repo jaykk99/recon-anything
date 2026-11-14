@@ -16,3 +16,9 @@ backend/app/breachwatch_cache.json
 .local-env
 .local-access-code
 .venv/
+
+.pytest_cache/
+# .venv-mythril is committed on purpose (the Mythril side venv). Its
+# signatures.db is required by Mythril and must not be dropped by *.db above.
+!.venv-mythril/**/signatures.db
+.venv-mythril/**/__pycache__/

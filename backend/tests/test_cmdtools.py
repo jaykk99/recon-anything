@@ -207,7 +207,6 @@ def test_cmd_smtp_quits_without_mailing(monkeypatch):
 _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _tmp.close()
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
-os.environ["RECON_SERVICE_KEY"] = "canary-test-key"
 os.environ["ACCESS_CODE"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -217,6 +216,11 @@ from app.models import Finding, Run, get_session, init_db  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
+    # Set (and restore) the service key at fixture time, not import time:
+    # other test modules also set RECON_SERVICE_KEY at import, and the last
+    # one collected would otherwise win and 401 these requests.
+    mp = pytest.MonkeyPatch()
+    mp.setenv("RECON_SERVICE_KEY", "canary-test-key")
     init_db()
     s = get_session()
     try:
@@ -231,8 +235,11 @@ def client():
         s.commit()
     finally:
         s.close()
-    with TestClient(app) as c:
-        yield c
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        mp.undo()
 
 
 def test_service_api_returns_full_finding_set(client):

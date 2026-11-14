@@ -1,4 +1,6 @@
-#!/home/hatch/workspace/wt/recon-sim-plugin/.venv-mythril/bin/python3
+#!/bin/sh
+'''exec' "$(dirname -- "$(realpath -- "$0")")/python3" "$0" "$@"
+' '''
 import sys
 from pre_commit.clientlib import validate_config_main
 if __name__ == '__main__':

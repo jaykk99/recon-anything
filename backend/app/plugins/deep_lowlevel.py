@@ -1494,6 +1494,11 @@ def _analyze_mpt(src: str, spec: DetectorSpec, compiler: str = "",
         expected = doc.get("expected_value")
         if not (root and key and proof and expected is not None):
             continue
+        if _keccak is None:
+            # Cannot verify without keccak: "unable to check" is not
+            # "proof invalid". Reporting here would be a false positive on
+            # every valid proof, so emit nothing.
+            continue
         valid, reason = verify_mpt_proof(root, key, proof, expected)
         if valid:
             continue

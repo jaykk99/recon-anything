@@ -35,6 +35,7 @@ Layers:
 """
 import asyncio
 import os
+import shutil
 import sys
 
 import pytest
@@ -547,6 +548,8 @@ def test_fast_context_refused_immediately():
     assert "stayed off" in res.findings[0].value
 
 
+@pytest.mark.skipif(shutil.which("solc") is None,
+                    reason="without solc the plugin reports solc_absent first")
 def test_engine_absent_is_inconclusive_not_fake(monkeypatch):
     monkeypatch.setattr(cf, "fuzz_engine", lambda: None)
     p = _plugin(test_limit_attr=500)

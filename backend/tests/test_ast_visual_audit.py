@@ -190,6 +190,9 @@ class _FakeCache:
 
 def test_plugin_run_emits_map_and_highlights(monkeypatch):
     from app.plugins import contract_chain as cc
+    import pytest
+    if not toolbox._solc_for(_load("Inheritance.sol")):
+        pytest.skip("no solc available in this environment")
 
     async def fake_get_code(ctx, chain, address):
         return "0x60006000fd" if chain.id == "ethereum" else "0x"

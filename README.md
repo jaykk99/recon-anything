@@ -1765,3 +1765,19 @@ No em dashes in user-facing text.
 ## Live URL
 
 https://recon-anything.onrender.com
+
+## Recon -> remediation workflow
+
+After a scan, the neural engine's scores pick the findings worth acting on and
+an LLM drafts a fix plus a pytest regression test for each:
+
+```bash
+cd backend
+python -m app.remediation <run_id> --min-score 40 --limit 5 --out remediation_out
+```
+
+Defensive only: masked findings in, credential-shaped strings redacted before
+anything leaves the process, files out for human review, nothing applied or
+executed. The provider is pluggable (`RECON_LLM_PROVIDER`: `anthropic`, or
+`openai` for any OpenAI-compatible endpoint including a self-hosted model);
+see `.env.example`.

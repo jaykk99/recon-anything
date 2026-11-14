@@ -1288,20 +1288,22 @@ def simulate_tool(chain: str, address: str, steps: List[Dict],
     _validate_address(address)
     if not isinstance(steps, list) or not steps or len(steps) > 10:
         raise AgentToolError("steps must be a list of 1-10 steps")
-    cast = _find_binary("cast")
-    if not cast:
-        return {"status": "unavailable",
-                "detail": "cast is not installed (foundry)",
-                "verdict": "UNVERIFIED"}
+    # Validate every input BEFORE probing for tooling: bad steps must be
+    # rejected the same way whether or not foundry is installed.
     tokens = set()
     for s in steps:
         if not isinstance(s, dict) or not s.get("function"):
             if not (isinstance(s, dict) and s.get("flashloan")):
                 raise AgentToolError(
                     "each step needs function + args, or a flashloan")
-        for t in (s.get("tokens") or []):
+        for t in (s.get("tokens") or []) if isinstance(s, dict) else []:
             _validate_address(str(t), "token")
             tokens.add(str(t))
+    cast = _find_binary("cast")
+    if not cast:
+        return {"status": "unavailable",
+                "detail": "cast is not installed (foundry)",
+                "verdict": "UNVERIFIED"}
     with _anvil_fork(chain, fork_block, timeout_s=float(timeout_s or 300)
                      ) as url:
         native_before = _native_balance(url, STRANGER)
