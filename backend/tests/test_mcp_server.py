@@ -46,6 +46,8 @@ EXPECTED_TOOLS = {
     "recon_list_schedules", "recon_create_schedule",
     "recon_delete_schedule", "recon_breachwatch",
     "recon_breachwatch_check", "recon_agentdata", "recon_hunters",
+    # v2.3: operations (dependency doctor + manual-testing funnel)
+    "recon_capabilities", "recon_funnel", "recon_lineage",
     # v2.2: agent write / terminal / browser / crazy tools
     "agent_write_poc", "agent_write_report", "agent_cast",
     "agent_forge", "agent_anvil", "agent_slither", "agent_mythril",

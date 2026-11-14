@@ -2142,6 +2142,57 @@ async def _tool_bounty_pack(args: Dict) -> Dict:
     inv.report = manifest
     inv.save(store_dir)
     return manifest
+def _tool_capabilities(args: Dict) -> Dict:
+    from .capabilities import doctor
+    return doctor(network=bool(args.get("network")))
+
+
+def _tool_funnel(args: Dict) -> Dict:
+    """Manual-testing funnel for one run: ranked leads for a human."""
+    from .funnel import build_funnel
+    try:
+        limit = max(1, min(int(args.get("limit", 15)), 100))
+    except (TypeError, ValueError):
+        raise ToolError("limit must be an integer")
+    session = get_session()
+    try:
+        run = _get_run_or_raise(session, args)
+        rows = findings_dump(session, run.id, show_secrets=False)
+        from .lineage import augment as _lineage_augment
+        rows = _lineage_augment(rows)
+        targets = session.query(Target).filter_by(run_id=run.id).all()
+        out = build_funnel(
+            rows, host_hint=(targets[0].normalized if targets else None),
+            limit=limit)
+        out["run_id"] = run.id
+        return out
+    finally:
+        session.close()
+
+
+def _tool_lineage(args: Dict) -> Dict:
+    """Deployment-lineage clusters over a fund-flow graph (offline)."""
+    from .lineage import (cluster as _lineage_cluster,
+                          from_findings as _lineage_from_findings,
+                          to_findings)
+    edges = args.get("edges") or []
+    contracts = args.get("contracts") or []
+    labels = args.get("labels") or {}
+    if not edges and not contracts and args.get("run_id"):
+        session = get_session()
+        try:
+            run = _get_run_or_raise(session, args)
+            src = _lineage_from_findings(
+                findings_dump(session, run.id, show_secrets=False))
+        finally:
+            session.close()
+        edges, contracts = src["edges"], src["contracts"]
+        labels = src["labels"] or labels
+    report = _lineage_cluster(edges=edges, contracts=contracts,
+                              deployers=args.get("deployers") or {},
+                              labels=labels)
+    report["funnel_rows"] = to_findings(report)
+    return report
 
 
 TOOLS: List[Dict[str, Any]] = [
@@ -3180,7 +3231,81 @@ TOOLS: List[Dict[str, Any]] = [
         },
         "handler": _tool_bounty_pack,
     },
+        "name": "recon_capabilities",
+        "description": "Dependency doctor: which external analyzers are "
+                       "installed and still callable, and (with "
+                       "network=true) whether the keyless OSINT upstreams "
+                       "still answer in the expected shape. 'drift' means "
+                       "present but changed (renamed flag, new response "
+                       "schema) - fix the wrapper; 'missing'/'degraded' means "
+                       "the stage skips and the run is shallower than it "
+                       "looks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "network": {"type": "boolean", "default": False,
+                            "description": "Also probe the upstream APIs "
+                                           "(sends 3 requests)."},
+            },
+        },
+        "handler": _tool_capabilities,
+    },
+    {
+        "name": "recon_funnel",
+        "description": "Manual-testing funnel for a finished run: the short "
+                       "list of leads worth a human's time, grouped by "
+                       "manual-test class and asset, each with why it "
+                       "matters, its uncertainty, the supporting evidence "
+                       "and read-only checks to run next. Detection only; "
+                       "this is the handoff from broad recon to manual "
+                       "testing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 15},
+            },
+            "required": ["run_id"],
+        },
+        "handler": _tool_funnel,
+    },
+    {
+        "name": "recon_lineage",
+        "description": "Deployment-lineage clustering: group addresses that "
+                       "share a deployer, a private funder or the same "
+                       "CREATE2 recipe, so a contract's risk can include who "
+                       "else is behind it and what they shipped. Pass the "
+                       "graph from agent_trace as edges (plus contracts) or a "
+                       "run_id to use its recorded deployer/funder findings. "
+                       "Exchange/bridge/mixer/sanctioned/burn addresses and "
+                       "hub funders never link addresses. Deterministic, "
+                       "offline; clusters are hypotheses with evidence, never "
+                       "attribution.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "edges": {"type": "array", "items": {"type": "object"},
+                          "description": "fund-flow edges (from, to, asset, "
+                                         "amount_raw, tx_hash, block)"},
+                "contracts": {"type": "array", "items": {"type": "object"},
+                              "description": "audited contracts: address, "
+                                             "deployer, bytecode_hash, salt, "
+                                             "chain"},
+                "deployers": {"type": "object",
+                              "description": "optional contract -> deployer "
+                                             "map"},
+                "labels": {"type": "object",
+                           "description": "optional address -> label or "
+                                          '"label/category" map object'},
+                "run_id": {"type": "string",
+                           "description": "use this run's recorded deployer/"
+                                          "funder findings instead"},
+            },
+        },
+        "handler": _tool_lineage,
+    },
 ]
+
 
 _TOOL_MAP = {t["name"]: t for t in TOOLS}
 

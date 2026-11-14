@@ -83,7 +83,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (HTMLResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
 from pydantic import BaseModel
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from . import billing
 from . import config
@@ -502,12 +502,62 @@ def health():
     # discover() is cached after first call, so this stays cheap.
     from .plugins.registry import health as _plugin_health
     ph = _plugin_health()
+    # Which external analyzers are actually installed right now (local
+    # PATH check only - no subprocess, no network). A stage whose tool is
+    # absent degrades by design; this makes that visible instead of silent.
+    try:
+        from .capabilities import health_summary as _caps_health
+        caps = _caps_health()
+    except Exception:
+        caps = {}
     return {
         "ok": True,
         "service": "recon-anything",
         "plugins": ph["registered"],
         "plugins_healthy": ph["healthy"],
+        "capabilities": caps,
     }
+
+
+@app.get("/api/capabilities", dependencies=[Depends(gate)])
+def api_capabilities(network: bool = False):
+    """Dependency doctor (2026-11-14): are the external analyzers and the
+    keyless OSINT upstreams still present, callable and answering in the
+    shape the parsers expect? Reports drift separately from missing - a
+    renamed flag or a changed response schema must not look like an empty
+    scan. Local checks only unless ?network=true (that sends 3 requests)."""
+    from .capabilities import doctor
+    return doctor(network=network)
+
+
+@app.get("/api/runs/{run_id}/funnel", dependencies=[Depends(gate)])
+def api_funnel(run_id: str, request: Request, limit: int = 25):
+    """Manual-testing funnel for a run (2026-11-14): the short list of
+    leads worth a human's time, each with its uncertainty and the read-only
+    checks to run next. This is the handoff from broad recon to manual
+    testing - detection only, never a payload."""
+    from .funnel import build_funnel
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        actor = getattr(request.state, "actor", {"kind": "open"})
+        if actor["kind"] == "user" and run.user_id != actor["user"].id:
+            raise missing_run(run_id)
+        targets = session.query(Target).filter_by(run_id=run_id).all()
+        rows = findings_dump(session, run_id, show_secrets=False)
+        hint = targets[0].normalized if targets else None
+    finally:
+        session.close()
+    # Deployment lineage (2026-11-14): if the run's findings carry deployer
+    # / funder provenance, fold the clusters in as leads tied to the audited
+    # contracts. Pure and offline; a run without chain findings is unchanged.
+    from .lineage import augment as _lineage_augment
+    rows = _lineage_augment(rows)
+    out = build_funnel(rows, host_hint=hint, limit=max(1, min(limit, 100)))
+    out["run_id"] = run_id
+    return out
 
 
 # -- MCP server ------------------------------------------------------------
@@ -565,6 +615,13 @@ def api_plugins():
 
 
 # -- runs -----------------------------------------------------------------
+class LineageIn(BaseModel):
+    edges: List[Dict[str, Any]] = []
+    contracts: List[Any] = []
+    deployers: Dict[str, str] = {}
+    labels: Dict[str, Any] = {}
+
+
 class RunIn(BaseModel):
     targets: str
     mode: str = "active"
@@ -591,6 +648,23 @@ def api_presets():
                                      if resolved["plugins"] is not None
                                      else None)})
     return {"presets": out}
+
+
+@app.post("/api/lineage", dependencies=[Depends(gate)])
+def api_lineage(body: LineageIn):
+    """Deployment-lineage clustering (2026-11-14).
+
+    Input is an already-fetched fund-flow graph (``agent_trace`` /
+    ``fundflow.build_graph``), a contract list and optional labels. Output
+    is deterministic operator clusters plus the funnel-shaped rows that tie
+    each cluster to its audited contracts. Pure function: no network, no
+    keys, no persistence. Clusters are hypotheses with evidence attached,
+    never attribution."""
+    from .lineage import cluster as _cluster, to_findings
+    report = _cluster(edges=body.edges, contracts=body.contracts,
+                      deployers=body.deployers, labels=body.labels)
+    report["funnel_rows"] = to_findings(report)
+    return report
 
 
 @app.post("/api/runs", dependencies=[Depends(gate)])

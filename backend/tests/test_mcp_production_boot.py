@@ -37,6 +37,9 @@ TEST_KEY = "test-service-key-123"
 # on master; asserting the real set keeps the boot check
 # meaningful.
 EXPECTED_TOOLS = {
+    "recon_capabilities",  # dependency doctor (2026-11-14)
+    "recon_funnel",        # manual-testing handoff (2026-11-14)
+    "recon_lineage",       # deployment lineage (2026-11-14)
     "recon_health", "recon_start_scan", "recon_list_runs",
     "recon_run_status", "recon_get_findings", "recon_get_graph",
     "recon_list_plugins", "recon_query_knowledge", "recon_get_delta",

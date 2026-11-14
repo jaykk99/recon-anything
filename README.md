@@ -196,6 +196,97 @@ skipped - exactly the resilience contract the plugins already guarantee.
 Both lanes are detection only: pure functions of the source text, nothing
 touches a chain.
 
+## Operating in the real world: WAFs, drift, and depth
+
+Broad recon is a funnel, not a verdict. Three operational facts decide
+whether the funnel is usable on a real target, and each has an explicit
+handle rather than a README wish.
+
+### WAFs and rate limits
+
+A 64-plugin fan-out against one host looks like a botnet unless it is
+shaped. Layers, in order of effect:
+
+| Knob | Default | What it does |
+|---|---|---|
+| `RECON_CONCURRENCY` | 8 | per-host RPS pacing (token bucket) |
+| `RECON_HOST_CONCURRENCY` | 16 | max in-flight requests to **one** host |
+| `RECON_HTTP_JITTER_MS` | 0 | random extra gap (0..N ms) per request |
+| `RECON_PROXY_URLS` | unset | comma-separated rotation pool |
+| `RECON_PROXY_COOLDOWN_S` | 60 | skip a proxy that just failed |
+
+Jitter defaults to 0 on purpose: the batch lanes measure throughput and a
+default sleep would be a silent regression. Turn it on (25-150 ms is
+plenty) for hostile edges. WAF graceful mode already jitters and halves RPS
+when it fingerprints a block. Rotation is per client, not per request: each
+plugin keeps one connection pool, because per-request rotation destroys
+keep-alive and looks worse to an edge, not better. `RateLimiter.shape()`
+and `net.proxy_state()` report what is actually in force.
+
+### Dependency drift
+
+The wrapper shells out to external analyzers (semgrep, slither, nuclei,
+subfinder, ...) and to keyless upstreams (crt.sh, HackerTarget, wayback).
+One renamed flag or changed response schema and a stage silently returns
+nothing. `GET /api/capabilities` (MCP `recon_capabilities`, CLI
+`python -m app.capabilities`) reports a status per dependency:
+
+- `ok` - present and answering in the expected shape
+- `missing` - not installed; the stage degrades, the run is shallower
+- `drift` - present but the interface changed (unknown flag, version shape,
+  non-JSON where JSON is expected, retired route) - **fix the wrapper**
+- `degraded` - present but failing right now (timeout, 5xx)
+
+Local checks only by default; `?network=true` also probes the three
+upstream APIs (three requests). `/api/health` carries the local summary, so
+a shallow run is visible instead of silent.
+
+### False positives vs depth
+
+No amount of recon proves a logic bug. What it can do is hand a human a
+short, ranked list. `GET /api/runs/{id}/funnel` (MCP `recon_funnel`, and a
+section of the Markdown export) groups findings into manual-test classes
+(auth boundary, object access, business logic, crypto flow, ...), scores
+each lead by evidence strength, corroboration and correlated attack paths,
+and states its uncertainty plus three read-only checks to run next. That is
+the handoff point: automation stops, a tester starts, and the report says
+which leads deserve their time and which are hardening noise. Everything
+above stays detection only - the funnel suggests read-only checks (compare
+two accounts' responses, replay without a token), never a payload.
+
+## Deployment lineage: who else is behind this contract
+
+A contract audit says what the code can do. It does not say who can still
+act on it, or what else that operator has shipped - which is usually the
+part that decides whether a finding matters. `app/lineage.py` adds that
+layer as a deterministic clustering pass over an already-fetched fund-flow
+graph (the `agent_trace` tool or `fundflow.build_graph`), a contract list,
+and optional public labels:
+
+- **shared deployer** - a contract and its creator are one operator;
+- **private funding** - an unlabelled wallet that funded two addresses
+  links them, but only while it fans out to at most 25 recipients;
+- **same CREATE2 recipe** - identical init code plus the same salt is
+  repeated deployment infrastructure, not a shared library;
+- **excluded by design** - exchange, bridge, mixer, sanctioned and burn
+  addresses, and exchange-like hub funders, never link anything. Shared
+  standard bytecode (a vanilla ERC-20) is reported as a signal but never
+  merges contracts.
+
+Clusters come back with their evidence (which tx funded whom), any public
+labels, a confidence and a risk tier, and are folded into the manual-test
+funnel as `deployment_lineage` leads tied to the audited contracts - so
+"this contract's owner is an EOA funded from the same wallet as three
+other deployments" shows up next to the code findings instead of nowhere.
+
+Surfaces: `POST /api/lineage` (graph in, clusters plus funnel rows out),
+MCP `recon_lineage` (edges, contracts, or a `run_id` whose recorded
+deployer/funder findings are used), and a "Deployment lineage" section in
+the Markdown export. Everything is offline and read-only, and every cluster
+is labelled a hypothesis: shared funding is not proof of common control,
+and the lead's checks say to confirm it with a second independent signal
+before treating it as attribution.
+
 ## Smart contract analysis
 
 Contract targets are first-class, not an afterthought. Coverage:
