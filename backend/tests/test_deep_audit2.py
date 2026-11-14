@@ -37,8 +37,8 @@ def test_six_plugins_registered():
 
 def test_registry_count_794():
     reg = discover()
-    assert len(reg) == 1434, \
-        f"registry size {len(reg)}, expected 1434"
+    assert len(reg) == 1440, \
+        f"registry size {len(reg)}, expected 1440"
 
 
 def test_vuln_fires_candidate_with_evidence():
