@@ -20,11 +20,23 @@ These tests pin:
 """
 import asyncio
 
+import pytest
+
 from app.plugins import contract_chain as cc
 from app.plugins import contract_sim
 
 
 ADDR = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"  # WBNB
+
+
+@pytest.fixture(autouse=True)
+def _reset_rpc_health():
+    """The dead-host cooldown is process-global and reorders endpoints, so
+    one test's simulated outages must not leak into the next test's call
+    order."""
+    cc._RPC_DEAD_UNTIL.clear()
+    yield
+    cc._RPC_DEAD_UNTIL.clear()
 
 
 class FakeCtx:

@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import sys
+import shutil
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
@@ -150,6 +151,14 @@ def test_cast_refuses_mainnet_send(monkeypatch):
                       "https://bsc-rpc.publicnode.com"])
 
 
+def _have(binary):
+    """True when `binary` is on PATH or in one of the audit-tool dirs."""
+    path = os.pathsep.join([AUDIT_BIN, MYTHRIL_BIN,
+                            os.environ.get("PATH", "")])
+    return shutil.which(binary, path=path) is not None
+
+
+@pytest.mark.skipif(not _have("cast"), reason="foundry cast not installed")
 def test_cast_version_ok(monkeypatch):
     _with_bins(monkeypatch)
     out = at.cast_tool(["--version"])
@@ -165,6 +174,8 @@ def test_forge_refuses_outside_roots(monkeypatch):
         at.forge_tool("test", "/home/other/tree")
 
 
+@pytest.mark.skipif(not (_have("forge") and _have("solc")),
+                    reason="foundry forge / solc not installed")
 def test_forge_builds_tiny_tree(monkeypatch, tmp_path):
     _with_bins(monkeypatch)
     tree = tmp_path / "tiny"
@@ -211,6 +222,8 @@ def test_slither_unavailable_without_binary(monkeypatch):
     assert out["status"] == "unavailable"
 
 
+@pytest.mark.skipif(not _have("solc"),
+                    reason="slither_tool needs a solc matching the pragma")
 def test_slither_parses_stub_output(monkeypatch, tmp_path):
     stub = tmp_path / "slither"
     stub.write_text(

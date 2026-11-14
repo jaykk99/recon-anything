@@ -223,4 +223,7 @@ def test_findings_dump_rows_carry_impact_and_source():
         assert len(r["attacker_impact"]) >= 20, r
         assert (r["evidence"] or {}).get("attacker_impact"), r
     # the specific key wins over fallbacks
-    assert "plain HTTP" in rows[1]["attacker_impact"]
+    # (findings_dump is score-ranked now, so look the row up by key
+    # instead of assuming input order)
+    by_key = {r["key"]: r for r in rows}
+    assert "plain HTTP" in by_key["hsts_missing"]["attacker_impact"]

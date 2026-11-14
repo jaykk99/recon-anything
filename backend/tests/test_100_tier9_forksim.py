@@ -27,6 +27,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.plugins import anvil_fork_probe as afp  # noqa: E402
@@ -438,7 +440,9 @@ def test_echidna_is_duplicate_of_contract_fuzz():
     assert "echidna_fuzz" not in discover()
     assert "contract_fuzz" in discover()
     engine = cf.fuzz_engine()
-    assert engine is not None and "echidna" in engine  # real binary here
+    if engine is None:
+        pytest.skip("no fuzz engine (echidna) installed")
+    assert "echidna" in engine
 
 
 def test_suri_is_duplicate_of_fuzz_and_symbolic_lanes():

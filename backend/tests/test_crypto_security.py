@@ -332,14 +332,20 @@ def test_delegatecall_literal_address_not_flagged():
     assert "delegatecall_untrusted" not in {k for k, _ in dcall_checks(src)}
 
 
-def test_delegatecall_mutable_state_var_flagged():
+def test_delegatecall_mutable_state_var_not_critical_but_setter_flagged():
+    # Precision policy (contract_audit, efc2420): a state-var receiver is a
+    # normal proxy implementation, so delegatecall_untrusted is reserved for
+    # attacker-supplied (parameter) targets. The real hazard here - an
+    # unguarded setter for that slot - is caught by missing_access_control.
     src = ("pragma solidity ^0.8.20; contract P { "
            "address public impl; "
            "function setImpl(address a) public { impl = a; } "
            "function upgrade() public { "
            "(bool s,) = impl.delegatecall(abi.encodeWithSignature(\"init()\")); "
            "require(s); } }")
-    assert ("delegatecall_untrusted", "upgrade") in dcall_checks(src)
+    checks = dcall_checks(src)
+    assert ("delegatecall_untrusted", "upgrade") not in checks
+    assert ("missing_access_control", "setImpl") in checks
 
 
 def test_delegatecall_function_arg_flagged():
@@ -351,8 +357,8 @@ def test_delegatecall_function_arg_flagged():
 
 def test_delegatecall_detail_names_receiver():
     src = ("pragma solidity ^0.8.20; contract P { "
-           "address public logic; "
-           "function upgrade() public { (bool s,) = logic.delegatecall(\"\"); } }")
+           "function upgrade(address logic) public { "
+           "(bool s,) = logic.delegatecall(\"\"); } }")
     rows = [r for r in audit_source(src)
             if r["check"] == "delegatecall_untrusted"]
     assert rows and "logic" in rows[0]["detail"]

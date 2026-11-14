@@ -889,9 +889,6 @@ _REMEDIATION = {
         "Every transfer runs an external hook program that can "
         "approve, tax or block the transfer - including blocking "
         "sells. Read the hook program before holding this token."),
-    "solana_token2022_non_transferable": (
-        "Non-transferable tokens can never be sold or moved once "
-        "received. Confirm that is the intent before accepting any."),
     "solana_no_sells_recorded": (
         "Buys are happening but no sells are recorded - treat as a "
         "honeypot until a small test sell proves otherwise. Never "
