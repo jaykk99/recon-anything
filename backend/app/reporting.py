@@ -116,6 +116,28 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
                      else 1)
     except Exception:
         pass
+    # Neural score ordering (app/nn_engine.py): every row carries the
+    # engine's score - persisted at finalize, backfilled here for older
+    # runs - and the dump is handed out ordered by it, so the run detail
+    # API, the JSON/CSV/MD/HTML exports and the MCP tools all serve the
+    # same ranking (KEV and crypto-key findings still lead, see
+    # prioritizer.nn_priority_key). Read-time, cached by the engine.
+    try:
+        from .nn_engine import score as _nn_score
+        for row in out:
+            ev = row.get("evidence")
+            if not isinstance(ev, dict) or "nn" in ev:
+                continue
+            block = _nn_score(row)
+            if block:
+                ev["nn"] = block
+    except Exception:
+        pass
+    try:
+        from .prioritizer import sort_by_nn
+        out = sort_by_nn(out)
+    except Exception:
+        pass
     return out
 
 
@@ -137,6 +159,18 @@ def _attack_paths(rows: List[Dict]) -> List[Dict]:
 
 def _exposure(run: Run) -> Dict:
     return ((run.summary or {}).get("exposure") or {}) if run else {}
+
+
+def _nn_rank(row: Dict) -> int:
+    """The row's neural score (-1 when unscored), for export ordering."""
+    ev = row.get("evidence")
+    block = ev.get("nn") if isinstance(ev, dict) else None
+    if not isinstance(block, dict):
+        return -1
+    try:
+        return int(block.get("score"))
+    except (TypeError, ValueError):
+        return -1
 
 
 def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
@@ -191,7 +225,8 @@ def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
           f"- {sum(1 for r in rows if r['category'] == 'api')} API findings", ""]
     for cat in sorted(by_cat):
         L.append(f"## {cat}")
-        for r in sorted(by_cat[cat], key=lambda x: -x["confidence"])[:100]:
+        for r in sorted(by_cat[cat], key=lambda x: (-_nn_rank(x),
+                                                   -x["confidence"]))[:100]:
             badge = "passive" if r["passive"] else "ACTIVE"
             L.append(f"- [{r['confidence']}] `{r['key']}` {r['value'][:160]} "
                      f"({r['plugin']}, {badge})")
@@ -294,7 +329,8 @@ def to_html(run: Run, targets: List[Target], rows: List[Dict]) -> str:
             f"<td>{html.escape(r['plugin'])}</td>"
             f"<td>{html.escape(r.get('attacker_impact') or '')}</td>"
             f"<td>{'passive' if r['passive'] else 'ACTIVE'}</td></tr>"
-            for r in sorted(by_cat[cat], key=lambda x: -x["confidence"])[:150])
+            for r in sorted(by_cat[cat], key=lambda x: (-_nn_rank(x),
+                                                       -x["confidence"]))[:150])
         cards.append(f"<h2>{html.escape(cat)} ({len(by_cat[cat])})</h2>"
                      f"<table><tr><th>conf</th><th>key</th><th>value</th>"
                      f"<th>plugin</th><th>what an attacker can do</th>"

@@ -32,5 +32,5 @@ recon-mcp = "app.mcp_server:main"
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["breachwatch_emails.json.example"]
+app = ["breachwatch_emails.json.example", "nn_weights.json"]
 "app.hunters" = ["knowledge/*.json", "knowledge/*.txt"]

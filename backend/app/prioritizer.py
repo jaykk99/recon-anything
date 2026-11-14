@@ -123,6 +123,53 @@ def priority_key(f: Any) -> Tuple[int, int, int, int]:
             -confidence_of(f))
 
 
+def nn_score_of(f: Any) -> Optional[int]:
+    """The neural engine's 0-100 actionability score, when the row has one.
+
+    ``findings_dump`` backfills it at read time for runs finalized before
+    the engine existed, so in practice every row is scored; ``None`` from
+    here just falls back to the heuristic ordering.
+    """
+    block = _evidence(f).get("nn")
+    if not isinstance(block, dict):
+        return None
+    try:
+        return max(0, min(100, int(block.get("score"))))
+    except (TypeError, ValueError):
+        return None
+
+
+def nn_priority_key(f: Any) -> Tuple[int, int, int, int, int, int]:
+    """Sort key with the neural score leading, heuristic order behind it.
+
+    CISA KEV findings still rank first (actively exploited beats any
+    model score) and crypto key/seed findings stay on top of a crypto
+    run, exactly as before. Within those, the highest neural score
+    wins; ties - and unscored legacy rows - fall back to the classic
+    exploitability / severity / confidence order unchanged.
+    """
+    score = nn_score_of(f)
+    return (0 if kev_of(f) else 1,
+            0 if _get(f, "crypto_key_finding") else 1,
+            -score if score is not None else 1,
+            EXPLOITABILITY_ORDER[exploitability_of(f)],
+            SEVERITY_ORDER[severity_of(f)],
+            -confidence_of(f))
+
+
+def sort_by_nn(findings: List[Any],
+               limit: Optional[int] = None) -> List[Any]:
+    """Return findings ordered by the neural score (see nn_priority_key).
+
+    Stable, does not mutate the input list. This is the ordering the run
+    detail API, the exports and the MCP tools serve.
+    """
+    ordered = sorted(findings, key=nn_priority_key)
+    if limit is not None:
+        ordered = ordered[:max(limit, 0)]
+    return ordered
+
+
 def priority_label(f: Any) -> str:
     """One-line human label, e.g. 'P1 weaponized/high (90%)'."""
     exp = exploitability_of(f)

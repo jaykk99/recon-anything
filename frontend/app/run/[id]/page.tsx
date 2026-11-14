@@ -161,8 +161,16 @@ function valueRank(f: Finding): number {
   const expRank = { weaponized: 0, public_poc: 1, theoretical: 2, unknown: 3 }[exploitOf(f)];
   return sevRank * 10 + expRank;
 }
+// neural scoring engine (backend app/nn_engine.py): 0-100 actionability
+// score, stamped into evidence.nn at finalize and backfilled by the API for
+// older runs. -1 when a row has no score yet; the heuristic order decides.
+function nnScoreOf(f: Finding): number {
+  const v = Number(f.evidence?.nn?.score);
+  return Number.isNaN(v) ? -1 : v;
+}
 function sortByValue(list: Finding[]): Finding[] {
-  return [...list].sort((a, b) => valueRank(a) - valueRank(b) || b.confidence - a.confidence);
+  return [...list].sort((a, b) => nnScoreOf(b) - nnScoreOf(a)
+    || valueRank(a) - valueRank(b) || b.confidence - a.confidence);
 }
 // bounty-grade impact: backend stamps evidence.impact (1-10).
 // "Big stuff only" = impact >= 7. "sort: impact" ranks by impact * confidence.
@@ -1318,7 +1326,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
           {showWeak ? "✓ Weak signals shown" : `Weak signals hidden (${weakHidden})`}
         </button>
         <select className="input text-sm px-3 py-2.5 min-h-[44px]" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          <option value="value">sort: value</option>
+          <option value="value">sort: neural score</option>
           <option value="severity">sort: severity</option>
           <option value="confidence">sort: confidence</option>
           <option value="impact">sort: impact</option>
