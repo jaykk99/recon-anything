@@ -1,0 +1,54 @@
++ R=/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14
++ CAND=/home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114
++ BATCH=/home/hatch/workspace/recon-continuous/results/batches.jsonl
+++ date -u +%FT%TZ
++ echo '=== SPLIT DUMPS START 2026-11-14T22:15:30Z'
+=== SPLIT DUMPS START 2026-11-14T22:15:30Z
++ python3 /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/scripts/dump_split.py /home/hatch/workspace/wt/nn-reval-v2/backend /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-v2.json
+/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-v2.json own 725 train 580 test 145 pos 124 neg 21
+batch stats: 4689 22 248713 joined 725
++ python3 /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/scripts/dump_split.py /home/hatch/workspace/wt/nn-reval-hyper/backend /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-hyper.json
+/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-hyper.json own 725 train 580 test 145 pos 124 neg 21
+batch stats: 4689 22 248713 joined 725
++ python3 /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/scripts/dump_split.py /home/hatch/workspace/wt/nn-reval-multi/backend /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-multi.json
+/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-multi.json own 725 train 580 test 145 pos 124 neg 21
+batch stats: 4689 22 248713 joined 725
++ python3 -c '
+import json
+d = {n: json.load(open('\''/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/evidence/split-%s.json'\'' % n)) for n in ['\''v2'\'','\''hyper'\'','\''multi'\'']}
+print('\''SPLIT-IDENTICAL:'\'', d['\''v2'\'']['\''test_keys'\''] == d['\''hyper'\'']['\''test_keys'\''] == d['\''multi'\'']['\''test_keys'\''])
+print('\''counts:'\'', {n: (v['\''n_own'\''], v['\''n_train'\''], v['\''n_test'\''], v['\''test_pos'\''], v['\''test_neg'\'']) for n, v in d.items()})
+'
+SPLIT-IDENTICAL: True
+counts: {'v2': (725, 580, 145, 124, 21), 'hyper': (725, 580, 145, 124, 21), 'multi': (725, 580, 145, 124, 21)}
+++ date -u +%FT%TZ
++ echo '=== SPLIT DUMPS DONE 2026-11-14T22:15:52Z'
+=== SPLIT DUMPS DONE 2026-11-14T22:15:52Z
+++ date -u +%FT%TZ
++ echo '=== REVAL V2 START 2026-11-14T22:15:52Z'
+=== REVAL V2 START 2026-11-14T22:15:52Z
++ cd /home/hatch/workspace/wt/nn-reval-v2/backend
++ python3 -m app.nn.train_v2_ownholdout_reval
+++ date -u +%FT%TZ
++ echo '=== REVAL V2 EXIT 0 2026-11-14T22:21:14Z'
+=== REVAL V2 EXIT 0 2026-11-14T22:21:14Z
++ cp /home/hatch/workspace/wt/nn-reval-v2/nn-logs/v2-ownholdout-ckpt.json /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/results/v2/v2-ownholdout-ckpt.json
+++ date -u +%FT%TZ
++ echo '=== REVAL MULTI START 2026-11-14T22:21:14Z'
+=== REVAL MULTI START 2026-11-14T22:21:14Z
++ cd /home/hatch/workspace/wt/nn-reval-multi/backend
++ python3 -m app.nn.train --candidates /home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114 --batches /home/hatch/workspace/recon-continuous/results/batches.jsonl --external app/nn/external_findings.jsonl --holdout own --hidden 64,32 --epochs 120 --multimodal --out /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/results/multi
+++ date -u +%FT%TZ
++ echo '=== REVAL MULTI EXIT 0 2026-11-14T23:02:37Z'
+=== REVAL MULTI EXIT 0 2026-11-14T23:02:37Z
+++ date -u +%FT%TZ
++ echo '=== REVAL HYPER START 2026-11-14T23:02:37Z'
+=== REVAL HYPER START 2026-11-14T23:02:37Z
++ cd /home/hatch/workspace/wt/nn-reval-hyper/backend
++ python3 -m app.nn.train_hypergraph --candidates /home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114 --batches /home/hatch/workspace/recon-continuous/results/batches.jsonl --out /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/results/hyper
+++ date -u +%FT%TZ
++ echo '=== REVAL HYPER EXIT 0 2026-11-14T23:18:06Z'
+=== REVAL HYPER EXIT 0 2026-11-14T23:18:06Z
+++ date -u +%FT%TZ
++ echo '=== REVAL ALL DONE 2026-11-14T23:18:06Z'
+=== REVAL ALL DONE 2026-11-14T23:18:06Z

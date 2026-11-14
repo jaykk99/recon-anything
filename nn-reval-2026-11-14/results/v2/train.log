@@ -1,0 +1,4 @@
+own train 580 test 145 + external 1922 = train 2502
+V2-OWNHOLDOUT-RETRAIN test n=145 acc=0.9103 auc=0.9685 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} baseline=0.8552
+  claimed: n=145 acc=0.9103 auc=0.9697 cm tp114 fp3 fn10 tn18
+OWNHOLDOUT-RETRAIN-DONE

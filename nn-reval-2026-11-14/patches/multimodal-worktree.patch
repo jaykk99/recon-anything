@@ -1,0 +1,81 @@
+diff --git a/backend/app/nn/mlp.py b/backend/app/nn/mlp.py
+index 3eb2ee6e..1e23abe7 100644
+--- a/backend/app/nn/mlp.py
++++ b/backend/app/nn/mlp.py
+@@ -15,6 +15,7 @@ from __future__ import annotations
+ 
+ import json
+ import math
++import os
+ import random
+ from operator import mul
+ from typing import Dict, List, Optional, Sequence, Tuple
+@@ -132,7 +133,9 @@ class MLP:
+             epochs: int = 60, batch_size: int = 32,
+             X_val: Optional[Sequence[Sequence[float]]] = None,
+             y_val: Optional[Sequence[int]] = None,
+-            seed: int = 42, history_every: int = 1) -> Dict[str, List[float]]:
++            seed: int = 42, history_every: int = 1,
++            checkpoint_path: Optional[str] = None,
++            checkpoint_every: int = 20) -> Dict[str, List[float]]:
+         """Train with mini-batch SGD. Returns per-epoch history.
+ 
+         history = {"loss": [...], "train_acc": [...], "val_acc": [...]}
+@@ -141,6 +144,13 @@ class MLP:
+         > 1 records loss/accuracy only every Nth epoch (and the first):
+         the weights are identical, only the reporting is sparser.
+         Sweeps pass a large value; the shipped train run uses 1.
++
++        REVAL PATCH (worktree-only, 2026-11-14): checkpoint_path +
++        checkpoint_every write the current weights to disk every N
++        epochs (atomic tmp + rename). This is a pure side-effect
++        write at epoch end: it touches no weights, no RNG state, and
++        no training order, so the trajectory is bit-identical with
++        or without it.
+         """
+         X = [list(map(float, row)) for row in X]
+         y = [float(v) for v in y]
+@@ -195,6 +205,10 @@ class MLP:
+                 history["train_acc"].append(self.accuracy(X, y))
+                 if X_val is not None and y_val is not None:
+                     history["val_acc"].append(self.accuracy(X_val, y_val))
++            # REVAL PATCH: pure side-effect checkpoint, epoch end.
++            if checkpoint_path and ((epoch + 1) % max(1, int(checkpoint_every)) == 0
++                                    or epoch == epochs - 1):
++                _write_checkpoint(checkpoint_path, self, epoch + 1)
+         return history
+ 
+     def _bce(self, X, y) -> float:
+@@ -330,3 +344,15 @@ def metrics_for(y_true: Sequence[int], scores: Sequence[float],
+     }
+     out.update(prf(cm))
+     return out
++
++
++# REVAL PATCH (worktree-only, 2026-11-14): atomic checkpoint write.
++# Pure side effect; never read during training, so it cannot change
++# the trajectory.
++def _write_checkpoint(path: str, net: "MLP", epochs_done: int) -> None:
++    data = net.to_dict()
++    data["epochs_done"] = int(epochs_done)
++    tmp = f"{path}.tmp"
++    with open(tmp, "w", encoding="utf-8") as fh:
++        json.dump(data, fh)
++    os.replace(tmp, path)
+diff --git a/backend/app/nn/train.py b/backend/app/nn/train.py
+index 23a300a2..5ba2e2f2 100644
+--- a/backend/app/nn/train.py
++++ b/backend/app/nn/train.py
+@@ -170,8 +170,11 @@ def train(candidates_path: str, batches_path: str, out_dir: str,
+ 
+     layers = [len(X_train[0])] + [int(h) for h in hidden.split(",") if h] + [1]
+     net = MLP(layers, seed=seed, lr=lr)
++    # REVAL PATCH (worktree-only): checkpoint every 20 epochs.
+     history = net.fit(X_train, y_train, epochs=epochs, batch_size=32,
+-                      X_val=X_test, y_val=y_test, seed=seed)
++                      X_val=X_test, y_val=y_test, seed=seed,
++                      checkpoint_path=os.path.join(out_dir, "mlp-checkpoint.json"),
++                      checkpoint_every=20)
+     train_scores = [net.predict_proba(x) for x in X_train]
+     test_scores = [net.predict_proba(x) for x in X_test]
+     train_metrics = metrics_for(y_train, train_scores)

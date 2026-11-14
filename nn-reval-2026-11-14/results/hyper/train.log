@@ -1,0 +1,62 @@
+training hypergraph (200 epochs, hidden 16, lr 0.5) ...
+hypergraph lr 0.500 for 30 epochs ...
+hypergraph epoch 0: loss 0.4297 acc 0.8493
+hypergraph epoch 5: loss 0.3997 acc 0.8493
+hypergraph epoch 10: loss 0.3763 acc 0.8549
+hypergraph epoch 15: loss 0.3397 acc 0.8589
+hypergraph epoch 20: loss 0.2760 acc 0.8625
+hypergraph epoch 25: loss 0.1897 acc 0.9289
+hypergraph epoch 29: loss 0.1352 acc 0.9812
+hypergraph lr 0.150 for 70 epochs ...
+hypergraph epoch 0: loss 0.1321 acc 0.9828
+hypergraph epoch 5: loss 0.1181 acc 0.9832
+hypergraph epoch 10: loss 0.1066 acc 0.9836
+hypergraph epoch 15: loss 0.0970 acc 0.9852
+hypergraph epoch 20: loss 0.0891 acc 0.9856
+hypergraph epoch 25: loss 0.0825 acc 0.9868
+hypergraph epoch 30: loss 0.0769 acc 0.9868
+hypergraph epoch 35: loss 0.0721 acc 0.9872
+hypergraph epoch 40: loss 0.0680 acc 0.9876
+hypergraph epoch 45: loss 0.0645 acc 0.9876
+hypergraph epoch 50: loss 0.0614 acc 0.9876
+hypergraph epoch 55: loss 0.0587 acc 0.9880
+hypergraph epoch 60: loss 0.0563 acc 0.9880
+hypergraph epoch 65: loss 0.0542 acc 0.9884
+hypergraph epoch 69: loss 0.0527 acc 0.9888
+hypergraph lr 0.050 for 100 epochs ...
+hypergraph epoch 0: loss 0.0526 acc 0.9888
+hypergraph epoch 5: loss 0.0520 acc 0.9892
+hypergraph epoch 10: loss 0.0514 acc 0.9892
+hypergraph epoch 15: loss 0.0509 acc 0.9892
+hypergraph epoch 20: loss 0.0504 acc 0.9892
+hypergraph epoch 25: loss 0.0499 acc 0.9892
+hypergraph epoch 30: loss 0.0494 acc 0.9896
+hypergraph epoch 35: loss 0.0489 acc 0.9896
+hypergraph epoch 40: loss 0.0484 acc 0.9896
+hypergraph epoch 45: loss 0.0480 acc 0.9896
+hypergraph epoch 50: loss 0.0476 acc 0.9896
+hypergraph epoch 55: loss 0.0471 acc 0.9896
+hypergraph epoch 60: loss 0.0467 acc 0.9896
+hypergraph epoch 65: loss 0.0463 acc 0.9896
+hypergraph epoch 70: loss 0.0459 acc 0.9892
+hypergraph epoch 75: loss 0.0456 acc 0.9892
+hypergraph epoch 80: loss 0.0452 acc 0.9892
+hypergraph epoch 85: loss 0.0448 acc 0.9892
+hypergraph epoch 90: loss 0.0445 acc 0.9892
+hypergraph epoch 95: loss 0.0441 acc 0.9892
+hypergraph epoch 99: loss 0.0439 acc 0.9892
+training MLP v2 baseline (60 epochs, 255-64-32-1, lr 0.05) ...
+rows: train=2502 test=145 (own test 145, pos 2125 / neg 377 in train)
+features: 255  layers: [255, 16, 16, 1]
+hypergraph train: 70 edges, 276/2502 nodes covered
+hypergraph test: 11 edges, 31/145 nodes covered
+train acc 0.989  test acc 0.938  majority baseline 0.855
+test ROC AUC 0.982
+worth-validating: precision 0.983 recall 0.944
+likely-false-positive: precision 0.731 recall 0.905
+confusion (test): tp=117 fp=2 fn=7 tn=19
+no-edge ablation: test acc 0.924 AUC 0.967
+MLP v2 baseline (same split): test acc 0.910 AUC 0.973  WV recall 0.919  FP recall 0.857
+LIMITS: triage only; zero verified-real positives; never predicts VERIFIED_REAL.
+weights: /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/results/hyper/hypergraph-weights.json
+viewer data: /home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14/results/hyper/viewer-data.json
