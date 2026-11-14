@@ -305,6 +305,8 @@ def impact_of(f: Any) -> int:
                 score = 6
             elif sev == "low":
                 score = 3
+            elif sev == "info":
+                score = 2
         # unauthenticated = higher value (bounty hunters love these)
         blob = " ".join(str(v) for v in
                         (key, _get(f, "value", ""), ev.get("note", ""),

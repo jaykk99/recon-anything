@@ -27,6 +27,8 @@ the network never saw:
     python -m app.nn_train                       # distill policy, write weights
     python -m app.nn_train --corpus labels.jsonl # fit real labels
     python -m app.nn_train --self-report
+    python -m app.nn_train --corpus labels.jsonl --dry-run  # metrics only
+    python -m app.nn_train --eval labels.jsonl   # score CURRENT weights
 
 ``spearman`` on the holdout is the metric that matters for a ranker:
 1.0 means the network orders findings exactly like the policy it was
@@ -44,7 +46,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
+try:  # training needs numpy; --eval / --self-report do not
+    import numpy as np
+except ImportError:  # pragma: no cover - exercised only without numpy
+    np = None
 
 from . import nn_engine
 from .correlate import _detect_signals as _signals_of
@@ -177,6 +182,24 @@ def build_corpus(plugin_dir: Path = PLUGIN_DIR) -> List[Tuple[Dict[str, Any], fl
         row2["evidence"]["exploitability"] = "unknown"
         row2["evidence"]["commands"] = []
         out.append((row2, _target(row2), pid))
+        # Controlled contrast grid (every 5th capability): the same finding
+        # at every severity x a confidence sweep. The fixed variants above
+        # tie severity to confidence (low always ships low confidence), so
+        # without this the network cannot separate the two effects and
+        # learned non-monotone ones (info above low; more confidence
+        # scoring lower). The policy labels the grid, so it teaches the
+        # ordering the policy already encodes.
+        if i % 5 == 0:
+            for gsev in ("info", "low", "medium", "high", "critical"):
+                for gconf in (30, 60, 90):
+                    g = json.loads(json.dumps(row))
+                    g["confidence"] = gconf
+                    g["bounty_value"] = gsev
+                    g["evidence"]["severity"] = gsev
+                    g["evidence"]["exploitability"] = "unknown"
+                    g["evidence"]["commands"] = []
+                    g["evidence"]["needs_manual_verification"] = True
+                    out.append((g, _target(g), pid))
     for key, cat, sev in _EXTRA_KEYS:
         for expl in ("weaponized", "unknown"):
             row = {
@@ -311,7 +334,12 @@ def _export(params, hidden: int, metrics: Dict[str, Any],
 
 
 def run(corpus_path: Optional[Path] = None, *, hidden: int = 16,
-        epochs: int = 500, out: Path = WEIGHTS_PATH) -> Dict[str, Any]:
+        epochs: int = 500,
+        out: Optional[Path] = WEIGHTS_PATH) -> Dict[str, Any]:
+    """Train and report holdout metrics. ``out=None`` is a dry run: the
+    metrics are computed but no weights file is written."""
+    if np is None:
+        raise SystemExit("training needs numpy: pip install numpy")
     corpus = (load_labeled_corpus(corpus_path) if corpus_path
               else build_corpus())
     if not corpus:
@@ -338,8 +366,64 @@ def run(corpus_path: Optional[Path] = None, *, hidden: int = 16,
     auc = _auc(gold, pred)
     if auc is not None:
         metrics["holdout_auc"] = auc
-    _export(params, hidden, metrics, out)
+    if out is not None:
+        _export(params, hidden, metrics, out)
     return metrics
+
+
+def _rank(v: List[float]) -> List[float]:
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    r = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            r[order[k]] = (i + j) / 2.0
+        i = j + 1
+    return r
+
+
+def _spearman_py(a: List[float], b: List[float]) -> float:
+    if len(a) < 2:
+        return 0.0
+    ra, rb = _rank(a), _rank(b)
+    ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    va = sum((x - ma) ** 2 for x in ra) ** 0.5
+    vb = sum((y - mb) ** 2 for y in rb) ** 0.5
+    return cov / (va * vb) if va and vb else 0.0
+
+
+def evaluate(corpus_path: Path, weights: Path = WEIGHTS_PATH,
+             k: int = 10) -> Dict[str, Any]:
+    """Score the CURRENT model against labelled findings, no training.
+
+    Pure stdlib (works without numpy). Reports rank agreement
+    (spearman), mean absolute error, and precision@k: of the k findings
+    the model ranks highest, the share labelled actionable (>= 0.5).
+    """
+    model = nn_engine.load_model(weights)
+    if model is None:
+        raise SystemExit(f"no model at {weights}")
+    corpus = load_labeled_corpus(corpus_path)
+    if not corpus:
+        raise SystemExit("empty evaluation corpus")
+    pred, gold = [], []
+    for finding, label, _g in corpus:
+        p, _c = nn_engine._forward(model, nn_engine.features(finding))
+        pred.append(float(p))
+        gold.append(float(label))
+    top = sorted(range(len(pred)), key=lambda i: -pred[i])[:max(1, k)]
+    return {
+        "corpus": str(corpus_path), "records": len(pred),
+        "model_version": model.get("version"),
+        "spearman": round(_spearman_py(pred, gold), 4),
+        "mae": round(sum(abs(p - g) for p, g in zip(pred, gold)) / len(pred), 4),
+        f"precision_at_{len(top)}": round(
+            sum(1 for i in top if gold[i] >= 0.5) / len(top), 4),
+    }
 
 
 def self_report(path: Path = WEIGHTS_PATH) -> int:
@@ -368,13 +452,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--out", type=Path, default=WEIGHTS_PATH)
     ap.add_argument("--self-report", action="store_true")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="train and print metrics, but do not write weights")
+    ap.add_argument("--eval", type=Path, default=None, metavar="LABELS",
+                    help="evaluate the current weights on a labelled JSONL "
+                         "(no training, no numpy needed)")
+    ap.add_argument("--k", type=int, default=10,
+                    help="k for precision@k in --eval")
     args = ap.parse_args(argv)
     if args.self_report:
         return self_report(args.out)
+    if args.eval:
+        print(json.dumps(evaluate(args.eval, args.out, args.k), indent=1))
+        return 0
     metrics = run(args.corpus, hidden=args.hidden, epochs=args.epochs,
-                  out=args.out)
+                  out=None if args.dry_run else args.out)
     print(json.dumps(metrics, indent=1))
-    print(f"wrote {args.out}")
+    print("dry run: weights not written" if args.dry_run
+          else f"wrote {args.out}")
     return 0
 
 
