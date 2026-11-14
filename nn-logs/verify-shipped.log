@@ -1,0 +1,6 @@
+loaded shipped weights: layers=[255, 64, 32, 1] format=recon-nn-weights/1 eval_mode=own-holdout trained_at=2026-11-14T21:27:51.477119+00:00
+SHIPPED-WEIGHTS OWN-HOLDOUT test n=145 acc=0.9103 auc=0.9685 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} baseline=0.8552
+  FP recall=0.8571 recall_worth_validating=0.9194
+SHIPPED-WEIGHTS TRAIN n=2502 acc=0.9892 auc=0.9993 cm={'tn': 369, 'fp': 8, 'fn': 19, 'tp': 2106}
+SHIPPED-WEIGHTS COMBINED test n=530 acc=0.9868 auc=0.9987 cm={'tn': 78, 'fp': 2, 'fn': 5, 'tp': 445} (reference only; old combined weights scored 0.9811 here with leakage)
+VERIFY-SHIPPED-DONE

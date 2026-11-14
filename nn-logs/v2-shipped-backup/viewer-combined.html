@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReconAnything NN — triage scorer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3;
+          --muted:#8b949e; --green:#3fb950; --red:#f85149; --amber:#d29922;
+          --blue:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:20px 24px 8px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { padding:12px 24px 40px; display:grid; gap:16px;
+         grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:8px; padding:16px; }
+  .wide { grid-column:1 / -1; }
+  .warn { background:#3a2b00; border:1px solid var(--amber); color:#ffd479;
+          border-radius:8px; padding:12px 16px; font-size:13px; }
+  .warn b { color:#fff; }
+  .metrics { display:flex; flex-wrap:wrap; gap:12px; }
+  .metric { flex:1 1 120px; background:#0d1117; border:1px solid var(--line);
+            border-radius:6px; padding:10px; }
+  .metric .v { font-size:22px; font-weight:700; }
+  .metric .k { color:var(--muted); font-size:12px; margin-top:2px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border:1px solid var(--line); padding:6px 10px; text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  .bar-row { display:grid; grid-template-columns:170px 1fr 56px; gap:8px;
+             align-items:center; font-size:12px; margin:5px 0; }
+  .bar { height:12px; background:#0d1117; border:1px solid var(--line);
+         border-radius:3px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--blue); }
+  .bar-row.neg .bar > div { background:var(--red); }
+  svg text { fill:var(--muted); font-size:10px; font-family:inherit; }
+  svg .axis { stroke:var(--line); stroke-width:1; }
+  svg .loss { stroke:var(--amber); stroke-width:2; fill:none; }
+  svg .acc { stroke:var(--green); stroke-width:2; fill:none; }
+  svg .val { stroke:var(--blue); stroke-width:2; fill:none; }
+  .node { fill:#1f6feb; stroke:#58a6ff; }
+  .edge { stroke:#30363d; stroke-width:1; }
+  form { display:flex; gap:8px; flex-wrap:wrap; }
+  input[type=text] { flex:1 1 260px; background:#0d1117; color:var(--text);
+    border:1px solid var(--line); border-radius:6px; padding:9px 10px;
+    font-size:14px; }
+  button { background:#1f6feb; color:#fff; border:0; border-radius:6px;
+           padding:9px 16px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  code { background:#0d1117; border:1px solid var(--line); border-radius:4px;
+         padding:1px 5px; font-size:12px; }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:6px;
+        padding:12px; overflow:auto; font-size:12px; }
+  .pill { display:inline-block; border-radius:20px; padding:2px 10px;
+          font-size:12px; font-weight:600; }
+  .pill.good { background:#12261a; color:var(--green); }
+  .pill.bad { background:#2d1215; color:var(--red); }
+  .muted { color:var(--muted); font-size:12px; }
+  #score-status { margin-top:10px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ReconAnything NN — plugin-finding triage scorer</h1>
+  <div class="sub">Pure-stdlib MLP. Ranks findings by how much they look like past
+  candidates that survived triage. <span id="trained-at"></span></div>
+</header>
+<main>
+  <div class="warn wide"><b>TRIAGE ONLY.</b>
+  This network never verifies a vulnerability and never predicts
+  <b>VERIFIED_REAL</b> — there are zero verified-real positives in the
+  training data. A high score means “worth a live probe”, nothing more.
+  A low score means “looks like the false positives we have seen”.
+  Detection only: scoring never sends transactions or takes funds.</div>
+
+  <section class="card wide">
+    <h2>Test-set metrics</h2>
+    <div class="metrics" id="metrics"></div>
+    <p class="muted" id="metric-note"></p>
+  </section>
+
+  <section class="card">
+    <h2>Network architecture</h2>
+    <div id="arch"></div>
+    <p class="muted" id="arch-note"></p>
+  </section>
+
+  <section class="card">
+    <h2>Training curves</h2>
+    <div id="curves"></div>
+    <p class="muted">Amber: training loss (left axis). Green: training accuracy.
+    Blue: validation accuracy. One point per epoch.</p>
+  </section>
+
+  <section class="card">
+    <h2>Confusion matrix (test set)</h2>
+    <div id="confusion"></div>
+    <p class="muted">Positive class = worth-validating. Rows are the true
+    label, columns are what the network predicted.</p>
+  </section>
+
+  <section class="card">
+    <h2>Feature importance</h2>
+    <div id="importance"></div>
+    <p class="muted">Grouped permutation importance on the test set: ROC AUC
+    lost when a feature group is shuffled. Higher = the network relies on
+    it more. Negative = shuffling it helped (noise).</p>
+  </section>
+
+  <section class="card wide">
+    <h2>Score a target</h2>
+    <form id="score-form">
+      <input type="text" id="score-target" placeholder="bsc:0x... or https://example.com or example.com" spellcheck="false">
+      <button type="submit" id="score-btn">Score it</button>
+    </form>
+    <div id="score-status" class="muted">Runs the plugin set against the target
+    and ranks every finding with the network. Needs the backend running
+    (<code>POST /api/nn/score</code>); without it, use the CLI:
+    <code>python -m app.nn.score --target bsc:0x...</code></div>
+    <div id="score-results"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Training data</h2>
+    <div id="dataset" class="muted"></div>
+    <h2 style="margin-top:16px">Limits</h2>
+    <ul id="limits" class="muted"></ul>
+  </section>
+</main>
+
+<!-- NN-DATA-START -->
+<script type="application/json" id="nn-data">
+{
+  "trained_at": "2026-11-14T07:31:50.572089+00:00",
+  "layers": [
+    255,
+    64,
+    32,
+    1
+  ],
+  "n_features": 255,
+  "feature_names": [
+    "plugin:unchecked_math_user_input:fired",
+    "plugin:unchecked_math_user_input:confidence",
+    "plugin:unchecked_math_user_input:severity",
+    "plugin:unchecked_math_user_input:risk",
+    "plugin:unchecked_math_user_input:count",
+    "plugin:unchecked_math_user_input:gate_present",
+    "plugin:unchecked_math_user_input:gate_no_caller",
+    "plugin:unchecked_math_user_input:detector_present",
+    "plugin:contract_logic:fired",
+    "plugin:contract_logic:confidence",
+    "plugin:contract_logic:severity",
+    "plugin:contract_logic:risk",
+    "plugin:contract_logic:count",
+    "plugin:contract_logic:gate_present",
+    "plugin:contract_logic:gate_no_caller",
+    "plugin:contract_logic:detector_present",
+    "plugin:readonly_reentrancy_gap:fired",
+    "plugin:readonly_reentrancy_gap:confidence",
+    "plugin:readonly_reentrancy_gap:severity",
+    "plugin:readonly_reentrancy_gap:risk",
+    "plugin:readonly_reentrancy_gap:count",
+    "plugin:readonly_reentrancy_gap:gate_present",
+    "plugin:readonly_reentrancy_gap:gate_no_caller",
+    "plugin:readonly_reentrancy_gap:detector_present",
+    "plugin:oracle_trust_assumption_break:fired",
+    "plugin:oracle_trust_assumption_break:confidence",
+    "plugin:oracle_trust_assumption_break:severity",
+    "plugin:oracle_trust_assumption_break:risk",
+    "plugin:oracle_trust_assumption_break:count",
+    "plugin:oracle_trust_assumption_break:gate_present",
+    "plugin:oracle_trust_assumption_break:gate_no_caller",
+    "plugin:oracle_trust_assumption_break:detector_present",
+    "plugin:flash_loan_callback_auth_bypass:fired",
+    "plugin:flash_loan_callback_auth_bypass:confidence",
+    "plugin:flash_loan_callback_auth_bypass:severity",
+    "plugin:flash_loan_callback_auth_bypass:risk",
+    "plugin:flash_loan_callback_auth_bypass:count",
+    "plugin:flash_loan_callback_auth_bypass:gate_present",
+    "plugin:flash_loan_callback_auth_bypass:gate_no_caller",
+    "plugin:flash_loan_callback_auth_bypass:detector_present",
+    "plugin:mev_sandwich_attack_vulnerability:fired",
+    "plugin:mev_sandwich_attack_vulnerability:confidence",
+    "plugin:mev_sandwich_attack_vulnerability:severity",
+    "plugin:mev_sandwich_attack_vulnerability:risk",
+    "plugin:mev_sandwich_attack_vulnerability:count",
+    "plugin:mev_sandwich_attack_vulnerability:gate_present",
+    "plugin:mev_sandwich_attack_vulnerability:gate_no_caller",
+    "plugin:mev_sandwich_attack_vulnerability:detector_present",
+    "plugin:uups_authorize_upgrade_missing:fired",
+    "plugin:uups_authorize_upgrade_missing:confidence",
+    "plugin:uups_authorize_upgrade_missing:severity",
+    "plugin:uups_authorize_upgrade_missing:risk",
+    "plugin:uups_authorize_upgrade_missing:count",
+    "plugin:uups_authorize_upgrade_missing:gate_present",
+    "plugin:uups_authorize_upgrade_missing:gate_no_caller",
+    "plugin:uups_authorize_upgrade_missing:detector_present",
+    "plugin:crypto_drain_scanner:fired",
+    "plugin:crypto_drain_scanner:confidence",
+    "plugin:crypto_drain_scanner:severity",
+    "plugin:crypto_drain_scanner:risk",
+    "plugin:crypto_drain_scanner:count",
+    "plugin:crypto_drain_scanner:gate_present",
+    "plugin:crypto_drain_scanner:gate_no_caller",
+    "plugin:crypto_drain_scanner:detector_present",
+    "plugin:cp_proto_unchecked_erc20_return:fired",
+    "plugin:cp_proto_unchecked_erc20_return:confidence",
+    "plugin:cp_proto_unchecked_erc20_return:severity",
+    "plugin:cp_proto_unchecked_erc20_return:risk",
+    "plugin:cp_proto_unchecked_erc20_return:count",
+    "plugin:cp_proto_unchecked_erc20_return:gate_present",
+    "plugin:cp_proto_unchecked_erc20_return:gate_no_caller",
+    "plugin:cp_proto_unchecked_erc20_return:detector_present",
+    "plugin:recipient_mint_to_caller:fired",
+    "plugin:recipient_mint_to_caller:confidence",
+    "plugin:recipient_mint_to_caller:severity",
+    "plugin:recipient_mint_to_caller:risk",
+    "plugin:recipient_mint_to_caller:count",
+    "plugin:recipient_mint_to_caller:gate_present",
+    "plugin:recipient_mint_to_caller:gate_no_caller",
+    "plugin:recipient_mint_to_caller:detector_present",
+    "plugin:rounding_iterated_drain:fired",
+    "plugin:rounding_iterated_drain:confidence",
+    "plugin:rounding_iterated_drain:severity",
+    "plugin:rounding_iterated_drain:risk",
+    "plugin:rounding_iterated_drain:count",
+    "plugin:rounding_iterated_drain:gate_present",
+    "plugin:rounding_iterated_drain:gate_no_caller",
+    "plugin:rounding_iterated_drain:detector_present",
+    "plugin:push_payment_revert_dos:fired",
+    "plugin:push_payment_revert_dos:confidence",
+    "plugin:push_payment_revert_dos:severity",
+    "plugin:push_payment_revert_dos:risk",
+    "plugin:push_payment_revert_dos:count",
+    "plugin:push_payment_revert_dos:gate_present",
+    "plugin:push_payment_revert_dos:gate_no_caller",
+    "plugin:push_payment_revert_dos:detector_present",
+    "plugin:proxy_implementation_uninitialized:fired",
+    "plugin:proxy_implementation_uninitialized:confidence",
+    "plugin:proxy_implementation_uninitialized:severity",
+    "plugin:proxy_implementation_uninitialized:risk",
+    "plugin:proxy_implementation_uninitialized:count",
+    "plugin:proxy_implementation_uninitialized:gate_present",
+    "plugin:proxy_implementation_uninitialized:gate_no_caller",
+    "plugin:proxy_implementation_uninitialized:detector_present",
+    "plugin:eip712_separator_unbound:fired",
+    "plugin:eip712_separator_unbound:confidence",
+    "plugin:eip712_separator_unbound:severity",
+    "plugin:eip712_separator_unbound:risk",
+    "plugin:eip712_separator_unbound:count",
+    "plugin:eip712_separator_unbound:gate_present",
+    "plugin:eip712_separator_unbound:gate_no_caller",
+    "plugin:eip712_separator_unbound:detector_present",
+    "plugin:recipient_sig_value_to_self:fired",
+    "plugin:recipient_sig_value_to_self:confidence",
+    "plugin:recipient_sig_value_to_self:severity",
+    "plugin:recipient_sig_value_to_self:risk",
+    "plugin:recipient_sig_value_to_self:count",
+    "plugin:recipient_sig_value_to_self:gate_present",
+    "plugin:recipient_sig_value_to_self:gate_no_caller",
+    "plugin:recipient_sig_value_to_self:detector_present",
+    "plugin:cross_function_guard_sibling:fired",
+    "plugin:cross_function_guard_sibling:confidence",
+    "plugin:cross_function_guard_sibling:severity",
+    "plugin:cross_function_guard_sibling:risk",
+    "plugin:cross_function_guard_sibling:count",
+    "plugin:cross_function_guard_sibling:gate_present",
+    "plugin:cross_function_guard_sibling:gate_no_caller",
+    "plugin:cross_function_guard_sibling:detector_present",
+    "plugin:recipient_overdraw_withdraw:fired",
+    "plugin:recipient_overdraw_withdraw:confidence",
+    "plugin:recipient_overdraw_withdraw:severity",
+    "plugin:recipient_overdraw_withdraw:risk",
+    "plugin:recipient_overdraw_withdraw:count",
+    "plugin:recipient_overdraw_withdraw:gate_present",
+    "plugin:recipient_overdraw_withdraw:gate_no_caller",
+    "plugin:recipient_overdraw_withdraw:detector_present",
+    "plugin:recipient_bridge_release_unproven:fired",
+    "plugin:recipient_bridge_release_unproven:confidence",
+    "plugin:recipient_bridge_release_unproven:severity",
+    "plugin:recipient_bridge_release_unproven:risk",
+    "plugin:recipient_bridge_release_unproven:count",
+    "plugin:recipient_bridge_release_unproven:gate_present",
+    "plugin:recipient_bridge_release_unproven:gate_no_caller",
+    "plugin:recipient_bridge_release_unproven:detector_present",
+    "plugin:bridge_withdrawer_identity_spoof:fired",
+    "plugin:bridge_withdrawer_identity_spoof:confidence",
+    "plugin:bridge_withdrawer_identity_spoof:severity",
+    "plugin:bridge_withdrawer_identity_spoof:risk",
+    "plugin:bridge_withdrawer_identity_spoof:count",
+    "plugin:bridge_withdrawer_identity_spoof:gate_present",
+    "plugin:bridge_withdrawer_identity_spoof:gate_no_caller",
+    "plugin:bridge_withdrawer_identity_spoof:detector_present",
+    "plugin:timelock_delay_bypass:fired",
+    "plugin:timelock_delay_bypass:confidence",
+    "plugin:timelock_delay_bypass:severity",
+    "plugin:timelock_delay_bypass:risk",
+    "plugin:timelock_delay_bypass:count",
+    "plugin:timelock_delay_bypass:gate_present",
+    "plugin:timelock_delay_bypass:gate_no_caller",
+    "plugin:timelock_delay_bypass:detector_present",
+    "plugin:weak_randomness_value_outcome:fired",
+    "plugin:weak_randomness_value_outcome:confidence",
+    "plugin:weak_randomness_value_outcome:severity",
+    "plugin:weak_randomness_value_outcome:risk",
+    "plugin:weak_randomness_value_outcome:count",
+    "plugin:weak_randomness_value_outcome:gate_present",
+    "plugin:weak_randomness_value_outcome:gate_no_caller",
+    "plugin:weak_randomness_value_outcome:detector_present",
+    "plugin:erc2771_msg_sender_unbound:fired",
+    "plugin:erc2771_msg_sender_unbound:confidence",
+    "plugin:erc2771_msg_sender_unbound:severity",
+    "plugin:erc2771_msg_sender_unbound:risk",
+    "plugin:erc2771_msg_sender_unbound:count",
+    "plugin:erc2771_msg_sender_unbound:gate_present",
+    "plugin:erc2771_msg_sender_unbound:gate_no_caller",
+    "plugin:erc2771_msg_sender_unbound:detector_present",
+    "plugin:recipient_unbacked_claim:fired",
+    "plugin:recipient_unbacked_claim:confidence",
+    "plugin:recipient_unbacked_claim:severity",
+    "plugin:recipient_unbacked_claim:risk",
+    "plugin:recipient_unbacked_claim:count",
+    "plugin:recipient_unbacked_claim:gate_present",
+    "plugin:recipient_unbacked_claim:gate_no_caller",
+    "plugin:recipient_unbacked_claim:detector_present",
+    "plugin:bridge_proof_length_unvalidated:fired",
+    "plugin:bridge_proof_length_unvalidated:confidence",
+    "plugin:bridge_proof_length_unvalidated:severity",
+    "plugin:bridge_proof_length_unvalidated:risk",
+    "plugin:bridge_proof_length_unvalidated:count",
+    "plugin:bridge_proof_length_unvalidated:gate_present",
+    "plugin:bridge_proof_length_unvalidated:gate_no_caller",
+    "plugin:bridge_proof_length_unvalidated:detector_present",
+    "plugin:OTHER:fired",
+    "plugin:OTHER:confidence",
+    "plugin:OTHER:severity",
+    "plugin:OTHER:risk",
+    "plugin:OTHER:count",
+    "plugin:OTHER:gate_present",
+    "plugin:OTHER:gate_no_caller",
+    "plugin:OTHER:detector_present",
+    "key:audit_finding",
+    "key:unchecked_math_user_input",
+    "key:access_control_flaw",
+    "key:reentrancy",
+    "key:oracle_manipulation",
+    "key:flash_loan",
+    "key:frontrunning",
+    "key:uups_authorize_upgrade_missing",
+    "key:unprotected_drain",
+    "key:allowance",
+    "key:recipient_mint_to_caller",
+    "key:rounding",
+    "key:denial_of_service",
+    "key:proxy",
+    "key:recipient_sig_value_to_self",
+    "key:signature_replay",
+    "key:cross_function_guard_sibling",
+    "key:recipient_overdraw_withdraw",
+    "key:recipient_bridge_release_unproven",
+    "key:bridge_withdrawer_identity_spoof",
+    "key:timelock_bypass",
+    "key:weak_randomness_value_outcome",
+    "key:erc2771_msg_sender_unbound",
+    "key:recipient_unbacked_claim",
+    "key:OTHER",
+    "bounty_value",
+    "recipient:CALLER",
+    "recipient:CALLER-SUPPLIED",
+    "recipient:FIXED",
+    "recipient:HOLDER-SELF",
+    "recipient:OTHER",
+    "chain:bsc",
+    "chain:ethereum",
+    "chain:base",
+    "chain:arbitrum",
+    "chain:polygon",
+    "chain:other",
+    "source:Sourcify v2",
+    "source:Blockscout",
+    "source:other",
+    "bytecode_only_present",
+    "bytecode_only_true",
+    "role:implementation",
+    "role:standalone",
+    "role:proxy_shell",
+    "role:other",
+    "report:candidate",
+    "report:trigger_only",
+    "report:other",
+    "proxy_present",
+    "implementation_present",
+    "function_present",
+    "function_len",
+    "value_len",
+    "evidence_count"
+  ],
+  "dataset": {
+    "candidates": 727,
+    "candidates_torn_lines": 0,
+    "batch_rows": 4689,
+    "batch_torn_lines": 22,
+    "batch_findings": 248713,
+    "joined_with_evidence": 725,
+    "without_batch_match": 0,
+    "excluded_verified_real_rows": 2,
+    "train_rows": 2647,
+    "n_positive": 2249,
+    "n_negative": 398,
+    "external_rows": 1922,
+    "external_positive": 1629,
+    "external_negative": 293,
+    "external_sources": {
+      "scabench": 351,
+      "xanoutas": 450,
+      "defihack": 378,
+      "sherlock-invalid": 293,
+      "audit-findings": 450
+    },
+    "external_bad_lines": 0
+  },
+  "train_rows": 2117,
+  "test_rows": 530,
+  "train_metrics": {
+    "n": 2117,
+    "n_positive": 1799,
+    "n_negative": 318,
+    "threshold": 0.5,
+    "accuracy": 0.9858290033065659,
+    "majority_baseline_accuracy": 0.8497874350495985,
+    "roc_auc": 0.9989109952769009,
+    "confusion": {
+      "tn": 308,
+      "fp": 10,
+      "fn": 20,
+      "tp": 1779
+    },
+    "precision_worth_validating": 0.9944102850754611,
+    "recall_worth_validating": 0.9888827126181212,
+    "f1_worth_validating": 0.991638795986622,
+    "precision_likely_fp": 0.9390243902439024,
+    "recall_likely_fp": 0.9685534591194969,
+    "f1_likely_fp": 0.9535603715170279
+  },
+  "test_metrics": {
+    "n": 530,
+    "n_positive": 450,
+    "n_negative": 80,
+    "threshold": 0.5,
+    "accuracy": 0.9811320754716981,
+    "majority_baseline_accuracy": 0.8490566037735849,
+    "roc_auc": 0.9978472222222222,
+    "confusion": {
+      "tn": 76,
+      "fp": 4,
+      "fn": 6,
+      "tp": 444
+    },
+    "precision_worth_validating": 0.9910714285714286,
+    "recall_worth_validating": 0.9866666666666667,
+    "f1_worth_validating": 0.9888641425389756,
+    "precision_likely_fp": 0.926829268292683,
+    "recall_likely_fp": 0.95,
+    "f1_likely_fp": 0.9382716049382716
+  },
+  "history": {
+    "loss": [
+      0.3388046949544604,
+      0.29479322761125254,
+      0.19136478000948692,
+      0.14404913548489698,
+      0.1099010156256479,
+      0.097813136516786,
+      0.07848737363173067,
+      0.07040351022836634,
+      0.062298883410432424,
+      0.057767562741747984,
+      0.05888871185112529,
+      0.05711564504679251,
+      0.05104839663820248,
+      0.0783777615042723,
+      0.06378164874619688,
+      0.04646179736928567,
+      0.04426560073871427,
+      0.08317907017789873,
+      0.04230107501817998,
+      0.04034223413902044,
+      0.039402278373824734,
+      0.03916823071722957,
+      0.03869901909738904,
+      0.03991064576751948,
+      0.050984109899509626,
+      0.0382977984214625,
+      0.04101187341817428,
+      0.051779362186511566,
+      0.10471031683822452,
+      0.03667539733226969,
+      0.03597646005985645,
+      0.03597738452370291,
+      0.035348335607265094,
+      0.04334317117394482,
+      0.034223832246192416,
+      0.03384451609271515,
+      0.03727511727432921,
+      0.03379039100829624,
+      0.03482674760614293,
+      0.0352681300495584,
+      0.04431471115394211,
+      0.033983511889229316,
+      0.035046362156218105,
+      0.0329847363196969,
+      0.03516924718027676,
+      0.036828427936528914,
+      0.03516122427724572,
+      0.042198371347686364,
+      0.03755912492076909,
+      0.03407747359567648,
+      0.03278585290267072,
+      0.03324342741017121,
+      0.03189063558098618,
+      0.045006929699428114,
+      0.03336537175434166,
+      0.032126774591771046,
+      0.03945161037408794,
+      0.032676414464134294,
+      0.11636432469148743,
+      0.14903292008439098,
+      0.03991817551922147,
+      0.03726394635873795,
+      0.031676934419363305,
+      0.03301198120739366,
+      0.031166002171094977,
+      0.03220670834147613,
+      0.032072257087340066,
+      0.031625046408544105,
+      0.05664201594103541,
+      0.031193140595220645,
+      0.031549324674549885,
+      0.031063726375424365,
+      0.030861303933025025,
+      0.07281288353832294,
+      0.033738699195529756,
+      0.030699454452185904,
+      0.03521869007043976,
+      0.037507084265220605,
+      0.03279981650290764,
+      0.03148748005293258,
+      0.035423890463671746,
+      0.03074684505429332,
+      0.03159253166523263,
+      0.03262248079502804,
+      0.03112107999638542,
+      0.032651544602261974,
+      0.030401191274929563,
+      0.036682932676490414,
+      0.030998355724650043,
+      0.031159923676033572,
+      0.03277104950799599,
+      0.030083406602369446,
+      0.030425589087944627,
+      0.031073834165895688,
+      0.02996547921354368,
+      0.03108785082277122,
+      0.035535253233594084,
+      0.030093933079959143,
+      0.030101193745931835,
+      0.02986851238282434,
+      0.02999482106901994,
+      0.030562606784670116,
+      0.032556776805509786,
+      0.03172406071942702,
+      0.02997312922637431,
+      0.030692644170772936,
+      0.029791170636819794,
+      0.02970605136791991,
+      0.029974969853778635,
+      0.05968353379381021,
+      0.035442618515996456,
+      0.030064866657310372,
+      0.02958696656748476,
+      0.037939761853784754,
+      0.029944499791818333,
+      0.029893893469831588,
+      0.029552425397382464,
+      0.02952339914051228,
+      0.0308936751294512,
+      0.02950832709725949
+    ],
+    "train_acc": [
+      0.8502598016060463,
+      0.956542276806802,
+      0.9433160132262636,
+      0.9579593764761455,
+      0.9806329711856401,
+      0.9782711384034011,
+      0.9829948039678791,
+      0.9834671705243269,
+      0.9834671705243269,
+      0.9834671705243269,
+      0.9815777042985356,
+      0.9801606046291923,
+      0.9829948039678791,
+      0.9763816721776098,
+      0.9796882380727444,
+      0.9844119036372225,
+      0.9839395370807746,
+      0.9773264052905054,
+      0.9834671705243269,
+      0.9844119036372225,
+      0.9844119036372225,
+      0.9844119036372225,
+      0.9853566367501181,
+      0.9839395370807746,
+      0.9801606046291923,
+      0.9848842701936703,
+      0.9815777042985356,
+      0.9801606046291923,
+      0.9702409069437884,
+      0.9839395370807746,
+      0.9834671705243269,
+      0.9829948039678791,
+      0.9844119036372225,
+      0.9815777042985356,
+      0.9844119036372225,
+      0.9848842701936703,
+      0.9839395370807746,
+      0.9844119036372225,
+      0.9839395370807746,
+      0.9844119036372225,
+      0.9811053377420879,
+      0.9858290033065659,
+      0.9844119036372225,
+      0.9844119036372225,
+      0.9839395370807746,
+      0.9834671705243269,
+      0.9825224374114313,
+      0.9801606046291923,
+      0.9834671705243269,
+      0.9844119036372225,
+      0.9829948039678791,
+      0.9839395370807746,
+      0.9858290033065659,
+      0.9806329711856401,
+      0.9834671705243269,
+      0.9848842701936703,
+      0.9801606046291923,
+      0.9853566367501181,
+      0.9636277751535192,
+      0.9475673122342938,
+      0.9820500708549834,
+      0.9811053377420879,
+      0.9844119036372225,
+      0.9848842701936703,
+      0.9844119036372225,
+      0.9839395370807746,
+      0.9839395370807746,
+      0.9848842701936703,
+      0.9801606046291923,
+      0.9844119036372225,
+      0.9825224374114313,
+      0.9848842701936703,
+      0.9839395370807746,
+      0.9702409069437884,
+      0.9848842701936703,
+      0.9853566367501181,
+      0.9839395370807746,
+      0.9820500708549834,
+      0.9844119036372225,
+      0.9844119036372225,
+      0.9825224374114313,
+      0.9853566367501181,
+      0.9839395370807746,
+      0.9844119036372225,
+      0.9848842701936703,
+      0.9848842701936703,
+      0.9858290033065659,
+      0.9820500708549834,
+      0.9858290033065659,
+      0.9853566367501181,
+      0.9844119036372225,
+      0.9848842701936703,
+      0.9844119036372225,
+      0.9839395370807746,
+      0.9853566367501181,
+      0.9853566367501181,
+      0.9834671705243269,
+      0.9844119036372225,
+      0.9858290033065659,
+      0.9858290033065659,
+      0.9858290033065659,
+      0.9858290033065659,
+      0.9848842701936703,
+      0.9853566367501181,
+      0.9848842701936703,
+      0.9853566367501181,
+      0.9848842701936703,
+      0.9858290033065659,
+      0.9858290033065659,
+      0.9777987718469532,
+      0.9820500708549834,
+      0.9858290033065659,
+      0.9853566367501181,
+      0.9782711384034011,
+      0.9848842701936703,
+      0.9848842701936703,
+      0.9858290033065659,
+      0.9863013698630136,
+      0.9858290033065659,
+      0.9858290033065659
+    ],
+    "val_acc": [
+      0.8490566037735849,
+      0.9528301886792453,
+      0.939622641509434,
+      0.9490566037735849,
+      0.9849056603773585,
+      0.9716981132075472,
+      0.9811320754716981,
+      0.9811320754716981,
+      0.9811320754716981,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9735849056603774,
+      0.9811320754716981,
+      0.9641509433962264,
+      0.9735849056603774,
+      0.9773584905660377,
+      0.9773584905660377,
+      0.969811320754717,
+      0.9792452830188679,
+      0.9773584905660377,
+      0.9773584905660377,
+      0.9773584905660377,
+      0.9773584905660377,
+      0.9811320754716981,
+      0.9735849056603774,
+      0.9792452830188679,
+      0.9735849056603774,
+      0.9735849056603774,
+      0.9641509433962264,
+      0.9830188679245283,
+      0.9754716981132076,
+      0.9754716981132076,
+      0.9830188679245283,
+      0.9754716981132076,
+      0.9830188679245283,
+      0.9792452830188679,
+      0.9830188679245283,
+      0.9792452830188679,
+      0.9754716981132076,
+      0.9830188679245283,
+      0.9754716981132076,
+      0.9830188679245283,
+      0.9830188679245283,
+      0.9773584905660377,
+      0.9792452830188679,
+      0.9754716981132076,
+      0.9773584905660377,
+      0.9754716981132076,
+      0.9754716981132076,
+      0.9792452830188679,
+      0.9773584905660377,
+      0.9754716981132076,
+      0.9792452830188679,
+      0.9754716981132076,
+      0.9811320754716981,
+      0.9811320754716981,
+      0.9754716981132076,
+      0.9773584905660377,
+      0.9547169811320755,
+      0.9377358490566038,
+      0.9773584905660377,
+      0.9773584905660377,
+      0.9811320754716981,
+      0.9792452830188679,
+      0.9811320754716981,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9754716981132076,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.969811320754717,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9773584905660377,
+      0.9754716981132076,
+      0.9830188679245283,
+      0.9773584905660377,
+      0.9849056603773585,
+      0.9792452830188679,
+      0.9773584905660377,
+      0.9830188679245283,
+      0.9792452830188679,
+      0.9811320754716981,
+      0.9792452830188679,
+      0.9735849056603774,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9811320754716981,
+      0.9830188679245283,
+      0.9830188679245283,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9811320754716981,
+      0.9830188679245283,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9811320754716981,
+      0.9830188679245283,
+      0.9849056603773585,
+      0.9792452830188679,
+      0.9849056603773585,
+      0.9792452830188679,
+      0.9792452830188679,
+      0.9735849056603774,
+      0.9735849056603774,
+      0.9792452830188679,
+      0.9830188679245283,
+      0.9735849056603774,
+      0.9830188679245283,
+      0.9830188679245283,
+      0.9811320754716981,
+      0.9811320754716981,
+      0.9792452830188679,
+      0.9811320754716981
+    ]
+  },
+  "feature_importance": [
+    {
+      "group": "bounty_value",
+      "auc_drop": 0.2953
+    },
+    {
+      "group": "plugin",
+      "auc_drop": 0.0521
+    },
+    {
+      "group": "report_class",
+      "auc_drop": 0.0421
+    },
+    {
+      "group": "recipient_class",
+      "auc_drop": 0.0177
+    },
+    {
+      "group": "key",
+      "auc_drop": 0.0025
+    },
+    {
+      "group": "proxy_impl",
+      "auc_drop": 0.0025
+    },
+    {
+      "group": "contract_role",
+      "auc_drop": 0.002
+    },
+    {
+      "group": "chain",
+      "auc_drop": 0.0015
+    },
+    {
+      "group": "source_origin",
+      "auc_drop": 0.0007
+    },
+    {
+      "group": "evidence_count",
+      "auc_drop": 0.0005
+    },
+    {
+      "group": "bytecode_signals",
+      "auc_drop": 0.0003
+    },
+    {
+      "group": "function",
+      "auc_drop": 0.0002
+    },
+    {
+      "group": "value_len",
+      "auc_drop": 0.0002
+    }
+  ],
+  "limits": [
+    "Triage only. The model ranks findings by how much they look like past candidates that survived triage. It does not verify anything.",
+    "Zero verified-real positives exist in the training data, so the model never predicts VERIFIED_REAL and must never be used to claim one. A high score means 'worth a live probe', nothing more.",
+    "Label skew: the training set is 85% worth-validating / 15% likely-false-positive (2249 positive / 398 negative of 2647 rows). Accuracy near the majority baseline means the model learned nothing; judge it by minority-class recall and ROC AUC instead.",
+    "Findings from plugins or chains unseen in training fall into the OTHER bucket; the model has no opinion about them beyond the generic features."
+  ],
+  "seed": 42,
+  "epochs": 120,
+  "lr": 0.05,
+  "external": 1922
+}
+</script>
+<!-- NN-DATA-END -->
+
+<script>
+"use strict";
+async function loadData() {
+  // Served over HTTP: prefer the fresh file. Opened as file:// (or the
+  // file is missing): fall back to the metrics embedded at train time.
+  try {
+    const r = await fetch("viewer-data.json", {cache: "no-store"});
+    if (r.ok) return await r.json();
+  } catch (e) { /* file:// or no backend: use embedded data */ }
+  try {
+    return JSON.parse(document.getElementById("nn-data").textContent || "null");
+  } catch (e) { return null; }
+}
+function el(id) { return document.getElementById(id); }
+function fmt(x, d) { return (x === null || x === undefined) ? "n/a" : Number(x).toFixed(d === undefined ? 3 : d); }
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderMetrics(d) {
+  const t = d.test_metrics, tr = d.train_metrics;
+  const cards = [
+    ["Test accuracy", fmt(t.accuracy), "majority baseline " + fmt(t.majority_baseline_accuracy)],
+    ["ROC AUC (test)", fmt(t.roc_auc), "0.5 = chance, 1.0 = perfect ranking"],
+    ["Worth-validating recall", fmt(t.recall_worth_validating), "precision " + fmt(t.precision_worth_validating)],
+    ["Likely-FP recall", fmt(t.recall_likely_fp), "precision " + fmt(t.precision_likely_fp)],
+    ["Train accuracy", fmt(tr.accuracy), "epochs " + d.epochs],
+    ["Test rows", String(d.test_rows), "train rows " + d.train_rows],
+  ];
+  el("metrics").innerHTML = cards.map(c =>
+    '<div class="metric"><div class="v">' + c[1] + '</div><div class="k">' +
+    esc(c[0]) + '<br>' + esc(c[2]) + '</div></div>').join("");
+  el("metric-note").textContent =
+    "Test accuracy near the majority baseline (" + fmt(t.majority_baseline_accuracy) +
+    ") would mean the network learned nothing. Judge it by likely-FP recall and ROC AUC.";
+  el("trained-at").textContent = "Trained " + esc(d.trained_at || "unknown") +
+    " · " + d.n_features + " features · layers " + d.layers.join("-");
+}
+
+function renderArch(d) {
+  const layers = d.layers, W = 560, H = 190, pad = 30;
+  const xs = layers.map((_, i) => pad + i * (W - 2 * pad) / Math.max(1, layers.length - 1));
+  const maxN = Math.max.apply(null, layers);
+  function ys(n) {
+    const out = [];
+    const shown = Math.min(n, 8);
+    for (let i = 0; i < shown; i++)
+      out.push(pad + (H - 2 * pad) * (shown === 1 ? 0.5 : i / (shown - 1)));
+    return out;
+  }
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%">';
+  const pos = layers.map((n, i) => ys(n).map(y => [xs[i], y]));
+  for (let l = 0; l < pos.length - 1; l++)
+    for (const a of pos[l]) for (const b of pos[l + 1])
+      s += '<line class="edge" x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '"/>';
+  pos.forEach((layer, l) => layer.forEach(p =>
+    s += '<circle class="node" cx="' + p[0] + '" cy="' + p[1] + '" r="5"/>'));
+  layers.forEach((n, i) =>
+    s += '<text x="' + xs[i] + '" y="' + (H - 6) + '" text-anchor="middle">' + n + '</text>');
+  s += "</svg>";
+  el("arch").innerHTML = s;
+  el("arch-note").textContent =
+    "Input " + d.n_features + " features (plugin, key, severity, recipient class, " +
+    "chain, source origin, bytecode signals, gate analysis, contract role, " +
+    "report class, value length, ...). Hidden layers tanh, output sigmoid. " +
+    "Layers with more than 8 neurons are drawn as 8.";
+}
+
+function lineChart(series, W, H) {
+  // series: [{pts:[...], cls:"loss"|"acc"|"val", max: number|null}]
+  const padL = 44, padB = 20, padT = 8, padR = 8;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%">';
+  s += '<line class="axis" x1="' + padL + '" y1="' + padT + '" x2="' + padL + '" y2="' + (padT + ih) + '"/>';
+  s += '<line class="axis" x1="' + padL + '" y1="' + (padT + ih) + '" x2="' + (padL + iw) + '" y2="' + (padT + ih) + '"/>';
+  for (const [cls, pts, max] of series) {
+    if (!pts || pts.length < 2) continue;
+    const mx = max === null ? Math.max.apply(null, pts) : max;
+    const mn = 0;
+    const step = iw / (pts.length - 1);
+    const d = pts.map((v, i) =>
+      (i === 0 ? "M" : "L") + (padL + i * step).toFixed(1) + "," +
+      (padT + ih - (v - mn) / Math.max(1e-9, mx - mn) * ih).toFixed(1)).join(" ");
+    s += '<path class="' + cls + '" d="' + d + '"/>';
+  }
+  s += '<text x="4" y="' + (padT + 4) + '">1.0</text>';
+  s += '<text x="4" y="' + (padT + ih) + '">0</text>';
+  s += "</svg>";
+  return s;
+}
+function renderCurves(d) {
+  const h = d.history || {};
+  el("curves").innerHTML = lineChart([
+    ["loss", h.loss || [], null],
+    ["acc", h.train_acc || [], 1],
+    ["val", h.val_acc || [], 1],
+  ], 560, 200);
+}
+
+function renderConfusion(d) {
+  const cm = d.test_metrics.confusion;
+  el("confusion").innerHTML =
+    "<table><tr><th></th><th>Predicted worth-validating</th><th>Predicted likely-FP</th></tr>" +
+    "<tr><th>Actually worth-validating</th><td>" + cm.tp + "</td><td>" + cm.fn + "</td></tr>" +
+    "<tr><th>Actually likely-FP</th><td>" + cm.fp + "</td><td>" + cm.tn + "</td></tr></table>";
+}
+
+function renderImportance(d) {
+  const imp = d.feature_importance || [];
+  const max = Math.max.apply(null, imp.map(x => Math.abs(x.auc_drop)).concat([0.001]));
+  el("importance").innerHTML = imp.map(x => {
+    const w = Math.abs(x.auc_drop) / max * 100;
+    return '<div class="bar-row' + (x.auc_drop < 0 ? " neg" : "") + '">' +
+      "<span>" + esc(x.group) + "</span>" +
+      '<div class="bar"><div style="width:' + w.toFixed(1) + '%"></div></div>' +
+      "<span>" + fmt(x.auc_drop) + "</span></div>";
+  }).join("") || '<p class="muted">No importance data yet.</p>';
+}
+
+function renderDataset(d) {
+  const s = d.dataset || {};
+  el("dataset").innerHTML =
+    "Candidates: " + (s.candidates ?? "n/a") + " rows (" +
+    (s.n_positive ?? "?") + " worth-validating / " + (s.n_negative ?? "?") +
+    " likely-false-positive). Joined with batch evidence: " +
+    (s.joined_with_evidence ?? "?") + "; without a batch match: " +
+    (s.without_batch_match ?? "?") + ". Excluded VERIFIED_REAL rows: " +
+    (s.excluded_verified_real_rows ?? "?") + " (adjudicated simulation-path " +
+    "false positives; real verified count is 0). Batch rows read: " +
+    (s.batch_rows ?? "?") + " (" + (s.batch_torn_lines ?? 0) + " torn lines skipped).";
+  el("limits").innerHTML = (d.limits || []).map(x => "<li>" + esc(x) + "</li>").join("");
+}
+
+function renderEmpty() {
+  document.querySelectorAll("#metrics,#arch,#curves,#confusion,#importance,#dataset")
+    .forEach(n => n.innerHTML = "");
+  el("metric-note").textContent =
+    "No training run yet. Train it with: python -m app.nn.train " +
+    "(from backend/, with the candidates file present).";
+}
+
+el("score-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const target = el("score-target").value.trim();
+  const btn = el("score-btn"), status = el("score-status"), out = el("score-results");
+  if (!target) return;
+  btn.disabled = true;
+  status.textContent = "Running plugins against " + target + " — this can take a few minutes for contracts…";
+  out.innerHTML = "";
+  try {
+    const r = await fetch("/api/nn/score", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({target: target}),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const rec = await r.json();
+    status.textContent = "Plugins run: " + rec.plugins_run.length +
+      " · findings: " + rec.findings_count +
+      (rec.notes && rec.notes.length ? " · " + rec.notes.length + " notes" : "");
+    if (!rec.findings.length) {
+      out.innerHTML = "<p class='muted'>No findings. Nothing to rank.</p>";
+      return;
+    }
+    let h = "<table><tr><th>Score</th><th>Label</th><th>Plugin / key</th><th>Top features</th></tr>";
+    for (const f of rec.findings.slice(0, 50)) {
+      const pill = f.nn_label === "worth-validating" ? "good" : "bad";
+      h += "<tr><td>" + fmt(f.nn_score) + "</td><td><span class='pill " + pill + "'>" +
+        esc(f.nn_label || "") + "</span></td><td>" + esc(f.plugin) + " / " + esc(f.key) +
+        "</td><td class='muted'>" + (f.nn_top_features || []).map(t =>
+          esc(t.feature) + " " + (t.direction === "up" ? "↑" : "↓")).join(", ") + "</td></tr>";
+    }
+    out.innerHTML = h + "</table>";
+  } catch (e) {
+    status.innerHTML = "No backend score endpoint reachable (" + esc(e.message) +
+      "). Run it from a terminal instead:<br><code>python -m app.nn.score --target " +
+      esc(target) + "</code>";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadData().then(d => {
+  if (!d || !d.test_metrics) { renderEmpty(); return; }
+  renderMetrics(d); renderArch(d); renderCurves(d);
+  renderConfusion(d); renderImportance(d); renderDataset(d);
+});
+</script>
+</body>
+</html>

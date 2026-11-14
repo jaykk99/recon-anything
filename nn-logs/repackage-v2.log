@@ -1,0 +1,8 @@
+ckpt epochs_done=120 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 seed=42
+frozen own rows 725 train 580 test 145 + external 1922 = train 2502
+TRAIN n=2502 acc=0.9892 auc=0.9993 cm={'tn': 369, 'fp': 8, 'fn': 19, 'tp': 2106}
+TEST n=145 acc=0.9103 auc=0.9685 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} baseline=0.8552
+  holdout label changed since freeze: ('base', '0x9c7beba8f6ef6643abd725e45a4e8387ef260649', 'contract_logic', 'access_control_flaw', 'mint') 1 -> 0
+TEST current-labels n=145 acc=0.9172 auc=0.9690 cm={'tn': 19, 'fp': 3, 'fn': 9, 'tp': 114} (1 holdout row(s) relabelled since freeze)
+importance: [{'group': 'bounty_value', 'auc_drop': 0.0841}, {'group': 'proxy_impl', 'auc_drop': 0.0334}, {'group': 'contract_role', 'auc_drop': 0.0269}, {'group': 'plugin', 'auc_drop': 0.0169}, {'group': 'recipient_class', 'auc_drop': 0.0138}, {'group': 'report_class', 'auc_drop': 0.0108}, {'group': 'bytecode_signals', 'auc_drop': 0.0077}, {'group': 'source_origin', 'auc_drop': 0.0061}, {'group': 'value_len', 'auc_drop': -0.0006}, {'group': 'function', 'auc_drop': -0.0008}, {'group': 'evidence_count', 'auc_drop': -0.0023}, {'group': 'chain', 'auc_drop': -0.0038}, {'group': 'key', 'auc_drop': -0.0142}]
+REPACKAGE-DONE

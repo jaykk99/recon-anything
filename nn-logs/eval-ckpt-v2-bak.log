@@ -1,0 +1,7 @@
+ckpt: nn-logs/v2-ownholdout-ckpt.json epochs_done=120 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 seed=42
+own rows 725 train 580 test 145 + external 1922
+holdout dumped to nn-logs/own-holdout-145-bak.jsonl (145 rows)
+OWN-HOLDOUT test n=145 acc=0.9103 auc=0.9685 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} baseline=0.8552
+  FP recall (likely-fp recall)=0.8571 precision_likely_fp=0.6429 recall_worth_validating=0.9194
+TRAIN n=2502 acc=0.9892 auc=0.9993 cm={'tn': 369, 'fp': 8, 'fn': 19, 'tp': 2106}
+EVAL-CKPT-DONE
