@@ -18,7 +18,7 @@ import hashlib
 import random
 import string
 import time
-from typing import Dict, List
+from typing import Dict
 from urllib.parse import urlparse
 
 from ..classifier import domain_from_target

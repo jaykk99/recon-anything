@@ -2,9 +2,7 @@
 Delta: Stylus/Wasm branch - instead of EVM opcode analysis, flag Stylus host-call risks: external calls with no sender check and value functions with no owner gating."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

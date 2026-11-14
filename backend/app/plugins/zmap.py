@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import List
 
 from ._tier2_common import SERVICE_LABELS, host_of, resolve_ips, tcp_state
 from .base import Cost, Ctx, Plugin, PluginResult, Target

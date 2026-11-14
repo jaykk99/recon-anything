@@ -10,10 +10,9 @@ phase-1 plugins via the discovery bus.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import time
-from typing import Dict, List, Optional
+from typing import List
 from urllib.parse import urlparse
 
 from ..classifier import domain_from_target

@@ -24,7 +24,6 @@ os.environ.setdefault("ACCESS_CODE", "")
 
 import app.ratelimit as ratelimit  # noqa: E402
 from app.cache import Cache  # noqa: E402
-from app.plugins import base  # noqa: E402
 from app.plugins.base import Ctx, PageData, Target  # noqa: E402
 from app.plugins.registry import discover  # noqa: E402
 

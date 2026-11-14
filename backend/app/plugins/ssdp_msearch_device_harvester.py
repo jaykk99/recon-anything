@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 import socket
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat9_common import collect, host_port_of, text_of

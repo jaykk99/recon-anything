@@ -20,7 +20,6 @@ Detection only, read-only live probes, never a transaction.
 
 from __future__ import annotations
 
-from typing import List
 
 from .bsc_common import S, register_family
 

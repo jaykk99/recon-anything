@@ -18,7 +18,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
 
 from app.cache import Cache  # noqa: E402
 from app.finding_chain import (CHAIN_RULES, MAX_CHAIN_DEPTH,  # noqa: E402

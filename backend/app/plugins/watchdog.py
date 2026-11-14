@@ -20,7 +20,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many

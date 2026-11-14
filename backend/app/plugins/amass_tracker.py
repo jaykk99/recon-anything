@@ -24,7 +24,7 @@ Malformed snapshots degrade to ok(0), never a crash.
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Set
+from typing import List, Set
 
 from ..classifier import domain_from_target
 from ._orchestration import collect_findings, consume, override_for, \

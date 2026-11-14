@@ -1,17 +1,11 @@
 """Mach-O-entitlement-analyzer (VARIANT of binex, whose iOS lane is App Store metadata only): parses embedded entitlements / code-signature blobs from an operator-supplied Mach-O binary or IPA payload and flags dangerous entitlements.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, detect_format, load_artifacts,
+    parse_macho)
 
 
 DANGEROUS_ENT = ("get-task-allow", "com.apple.security.cs.allow-unsigned-executable-memory",

@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import sys
-from urllib.parse import urlsplit
 
 import httpx
 import pytest

@@ -10,7 +10,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.plugins import base  # noqa: E402
 from app.plugins.xss import XssPlugin  # noqa: E402
 
 

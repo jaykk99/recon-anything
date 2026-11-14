@@ -2,9 +2,7 @@
 Local MASM analysis: flags procedures that consume external/advice inputs or move assets with no assert anywhere in the program."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

@@ -2,9 +2,7 @@
 Flags Warp message receivers that never check the signer quorum / BLS threshold, and Teleporter receivers with no relayer/source verification."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

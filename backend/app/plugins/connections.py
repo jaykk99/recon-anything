@@ -55,7 +55,6 @@ class ConnectionsPlugin(Plugin):
         # Don't rely solely on the bus; parse page content ourselves.
         try:
             from ..classifier import domain_from_target
-            from ..ratelimit import fetch as _fetch
             from ..net import web_base
             domain = domain_from_target(target.type, target.normalized)
             if domain:

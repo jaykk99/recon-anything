@@ -12,7 +12,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx  # noqa: E402
-import pytest  # noqa: E402
 
 from app.plugins import base  # noqa: E402
 from app.plugins.openid_discovery import discovery_issues  # noqa: E402

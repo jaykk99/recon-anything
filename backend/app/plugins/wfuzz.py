@@ -18,7 +18,7 @@ import random
 import string
 import time
 from typing import Dict, List, Tuple
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse
 
 from ..classifier import domain_from_target
 from ..net import web_base

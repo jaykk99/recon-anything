@@ -11,7 +11,7 @@ submits a form, or uses a credential it finds.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from .bankpack_util import (FinPlugin, collect_texts, fetch_paths,
                             find_internal_leaks, looks_like_placeholder,

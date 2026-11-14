@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, List, Set
+from typing import List, Set
 from urllib.parse import quote
 
 from ..classifier import domain_from_target

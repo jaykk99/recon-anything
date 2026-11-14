@@ -1,7 +1,7 @@
 """SHIP 63: static/artifact analysis of Halo2 lookup tables and arguments."""
 from __future__ import annotations
 import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import find_values, rx, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

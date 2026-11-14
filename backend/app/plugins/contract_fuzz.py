@@ -121,7 +121,6 @@ signed or sent; the fuzz VM is Echidna's in-process EVM.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import random

@@ -30,8 +30,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.cache import Cache  # noqa: E402
 from app.plugins import contract_chain as cc  # noqa: E402
 from app.plugins import zeroday_contract_guards as zg  # noqa: E402
-from app.plugins import zeroday_differential as zd  # noqa: E402
-from app.plugins import zeroday_error_miner as ze  # noqa: E402
 from app.plugins.base import Ctx, Target  # noqa: E402
 from app.plugins.zeroday_differential import (  # noqa: E402
     ZerodayDifferentialPlugin, body_mutations, evaluate_anomaly,

@@ -2,9 +2,7 @@
 Flags single-key system upgrade authority, default-account validation that never increments the nonce, and system functions callable by anyone (no bootloader check)."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

@@ -13,7 +13,6 @@ no weakness findings.
 """
 import asyncio
 
-import pytest
 
 from app.plugins import email_infra
 from app.plugins.base import Target

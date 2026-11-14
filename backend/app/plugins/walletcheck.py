@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import time
 from typing import List
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

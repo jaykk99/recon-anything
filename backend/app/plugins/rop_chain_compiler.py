@@ -1,17 +1,13 @@
 """ROP-chain-compiler (BOUNDARY FORM - gadget INVENTORY + mitigation audit ONLY): inventories ret-terminated gadgets (address, bytes, terminator class) in an operator-supplied binary and audits exploit-mitigation posture (NX, PIE, canary, RELRO/CFG). No chain is constructed, no payload is assembled, ever.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, code_section_bytes, elf_imports,
+    load_artifacts,
+    parse_any, PT_GNU_STACK,
+    PT_GNU_RELRO, PF_X)
 
 
 def analyze(data: bytes, name: str = "") -> List[Dict[str, Any]]:

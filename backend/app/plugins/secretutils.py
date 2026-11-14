@@ -9,7 +9,7 @@ display helper for non-secret material (emails, hashes, samples).
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 
 def redact(secret: str, show: int = 4) -> str:

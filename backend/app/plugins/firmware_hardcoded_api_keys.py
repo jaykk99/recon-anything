@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict, List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
-from ._cat8_common import collect, mask_secret, strings_only
+from ._cat8_common import collect, mask_secret
 
 _PATTERNS = [
     ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),

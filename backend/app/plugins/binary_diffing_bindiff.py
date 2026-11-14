@@ -1,17 +1,11 @@
 """Binary-diffing-bindiff: function-level diff of two versions of an operator-supplied binary (old + new supplied as the first two artifacts) - changed/new/removed function blocks by instruction hashing, highlighting newly patched sites.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, code_section_bytes, load_artifacts,
+    parse_any, split_blocks)
 
 
 def function_hashes(code: bytes) -> Dict[str, Dict[str, Any]]:

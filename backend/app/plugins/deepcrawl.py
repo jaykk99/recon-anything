@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from typing import List, Set
 from urllib.parse import urljoin, urlparse
 

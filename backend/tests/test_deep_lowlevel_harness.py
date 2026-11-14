@@ -9,7 +9,6 @@
   passes, and run_guarded executes a trivial command and
   records an audit.
 """
-import json
 import os
 import sys
 
@@ -23,7 +22,6 @@ from app.agent_sandbox_guard import (  # noqa: E402
 from app.plugin_schema import (  # noqa: E402
     PluginInput, PluginOutput, PluginFinding, load_dag,
     validate_plugin_output)
-from app.plugins.registry import discover  # noqa: E402
 
 NEW_IDS = [
     "evm_cfg_basic_block_reconstructor",

@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List, Optional
-from urllib.parse import quote
+from typing import List
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

@@ -32,7 +32,7 @@ import hashlib
 import html as html_lib
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import unquote
 
 from ..classifier import domain_from_target

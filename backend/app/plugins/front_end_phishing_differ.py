@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
-from ._cat4_common import ADDR_RE, artifact_texts, fetch
+from ._cat4_common import ADDR_RE, artifact_texts
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 OVERLAY_HINTS = ("web3modal", "walletconnect", "connect-wallet",

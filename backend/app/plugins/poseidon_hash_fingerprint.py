@@ -1,7 +1,7 @@
 """SHIP 77: parameter extraction vs a local reference table."""
 from __future__ import annotations
 import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import first, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

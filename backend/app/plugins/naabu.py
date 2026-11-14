@@ -9,7 +9,6 @@ rate a medium severity, the rest low.
 from __future__ import annotations
 
 import time
-from typing import List
 
 from ._tier2_common import (RISKY_PORTS, SERVICE_LABELS, host_of,
                             resolve_ips, tcp_state)

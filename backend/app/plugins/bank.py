@@ -406,7 +406,6 @@ class BankPlugin(Plugin):
         # Distinct API / mobile-banking hosts the page itself points
         # at (absolute URLs in markup): the mobile channel usually
         # lives on its own host and is half the attack surface.
-        from urllib.parse import urlparse as _up
         hosts = set()
         for m in re.finditer(r"https?://([a-z0-9.\-]+)", html or "",
                              re.IGNORECASE):

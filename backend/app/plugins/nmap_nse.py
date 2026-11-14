@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict
 
 from ._tier2_common import (SERVICE_LABELS, extract_title, host_of,
                             resolve_ips, tcp_banner, tls_probe)

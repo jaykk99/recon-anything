@@ -2,9 +2,7 @@
 Flags account capabilities linked at a public path that borrow privileged resources, and privileged resource functions with no entitlement / restricted access."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

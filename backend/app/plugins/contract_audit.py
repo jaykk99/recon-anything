@@ -23,7 +23,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 ETH_API = "https://api.etherscan.io/api"
 SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"

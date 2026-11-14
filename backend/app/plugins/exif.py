@@ -11,7 +11,7 @@ import re
 import struct
 import time
 from typing import Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

@@ -32,7 +32,7 @@ ONE missing ingredient so they never double-fire -
 """
 from __future__ import annotations
 
-from .bsc_common import DetectorSpec, S, register_family
+from .bsc_common import S, register_family
 
 FAMILY = "access"
 

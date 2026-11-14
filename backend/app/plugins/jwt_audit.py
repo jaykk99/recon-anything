@@ -23,7 +23,7 @@ import hmac
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from ..classifier import domain_from_target
 from .base import Cost, Ctx, Plugin, PluginResult, Target

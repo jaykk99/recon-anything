@@ -7,12 +7,10 @@ down; they never assert on live balances, only on shape + verdict.
 Fork tests run against a local Anvil fork and assert the stranger
 received 0 and the verdict stays UNVERIFIED.
 """
-import json
 import os
 import stat
 import sys
 import shutil
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))

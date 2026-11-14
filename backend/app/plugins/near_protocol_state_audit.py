@@ -2,9 +2,7 @@
 Flags callbacks not marked #[private], promise results consumed without a Failed check, and attached_deposit used without an assertion."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

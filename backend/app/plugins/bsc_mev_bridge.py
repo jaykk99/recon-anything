@@ -35,7 +35,7 @@ Dedupe map (outcome per ID, also in the PR body):
 """
 from __future__ import annotations
 
-from .bsc_common import DetectorSpec, S, register_family
+from .bsc_common import S, register_family
 
 FAMILY = "mev_bridge"
 

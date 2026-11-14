@@ -423,7 +423,6 @@ class Ctx:
         Returns a PageData (dict with status_code/headers/text/url,
         also readable as attributes) or None on failure.
         """
-        from ..ratelimit import fetch as _fetch
         # Normalize the key: "https://host" and "https://host/" are the same
         # page, so every plugin's homepage read hits one shared cache entry
         # no matter how it spelled the base URL.

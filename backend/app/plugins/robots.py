@@ -6,7 +6,6 @@ Custom-built, no API keys needed.
 """
 from __future__ import annotations
 
-import re
 import time
 from typing import List
 from xml.etree import ElementTree

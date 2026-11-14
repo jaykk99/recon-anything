@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, List, Set
+from typing import List, Set
 from urllib.parse import quote, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, bounded
 from .injutil import same_domain
 

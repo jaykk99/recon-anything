@@ -28,8 +28,8 @@ import base64
 import hashlib
 import re
 import time
-from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from typing import Callable, List, Optional, Tuple
+from urllib.parse import urljoin
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .injutil import same_domain

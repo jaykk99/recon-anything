@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

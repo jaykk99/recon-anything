@@ -2,9 +2,7 @@
 Delta: calls to BNB Chain precompile addresses (0x64-0x6a range: double-sign, cometBFT/light-client, BLS, native staking helpers) whose success/return value is never checked before a value or security decision."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

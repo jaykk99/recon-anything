@@ -24,7 +24,6 @@ import time
 from urllib.parse import urlparse
 
 import httpx
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))

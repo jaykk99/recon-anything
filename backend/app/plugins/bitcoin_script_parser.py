@@ -2,9 +2,7 @@
 Decodes scriptPubKey/scriptSig/witness hex into opcodes, classifies multisig m-of-n and timelocks (OP_CHECKLOCKTIMEVERIFY / OP_CHECKSEQUENCEVERIFY), flagging 1-of-n multisig and short timelocks."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

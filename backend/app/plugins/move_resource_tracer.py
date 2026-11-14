@@ -2,9 +2,7 @@
 Builds resource-mutation signals from Move source/disassembly: move_from / borrow_global_mut on a non-signer address, and destroy/burn entrypoints with no signer parameter."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

@@ -37,7 +37,7 @@ import json
 import os
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List
 from urllib.parse import parse_qsl, urlparse
 
 from ..classifier import domain_from_target

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 from ..classifier import domain_from_target

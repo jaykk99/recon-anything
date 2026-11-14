@@ -2,9 +2,7 @@
 Pure-Python opcode disassembly of Move module bytes (hex input) or a textual listing; flags MoveFrom / BorrowGlobalMut on global resources with no signer check in the module."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

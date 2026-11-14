@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target

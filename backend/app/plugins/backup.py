@@ -16,13 +16,11 @@ Authorized testing only.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import List
 from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .wayback import fetch_cdx
 

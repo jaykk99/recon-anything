@@ -23,11 +23,10 @@ Read-only: only GETs public .map files. Authorized testing only.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 from urllib.parse import urlparse
 
 from ..ratelimit import fetch, fetch_many

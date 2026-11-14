@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat8_common import (collect, host_of, is_local_or_private,

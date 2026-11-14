@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 from urllib.parse import quote
 
 from ..classifier import domain_from_target

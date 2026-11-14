@@ -39,10 +39,9 @@ import json
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
-from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 

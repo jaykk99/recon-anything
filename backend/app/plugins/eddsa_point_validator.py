@@ -1,7 +1,6 @@
 """SHIP 66: pure curve-math checks (field/canonicality/small-order) on supplied Ed25519 points and scalars."""
 from __future__ import annotations
-import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import find_values, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

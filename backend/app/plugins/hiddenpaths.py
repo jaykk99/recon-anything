@@ -6,13 +6,10 @@ checks JS for API calls, parses sitemaps and robots.txt.
 from __future__ import annotations
 
 import asyncio
-import re
-import time
 from typing import List
 from urllib.parse import urljoin
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 

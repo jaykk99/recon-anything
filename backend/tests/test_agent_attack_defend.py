@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import pytest  # noqa: E402
 
 from app import defense_watch as dw  # noqa: E402
 from app import fork_attack as fa  # noqa: E402

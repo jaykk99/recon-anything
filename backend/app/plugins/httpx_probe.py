@@ -11,7 +11,6 @@ import time
 from typing import Dict, List
 from urllib.parse import urljoin, urlparse
 
-from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ._tier2_common import extract_title, host_of, tech_hints
 from .base import Cost, Ctx, Plugin, PluginResult, Target, bounded

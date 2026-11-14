@@ -24,8 +24,7 @@ import io
 import re
 import time
 import zipfile
-from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import quote
+from typing import List, Set
 
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Plugin, PluginResult, Target

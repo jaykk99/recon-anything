@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from ..chaindata import (BLOCKCHAIR, CHAINS, SOLANA_RPC, TRONSCAN, XRPSCAN,
                          explorer_url, parse_blockchair, parse_solana_balance,

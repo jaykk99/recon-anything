@@ -12,7 +12,6 @@ simulates the vulnerable endpoints: UNION error, SLEEP delay,
 boolean content diff, /etc/passwd leak, and a raw-echo page.
 """
 import asyncio
-import time
 from urllib.parse import parse_qs, urlparse
 
 import httpx

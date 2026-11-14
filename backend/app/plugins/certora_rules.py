@@ -29,7 +29,7 @@ with the same amount expression do not flag.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from . import contract_chain as cc
 from .base import Cost, Plugin, PluginResult, Target, Ctx
