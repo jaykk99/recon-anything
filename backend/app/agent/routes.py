@@ -84,3 +84,63 @@ def agent_allowlist(body: AllowIn, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"added": body.host}
+
+
+class PlanIn(BaseModel):
+    objective: str = ""
+    run_id: str | None = None
+    authorized: bool = False
+    commands: list[str] | None = None
+    use_llm: bool = True
+    min_score: int = 40
+    limit: int = 5
+
+
+@router.post("/api/agent/plan")
+def agent_plan(body: PlanIn, request: Request):
+    """Run the multi-step agent plan for a run (owner-only).
+
+    gate -> rank -> investigate -> terminal_probe -> remediate -> verify
+    -> report. Active steps run only with authorized=True and allowlisted
+    targets. Resumable: calling again with the same run_id + objective
+    continues the stored plan. Never runs exploit code against a target.
+    """
+    require_agent_owner(request)
+    if not body.run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    import hashlib
+    import os
+    from pathlib import Path
+
+    from .. import config
+    from ..models import Target, get_session
+    from ..reporting import findings_dump
+    from . import plan as plan_mod
+
+    session = get_session()
+    try:
+        rows = findings_dump(session, body.run_id, show_secrets=False)
+        targets = [t.normalized or t.raw for t in
+                   session.query(Target).filter_by(run_id=body.run_id).all()]
+    finally:
+        session.close()
+    if not rows and not targets:
+        raise HTTPException(status_code=404, detail=f"run {body.run_id} has no data")
+    key = hashlib.sha1(f"{body.run_id}:{body.objective}".encode()).hexdigest()[:10]
+    base = os.environ.get("RECON_AGENT_PLAN_DIR") or os.path.join(
+        getattr(config, "EVIDENCE_DIR", "evidence") or "evidence", "plans")
+    workdir = Path(base) / f"{body.run_id}-{key}"
+    try:
+        result = plan_mod.run_plan(
+            workdir, objective=body.objective, run_id=body.run_id,
+            targets=targets, authorized=body.authorized, findings=rows,
+            commands=body.commands or [], use_llm=body.use_llm,
+            min_score=body.min_score, limit=body.limit, log=lambda m: None)
+    except plan_mod.PlanRefused as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    report_md = ""
+    rp = Path(result["report"].get("report", "")) if result.get("report") else None
+    if rp and rp.exists():
+        report_md = rp.read_text()[:100000]
+    return {"run_id": body.run_id, "summary": result["summary"],
+            "report_markdown": report_md}
