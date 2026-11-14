@@ -287,6 +287,111 @@ def test_score_ordering_monotonic():
     assert s_worse <= 100
 
 
+# ---------------------------------------------------------------------------
+# Wave 1.2: contract / multi-hop call-graph rules (first contract rules)
+# ---------------------------------------------------------------------------
+
+_CONTRACT_A = "0x" + "aa" * 20
+_CONTRACT_B = "0x" + "11" * 20
+
+
+def _cf(plugin, key, addr, severity="high"):
+    return _f(plugin, "web3", key,
+              f"HIGH: {key.replace('_', ' ')}: {addr} -> "
+              f"0x{'bb' * 20} on Ethereum", severity)
+
+
+def test_multicontract_composer_path():
+    rows = [
+        _cf("call_graph_multihop", "call_graph_gate_bypass_multihop",
+            _CONTRACT_A),
+        _cf("call_graph_multihop",
+            "call_graph_caller_supplied_route_multihop", _CONTRACT_A),
+        _cf("call_graph_multihop", "call_graph_value_sink_multihop",
+            _CONTRACT_A),
+    ]
+    paths, _ = correlate(rows)
+    names = _names(paths)
+    assert any("composer attack path" in n.lower() for n in names), names
+    p = [p for p in paths
+         if "composer" in p["evidence"]["path_name"].lower()][0]
+    assert "contract" in p["evidence"]["tags"]
+    assert p["evidence"]["severity"] == "high"
+    assert p["evidence"]["component_count"] == 3
+    # 3 components / 3 steps from one plugin lane: two-stage by the
+    # existing _complexity definition (multi-stage needs 3+ plugins
+    # or 4+ steps)
+    assert p["evidence"]["complexity"] == "two-stage"
+
+
+def test_multicontract_composer_with_ungated_drain_sink():
+    # the sink leg may be the storage lane's ungated-drain finding
+    # instead of the multihop value-sink finding
+    rows = [
+        _cf("cross_contract_call_graph", "call_graph_gate_bypass",
+            _CONTRACT_A),
+        _cf("call_graph_multihop",
+            "call_graph_caller_supplied_route_multihop", _CONTRACT_A),
+        _cf("storage_state_analysis", "storage_ungated_drain_live",
+            _CONTRACT_A),
+    ]
+    paths, _ = correlate(rows)
+    assert any("composer attack path" in n.lower() for n in _names(paths))
+
+
+def test_multicontract_gate_to_sink():
+    rows = [
+        _cf("call_graph_multihop", "call_graph_gate_bypass_multihop",
+            _CONTRACT_A),
+        _cf("call_graph_multihop", "call_graph_value_sink_multihop",
+            _CONTRACT_A),
+    ]
+    paths, _ = correlate(rows)
+    names = _names(paths)
+    assert any("ungated multi-contract value sink" in n.lower()
+               for n in names), names
+    assert not any("composer" in n.lower() for n in names)
+
+
+def test_multicontract_caller_route_to_sink():
+    rows = [
+        _cf("call_graph_multihop",
+            "call_graph_caller_supplied_route_multihop", _CONTRACT_A),
+        _cf("call_graph_multihop", "call_graph_value_sink_multihop",
+            _CONTRACT_A),
+    ]
+    paths, _ = correlate(rows)
+    names = _names(paths)
+    assert any("caller-supplied route to multi-contract" in n.lower()
+               for n in names), names
+    assert not any("composer" in n.lower() for n in names)
+
+
+def test_multicontract_rules_are_address_scoped():
+    # bypass on one contract + sink on another must NOT chain
+    rows = [
+        _cf("call_graph_multihop", "call_graph_gate_bypass_multihop",
+            _CONTRACT_A),
+        _cf("call_graph_multihop",
+            "call_graph_caller_supplied_route_multihop", _CONTRACT_A),
+        _cf("call_graph_multihop", "call_graph_value_sink_multihop",
+            _CONTRACT_B),
+    ]
+    paths, _ = correlate(rows)
+    names = [n.lower() for n in _names(paths)]
+    assert not any("composer" in n for n in names), names
+    assert not any("multi-contract" in n for n in names), names
+
+
+def test_multicontract_single_signal_no_path():
+    rows = [_cf("call_graph_multihop",
+                "call_graph_gate_bypass_multihop", _CONTRACT_A)]
+    paths, _ = correlate(rows)
+    assert not [n for n in _names(paths)
+                if "multi-contract" in n.lower()
+                or "composer" in n.lower()]
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
