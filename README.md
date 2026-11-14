@@ -1907,6 +1907,43 @@ cd backend
 python3 scripts/run_profile.py <run_id>   # wall vs plugin time, timeouts, slowest plugins
 ```
 
+## Multi-step agent plan
+
+A checkpointed, resumable agent plan chains the existing gated tools into one
+run:
+
+```
+gate -> rank -> investigate -> terminal_probe -> remediate -> verify -> report
+```
+
+```bash
+cd backend
+python -m app.agent.plan_cli <run_id> --objective "assess my site"
+python -m app.agent.plan_cli <run_id> --authorized \
+    --command "dig example.com" --command "whois example.com"
+```
+
+Or `POST /api/agent/plan` (owner-only) with `{run_id, objective, authorized,
+commands}`.
+
+- **gate** refuses the whole plan if the objective trips a hard boundary
+  (`app/agent/refusal.py`), and resolves target authorization once.
+- **rank** scores findings with the neural engine.
+- **investigate / terminal_probe** are the ACTIVE steps: live verification
+  through the detection-only browser/terminal layer and extra allowlisted
+  commands. They run only with `--authorized` AND allowlisted targets
+  (`app/agent/allowlist.py`); otherwise they skip with a recorded reason. The
+  terminal stays locked to its allowlist (no shell, writes, or installs) and
+  SSRF-checked (a `curl` to `169.254.169.254` is blocked).
+- **remediate / verify** draft a fix + regression test per top finding and
+  compile-check them.
+- **report** writes `report.md` and the full `audit.json` (every step and
+  tool call). State is checkpointed after each step, so re-running the same
+  `run_id` + objective resumes where it stopped.
+
+The plan never runs drafted proof-of-concept or exploit code against a
+target; it drafts fixes and tests and stops there.
+
 ## Recon -> remediation workflow
 
 After a scan, the neural engine's scores pick the findings worth acting on and
