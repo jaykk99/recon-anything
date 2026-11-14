@@ -1406,6 +1406,21 @@ _MOD_SELECT_RE = re.compile(
     r"\[\s*\w*(?:[Rr]and|[Ii]ndex|[Ww]in)\w*\s*\]")
 
 
+def _pays_array_picked_address(text: str) -> bool:
+    """True when an address read out of an array (`address w = arr[i]`)
+    is the destination of a value move in this function."""
+    for m in re.finditer(
+            r"\baddress(?:\s+payable)?\s+(\w+)\s*=\s*\w+\s*\[", text):
+        v = re.escape(m.group(1))
+        if re.search(
+                r"(?:transfer|transferFrom|send|call|safeTransfer|mint)"
+                r"\b[^;]*\b" + v + r"\b|payable\s*\(\s*" + v +
+                r"\s*\)|\b" + v + r"\s*\.\s*(?:transfer|send|call)",
+                text[m.end():]):
+            return True
+    return False
+
+
 def _analyze_weak_randomness(src: str, spec: DetectorSpec,
                              compiler: str = "",
                              contract_name: str = ""
@@ -1535,7 +1550,22 @@ def _analyze_weak_randomness(src: str, spec: DetectorSpec,
                     "commit-reveal marker in the function and "
                     "the block source is not confined to a "
                     "time comparison")
-        out.append(_finish_recipient(spec, item, text))
+        item = _finish_recipient(spec, item, text)
+        if item["report_class"] == "trigger_only" and \
+                _pays_array_picked_address(text):
+            # A winner picked by block-derived modulo over an array is
+            # drawn from an OPEN participant set (anyone can enter), so a
+            # destination read out of that array is not a fixed address:
+            # a stranger can be the one who receives. Keep candidate grade.
+            item["report_class"] = "candidate"
+            item["severity"] = spec.severity
+            item["recipient"] = "UNRESOLVED"
+            item["detail"] += (
+                " Recipient re-evaluated: the destination is drawn from "
+                "a participant array by the block-derived index, so any "
+                "entrant can be the recipient - CANDIDATE, not "
+                "trigger-only.")
+        out.append(item)
     return out
 
 

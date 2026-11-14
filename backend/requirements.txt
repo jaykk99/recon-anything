@@ -16,3 +16,8 @@ psycopg2-binary==2.9.13
 pymongo==4.10.1
 # optional: neo4j asset graph sink (only used when NEO4J_URL is set)
 neo4j==5.28.1
+# optional: keccak-256 for the deep-lowlevel Merkle-Patricia proof verifier
+# (the plugin stays silent, never a false positive, when this is absent)
+pycryptodome==3.23.0
+# optional: symbolic storage-taint tracer (deep_lowlevel); plugin is inert without it
+z3-solver==4.15.4.0

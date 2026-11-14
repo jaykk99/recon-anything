@@ -18,7 +18,7 @@ import struct
 from typing import Any, Dict, List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
-from ._cat9_common import packet_payloads, parse_pcap, text_of
+from ._cat9_common import collect, packet_payloads, parse_pcap, text_of
 
 _SNI_SHAPE = re.compile(rb"[a-z0-9\-]{2,}\.[a-z0-9\-]{2,}\.(?:com|net|"
                         rb"org|io|internal|corp|lan)\b")

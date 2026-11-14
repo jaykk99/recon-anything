@@ -16,3 +16,8 @@ backend/app/breachwatch_cache.json
 .local-env
 .local-access-code
 .venv/
+
+# any local virtualenv (e.g. .venv-mythril); never commit these
+.venv*/
+venv/
+.pytest_cache/
