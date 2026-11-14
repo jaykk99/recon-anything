@@ -1,0 +1,21 @@
+frozen own 725 train 580 test 145
+resuming; already done: []
+  external external_findings.jsonl: 1922 rows -> train 2502
+START l2-1e-3-seed43 layers=[255, 64, 32, 1] lr=0.05 l2=0.001 epochs=120 dropout=0.0 seed=43 ext=external_findings.jsonl train_n=2502
+DONE l2-1e-3-seed43: test acc=0.9103 auc=0.9727 cm={'tn': 17, 'fp': 4, 'fn': 9, 'tp': 115} fp_recall=0.8095 train_acc=0.9884 (356s)
+START l2-1e-3-seed44 layers=[255, 64, 32, 1] lr=0.05 l2=0.001 epochs=120 dropout=0.0 seed=44 ext=external_findings.jsonl train_n=2502
+DONE l2-1e-3-seed44: test acc=0.8966 auc=0.9704 cm={'tn': 18, 'fp': 3, 'fn': 12, 'tp': 112} fp_recall=0.8571 train_acc=0.9876 (875s)
+START l2-3e-2-seed43 layers=[255, 64, 32, 1] lr=0.05 l2=0.03 epochs=120 dropout=0.0 seed=43 ext=external_findings.jsonl train_n=2502
+DONE l2-3e-2-seed43: test acc=0.9241 auc=0.9693 cm={'tn': 15, 'fp': 6, 'fn': 5, 'tp': 119} fp_recall=0.7143 train_acc=0.9832 (451s)
+START l2-3e-2-seed44 layers=[255, 64, 32, 1] lr=0.05 l2=0.03 epochs=120 dropout=0.0 seed=44 ext=external_findings.jsonl train_n=2502
+DONE l2-3e-2-seed44: test acc=0.9034 auc=0.972 cm={'tn': 19, 'fp': 2, 'fn': 12, 'tp': 112} fp_recall=0.9048 train_acc=0.9856 (320s)
+START l2-1e-2-seed43 layers=[255, 64, 32, 1] lr=0.05 l2=0.01 epochs=120 dropout=0.0 seed=43 ext=external_findings.jsonl train_n=2502
+DONE l2-1e-2-seed43: test acc=0.9241 auc=0.9743 cm={'tn': 18, 'fp': 3, 'fn': 8, 'tp': 116} fp_recall=0.8571 train_acc=0.986 (348s)
+  external external-3422.jsonl: 3422 rows -> train 4002
+START ext3422-base layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=42 ext=external-3422.jsonl train_n=4002
+DONE ext3422-base: test acc=0.9103 auc=0.9697 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9933 (641s)
+START ext3422-l2-1e-3 layers=[255, 64, 32, 1] lr=0.05 l2=0.001 epochs=120 dropout=0.0 seed=42 ext=external-3422.jsonl train_n=4002
+DONE ext3422-l2-1e-3: test acc=0.9103 auc=0.9716 cm={'tn': 16, 'fp': 5, 'fn': 8, 'tp': 116} fp_recall=0.7619 train_acc=0.992 (985s)
+START ext3422-l2-3e-2 layers=[255, 64, 32, 1] lr=0.05 l2=0.03 epochs=120 dropout=0.0 seed=42 ext=external-3422.jsonl train_n=4002
+DONE ext3422-l2-3e-2: test acc=0.9241 auc=0.9689 cm={'tn': 11, 'fp': 10, 'fn': 1, 'tp': 123} fp_recall=0.5238 train_acc=0.9178 (1000s)
+SWEEP-B2-DONE

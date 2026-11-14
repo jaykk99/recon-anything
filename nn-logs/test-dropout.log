@@ -1,0 +1,4 @@
+dropout=0 bit-identical to old code: True
+dropout numeric-grad worst relative error: 5.09e-10
+dropout-trained predict deterministic: True (p=0.9230)
+DROPOUT-TEST-DONE

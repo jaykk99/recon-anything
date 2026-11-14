@@ -58,6 +58,8 @@ class MLP:
         rng = random.Random(seed)
         self.weights: List[List[List[float]]] = []
         self.biases: List[List[float]] = []
+        self._fwd_pre: List[List[float]] = []
+        self._fwd_mask: List[List[float]] = []
         for fan_in, fan_out in zip(self.layers[:-1], self.layers[1:]):
             # Xavier uniform: keeps tanh units out of saturation at init.
             limit = math.sqrt(6.0 / (fan_in + fan_out))
@@ -67,7 +69,8 @@ class MLP:
             self.biases.append([0.0 for _ in range(fan_out)])
 
     # -- forward ---------------------------------------------------------
-    def _forward(self, x: Sequence[float], nz=None):
+    def _forward(self, x: Sequence[float], nz=None, dropout: float = 0.0,
+                 training: bool = False, rng=None):
         """Return (activations, pre-activations); activations[0] is x.
 
         nz is an optional precomputed list of nonzero input indices.
@@ -78,12 +81,29 @@ class MLP:
         CPython's compensated sum, the sparse path a plain loop).
         This is what makes an 11k-input network trainable in pure
         Python: a finding lights up ~60 inputs, not 11,573.
+
+        Dropout (training only, hidden layers only, inverted): each
+        hidden unit is kept with probability (1 - dropout) and its
+        activation scaled by 1 / (1 - dropout), so the expected sum
+        at inference (dropout off) matches. The pre-dropout tanh
+        values and the per-unit keep/scale factors are kept on the
+        instance as _fwd_pre / _fwd_mask for _deltas, which needs the
+        true tanh derivative (1 - tanh(z)^2, not 1 - a'^2) times the
+        mask: a dropped unit carries no gradient to its inputs.
+        _fwd_pre / _fwd_mask are reset on every forward call; eval
+        forwards (dropout 0 / training False) record identity masks.
         """
         # Never copy the input: at 11,573 inputs, list(map(float, x))
         # on every forward pass was the whole training cost (the
         # vector is only read here, never mutated).
         acts = [x if type(x) is list else list(map(float, x))]
         pres = []
+        self._fwd_pre = []
+        self._fwd_mask = []
+        drop = float(dropout) if (training and dropout) else 0.0
+        if drop < 0.0 or drop >= 1.0:
+            raise ValueError(f"dropout must be in [0, 1): {dropout}")
+        keep_scale = 1.0 / (1.0 - drop) if drop > 0.0 else 1.0
         n_in = len(acts[0])
         if nz is None:
             nz = [i for i, v in enumerate(acts[0]) if v != 0.0]
@@ -100,8 +120,21 @@ class MLP:
                  for row, bias in zip(w0, b0)]
         pres.append(z)
         single_layer = len(self.weights) == 1
-        acts.append([_sigmoid(v) for v in z] if single_layer
-                    else [_tanh(v) for v in z])
+        if single_layer:
+            acts.append([_sigmoid(v) for v in z])
+            self._fwd_pre.append(list(acts[-1]))
+            self._fwd_mask.append([1.0] * len(z))
+        else:
+            hidden = [_tanh(v) for v in z]
+            self._fwd_pre.append(list(hidden))
+            if drop > 0.0:
+                mask = [0.0 if rng.random() < drop else keep_scale
+                        for _ in hidden]
+                self._fwd_mask.append(mask)
+                acts.append([a * m for a, m in zip(hidden, mask)])
+            else:
+                self._fwd_mask.append([1.0] * len(hidden))
+                acts.append(hidden)
         for li in range(1, len(self.weights)):
             w, b = self.weights[li], self.biases[li]
             z = [sum(map(mul, row, acts[-1])) + bias
@@ -109,8 +142,19 @@ class MLP:
             pres.append(z)
             if li == len(self.weights) - 1:
                 acts.append([_sigmoid(v) for v in z])
+                self._fwd_pre.append(list(acts[-1]))
+                self._fwd_mask.append([1.0] * len(z))
             else:
-                acts.append([_tanh(v) for v in z])
+                hidden = [_tanh(v) for v in z]
+                self._fwd_pre.append(list(hidden))
+                if drop > 0.0:
+                    mask = [0.0 if rng.random() < drop else keep_scale
+                            for _ in hidden]
+                    self._fwd_mask.append(mask)
+                    acts.append([a * m for a, m in zip(hidden, mask)])
+                else:
+                    self._fwd_mask.append([1.0] * len(hidden))
+                    acts.append(hidden)
         return acts, pres
 
     def predict_proba(self, x: Sequence[float], nz=None) -> float:
@@ -129,15 +173,35 @@ class MLP:
         deltas: List[Optional[List[float]]] = [None] * n_layers
         p = acts[-1][0]
         deltas[-1] = [p - y]
+        # Dropout-aware hidden deltas: the gradient through a hidden
+        # unit is dL/da' * mask * tanh'(z), where a' is the dropped
+        # activation, mask is 0 / 1/(1-p), and tanh'(z) = 1 - tanh(z)^2
+        # from the PRE-dropout activation recorded by the forward pass
+        # that produced these acts. Falls back to the plain rule when
+        # no dropout state is recorded (eval forwards, _backward).
+        pre = getattr(self, "_fwd_pre", None)
+        mask = getattr(self, "_fwd_mask", None)
         for li in range(n_layers - 2, -1, -1):
             w_next = self.weights[li + 1]
             d_next = deltas[li + 1]
             a = acts[li + 1]  # tanh activations of this layer
-            delta = []
-            for j in range(len(a)):
-                s = sum(map(mul, (w_next[k][j] for k in range(len(d_next))),
-                            d_next))
-                delta.append(s * _tanh_deriv(a[j]))
+            if (pre is not None and mask is not None
+                    and li < len(pre) and li < len(mask)
+                    and len(pre[li]) == len(a)
+                    and len(mask[li]) == len(a)):
+                pre_li, mask_li = pre[li], mask[li]
+                delta = []
+                for j in range(len(a)):
+                    s = sum(map(mul, (w_next[k][j] for k in range(len(d_next))),
+                                d_next))
+                    delta.append(s * (1.0 - pre_li[j] * pre_li[j])
+                                 * mask_li[j])
+            else:
+                delta = []
+                for j in range(len(a)):
+                    s = sum(map(mul, (w_next[k][j] for k in range(len(d_next))),
+                                d_next))
+                    delta.append(s * _tanh_deriv(a[j]))
             deltas[li] = delta
         return deltas
 
@@ -167,7 +231,8 @@ class MLP:
             checkpoint_path: Optional[str] = None,
             checkpoint_every: int = 10,
             start_epoch: int = 0,
-            resume_state: Optional[Tuple[list, int]] = None) -> Dict[str, List[float]]:
+            resume_state: Optional[Tuple[list, int]] = None,
+            dropout: float = 0.0) -> Dict[str, List[float]]:
         """Train with mini-batch SGD. Returns per-epoch history.
 
         history = {"loss": [...], "train_acc": [...], "val_acc": [...]}
@@ -176,6 +241,9 @@ class MLP:
         > 1 records loss/accuracy only every Nth epoch (and the first):
         the weights are identical, only the reporting is sparser.
         Sweeps pass a large value; the shipped train run uses 1.
+        dropout in [0, 1): inverted dropout on hidden units during
+        training only (0 = off, the pre-dropout behaviour); eval
+        forwards never drop, so predict_proba is deterministic.
 
         Crash-proofing: checkpoint_path + checkpoint_every write the
         full weights to disk every N epochs (atomic tmp + rename) and
@@ -241,7 +309,9 @@ class MLP:
                 idxs = order[start:start + int(batch_size)]
                 touched: set = set()
                 for i in idxs:
-                    acts, _ = self._forward(X[i], nz=X_nz[i])
+                    acts, _ = self._forward(
+                        X[i], nz=X_nz[i], dropout=dropout, training=True,
+                        rng=rng)
                     # Fuse the gradient into the batch accumulator
                     # directly: same d[i]*a_prev[j] products _backward
                     # would build, without a throwaway matrix per

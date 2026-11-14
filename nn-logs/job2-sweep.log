@@ -1,0 +1,25 @@
+frozen own 725 train 580 test 145 + external 1922
+resuming; already done: []
+START base-single layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE base-single: test acc=0.9103 auc=0.9685 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9892 (333s)
+START base-seed43 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=43 neg_dup=1 chunked=False train_n=2502
+DONE base-seed43: test acc=0.9172 auc=0.9689 cm={'tn': 17, 'fp': 4, 'fn': 8, 'tp': 116} fp_recall=0.8095 train_acc=0.9884 (309s)
+START base-seed44 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=44 neg_dup=1 chunked=False train_n=2502
+DONE base-seed44: test acc=0.9103 auc=0.9681 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9888 (321s)
+START base-chunked layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=True train_n=2502
+  base-chunked ep20: test acc=0.8897 auc=0.9635 cm={'tn': 18, 'fp': 3, 'fn': 13, 'tp': 111} train_acc=0.988
+  base-chunked ep40: test acc=0.9103 auc=0.97 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} train_acc=0.9892
+  base-chunked ep60: test acc=0.8966 auc=0.972 cm={'tn': 18, 'fp': 3, 'fn': 12, 'tp': 112} train_acc=0.9876
+  base-chunked ep80: test acc=0.931 auc=0.9743 cm={'tn': 13, 'fp': 8, 'fn': 2, 'tp': 122} train_acc=0.9852
+  base-chunked ep100: test acc=0.9034 auc=0.97 cm={'tn': 18, 'fp': 3, 'fn': 11, 'tp': 113} train_acc=0.9892
+  base-chunked ep120: test acc=0.9172 auc=0.9689 cm={'tn': 17, 'fp': 4, 'fn': 8, 'tp': 116} train_acc=0.9884
+DONE base-chunked: test acc=0.9172 auc=0.9689 cm={'tn': 17, 'fp': 4, 'fn': 8, 'tp': 116} fp_recall=0.8095 train_acc=0.9884 (328s)
+START l2-1e-3 layers=[255, 64, 32, 1] lr=0.05 l2=0.001 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE l2-1e-3: test acc=0.9241 auc=0.9747 cm={'tn': 18, 'fp': 3, 'fn': 8, 'tp': 116} fp_recall=0.8571 train_acc=0.9884 (293s)
+START l2-1e-2 layers=[255, 64, 32, 1] lr=0.05 l2=0.01 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE l2-1e-2: test acc=0.9103 auc=0.977 cm={'tn': 19, 'fp': 2, 'fn': 11, 'tp': 113} fp_recall=0.9048 train_acc=0.988 (292s)
+START l2-3e-2 layers=[255, 64, 32, 1] lr=0.05 l2=0.03 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE l2-3e-2: test acc=0.9241 auc=0.9724 cm={'tn': 19, 'fp': 2, 'fn': 9, 'tp': 115} fp_recall=0.9048 train_acc=0.9856 (293s)
+START small-32-16 layers=[255, 32, 16, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE small-32-16: test acc=0.8966 auc=0.97 cm={'tn': 18, 'fp': 3, 'fn': 12, 'tp': 112} fp_recall=0.8571 train_acc=0.9892 (109s)
+START ep60 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=60 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502

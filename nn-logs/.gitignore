@@ -5,3 +5,10 @@ v3-a-64-32-120/
 v3-a-64-32-120-ckpt.json
 v3-b-32-16-120/
 v3-b-32-16-120-ckpt.json
+# Job 2 sweep artifacts: checkpoints are reproducible from the sweep
+# scripts + data; fetched HF rows are 160+ MB. Only the metrics
+# (sweep-results*.jsonl) and the scripts are the record. Kept on
+# disk, never committed.
+job2/*-ckpt.json
+job2/*-rows.jsonl
+job2/external-3422.jsonl

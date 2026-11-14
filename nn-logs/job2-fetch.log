@@ -1,0 +1,19 @@
+xanoutas/solidity-security-findings: splits=[('default', 'train')]
+xanoutas/solidity-security-findings: total=18869
+  xanoutas/solidity-security-findings: 5000/18869 rows (84s)
+  xanoutas/solidity-security-findings: 10000/18869 rows (163s)
+  retry after HTTPError: HTTP Error 502: Bad Gateway
+  xanoutas/solidity-security-findings: 15000/18869 rows (252s)
+xanoutas/solidity-security-findings: wrote 18869 rows to /home/hatch/workspace/wt/nn-scorer/nn-logs/job2/xanoutas-rows.jsonl (309s)
+mmlliu/audit-findings-dataset: splits=[('default', 'train')]
+mmlliu/audit-findings-dataset: total=23625
+  retry after HTTPError: HTTP Error 502: Bad Gateway
+  mmlliu/audit-findings-dataset: 5000/23625 rows (108s)
+  retry after HTTPError: HTTP Error 502: Bad Gateway
+  mmlliu/audit-findings-dataset: 10000/23625 rows (247s)
+  retry after HTTPError: HTTP Error 502: Bad Gateway
+  retry after HTTPError: HTTP Error 502: Bad Gateway
+  mmlliu/audit-findings-dataset: 15000/23625 rows (357s)
+  mmlliu/audit-findings-dataset: 20000/23625 rows (538s)
+mmlliu/audit-findings-dataset: wrote 23625 rows to /home/hatch/workspace/wt/nn-scorer/nn-logs/job2/auditfindings-rows.jsonl (608s)
+FETCH-DONE

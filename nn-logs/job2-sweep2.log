@@ -1,0 +1,20 @@
+frozen own 725 train 580 test 145 + external 1922
+resuming; already done: ['base-chunked', 'base-seed43', 'base-seed44', 'base-single', 'l2-1e-2', 'l2-1e-3', 'l2-3e-2', 'small-32-16']
+SKIP base-single (already done)
+SKIP base-seed43 (already done)
+SKIP base-seed44 (already done)
+SKIP base-chunked (already done)
+SKIP l2-1e-3 (already done)
+SKIP l2-1e-2 (already done)
+SKIP l2-3e-2 (already done)
+SKIP small-32-16 (already done)
+START ep60 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=60 dropout=0.0 seed=42 neg_dup=1 chunked=False train_n=2502
+  resume ep60 at epoch 40
+DONE ep60: test acc=0.8966 auc=0.972 cm={'tn': 18, 'fp': 3, 'fn': 12, 'tp': 112} fp_recall=0.8571 train_acc=0.988 (37s)
+START drop-0.2 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.2 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE drop-0.2: test acc=0.9103 auc=0.9708 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9892 (305s)
+START drop-0.3-l2-1e-3 layers=[255, 64, 32, 1] lr=0.05 l2=0.001 epochs=120 dropout=0.3 seed=42 neg_dup=1 chunked=False train_n=2502
+DONE drop-0.3-l2-1e-3: test acc=0.9103 auc=0.9704 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9888 (326s)
+START neg-dup2 layers=[255, 64, 32, 1] lr=0.05 l2=0.0001 epochs=120 dropout=0.0 seed=42 neg_dup=2 chunked=False train_n=2879
+DONE neg-dup2: test acc=0.9103 auc=0.9662 cm={'tn': 18, 'fp': 3, 'fn': 10, 'tp': 114} fp_recall=0.8571 train_acc=0.9892 (332s)
+SWEEP-DONE
