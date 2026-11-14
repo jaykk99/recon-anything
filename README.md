@@ -327,6 +327,72 @@ line up, a compound **kill chain** (recon → foothold → access →
 escalation) that orders isolated weak spots into the sequence an
 attacker would actually walk.
 
+### Neural scoring engine (`backend/app/nn_engine.py`)
+
+Every finding is scored once, at finalize, by a small neural network: a
+2-layer MLP (80 features -> 16 tanh -> actionability) that gives findings
+from across the whole registry one comparable 0-100 scale, and gives the
+run a single number the network produced. Inference is pure stdlib - the
+weights are a JSON file next to the module, no numpy/torch/sklearn at
+runtime, ~1.3k multiply-adds per finding, deterministic in any process
+(key tokens are sha1-bucketed, never Python's salted `hash()`).
+
+Features are the evidence every plugin already emits: severity,
+exploitability tier, confidence, bounty tier, the 27 semantic signals
+`correlate` derives (credential / ssrf / takeover / weaponized_cve ...),
+category, verification-command and manual-verification flags, and 24
+hashed key-token buckets - so a plugin added tomorrow is scored on its own
+vocabulary with no model change and no retraining.
+
+Each finding carries the score in `evidence.nn`:
+
+```json
+{"score": 78, "p": 0.78, "band": "high", "version": "2026-11-14",
+ "drivers": [{"feature": "sev_critical", "contribution": 4.21},
+              {"feature": "expl_weaponized", "contribution": 2.05}]}
+```
+
+`drivers` names the inputs that moved the score, so a number is always
+traceable to evidence instead of trusted as a black box - the same
+"candidate, not verdict" contract the detectors follow.
+
+The run exposure block is now network-driven: `exposure.score`,
+`.band` and `.headline` come from the model (the strongest finding sets
+most of it; summed probability mass adds the rest with diminishing
+returns, so a noisy run of low-confidence notes cannot peg at 100), with
+the previous heuristic kept under `exposure.heuristic` and the full model
+block - top findings, actionable count, mean probability - under
+`exposure.nn`. Missing or corrupt weights disable the engine cleanly and
+finalize falls back to the heuristic score.
+
+Training (`backend/app/nn_train.py`, numpy, dev-only) ships weights that
+distill the project's own adjudication policy - `prioritizer.impact_of` x
+exploitability x confidence, plus semantic-signal breadth and available
+verification commands - over the real registry vocabulary parsed textually
+from `app/plugins/` (881 declared plugin ids, 1,802 records, split by
+plugin so the holdout never saw the id). Measured on that held-out split:
+**Spearman 0.9145, MAE 0.0281, AUC 0.9948**. That is the honest claim: one
+network reproduces the hand-tuned ranking it was distilled from across all
+plugins; it does not yet outperform that policy, and it inherits its blind
+spots. When adjudicated finding-level labels accumulate, retrain against
+them instead:
+
+```bash
+python -m app.nn_train --corpus labels.jsonl   # {"finding": {...}, "label": 0..1}
+python -m app.nn_train                          # policy distillation (shipped weights)
+python -m app.nn_train --self-report            # model + measured metrics
+python -m app.nn_engine findings.jsonl          # score any JSONL, ranked
+```
+
+
+The score is what orders every surface: `findings_dump` backfills it
+for older runs and sorts by it, so the run-detail API, the JSON/CSV/MD/HTML
+exports, the MCP tools and the UI list (its default sort) all serve the
+same ranking - KEV and crypto-key findings still lead, and unscored
+legacy rows fall back to the old heuristic order behind them.
+
+Gate: `tests/test_nn_engine.py`.
+
 ### Verification commands on every finding
 
 Every actionable finding (and every attack path) carries the exact

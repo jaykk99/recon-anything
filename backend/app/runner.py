@@ -1644,6 +1644,35 @@ def _correlate_run(session, run_id: str):
         tid = first_target.id if first_target else run_id
         host_hint = first_target.normalized if first_target else None
         paths, exposure = correlate(as_dicts, host_hint=host_hint)
+        # Neural scoring pass (app/nn_engine.py): one learned score per
+        # finding over the whole set, persisted into evidence so the API,
+        # exports and UI read the same number, and the run-level exposure
+        # score is driven by it. Degrades cleanly to the heuristic score
+        # when no weights are present.
+        try:
+            from .nn_engine import score_findings as _nn_findings
+            from .nn_engine import score_run as _nn_run
+            _blocks = _nn_findings(as_dicts)
+            for _r, _b in zip(rows, _blocks):
+                if _b:
+                    _ev = dict(_r.evidence or {})
+                    _ev["nn"] = _b
+                    _r.evidence = _ev
+            _nn_exp = _nn_run(as_dicts)
+            if _nn_exp:
+                exposure = {
+                    **(exposure or {}),
+                    "score": _nn_exp["score"],
+                    "band": _nn_exp["band"],
+                    "headline": _nn_exp["headline"],
+                    "engine": "nn",
+                    "nn": _nn_exp,
+                    "heuristic": {"score": (exposure or {}).get("score"),
+                                  "band": (exposure or {}).get("band")},
+                }
+            session.flush()
+        except Exception:
+            pass
         now = dt.datetime.now(dt.timezone.utc)
         for p in paths:
             session.add(FindingRow(
