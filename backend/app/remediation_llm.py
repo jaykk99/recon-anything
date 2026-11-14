@@ -80,6 +80,14 @@ def nn_score(row: Dict[str, Any]) -> int:
         return -1
 
 
+def is_plugin_error(row: Dict[str, Any]) -> bool:
+    """A plugin reporting that IT failed (unreachable host, missing input)
+    is operational noise, not a weakness of the target."""
+    key = str(row.get("key") or "")
+    return key.endswith("_error") or key.endswith("_degraded") or \
+        key.endswith("_no_identifiers")
+
+
 def select_queue(rows: List[Dict[str, Any]], min_score: int = 40,
                  limit: int = 5) -> List[Dict[str, Any]]:
     """Top findings by neural score, at or above ``min_score``.
@@ -90,7 +98,8 @@ def select_queue(rows: List[Dict[str, Any]], min_score: int = 40,
     ranked = []
     for r in rows:
         ev = r.get("evidence") if isinstance(r.get("evidence"), dict) else {}
-        if str(ev.get("severity", "")).lower() == "info":
+        if str(ev.get("severity", "")).lower() == "info" or \
+                is_plugin_error(r):
             continue
         s = nn_score(r)
         if s >= min_score:

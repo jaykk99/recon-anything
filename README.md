@@ -1827,6 +1827,31 @@ No em dashes in user-facing text.
 
 https://recon-anything.onrender.com
 
+## End-to-end workflow (recon -> rank -> remediate -> verify -> report)
+
+One command runs everything against a running API (start it first, see
+Quick start):
+
+```bash
+cd backend
+python -m app.workflow example.com                 # passive scan, full pipeline
+python -m app.workflow example.com --mode active --authorized
+python -m app.workflow --run-id <run_id>           # resume / re-report a run
+python -m app.workflow example.com --no-llm        # skip fix drafting
+```
+
+1. **recon**: starts the scan and waits for it (or resumes `--run-id`)
+2. **rank**: every finding carries the neural engine score, and the run gets one too
+3. **remediate**: the top-scored findings get a drafted fix plus a regression test (below)
+4. **verify**: drafted tests are compile-checked, never executed
+5. **report**: `workflow_out/<run_id>/report.md`, `summary.json`, `findings.json`, `drafts/`
+
+Plugin errors (unreachable hosts, missing input) are left out of the ranking.
+Active mode needs `--authorized`. Set `RECON_API` / `RECON_ACCESS_CODE` if
+the API is not at `http://localhost:8000` or is gated. From GitHub, use
+**Actions -> recon-workflow -> Run workflow** (passive; add an
+`ANTHROPIC_API_KEY` secret to enable drafting).
+
 ## Recon -> remediation workflow
 
 After a scan, the neural engine's scores pick the findings worth acting on and
