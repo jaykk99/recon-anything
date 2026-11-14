@@ -1636,6 +1636,19 @@ def _correlate_run(session, run_id: str):
             "source_url": r.source_url, "confidence": r.confidence,
             "evidence": r.evidence, "bounty_value": r.bounty_value,
         } for r in rows]
+        # Precision gate (app/precision.py): correlation chains findings,
+        # so it must never chain a claim the run's own evidence already
+        # contradicts - a path built on a 403 "exposure", a placeholder key
+        # or a CVE with no observed version is a false path, and it also
+        # inflates the exposure score. Suppressed rows are withheld from
+        # the synthesis only; they stay in the run and its exports with the
+        # reason they were taken out.
+        try:
+            from .precision import apply as _apply_precision
+            _gated = _apply_precision([dict(d) for d in as_dicts])
+            adjudicated = [d for d in _gated if not d.get("suppressed")]
+        except Exception:
+            adjudicated = as_dicts
         # Attach correlation findings to the run's first target (they are
         # run-level, but FindingRow requires a target_id). Its normalized
         # value is also the host hint for verification commands.
@@ -1643,7 +1656,7 @@ def _correlate_run(session, run_id: str):
             run_id=run_id).first()
         tid = first_target.id if first_target else run_id
         host_hint = first_target.normalized if first_target else None
-        paths, exposure = correlate(as_dicts, host_hint=host_hint)
+        paths, exposure = correlate(adjudicated, host_hint=host_hint)
         # Neural scoring pass (app/nn_engine.py): one learned score per
         # finding over the whole set, persisted into evidence so the API,
         # exports and UI read the same number, and the run-level exposure
@@ -1658,7 +1671,10 @@ def _correlate_run(session, run_id: str):
                     _ev = dict(_r.evidence or {})
                     _ev["nn"] = _b
                     _r.evidence = _ev
-            _nn_exp = _nn_run(as_dicts)
+            # The exposure headline is computed over the adjudicated set:
+            # a suppressed claim must not inflate the number any more than
+            # it may become an attack-path component.
+            _nn_exp = _nn_run(adjudicated)
             if _nn_exp:
                 exposure = {
                     **(exposure or {}),

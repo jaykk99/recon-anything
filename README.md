@@ -285,6 +285,67 @@ The analysis plugins (all under `backend/app/plugins/`):
   read-only `eth_call` simulations; fuzzing happens on local deploys
   against mock balances.
 
+### Precision gate: a claim is not a finding
+
+A wide registry finds a lot, and the failure mode that matters is not
+missing something - it is asserting something that is not there: a CVE
+matched against a version the page never disclosed, a "takeover" on a
+CNAME that still resolves, a "missing header" report on a page that
+never loaded, a backup "found" on a 403, a sample key from the docs.
+
+`backend/app/precision.py` runs at read time over every finding a run
+produced and grades each claim against that row's **own captured
+evidence**. It is deliberately narrow in what it may take away:
+
+| `claim_status` | when | what happens |
+|---|---|---|
+| `verified` | the row carries the proof its class needs: an HTTP 2xx, a disclosed version, an unclaimed CNAME target, a credential-shaped value, a measured-receipt verdict, a decoded JWT, a captured payload marker | nothing changes |
+| `candidate` | the claim is legitimate but the proof is missing | score capped in the `likely` band (never `confirmed`), `needs_manual_verification=true`, and `precision.missing` names exactly the evidence to capture |
+| `suppressed` | **positive contradiction**: 401/403/404/410 on an "exposed" path, a catch-all baseline page, a documentation placeholder credential, a port the same run says is closed, a validator `FALSE_POSITIVE` | kept in the row set and visible with its reason, scored into `weak`, sorted last |
+
+Nothing is deleted - the suppressed count stays visible, the same
+contract the confidence tiers keep. Two cross-row passes ride on top:
+contradicting port states become candidates, and an **attack path is
+only as proven as its weakest component** (one suppressed component
+suppresses the chain; one unproven component makes it a candidate), so
+correlation and the exposure score are computed over the adjudicated
+set rather than raw detector output.
+
+Every row carries `claim_status`, `claim_label`,
+`needs_manual_verification` and a `precision` block
+(`claim_family`/`reason`/`basis`/`missing`); `executive_summary`
+exposes the run-level `precision` block with counts, the verified share
+and the first suppressed rows with their reasons. Gate:
+`tests/test_precision.py`.
+
+### Remediation plan: what to do next
+
+Recon ends at "here is what exists". `backend/app/remediation.py` takes
+the same adjudicated rows and turns them into a fix program:
+
+- **One item per underlying problem**, not per detector hit - every
+  finding that routes to the same fix (rotate a credential, patch a
+  version, remove a path, close a port, break a chain) collapses into
+  one item with its evidence.
+- **Priority from proof, not tone.** Verified + weaponized/KEV/
+  internet-reachable is `Now`; an unproven candidate of the same
+  severity is `Next` (capture the missing evidence first); hygiene drift
+  is `Later`. Suppressed rows never enter the plan.
+- **A concrete fix per class** - steps, owner, effort - plus the
+  read-only verification commands the finding already carries.
+- **A re-test spec per item**: the plugins to re-run and the acceptance
+  criterion that closes it, so a fix is verified instead of assumed.
+
+```bash
+curl -s "$API/api/runs/<run_id>/plan" | jq '.summary, (.items[] | .title)'
+```
+
+It also ships as a **Remediation plan** section in the Markdown export,
+and its summary sits next to `precision` in `executive_summary`
+(`items`, `verified_items`, `priority`, `effort_label`, `next_action`,
+and a `posture` score/grade that counts verified findings only). Gate:
+`tests/test_remediation.py`.
+
 ### Attack-path correlation (cross-finding synthesis)
 
 Individual plugins each see one slice of a target. The correlation

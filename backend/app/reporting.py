@@ -49,9 +49,12 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
         annotate_attacker_impact = None
     out = []
     for f in rows:
+        # The value is carried in full through the annotation passes and
+        # masked at the end: adjudication (secret detection, precision,
+        # commands, impact) must reason about what was captured, never
+        # about the presentation mask. Otherwise every real credential
+        # looks "credential-shaped but truncated" and is demoted.
         v = f.value
-        if not show_secrets and f.key in SECRET_KEYS:
-            v = _mask(v)
         row = {"id": f.id, "target_id": f.target_id, "plugin": f.plugin_id,
                "category": f.category, "key": f.key, "value": v,
                "source": f.source, "source_url": f.source_url,
@@ -90,6 +93,19 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
     try:
         from .confidence import annotate_confidence
         out = annotate_confidence(out)
+    except Exception:
+        pass
+    # Precision gate (app/precision.py): the run's own captured evidence
+    # decides how each claim is presented. A claim with proof is
+    # "verified"; a claim missing its proof is a "candidate" (score capped
+    # in the likely band, needs_manual_verification names what is
+    # missing); a claim contradicted by the evidence (a 403 for an
+    # "exposed" file, a placeholder key, a validator FALSE_POSITIVE) is
+    # "suppressed" - kept and visible, never presented as a weakness.
+    # Read-time, so old runs get the same adjudication.
+    try:
+        from .precision import apply as _apply_precision
+        out = _apply_precision(out)
     except Exception:
         pass
     # Crypto-class runs (Jay's order, 2026-10-23): exposed private
@@ -138,6 +154,18 @@ def findings_dump(session, run_id: str, show_secrets: bool = False) -> List[Dict
         out = sort_by_nn(out)
     except Exception:
         pass
+    # Suppressed rows stay in the dump (the count is always visible) but
+    # never lead it: the ranking above is score-driven, and a suppressed
+    # row is not something to act on.
+    try:
+        out.sort(key=lambda r: 1 if r.get("suppressed") else 0)
+    except Exception:
+        pass
+    # Masking is presentation only, so it happens last.
+    if not show_secrets:
+        for row in out:
+            if row.get("key") in SECRET_KEYS:
+                row["value"] = _mask(str(row.get("value") or ""))
     return out
 
 
@@ -223,6 +251,17 @@ def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
           f"- {len(rows)} findings across {len(by_cat)} categories",
           f"- {sum(1 for r in rows if r['category'] == 'leak')} leak/exposure findings",
           f"- {sum(1 for r in rows if r['category'] == 'api')} API findings", ""]
+    # What to do next (app/remediation.py): the run is not finished at
+    # "here is what exists" - the report carries the fix program, each
+    # item with its evidence, steps, verification commands and the re-test
+    # that closes it. Suppressed claims never reach this section.
+    try:
+        from .remediation import to_markdown as _plan_md
+        _plan_section = _plan_md(rows)
+        if _plan_section:
+            L += [_plan_section, ""]
+    except Exception:
+        pass
     for cat in sorted(by_cat):
         L.append(f"## {cat}")
         for r in sorted(by_cat[cat], key=lambda x: (-_nn_rank(x),
@@ -495,9 +534,26 @@ def executive_summary(rows: List[Dict]) -> Dict:
         t = r.get("confidence_tier")
         if t in tiers:
             tiers[t] += 1
+    # Precision + remediation summaries (app/precision.py,
+    # app/remediation.py): how much of the run is proven, and what the
+    # owner should do about the proven part. Both are read-time and pure.
+    precision_block: Dict = {}
+    plan_block: Dict = {}
+    try:
+        from .precision import summary as _precision_summary
+        precision_block = _precision_summary(rows)
+    except Exception:
+        pass
+    try:
+        from .remediation import summary as _plan_summary
+        plan_block = _plan_summary(rows)
+    except Exception:
+        pass
     return {
         "total_findings": len(rows),
         "confidence_tiers": tiers,
+        "precision": precision_block,
+        "plan": plan_block,
         "tech_stack": techs[:20],
         "leak_count": len(leaks),
         "interesting_count": len(interesting),
