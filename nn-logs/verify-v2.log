@@ -1,0 +1,9 @@
+shipped v2 spec: 24 plugins, 24 keys, version 2
+shipped v2 metrics: {"n": 530, "n_positive": 450, "n_negative": 80, "threshold": 0.5, "accuracy": 0.9811320754716981, "majority_baseline_accuracy": 0.8490566037735849, "roc_auc": 0.9978472222222222, "confusion": {"tn": 76, "fp": 4, "fn": 6, "tp": 444}, "precision_worth_validating": 0.9910714285714286, "recall_worth_validating": 0.9866666666666667, "f1_worth_validating": 0.9888641425389756, "precision_likely_fp": 0.926829268292683, "recall_likely_fp": 0.95, "f1_likely_fp": 0.9382716049382716}
+loaded net layers [255, 64, 32, 1]
+own rows 725, external rows 1922
+COMBINED test n=530 acc=0.9811 auc=0.9978 cm={'tn': 76, 'fp': 4, 'fn': 6, 'tp': 444} baseline=0.8491
+  claimed: n=530 acc=0.9811 auc=0.9978 cm tp444 fp4 fn6 tn76
+OWN-HOLDOUT test n=145 acc=0.9310 auc=0.9804 cm={'tn': 19, 'fp': 2, 'fn': 8, 'tp': 116} baseline=0.8552
+  claimed: n=145 acc=0.9103 auc=0.9697 cm tp114 fp3 fn10 tn18
+VERIFY-DONE

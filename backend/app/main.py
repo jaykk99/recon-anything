@@ -506,6 +506,22 @@ from .mcp_server import mcp_router as _mcp_router  # noqa: E402
 app.include_router(_mcp_router, prefix="/mcp")
 
 
+# -- NN triage scorer ------------------------------------------------------
+# Optional viewer + score API for the trainable network (app/nn).
+# Guarded: a broken nn module must never take the whole app down.
+# The score endpoint sits behind the normal gate; the viewer page
+# itself is public (it only shows model metrics and a form).
+try:
+    from .nn.api import router as _nn_router  # noqa: E402
+    from .nn.api import viewer_router as _nn_viewer_router  # noqa: E402
+    app.include_router(_nn_router, prefix="/api/nn",
+                       dependencies=[Depends(gate)])
+    app.include_router(_nn_viewer_router)
+except Exception as _nn_err:  # noqa: BLE001
+    logging.getLogger(__name__).warning(
+        "nn scorer unavailable: %s", _nn_err)
+
+
 # -- classify ------------------------------------------------------------
 class ClassifyIn(BaseModel):
     text: str

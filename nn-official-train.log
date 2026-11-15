@@ -1,0 +1,11 @@
+rows: train=2117 test=530 (pos 2249 / neg 398)
+features: 255  layers: [255, 64, 32, 1]
+train acc 0.986  test acc 0.981  majority baseline 0.849
+test ROC AUC 0.998
+worth-validating: precision 0.991 recall 0.987
+likely-false-positive: precision 0.927 recall 0.950
+confusion (test): tp=444 fp=4 fn=6 tn=76
+feature importance (AUC drop): bounty_value=0.295, plugin=0.052, report_class=0.042, recipient_class=0.018, key=0.003, proxy_impl=0.003
+LIMITS: triage only; zero verified-real positives; never predicts VERIFIED_REAL.
+weights: /home/hatch/workspace/wt/nn-scorer/backend/app/nn/weights.json
+viewer data: /home/hatch/workspace/wt/nn-scorer/backend/app/nn/viewer-data.json

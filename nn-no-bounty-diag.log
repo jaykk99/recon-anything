@@ -1,0 +1,2 @@
+dim=255 bounty_value index=225
+NO-BOUNTY 120ep 64,32: acc=0.9172 base=0.8552 auc=0.9697 fp-recall=0.857 wv-recall=0.927 cm tp=115 fp=3 fn=9 tn=18

@@ -1297,6 +1297,16 @@ async def _run_one_job(job_id: int) -> None:
             f"worker error: {type(e).__name__}: {str(e)[:150]}")
         return
 
+    # NN triage scoring (optional, default off): RECON_NN_SCORING=1
+    # attaches nn_score + nn_top_features to each finding's evidence
+    # before persist, so scores land in the DB row. Never breaks a
+    # job: maybe_score_findings swallows its own errors.
+    try:
+        from .nn.pipeline import maybe_score_findings
+        maybe_score_findings(result.findings)
+    except Exception:
+        pass
+
     # Phase 3: persist findings + job outcome on a fresh session
     # (in a thread), then fan out the per-finding events.
     row_ids, counts, st = await asyncio.to_thread(

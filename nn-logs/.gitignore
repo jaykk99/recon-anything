@@ -1,0 +1,7 @@
+# Losing v3 sweep artifacts (8-24 MB each): the models are
+# reproducible from the sweep logs + data; only their metrics are
+# the record. Kept on disk, never committed.
+v3-a-64-32-120/
+v3-a-64-32-120-ckpt.json
+v3-b-32-16-120/
+v3-b-32-16-120-ckpt.json
