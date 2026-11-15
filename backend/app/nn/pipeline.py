@@ -17,8 +17,87 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .features import FeatureSpec, extract, top_features
+from .features import FeatureSpec, extract
 from .mlp import MLP
+
+
+def _net_input_dim(net) -> int:
+    """Input width the loaded net was trained on (first layer size)."""
+    try:
+        return int(net.layers[0])
+    except Exception:
+        return len(net.weights[0][0])
+
+
+def _v2_feature_names(plugins, keys):
+    """Feature names in the frozen v2 layout, in extract_v2 order.
+
+    Mirrors app.nn.verify_v2.extract_v2 exactly: plugin blocks,
+    key one-hot, bounty, recipient, chain, source, bytecode flags,
+    role, report, then the presence/length tail. No context features.
+    """
+    from .verify_v2 import (CHAINS, CONTRACT_ROLES, PLUGIN_BLOCK,
+                            RECIPIENT_CLASSES, REPORT_CLASSES,
+                            SOURCE_ORIGINS)
+    names = []
+    for p in list(plugins) + ["OTHER"]:
+        names += [f"plugin:{p}:{b}" for b in PLUGIN_BLOCK]
+    names += [f"key:{k}" for k in keys] + ["key:OTHER"]
+    names += ["bounty_value"]
+    names += ["recipient:" + r for r in RECIPIENT_CLASSES]
+    names += ["chain:" + c for c in CHAINS]
+    names += ["source:" + s for s in SOURCE_ORIGINS]
+    names += ["bytecode_only_present", "bytecode_only_true"]
+    names += ["role:" + r for r in CONTRACT_ROLES]
+    names += ["report:" + r for r in REPORT_CLASSES]
+    names += ["proxy_present", "implementation_present",
+              "function_present", "function_len",
+              "value_len", "evidence_count"]
+    return names
+
+
+def _extract_for_model(finding, model):
+    """Feature vector + names in the layout the loaded weights use.
+
+    The shipped weights are v2 (255 features) but the working tree's
+    extract() has since grown to the v3 spec (301 features), so scoring
+    with it raises IndexError inside predict_proba and every finding
+    silently lands unscored. When the current layout matches the net,
+    use it; otherwise fall back to the frozen v2 extractor recorded
+    in verify_v2.py, using the plugin/key vocab stored in weights.json.
+    """
+    net, spec, meta = model
+    dim = _net_input_dim(net)
+    try:
+        x = extract(finding, spec)
+        if len(x) == dim:
+            return x, spec.feature_names()
+    except Exception:
+        pass
+    from .verify_v2 import extract_v2
+    feats = (meta or {}).get("features") or {}
+    plugins = feats.get("plugins") or list(spec.plugins)
+    keys = feats.get("keys") or list(spec.keys)
+    x = extract_v2(finding, plugins, keys)
+    return x, _v2_feature_names(plugins, keys)
+
+
+def _top_features_for(x, names, net, k=3):
+    """Leave-one-out top features for an already-extracted vector."""
+    base = net.predict_proba(x)
+    deltas = []
+    for i, name in enumerate(names):
+        if i >= len(x) or x[i] == 0.0:
+            continue
+        x2 = list(x)
+        x2[i] = 0.0
+        d = base - net.predict_proba(x2)
+        deltas.append((abs(d), d, name))
+    deltas.sort(reverse=True)
+    return [{"feature": name,
+             "direction": "up" if d > 0 else "down",
+             "delta": round(d, 4)}
+            for _abs, d, name in deltas[:k]]
 
 _ENV_FLAG = "RECON_NN_SCORING"
 _WEIGHTS_NAME = "weights.json"
@@ -75,12 +154,12 @@ def score_finding_dicts(findings: List[Dict], model=None,
     scored = []
     for f in findings:
         try:
-            x = extract(f, spec)
+            x, names = _extract_for_model(f, model)
             p = net.predict_proba(x)
             f["nn_score"] = round(p, 4)
             f["nn_label"] = ("worth-validating" if p >= threshold
                              else "likely-false-positive")
-            f["nn_top_features"] = top_features(f, spec, net, k=3)
+            f["nn_top_features"] = _top_features_for(x, names, net, k=3)
         except Exception:
             f["nn_score"] = None
             f["nn_label"] = "unscored"
@@ -128,10 +207,11 @@ def attach_nn_scores(findings, model=None, threshold: float = 0.5):
         for f in findings:
             try:
                 d = _finding_to_dict(f)
-                p = net.predict_proba(extract(d, spec))
+                x, names = _extract_for_model(d, model)
+                p = net.predict_proba(x)
                 label = ("worth-validating" if p >= threshold
                          else "likely-false-positive")
-                feats = top_features(d, spec, net, k=3)
+                feats = _top_features_for(x, names, net, k=3)
                 if isinstance(f, dict):
                     f["nn_score"] = round(p, 4)
                     f["nn_label"] = label

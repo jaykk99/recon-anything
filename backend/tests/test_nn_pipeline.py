@@ -73,3 +73,23 @@ def test_disabled_by_default_and_never_raises(monkeypatch):
 
 def test_load_model_missing_file_returns_none(tmp_path):
     assert load_model(str(tmp_path / "nope.json")) is None
+
+
+def test_shipped_v2_weights_score_real_findings():
+    """Regression: shipped v2 weights (255 features) must score a
+    finding even though the working tree's extract() has grown to the
+    v3 spec (301 features). Before the fix every finding came back
+    unscored (IndexError inside predict_proba, swallowed per finding).
+    """
+    import copy
+    import pytest
+    model = load_model()
+    if model is None:
+        pytest.skip("no shipped weights.json in this checkout")
+    findings = [copy.deepcopy(ROWS[0][0])]
+    ranked = score_finding_dicts(findings, model=model)
+    assert ranked[0]["nn_label"] in (
+        "worth-validating", "likely-false-positive")
+    assert isinstance(ranked[0]["nn_score"], float)
+    assert 0.0 <= ranked[0]["nn_score"] <= 1.0
+    assert isinstance(ranked[0]["nn_top_features"], list)
