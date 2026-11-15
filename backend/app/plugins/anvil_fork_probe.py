@@ -172,6 +172,24 @@ class AnvilForkProbePlugin(Plugin):
                     source="anvil fork probe (sim-derived, UNVERIFIED)",
                     confidence=int(reason["confidence"]), passive=False,
                     evidence=ev))
+                # Feed the validator: a fork-success sequence is a lead
+                # for the live probe lane, never proof itself. This is
+                # the fork side of the validator_candidates bus the
+                # auto-validator reads (Wave 1.1 wiring).
+                try:
+                    ctx.publish("validator_candidates", {
+                        "address": item["address"],
+                        "chain": item["chain_id"],
+                        "function": fn["name"],
+                        "kind": "fork_sequence_success",
+                        "detail": (
+                            f"fork-sim sequence '{seq_desc}' succeeded "
+                            f"for unfunded stranger {STRANGER} "
+                            f"[SIM-DERIVED - UNVERIFIED, not proof]"),
+                        "source": item["source"],
+                    })
+                except Exception:  # noqa: BLE001 - publish never kills
+                    pass  # the plugin run
         res = self._ok(findings, f"anvil_fork_probe: {len(findings)} "
                                  f"sim-derived UNVERIFIED candidate(s)")
         res.duration_ms = int((time.monotonic() - t0) * 1000)

@@ -145,37 +145,85 @@ _DEEP_ANALYZERS: Optional[List[Any]] = None
 
 
 def _load_deep_analyzers() -> List[Any]:
-    """Load the deep_audit detector family (analyze_deepN_source + its SPECS)
+    """Load the deep detector families (analyze_deepN_source + its SPECS)
     plus the protocol auditor, once per process. These are the richest
     source-level crypto detectors; they normally only run inside the full
     plugin engine, so the fast path misses them unless scan_source(deep=True).
-    Returns a list of zero-arg-over-src callables that each yield findings."""
+
+    Loop-driven scans (Wave 1.1) run the FULL deep set, not just
+    deep_audit "",2-11: deep_audit12-19, deep_lowlevel, deep_solana,
+    recipient_first, and the bsc_* families (via bsc_common's shared
+    analyze_bsc_source). Returns a list of zero-arg-over-src callables
+    that each yield findings."""
     global _DEEP_ANALYZERS
     if _DEEP_ANALYZERS is not None:
         return _DEEP_ANALYZERS
     import importlib
     callables: List[Any] = []
-    for suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
+
+    def _spec_runner(fn, specs):
+        def run(src):
+            out = []
+            for spec in specs:
+                try:
+                    out.extend(fn(src, spec) or [])
+                except Exception:  # noqa: BLE001
+                    continue
+            return out
+        return run
+
+    for suffix in ["", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11",
+                   "12", "13", "14", "15", "16", "17", "18", "19"]:
         try:
             mod = importlib.import_module(f"app.plugins.deep_audit{suffix}")
             specs = getattr(mod, "SPECS", None)
             fn = getattr(mod, f"analyze_deep{suffix}_source", None)
             if not specs or fn is None:
                 continue
-
-            def make(fn, specs):
-                def run(src):
-                    out = []
-                    for spec in specs:
-                        try:
-                            out.extend(fn(src, spec) or [])
-                        except Exception:  # noqa: BLE001
-                            continue
-                    return out
-                return run
-            callables.append(make(fn, specs))
+            callables.append(_spec_runner(fn, specs))
         except Exception:  # noqa: BLE001
             continue
+    # Single-function families with the same (src, spec) shape.
+    for mod_name, fn_name in (
+            ("deep_lowlevel", "analyze_deep_lowlevel_source"),
+            ("deep_solana", "analyze_deep_solana_source")):
+        try:
+            mod = importlib.import_module(f"app.plugins.{mod_name}")
+            specs = getattr(mod, "SPECS", None)
+            fn = getattr(mod, fn_name, None)
+            if not specs or fn is None:
+                continue
+            callables.append(_spec_runner(fn, specs))
+        except Exception:  # noqa: BLE001
+            continue
+    # recipient_first: SPECS is a dict keyed by spec id and the analyzer
+    # takes the spec id, not the spec object.
+    try:
+        mod = importlib.import_module("app.plugins.recipient_first")
+        specs = getattr(mod, "SPECS", None)
+        fn = getattr(mod, "analyze_recipient_source", None)
+        if isinstance(specs, dict) and fn is not None:
+            callables.append(_spec_runner(
+                lambda src, sid: fn(src, sid), list(specs)))
+    except Exception:  # noqa: BLE001
+        pass
+    # bsc_* families share bsc_common.analyze_bsc_source(src, spec).
+    try:
+        from app.plugins.bsc_common import analyze_bsc_source
+        for mod_name in ("bsc_access", "bsc_bep20", "bsc_gamefi",
+                         "bsc_governance", "bsc_lending", "bsc_math_system",
+                         "bsc_mev_bridge", "bsc_pancake",
+                         "bsc_precompile_checker", "bsc_proxy", "bsc_staking"):
+            try:
+                mod = importlib.import_module(f"app.plugins.{mod_name}")
+            except Exception:  # noqa: BLE001
+                continue
+            specs = getattr(mod, "SPECS", None)
+            if not specs:
+                continue
+            callables.append(_spec_runner(analyze_bsc_source, list(specs)))
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from .plugins.cryptopack_protocol import audit_protocol_source
         callables.append(lambda src: audit_protocol_source(src) or [])
@@ -203,11 +251,16 @@ def scan_source(src: str,
     finding dicts. Never raises on a bad rule - a single detector failing
     must not drop the whole contract.
 
-    deep=True additionally runs the 11 deep_audit detector families (~84
-    crypto-focused source detectors) and the protocol auditor. That's ~8ms
-    extra per contract - negligible for the live per-address scanner (where a
-    network fetch dominates), too heavy for a million-contract bulk sweep, so
-    it is off by default and on for maximum recall on high-value targets.
+    deep=True additionally runs the deep detector families (deep_audit
+    "",2-19, deep_lowlevel, deep_solana, recipient_first and the bsc_*
+    families, plus the protocol auditor and the guard-convention
+    detector) - the full source-level crypto set, not just the first
+    11 deep_audit batches. That's ~8ms extra per contract in the old
+    shape and more with the full set - negligible for the live
+    per-address scanner (where a network fetch dominates), too heavy
+    for a million-contract bulk sweep, so it is off by default and on
+    for maximum recall on high-value targets (and always on in the
+    investigator loop's loop-driven scans).
     """
     meta = meta or {}
     findings: List[Dict[str, Any]] = []
@@ -260,8 +313,9 @@ def scan_source(src: str,
             "remediation": remediation, "plugin": pid,
         })
 
-    # Deep crypto detector families (opt-in): the ~84 deep_audit + protocol
-    # detectors that otherwise only run in the full plugin engine. For the
+    # Deep crypto detector families (opt-in): the deep_audit "",2-19,
+    # deep_lowlevel, deep_solana, recipient_first and bsc_* detectors
+    # that otherwise only run in the full plugin engine. For the
     # live/high-value path this gives the fast scan the same source-level
     # recall as the plugin engine. A crash in one family is isolated.
     if deep:

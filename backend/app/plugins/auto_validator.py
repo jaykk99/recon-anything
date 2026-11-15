@@ -79,6 +79,22 @@ STRANGER = sim.FUZZ_CALLER  # 0x000...deaDBeef, unfunded by design
 VERDICTS = ("VERIFIED_REAL", "TRIGGER_ONLY", "FALSE_POSITIVE",
             "UNVERIFIED")
 
+# Per-run candidate cap for the plugin lane. Default 8. Loop-driven
+# runs raise it (RECON_VALIDATOR_MAX_CANDIDATES, or the investigator's
+# LOOP_MAX_CANDIDATES) so the validator runs on every high-severity
+# contract candidate the loop publishes instead of silently dropping
+# the 9th and beyond.
+DEFAULT_MAX_CANDIDATES = 8
+
+
+def validator_max_candidates() -> int:
+    try:
+        return max(1, int(os.environ.get(
+            "RECON_VALIDATOR_MAX_CANDIDATES",
+            str(DEFAULT_MAX_CANDIDATES))))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_CANDIDATES
+
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -2050,7 +2066,7 @@ class AutoValidatorPlugin(Plugin):
             return res
         findings: List[Finding] = []
         counts: Dict[str, int] = {v: 0 for v in VERDICTS}
-        for cand in candidates[:8]:
+        for cand in candidates[:validator_max_candidates()]:
             try:
                 verdict = await gather_and_validate(ctx, key, cand)
             except Exception as e:
