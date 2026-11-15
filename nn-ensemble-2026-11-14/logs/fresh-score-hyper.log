@@ -1,0 +1,4 @@
+hypergraph layers=[255, 16, 16, 1] n_features=255 trained_at=2026-11-15T00:48:51.868956+00:00
+own 725 test 145 pos 124 neg 21
+test hypergraph: 11 edges, 31/145 covered
+wrote /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh-hyper-scores.jsonl n=145

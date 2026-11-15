@@ -1,0 +1,3 @@
+v2 checkpoint epochs_done=120 layers=[255, 64, 32, 1]
+own 725 test 145 pos 124 neg 21
+wrote /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/v2-scores.jsonl n=145

@@ -1,0 +1,70 @@
++ E=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14
++ CAND=/home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114
++ BATCH=/home/hatch/workspace/recon-continuous/results/batches.jsonl
++ mkdir -p /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/v2 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/multi /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/hyper /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/logs
+++ date -u +%FT%TZ
++ echo '=== RESUME MULTI START 2026-11-15T00:11:54Z'
+=== RESUME MULTI START 2026-11-15T00:11:54Z
++ cd /home/hatch/workspace/wt/nn-reval-multi/backend
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/resume_multi.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/multi
+++ date -u +%FT%TZ
++ echo '=== RESUME MULTI EXIT 0 2026-11-15T00:28:09Z'
+=== RESUME MULTI EXIT 0 2026-11-15T00:28:09Z
+++ date -u +%FT%TZ
++ echo '=== FRESH HYPER START 2026-11-15T00:28:09Z'
+=== FRESH HYPER START 2026-11-15T00:28:09Z
++ cd /home/hatch/workspace/wt/nn-reval-hyper/backend
++ python3 -m app.nn.train_hypergraph --candidates /home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114 --batches /home/hatch/workspace/recon-continuous/results/batches.jsonl --out /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/hyper
+++ date -u +%FT%TZ
++ echo '=== FRESH HYPER EXIT 0 2026-11-15T00:48:52Z'
+=== FRESH HYPER EXIT 0 2026-11-15T00:48:52Z
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE V2 START 2026-11-15T00:48:52Z'
+=== FRESH RESCORE V2 START 2026-11-15T00:48:52Z
++ cd /home/hatch/workspace/wt/nn-reval-v2/backend
++ ENSEMBLE_V2_CKPT=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/v2/v2-ownholdout-ckpt.json
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_v2.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh-v2-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE V2 EXIT 0 2026-11-15T00:49:05Z'
+=== FRESH RESCORE V2 EXIT 0 2026-11-15T00:49:05Z
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE MULTI START 2026-11-15T00:49:05Z'
+=== FRESH RESCORE MULTI START 2026-11-15T00:49:05Z
++ cd /home/hatch/workspace/wt/nn-reval-multi/backend
++ ENSEMBLE_MULTI_WEIGHTS=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/multi/weights.json
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_multi.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh-multi-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE MULTI EXIT 0 2026-11-15T00:49:23Z'
+=== FRESH RESCORE MULTI EXIT 0 2026-11-15T00:49:23Z
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE HYPER START 2026-11-15T00:49:23Z'
+=== FRESH RESCORE HYPER START 2026-11-15T00:49:23Z
++ cd /home/hatch/workspace/wt/nn-reval-hyper/backend
++ ENSEMBLE_HYPER_WEIGHTS=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/hyper/hypergraph-weights.json
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_hyper.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh-hyper-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== FRESH RESCORE HYPER EXIT 0 2026-11-15T00:49:38Z'
+=== FRESH RESCORE HYPER EXIT 0 2026-11-15T00:49:38Z
+++ date -u +%FT%TZ
++ echo '=== FRESH ENSEMBLE START 2026-11-15T00:49:38Z'
+=== FRESH ENSEMBLE START 2026-11-15T00:49:38Z
++ cd /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14
++ python3 scripts/ensemble.py results/fresh-v2-scores.jsonl results/fresh-hyper-scores.jsonl results/fresh-multi-scores.jsonl results/fresh-ensemble
+++ date -u +%FT%TZ
++ echo '=== FRESH ENSEMBLE EXIT 0 2026-11-15T00:49:38Z'
+=== FRESH ENSEMBLE EXIT 0 2026-11-15T00:49:38Z
++ cat /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/logs/fresh-ensemble.log
+aligned n=145 pos=124 neg=21 baseline=0.8552
+v2 255-64-32-1: acc=0.9103 auc=0.9685 tp=114 fp=3 fn=10 tn=18 wv_rec=0.919 fp_rec=0.857
+hypergraph 255-16-16-1: acc=0.9379 auc=0.9823 tp=117 fp=2 fn=7 tn=19 wv_rec=0.944 fp_rec=0.905
+multimodal 290-64-32-1: acc=0.9586 auc=0.9854 tp=120 fp=2 fn=4 tn=19 wv_rec=0.968 fp_rec=0.905
+ensemble avg3 (equal mean of 3): acc=0.9586 auc=0.9869 tp=119 fp=1 fn=5 tn=20 wv_rec=0.960 fp_rec=0.952
+ensemble majority vote (3 voters): acc=0.9586 auc=0.9547 tp=119 fp=1 fn=5 tn=20 wv_rec=0.960 fp_rec=0.952
+diagnostic avg multimodal+hypergraph: acc=0.9586 auc=0.9892 tp=119 fp=1 fn=5 tn=20 wv_rec=0.960 fp_rec=0.952
+diagnostic avg v2+multimodal: acc=0.9517 auc=0.9827 tp=120 fp=3 fn=4 tn=18 wv_rec=0.968 fp_rec=0.857
+diagnostic avg v2+hypergraph: acc=0.9448 auc=0.9816 tp=117 fp=1 fn=7 tn=20 wv_rec=0.944 fp_rec=0.952
+agreement: {'all_three_agree': 133, 'all_three_correct': 128, 'multimodal_correct_others_wrong': 1, 'multimodal_wrong_others_right': 1, 'unanimous_wrong': 5}
+flips vs multimodal: 2 rows
+++ date -u +%FT%TZ
++ echo '=== RESUME ALL DONE 2026-11-15T00:49:38Z'
+=== RESUME ALL DONE 2026-11-15T00:49:38Z

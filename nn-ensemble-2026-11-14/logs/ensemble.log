@@ -1,0 +1,11 @@
+aligned n=145 pos=124 neg=21 baseline=0.8552
+v2 255-64-32-1: acc=0.9103 auc=0.9685 tp=114 fp=3 fn=10 tn=18 wv_rec=0.919 fp_rec=0.857
+hypergraph 255-16-16-1: acc=0.9379 auc=0.9823 tp=117 fp=2 fn=7 tn=19 wv_rec=0.944 fp_rec=0.905
+multimodal 290-64-32-1: acc=0.9724 auc=0.9850 tp=122 fp=2 fn=2 tn=19 wv_rec=0.984 fp_rec=0.905
+ensemble avg3 (equal mean of 3): acc=0.9517 auc=0.9873 tp=119 fp=2 fn=5 tn=19 wv_rec=0.960 fp_rec=0.905
+ensemble majority vote (3 voters): acc=0.9586 auc=0.9624 tp=119 fp=1 fn=5 tn=20 wv_rec=0.960 fp_rec=0.952
+diagnostic avg multimodal+hypergraph: acc=0.9517 auc=0.9892 tp=119 fp=2 fn=5 tn=19 wv_rec=0.960 fp_rec=0.905
+diagnostic avg v2+multimodal: acc=0.9655 auc=0.9820 tp=121 fp=2 fn=3 tn=19 wv_rec=0.976 fp_rec=0.905
+diagnostic avg v2+hypergraph: acc=0.9448 auc=0.9816 tp=117 fp=1 fn=7 tn=20 wv_rec=0.944 fp_rec=0.952
+agreement: {'all_three_agree': 131, 'all_three_correct': 128, 'multimodal_correct_others_wrong': 3, 'multimodal_wrong_others_right': 1, 'unanimous_wrong': 3}
+flips vs multimodal: 4 rows

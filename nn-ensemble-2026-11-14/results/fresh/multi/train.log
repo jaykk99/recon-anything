@@ -1,0 +1,7 @@
+resumed multimodal from epoch 60, layers=[290, 64, 32, 1]
+rows: train=2502 test=145
+train acc 0.996  test acc 0.959  majority baseline 0.855
+test ROC AUC 0.985
+confusion (test): tp=120 fp=2 fn=4 tn=19
+multimodal blend (0.7 MLP + 0.3 kNN): acc 0.959  AUC 0.987
+RESUMED-MULTI-DONE

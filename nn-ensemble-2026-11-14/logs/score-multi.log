@@ -1,0 +1,3 @@
+multimodal layers=[290, 64, 32, 1] n_features=255 trained_at=2026-11-14T23:02:37.123853+00:00
+own 725 test 145 pos 124 neg 21
+wrote /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/multi-scores.jsonl n=145

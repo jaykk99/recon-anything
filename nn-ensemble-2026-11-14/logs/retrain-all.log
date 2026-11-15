@@ -1,0 +1,18 @@
++ E=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14
++ CAND=/home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114
++ BATCH=/home/hatch/workspace/recon-continuous/results/batches.jsonl
++ mkdir -p /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/v2 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/multi /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/hyper /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/logs
+++ date -u +%FT%TZ
++ echo '=== FRESH V2 START 2026-11-14T23:24:55Z'
+=== FRESH V2 START 2026-11-14T23:24:55Z
++ cd /home/hatch/workspace/wt/nn-reval-v2/backend
++ python3 -m app.nn.train_v2_ownholdout_reval
+++ date -u +%FT%TZ
++ echo '=== FRESH V2 EXIT 0 2026-11-14T23:35:20Z'
+=== FRESH V2 EXIT 0 2026-11-14T23:35:20Z
++ cp /home/hatch/workspace/wt/nn-reval-v2/nn-logs/v2-ownholdout-ckpt.json /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/v2/v2-ownholdout-ckpt.json
+++ date -u +%FT%TZ
++ echo '=== FRESH MULTI START 2026-11-14T23:35:20Z'
+=== FRESH MULTI START 2026-11-14T23:35:20Z
++ cd /home/hatch/workspace/wt/nn-reval-multi/backend
++ python3 -m app.nn.train --candidates /home/hatch/workspace/recon-continuous/results/candidates.jsonl.bak-20261114 --batches /home/hatch/workspace/recon-continuous/results/batches.jsonl --external app/nn/external_findings.jsonl --holdout own --hidden 64,32 --epochs 120 --multimodal --out /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/fresh/multi

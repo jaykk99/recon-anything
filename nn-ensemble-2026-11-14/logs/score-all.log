@@ -1,0 +1,46 @@
++ E=/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14
++ R=/home/hatch/workspace/wt/nn-reval/nn-reval-2026-11-14
++ mkdir -p /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/logs
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE V2 START 2026-11-14T23:22:05Z'
+=== ENSEMBLE SCORE V2 START 2026-11-14T23:22:05Z
++ cd /home/hatch/workspace/wt/nn-reval-v2/backend
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_v2.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/v2-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE V2 EXIT 0 2026-11-14T23:22:28Z'
+=== ENSEMBLE SCORE V2 EXIT 0 2026-11-14T23:22:28Z
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE MULTI START 2026-11-14T23:22:28Z'
+=== ENSEMBLE SCORE MULTI START 2026-11-14T23:22:28Z
++ cd /home/hatch/workspace/wt/nn-reval-multi/backend
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_multi.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/multi-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE MULTI EXIT 0 2026-11-14T23:22:45Z'
+=== ENSEMBLE SCORE MULTI EXIT 0 2026-11-14T23:22:45Z
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE HYPER START 2026-11-14T23:22:45Z'
+=== ENSEMBLE SCORE HYPER START 2026-11-14T23:22:45Z
++ cd /home/hatch/workspace/wt/nn-reval-hyper/backend
++ python3 /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/score_hyper.py /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/results/hyper-scores.jsonl
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE SCORE HYPER EXIT 0 2026-11-14T23:22:59Z'
+=== ENSEMBLE SCORE HYPER EXIT 0 2026-11-14T23:22:59Z
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE COMBINE START 2026-11-14T23:22:59Z'
+=== ENSEMBLE COMBINE START 2026-11-14T23:22:59Z
++ cd /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14
++ python3 scripts/ensemble.py results/v2-scores.jsonl results/hyper-scores.jsonl results/multi-scores.jsonl results/ensemble
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE COMBINE EXIT 1 2026-11-14T23:22:59Z'
+=== ENSEMBLE COMBINE EXIT 1 2026-11-14T23:22:59Z
++ cat /home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/logs/ensemble.log
+Traceback (most recent call last):
+  File "/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/ensemble.py", line 182, in <module>
+    main()
+  File "/home/hatch/workspace/wt/nn-ensemble/nn-ensemble-2026-11-14/scripts/ensemble.py", line 88, in main
+    assert len(keys) == 145, f"v2 rows {len(keys)} != 145"
+           ^^^^^^^^^^^^^^^^
+AssertionError: v2 rows 141 != 145
+++ date -u +%FT%TZ
++ echo '=== ENSEMBLE ALL DONE 2026-11-14T23:22:59Z'
+=== ENSEMBLE ALL DONE 2026-11-14T23:22:59Z
