@@ -42,6 +42,11 @@ def client():
 def signin_mode(monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-client-secret")
+    # Sign-in mode retires the access code as a session-signing fallback
+    # too, so a real session secret is required here (same as
+    # test_signin_mode.py); without it _session_secret() raises
+    # RuntimeError the moment make_session_token() is called.
+    monkeypatch.setenv("RECON_SESSION_SECRET", "test-session-secret")
     monkeypatch.setattr(config, "ACCESS_CODE", CODE)
     yield
     monkeypatch.setattr(config, "ACCESS_CODE", "")
