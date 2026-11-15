@@ -1,0 +1,2721 @@
+{
+  "accuracy": 0.9414,
+  "best_streak": 57,
+  "current_streak": 3,
+  "n_correct": 273,
+  "n_tests": 290,
+  "n_wrong": 17,
+  "per_chain": {
+    "arbitrum": 4,
+    "base": 6,
+    "bsc": 234,
+    "ethereum": 12
+  },
+  "per_plugin": {
+    "bridge_withdrawer_identity_spoof": 2,
+    "contract_logic": 16,
+    "cross_function_guard_sibling": 2,
+    "crypto_drain_scanner": 2,
+    "eip712_separator_unbound": 2,
+    "hardcoded_hash_constant_mismatch": 2,
+    "recipient_bridge_release_unproven": 8,
+    "recipient_mint_to_caller": 8,
+    "recipient_overdraw_withdraw": 2,
+    "recipient_sig_value_to_self": 8,
+    "unchecked_math_user_input": 190,
+    "uups_authorize_upgrade_missing": 14
+  },
+  "rounds": [
+    {
+      "accuracy": 0.9724,
+      "best_streak": 57,
+      "confusion": {
+        "fn": 2,
+        "fp": 2,
+        "tn": 19,
+        "tp": 122
+      },
+      "correct": 141,
+      "model": "multimodal",
+      "n_tests": 145,
+      "per_chain": {
+        "arbitrum": 2,
+        "base": 6,
+        "bsc": 120,
+        "ethereum": 9
+      },
+      "per_plugin": {
+        "bridge_withdrawer_identity_spoof": 1,
+        "contract_logic": 12,
+        "cross_function_guard_sibling": 2,
+        "crypto_drain_scanner": 1,
+        "eip712_separator_unbound": 1,
+        "hardcoded_hash_constant_mismatch": 2,
+        "recipient_bridge_release_unproven": 4,
+        "recipient_mint_to_caller": 6,
+        "recipient_overdraw_withdraw": 2,
+        "recipient_sig_value_to_self": 4,
+        "unchecked_math_user_input": 95,
+        "uups_authorize_upgrade_missing": 7
+      },
+      "points": 137,
+      "results": [
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998834115900063,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998472319468039,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "arbitrum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9969317435254779,
+          "plugin": "recipient_overdraw_withdraw",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998669032932165,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998696907262973,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9914737476811439,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9982322828002899,
+          "plugin": "cross_function_guard_sibling",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998896716362575,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 1,
+          "p": 0.9973489338043158,
+          "plugin": "hardcoded_hash_constant_mismatch",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999891104468012,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.5493770766535266,
+          "plugin": "recipient_overdraw_withdraw",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06011103356630077,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.02675014892375158,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 1,
+          "p": 0.7310742036284409,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998917651522683,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9971808525872787,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998769636513778,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998807133821904,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9997247432655592,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999886826272789,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.24109519769814894,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998760579855841,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998911583252438,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.08390796453900375,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998785372670982,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9999671471211253,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998816850122413,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 1,
+          "p": 0.5264012645915388,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.0006297559772008715,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999891368196994,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998857119586291,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9997002314617712,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998856575118972,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998719297421541,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998805848087771,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998776431819077,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998830174251336,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998842872780421,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998853279554147,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998793392409224,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998828729393884,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998729043383604,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998857119586291,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998759389302528,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.996733345877342,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998833394580532,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998738335335564,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9885732928521229,
+          "plugin": "eip712_separator_unbound",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999897052115835,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998799062451786,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998872082314831,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999881320150625,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998950670642006,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999878395815478,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998787641136927,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998847455795967,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9810123063707527,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.023607410318447,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998914969520754,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998750479058746,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998879614734196,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999889782488099,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.0034872268058724286,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9796045094037482,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998819771383551,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998810368170401,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998786664656323,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 2.7971679418287676e-05,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.22514831358051177,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998805526034416,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998745954033353,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998851975086768,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998776656673648,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998885591788621,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998635345624228,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.03460584290975974,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998875257868908,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998810115919403,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.08390796453900375,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998865289319137,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.7251181016231484,
+          "plugin": "crypto_drain_scanner",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998819771383551,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.23411308983289517,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998875257868908,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998823272174006,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 0,
+          "p": 0.8709864169387971,
+          "plugin": "recipient_mint_to_caller",
+          "points": -1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9925101154031744,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998878910271407,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9973112279061569,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998813792304313,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9939816902266594,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998777167204529,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998803750209011,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998799476782259,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.7270456291705157,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998852206081765,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.044483880460703354,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.959015955294971,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 0,
+          "p": 0.7404056031168442,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0003471083095467658,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.10736609962850123,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998892236184674,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.99988471964867,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06011103356630077,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "arbitrum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9140559683415117,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998856173738926,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9906798392282885,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9854009439394946,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999867602199019,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0003471083095467658,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998914969520754,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998845004799483,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9996564722098746,
+          "plugin": "hardcoded_hash_constant_mismatch",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.0010484695648036151,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.99987685799551,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998774217762156,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998890954353399,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998754124285795,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998963818298213,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998907475744998,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998671262615125,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998884764390961,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998781407877386,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998838986027487,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.978499701185855,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9999617022836779,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998800048113666,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998932250093053,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.1094361402988877,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0003471083095467658,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.001345902582795859,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998785372670982,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.8394845917036845,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998886447053421,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999886826272789,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998830548411907,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998806302745886,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998896716362575,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998757711807847,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998878910271407,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998843317216934,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9602025874154361,
+          "plugin": "cross_function_guard_sibling",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.999885364871496,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9998832872506751,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.995655041149947,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        }
+      ],
+      "streak_end": 46,
+      "threshold": 0.5,
+      "timestamp": "2026-11-15T14:35:13.059852+00:00",
+      "wrong": 4
+    },
+    {
+      "accuracy": 0.9103,
+      "best_streak": 33,
+      "confusion": {
+        "fn": 10,
+        "fp": 3,
+        "tn": 18,
+        "tp": 114
+      },
+      "correct": 132,
+      "model": "v2",
+      "n_tests": 145,
+      "per_chain": {
+        "arbitrum": 2,
+        "base": 0,
+        "bsc": 114,
+        "ethereum": 3
+      },
+      "per_plugin": {
+        "bridge_withdrawer_identity_spoof": 1,
+        "contract_logic": 4,
+        "cross_function_guard_sibling": 0,
+        "crypto_drain_scanner": 1,
+        "eip712_separator_unbound": 1,
+        "hardcoded_hash_constant_mismatch": 0,
+        "recipient_bridge_release_unproven": 4,
+        "recipient_mint_to_caller": 2,
+        "recipient_overdraw_withdraw": 0,
+        "recipient_sig_value_to_self": 4,
+        "unchecked_math_user_input": 95,
+        "uups_authorize_upgrade_missing": 7
+      },
+      "points": 119,
+      "results": [
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "arbitrum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9688883815923326,
+          "plugin": "recipient_overdraw_withdraw",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": false,
+          "label": 1,
+          "p": 0.23255310247381517,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.987736370896889,
+          "plugin": "cross_function_guard_sibling",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": false,
+          "label": 1,
+          "p": 0.248139576507538,
+          "plugin": "hardcoded_hash_constant_mismatch",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.46489996942020395,
+          "plugin": "recipient_overdraw_withdraw",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06361512979781221,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.04667919987591191,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "base",
+          "correct": false,
+          "label": 1,
+          "p": 0.31352190701811344,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.6192994637386487,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.995124443413492,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 0,
+          "p": 0.7348565654740842,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06430198718766623,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9996373361282739,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": false,
+          "label": 1,
+          "p": 0.14361938471554417,
+          "plugin": "recipient_mint_to_caller",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.02207555324349529,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9950234173554343,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9797452775715149,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.5802271589059607,
+          "plugin": "eip712_separator_unbound",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9828398789607953,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.048462219568948424,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.047922826931121335,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.7380415893735657,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.004153875062443486,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.14506888744294452,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.049059458567462425,
+          "plugin": "bridge_withdrawer_identity_spoof",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06430198718766623,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 1,
+          "p": 0.7233851773399252,
+          "plugin": "crypto_drain_scanner",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": false,
+          "label": 0,
+          "p": 0.7647193516242525,
+          "plugin": "recipient_mint_to_caller",
+          "points": -1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.4010340074963035,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "ethereum",
+          "correct": false,
+          "label": 1,
+          "p": 0.23255310247381517,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9826389528050038,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9470258536980708,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.7358942095880279,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "base",
+          "correct": true,
+          "label": 0,
+          "p": 0.14506888744294452,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.982664717896396,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 0,
+          "p": 0.7295236842226102,
+          "plugin": "contract_logic",
+          "points": -1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0013888926851737865,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.2867460557890399,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.06361512979781221,
+          "plugin": "recipient_sig_value_to_self",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "arbitrum",
+          "correct": true,
+          "label": 1,
+          "p": 0.9610775437007009,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9827624365413274,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9827893094628284,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0013888926851737865,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.6542165457105714,
+          "plugin": "hardcoded_hash_constant_mismatch",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.013836027808636514,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.7314507257051491,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9996338967838302,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.2883651764780838,
+          "plugin": "contract_logic",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 0,
+          "p": 0.0013888926851737865,
+          "plugin": "recipient_bridge_release_unproven",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "ethereum",
+          "correct": true,
+          "label": 0,
+          "p": 0.013962951108321896,
+          "plugin": "recipient_mint_to_caller",
+          "points": 1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.3983123001238554,
+          "plugin": "recipient_mint_to_caller",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": false,
+          "label": 1,
+          "p": 0.4046567871607474,
+          "plugin": "cross_function_guard_sibling",
+          "points": -1,
+          "pred": 0
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9995969512294327,
+          "plugin": "unchecked_math_user_input",
+          "points": 1,
+          "pred": 1
+        },
+        {
+          "chain": "bsc",
+          "correct": true,
+          "label": 1,
+          "p": 0.9825952994613987,
+          "plugin": "uups_authorize_upgrade_missing",
+          "points": 1,
+          "pred": 1
+        }
+      ],
+      "streak_end": 3,
+      "threshold": 0.5,
+      "timestamp": "2026-11-15T14:35:13.419435+00:00",
+      "wrong": 13
+    }
+  ],
+  "total_points": 256
+}
