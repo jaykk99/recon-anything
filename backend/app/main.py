@@ -923,6 +923,38 @@ def api_run_detail(run_id: str, request: Request, show_secrets: bool = False):
         session.close()
 
 
+@app.get("/api/runs/{run_id}/plan", dependencies=[Depends(gate)])
+def api_run_plan(run_id: str, request: Request):
+    """Remediation plan for a run: what to fix, in what order, and how to
+    prove the fix worked (app/remediation.py).
+
+    Built from the same adjudicated rows the run view serves, so every
+    item carries its evidence, the read-only verification commands and a
+    re-test spec. Suppressed claims never enter the plan; unproven
+    candidates are marked "next" because their evidence comes first.
+    """
+    session = get_session()
+    try:
+        run = session.query(Run).filter_by(id=run_id).first()
+        if not run:
+            raise missing_run(run_id)
+        actor = getattr(request.state, "actor", {"kind": "open"})
+        if actor["kind"] == "user" and run.user_id != actor["user"].id:
+            raise missing_run(run_id)
+        rows = findings_dump(session, run_id, show_secrets=False)
+        targets = session.query(Target).filter_by(run_id=run_id).all()
+        from .remediation import build_plan
+        plan = build_plan(rows, run)
+        return {"run_id": run_id,
+                "targets": [t.normalized for t in targets],
+                "posture": plan["summary"].get("posture", {}),
+                "summary": plan["summary"],
+                "items": plan["items"],
+                "verification_plan": plan["verification_plan"]}
+    finally:
+        session.close()
+
+
 @app.get("/api/runs/{run_id}/agent-activity",
          dependencies=[Depends(gate)])
 def api_run_agent_activity(run_id: str, request: Request,
