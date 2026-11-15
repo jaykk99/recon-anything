@@ -162,6 +162,18 @@ _DEBUG_MODE = re.compile(r"(debug_?mode|debug_?enabled|stack_?trace|"
                          r"error_?debug|django_?debug|rails_?console|"
                          r"symfony_?profiler|laravel_?telescope|whoops)")
 
+# Contract / multi-hop call-graph signals (first contract rules in
+# this file, Wave 1.2). Keys are the finding keys the deep layers
+# emit; the value carries the target address, so rules group by
+# address and never chain findings from different contracts.
+_CG_BYPASS_KEY = re.compile(r"call_graph_gate_bypass")
+_CG_ROUTE_KEY = re.compile(r"call_graph_caller_supplied_route")
+_CG_SINK_KEY = re.compile(r"call_graph_value_sink")
+_CONTRACT_UNGATED_KEY = re.compile(
+    r"(storage_ungated_drain_live|access_control_flaw|"
+    r"unprotected_?withdraw|ungated_?drain)")
+_ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
+
 # A finding counts as "high-value credential material" if its key hits the
 # cloud-cred or wallet pattern. These are what blast-radius rules pivot on.
 _PORT_VAL_META = re.compile(r"\b(22|3389|3306|5432|27017|6379|9200|21|23|"
@@ -236,6 +248,14 @@ def _detect_signals(r: Dict[str, Any]) -> Set[str]:
         sig.add("pkg_manifest")
     if _DEBUG_MODE.search(key):
         sig.add("debug_mode")
+    if _CG_BYPASS_KEY.search(key):
+        sig.add("contract_gate_bypass")
+    if _CG_ROUTE_KEY.search(key):
+        sig.add("contract_caller_route")
+    if _CG_SINK_KEY.search(key):
+        sig.add("contract_value_sink")
+    if _CONTRACT_UNGATED_KEY.search(key):
+        sig.add("contract_ungated_drain")
     return sig
 
 
@@ -1007,7 +1027,8 @@ def _rule_kill_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
     add("Access", "reach a privileged/management entry point",
         "privileged_endpoint", "mgmt_port", "auth_surface")
     add("Escalation / pivot", "pivot into cloud or internal infrastructure",
-        "storage", "cloud_hosted", "ssrf", "takeover_candidate")
+        "storage", "cloud_hosted", "ssrf", "takeover_candidate",
+        "contract_gate_bypass", "contract_value_sink")
 
     # Only fire when the chain spans at least 3 of the 4 stages AND there is
     # real severity behind it (a foothold or an escalation stage present).
@@ -1055,9 +1076,195 @@ def _rule_kill_chain(idx: SignalIndex) -> List[Dict[str, Any]]:
                      confidence=76, tags=["kill-chain", "compound"])]
 
 
+def _row_address(r: Dict[str, Any]) -> str:
+    """Target contract address for a finding, from its evidence
+    address field or the first 0x-address in its value text."""
+    ev = r.get("evidence") or {}
+    a = str(ev.get("address") or "")
+    if _ADDR_RE.fullmatch(a):
+        return a.lower()
+    m = _ADDR_RE.search(str(r.get("value") or ""))
+    return m.group(0).lower() if m else ""
+
+
+def _contract_groups(idx: SignalIndex
+                     ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Findings per target address, bucketed by contract signal."""
+    groups: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for signal in ("contract_gate_bypass", "contract_caller_route",
+                   "contract_value_sink", "contract_ungated_drain"):
+        for r in idx.get(signal, []):
+            addr = _row_address(r)
+            if not addr:
+                continue
+            groups.setdefault(addr, {}).setdefault(signal, []).append(r)
+    return groups
+
+
+def _dedup_comps(comps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    uniq: List[Dict[str, Any]] = []
+    seen = set()
+    for c in comps:
+        k = (_row_plugin(c), _norm(c.get("key")), _norm(c.get("value")))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    return uniq
+
+
+def _rule_multicontract_composer_path(idx: SignalIndex
+                                     ) -> List[Dict[str, Any]]:
+    """Gate bypass + forwarded caller-supplied route + ungated sink
+    on the SAME contract = one composer attack path: a gated entry
+    whose gate is skipped through a callee, an attacker-chosen
+    recipient forwarded hop to hop, and an ungated sink that pays
+    it. The three lanes each saw one hop; together they are the
+    whole chain."""
+    out: List[Dict[str, Any]] = []
+    for addr, g in _contract_groups(idx).items():
+        if not (g.get("contract_gate_bypass")
+                and g.get("contract_caller_route")
+                and (g.get("contract_value_sink")
+                     or g.get("contract_ungated_drain"))):
+            continue
+        sink = g.get("contract_value_sink") or g["contract_ungated_drain"]
+        comps = _dedup_comps(g["contract_gate_bypass"][:2]
+                             + g["contract_caller_route"][:2]
+                             + sink[:2])
+        steps = [
+            "1. Gated entry: a gated function on the target delegates "
+            "its sensitive action through a callee whose matching "
+            "function is ungated - the entry gate is bypassed.",
+            "2. Forwarded route: a caller-supplied address is passed "
+            "hop to hop toward the sink, so the caller chooses who "
+            "gets paid.",
+            "3. Ungated sink: the terminal function moves value to "
+            "that supplied address with no gate in the way.",
+        ]
+        out.append(_mk_path(
+            name=f"Multi-contract composer attack path on {addr}",
+            severity="high", exploitability="theoretical",
+            summary=(
+                "Three contract lanes line up on one target into a "
+                "single composer attack path: the entry is gated, "
+                "the gate is bypassed through an intermediate "
+                "contract, a caller-supplied recipient is forwarded "
+                "hop to hop, and an ungated sink pays it. Each "
+                "finding alone is one hop; together they are the "
+                "whole chain."),
+            attacker_impact=(
+                "A stranger can reach the value sink without passing "
+                "the entry gate and can name the recipient, so funds "
+                "the contract holds can be routed to an "
+                "attacker-chosen address."),
+            remediation=(
+                "Break the chain at the cheapest link: gate the "
+                "intermediate/sink function (or remove the forwarding "
+                "path), stop forwarding caller-supplied recipients "
+                "into value-moving calls, and re-scan. Breaking one "
+                "link defeats the whole path."),
+            steps=steps, components=comps, confidence=78,
+            tags=["contract", "multi-contract", "composer",
+                  "call-graph"]))
+    return out
+
+
+def _rule_multicontract_gate_to_sink(idx: SignalIndex
+                                    ) -> List[Dict[str, Any]]:
+    """Gate bypass + ungated sink/drain on the same contract, with
+    no forwarded caller-supplied route on that address (those go
+    to the composer rule instead): a gated entry whose value ends
+    at an ungated sink."""
+    out: List[Dict[str, Any]] = []
+    for addr, g in _contract_groups(idx).items():
+        if g.get("contract_caller_route"):
+            continue  # composer rule owns bypass + route + sink
+        if not (g.get("contract_gate_bypass")
+                and (g.get("contract_value_sink")
+                     or g.get("contract_ungated_drain"))):
+            continue
+        sink = g.get("contract_value_sink") or g["contract_ungated_drain"]
+        comps = _dedup_comps(g["contract_gate_bypass"][:2] + sink[:2])
+        steps = [
+            "1. Gated entry: a gated function on the target delegates "
+            "its sensitive action through a callee whose matching "
+            "function is ungated - the entry gate is bypassed.",
+            "2. Ungated sink: the terminal function moves value with "
+            "no gate in the way, so the bypassed entry reaches it.",
+        ]
+        out.append(_mk_path(
+            name=f"Gated entry, ungated multi-contract value sink "
+                 f"on {addr}",
+            severity="high", exploitability="theoretical",
+            summary=(
+                "A gated entry delegates through an intermediate "
+                "contract to an ungated value sink on the same "
+                "target: the gate guards the front door while the "
+                "value leaves through the side door."),
+            attacker_impact=(
+                "A stranger can reach the value sink without passing "
+                "the entry gate, so funds the contract holds can be "
+                "moved out through the intermediate contract."),
+            remediation=(
+                "Gate the intermediate/sink function the same way "
+                "the entry is gated (or remove the delegation), and "
+                "re-scan. Breaking one link defeats the whole path."),
+            steps=steps, components=comps, confidence=76,
+            tags=["contract", "multi-contract", "call-graph"]))
+    return out
+
+
+def _rule_multicontract_caller_route(idx: SignalIndex
+                                    ) -> List[Dict[str, Any]]:
+    """Caller-supplied route + value sink on the same contract,
+    with no gate bypass on that address: the caller names the
+    recipient at the end of a forwarded chain."""
+    out: List[Dict[str, Any]] = []
+    for addr, g in _contract_groups(idx).items():
+        if g.get("contract_gate_bypass"):
+            continue  # composer rule owns bypass + route + sink
+        if not (g.get("contract_caller_route")
+                and (g.get("contract_value_sink")
+                     or g.get("contract_ungated_drain"))):
+            continue
+        sink = g.get("contract_value_sink") or g["contract_ungated_drain"]
+        comps = _dedup_comps(g["contract_caller_route"][:2] + sink[:2])
+        steps = [
+            "1. Forwarded route: a caller-supplied address is passed "
+            "hop to hop toward the sink, so the caller chooses who "
+            "gets paid.",
+            "2. Value sink: the terminal function moves value to "
+            "that supplied address with no gate in the way.",
+        ]
+        out.append(_mk_path(
+            name=f"Caller-supplied route to multi-contract value "
+                 f"sink on {addr}",
+            severity="high", exploitability="theoretical",
+            summary=(
+                "A caller-supplied recipient is forwarded across "
+                "contracts into an ungated value sink on the same "
+                "target: whoever calls the chain chooses where the "
+                "value lands."),
+            attacker_impact=(
+                "A stranger can name the recipient of value moved "
+                "out of the contract system, so funds can be routed "
+                "to an attacker-chosen address."),
+            remediation=(
+                "Stop forwarding caller-supplied recipients into "
+                "value-moving calls, or gate the sink so only an "
+                "authorized caller can trigger the payout, and "
+                "re-scan."),
+            steps=steps, components=comps, confidence=76,
+            tags=["contract", "multi-contract", "call-graph"]))
+    return out
+
+
 RULES = [
     _rule_weaponized_cve,
     _rule_kill_chain,
+    _rule_multicontract_composer_path,
+    _rule_multicontract_gate_to_sink,
+    _rule_multicontract_caller_route,
     _rule_cloud_cred_blast,
     _rule_jwt_authbypass,
     _rule_source_to_secret,

@@ -8,7 +8,7 @@ other primitive leg (selfdestruct, upgrade, mint) MUST fire
 candidate on its own vulnerable shape; the batch-11 fixtures MUST
 stay silent under this detector (no cross-batch noise) and this
 detector's vulnerable fixture MUST stay silent under all five
-batch-11 detectors; the registry discovers exactly 1433 plugins
+batch-11 detectors; the registry discovers exactly 1434 plugins
 including this one.
 """
 import os
@@ -39,10 +39,10 @@ def test_one_plugin_registered():
     assert PID in reg, f"{PID} missing from registry"
 
 
-def test_registry_count_1433():
+def test_registry_count_1434():
     reg = discover()
-    assert len(reg) == 1433, \
-        f"registry size {len(reg)}, expected 1433"
+    assert len(reg) == 1434, \
+        f"registry size {len(reg)}, expected 1434"
 
 
 def test_vuln_fires_candidate_with_evidence():
