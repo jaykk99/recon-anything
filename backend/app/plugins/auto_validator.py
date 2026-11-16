@@ -1111,10 +1111,13 @@ def _vacuous_zero_probe(fork_delta):
     args = (fork_delta or {}).get("args") or []
     ints = []
     for a in args:
-        try:
-            ints.append(int(str(a), 0))
-        except (TypeError, ValueError):
-            pass
+        # Decimal integers only: addresses (0x...) and other
+        # non-decimal args are not amount slots, and int(..., 0)
+        # would read an address as a huge nonzero integer and
+        # wrongly clear the vacuous flag.
+        s = str(a)
+        if s.lstrip("-").isdigit():
+            ints.append(int(s))
     return bool(ints) and all(v == 0 for v in ints)
 
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
