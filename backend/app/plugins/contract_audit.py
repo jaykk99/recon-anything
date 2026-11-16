@@ -128,6 +128,20 @@ def _fund_sink(body: str) -> Optional[str]:
     return m.group(0).strip() if m else None
 
 
+def _unguarded_setter(funcs: List[Tuple[str, str, str]],
+                      var: str) -> Optional[str]:
+    """Name of a public/external function that assigns to `var` with no
+    access gate, or None. A delegatecall target with such a setter is
+    attacker-pointable: anyone can aim it at their own contract."""
+    pat = re.compile(r"\b" + re.escape(var) + r"\s*=(?![=>])")
+    for fname, fsig, fbody in funcs:
+        if not (("public" in fsig) or ("external" in fsig)):
+            continue
+        if pat.search(fbody) and not _has_access_gate(fsig, fbody):
+            return fname
+    return None
+
+
 def _modifiers(sig: str) -> List[str]:
     mods = []
     for w in ("onlyOwner", "onlyAdmin", "onlyRole", "nonReentrant",
@@ -240,6 +254,7 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                 r"\.delegatecall\s*\(", body):
             receiver = dm.group(1).split(".")[-1]
             trusted = bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", receiver))
+            setter = None
             if not trusted and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",
                                             receiver):
                 # immutable/constant state vars are set once at deploy time:
@@ -250,23 +265,29 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                     if re.search(r"\b(immutable|constant)\b", decl.group(0)):
                         trusted = True
                         break
-                # A target that is NOT a parameter of this function is a
-                # state variable - on a proxy that is the admin-set
-                # implementation, not attacker-controlled in this call. The
-                # real hijack (and the benchmark case) is a target passed as
-                # a function PARAMETER, i.e. attacker-supplied. So critical
-                # is reserved for parameter targets; a state-var target is a
-                # normal proxy and is not flagged here.
-                params = re.search(r"\(([^)]*)\)", sig_text)
-                param_names = set()
-                if params:
-                    for part in params.group(1).split(","):
-                        toks = _WORD_RE.findall(part)
-                        if toks:
-                            param_names.add(toks[-1])
-                if not trusted and receiver not in param_names:
-                    trusted = True  # state var (proxy impl), not a param
+                # A receiver that is NOT a parameter of this function is a
+                # state variable. A MUTABLE one is not hardcoded: it can be
+                # set in the constructor, by an upgrade path, or - worst -
+                # by an unguarded public setter, in which case anyone can
+                # point the delegatecall at their own contract. Only
+                # immutable/constant/literal receivers are trusted; a
+                # mutable state-var target is flagged. (The old carve-out
+                # that trusted every proxy impl hid exactly this hijack.)
+                if not trusted:
+                    params = re.search(r"\(([^)]*)\)", sig_text)
+                    param_names = set()
+                    if params:
+                        for part in params.group(1).split(","):
+                            toks = _WORD_RE.findall(part)
+                            if toks:
+                                param_names.add(toks[-1])
+                    if receiver not in param_names:
+                        setter = _unguarded_setter(funcs, receiver)
             if not trusted:
+                setter_note = (f" It is set by unguarded public setter "
+                               f"'{setter}()' - anyone can point it at "
+                               f"their own contract."
+                               if setter else "")
                 findings.append({
                     "check": "delegatecall_untrusted", "severity": "critical",
                     "function": name,
@@ -274,7 +295,7 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                                f"target ({receiver[:60] or 'dynamic'}). If the target "
                                "address is attacker-controllable the contract's "
                                "logic can be hijacked (storage lives in the "
-                               "caller).")})
+                               f"caller).{setter_note}")})
                 break
 
         # --- 3c. flash-loan callback without caller check ---

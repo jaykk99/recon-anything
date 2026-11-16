@@ -25,19 +25,29 @@ def test_train_on_real_candidates(tmp_path):
     batches = BATCHES if os.path.exists(BATCHES) else None
     result = train(CANDIDATES, batches, str(tmp_path),
                    epochs=15, hidden="16,8", seed=42)
-    assert result["train_rows"] + result["test_rows"] >= 700
-    assert result["dataset"]["n_positive"] > 500
-    assert result["dataset"]["n_negative"] > 50
-    # VERIFIED_REAL rows are excluded, never trained on. The count
-    # comes from the live file, not a constant: the Nov 12 file had
-    # 2; the Nov 14 08:53 UTC re-adjudication closed both as
-    # FALSE_POSITIVE, so the current file has 0.
+    # Expected counts come from the live file, not constants: the file is
+    # re-adjudicated as scanning continues, so hardcoded thresholds go
+    # stale the week they are written (Nov 14: 611 UNVERIFIED of 723;
+    # Nov 16: 202 UNVERIFIED of 916 after the false-positive sweep).
+    # The only fixed bar is a sanity floor that the file is not empty.
     import json
-    n_vr = 0
+    n_pos = n_neg = n_vr = 0
     with open(CANDIDATES, encoding="utf-8") as fh:
         for line in fh:
-            if line.strip() and json.loads(line).get("verdict") == "VERIFIED_REAL":
+            if not line.strip():
+                continue
+            verdict = (json.loads(line).get("validation") or {}).get("verdict")
+            if verdict == "UNVERIFIED":
+                n_pos += 1
+            elif verdict in ("FALSE_POSITIVE", "TRIGGER_ONLY"):
+                n_neg += 1
+            elif verdict == "VERIFIED_REAL":
                 n_vr += 1
+    assert n_pos + n_neg >= 100
+    assert result["train_rows"] + result["test_rows"] == n_pos + n_neg
+    assert result["dataset"]["n_positive"] == n_pos
+    assert result["dataset"]["n_negative"] == n_neg
+    # VERIFIED_REAL rows are excluded, never trained on.
     assert result["dataset"]["excluded_verified_real_rows"] == n_vr
     tm = result["test_metrics"]
     assert 0.0 <= tm["accuracy"] <= 1.0

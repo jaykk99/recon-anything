@@ -202,31 +202,42 @@ async def web_base(ctx, target, domain: str) -> str:
 
 def async_client(**kwargs) -> httpx.AsyncClient:
     """httpx.AsyncClient with full, unrestricted egress configured."""
-    kwargs.setdefault("proxy", egress_proxy())
+    if "transport" in kwargs:
+        # A caller-supplied transport owns routing (e.g. a MockTransport
+        # in tests). The egress proxy installs an all:// mount that would
+        # shadow it, and the NO_PROXY direct mounts would too, so neither
+        # is applied here. The RPC guard hook below still applies.
+        pass
+    else:
+        kwargs.setdefault("proxy", egress_proxy())
+        if "mounts" not in kwargs:
+            direct = _direct_mounts()
+            if direct:
+                kwargs["mounts"] = direct
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
     # Generous pool: the scan worker runs 32 plugin jobs concurrently
     # and time-based payloads hold connections open for seconds.
     kwargs.setdefault("limits", POOL_LIMITS)
-    if "mounts" not in kwargs:
-        direct = _direct_mounts()
-        if direct:
-            kwargs["mounts"] = direct
     _merge_request_hook(kwargs, _guard_request_async)
     return httpx.AsyncClient(**kwargs)
 
 
 def sync_client(**kwargs) -> httpx.Client:
     """httpx.Client with full, unrestricted egress configured."""
-    kwargs.setdefault("proxy", egress_proxy())
+    if "transport" in kwargs:
+        # Caller-supplied transport owns routing; see async_client.
+        pass
+    else:
+        kwargs.setdefault("proxy", egress_proxy())
+        if "mounts" not in kwargs:
+            direct = _direct_mounts_sync()
+            if direct:
+                kwargs["mounts"] = direct
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
     # Generous pool: the scan worker runs 32 plugin jobs concurrently
     # and time-based payloads hold connections open for seconds.
     kwargs.setdefault("limits", POOL_LIMITS)
-    if "mounts" not in kwargs:
-        direct = _direct_mounts_sync()
-        if direct:
-            kwargs["mounts"] = direct
     _merge_request_hook(kwargs, _guard_request_sync)
     return httpx.Client(**kwargs)
