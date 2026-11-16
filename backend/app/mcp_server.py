@@ -3231,6 +3231,7 @@ TOOLS: List[Dict[str, Any]] = [
         },
         "handler": _tool_bounty_pack,
     },
+    {
         "name": "recon_capabilities",
         "description": "Dependency doctor: which external analyzers are "
                        "installed and still callable, and (with "
