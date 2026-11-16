@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..classifier import domain_from_target
+from ..kev import kev_entry
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
@@ -1043,13 +1044,34 @@ class CvesPlugin(Plugin):
             seen_cves.add(dedupe)
 
             ver_note = f"detected version {ver_str}" if ver_str else "version not disclosed - verify manually"
+            # CISA KEV: a matched CVE that is actively exploited in the
+            # wild is the strongest triage signal available. Fail-open:
+            # any KEV problem degrades to "no KEV data", never an error.
+            kev = None
+            try:
+                kev = kev_entry(entry["cve"])
+            except Exception:
+                kev = None
+            exploit = entry["exploitability"]
+            value = (f"{entry['severity'].upper()}: {entry['software']} - "
+                     f"{entry['title']} [{entry['cve']}] ({ver_note})")
+            extra_ev: Dict[str, Any] = {}
+            if kev:
+                exploit = "weaponized"
+                value = f"KEV ACTIVELY EXPLOITED: {value}"
+                extra_ev = {
+                    "kev_exploited": True,
+                    "kev_vendor": kev.get("vendor", ""),
+                    "kev_product": kev.get("product", ""),
+                    "kev_due_date": kev.get("due_date", ""),
+                    "kev_description": kev.get("description", ""),
+                }
             findings.append(self._f(
                 "web", "cve_match",
-                f"{entry['severity'].upper()}: {entry['software']} - {entry['title']} "
-                f"[{entry['cve']}] ({ver_note})",
+                value,
                 source="CVE matcher", source_url=url,
                 confidence=88 if ver_str else 65, passive=True,
-                exploitability=entry["exploitability"],
+                exploitability=exploit,
                 evidence={
                     "severity": entry["severity"],
                     "cve": entry["cve"],
@@ -1057,6 +1079,7 @@ class CvesPlugin(Plugin):
                     "detected_version": ver_str or "unknown",
                     "remediation": entry["remediation"],
                     "poc_hint": POC_HINT.format(url=url),
+                    **extra_ev,
                 }))
 
         # WordPress REST API exposure (version enum fuel)
