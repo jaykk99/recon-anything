@@ -83,8 +83,13 @@ def test_dump_orders_by_neural_score(db):
 def test_legacy_rows_are_scored_at_read_time(db):
     _mk_run(db, "run-legacy")
     _add(db, "run-legacy", "headers", "missing_hsts", severity="low")
+    # Credential-shaped value, not a placeholder: the #186 precision gate
+    # suppresses placeholder values (redacted/example/sample), and a
+    # suppressed row sorts last regardless of its NN score - correct
+    # behavior, but this test is about NN ordering, so the row needs a
+    # live-looking key. Fabricated fixture value, not a real key.
     _add(db, "run-legacy", "keyharvest", "exposed_aws_access_key",
-         severity="critical", value="AKIAIOSFODNN7EXAMPLE")
+         severity="critical", value="AKIA4F7Q2K9M8X1W3R5T6")
     rows = findings_dump(db, "run-legacy")
     for r in rows:
         assert isinstance((r["evidence"] or {}).get("nn", {}).get("score"), int)

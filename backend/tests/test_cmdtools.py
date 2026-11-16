@@ -207,7 +207,6 @@ def test_cmd_smtp_quits_without_mailing(monkeypatch):
 _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _tmp.close()
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
-os.environ["RECON_SERVICE_KEY"] = "canary-test-key"
 os.environ["ACCESS_CODE"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -217,6 +216,13 @@ from app.models import Finding, Run, get_session, init_db  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
+    # Set at test time, not import time: pytest imports every test module
+    # before running any test, and test_mcp_server.py pins this same
+    # variable to its own key at import, so an import-time value here was
+    # overwritten before these tests ran (401). Restored afterwards so
+    # the mcp pin survives for its own tests.
+    prev = os.environ.get("RECON_SERVICE_KEY")
+    os.environ["RECON_SERVICE_KEY"] = "canary-test-key"
     init_db()
     s = get_session()
     try:
@@ -233,6 +239,10 @@ def client():
         s.close()
     with TestClient(app) as c:
         yield c
+    if prev is None:
+        os.environ.pop("RECON_SERVICE_KEY", None)
+    else:
+        os.environ["RECON_SERVICE_KEY"] = prev
 
 
 def test_service_api_returns_full_finding_set(client):

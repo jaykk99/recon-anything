@@ -53,6 +53,11 @@ def _clean():
     try:
         session.query(Finding).delete()
         session.query(Run).delete()
+        # Targets too: the engine binds once at import, so a subset run
+        # can land on the repo-local recon.db, where a stale Target
+        # (e.g. id "t1" from test_agent_fold) otherwise collides with
+        # the hardcoded ids later tests insert.
+        session.query(Target).delete()
         session.commit()
     finally:
         session.close()
