@@ -460,6 +460,7 @@ def fork_balance_delta(chain, address, signature, args,
                            "stranger, gas price 0)",
                     "fork_url": url, "fork_block": fork_block,
                     "tx_hash": tx_hash,
+                    "args": [str(a) for a in (args or [])],
                     "stranger_before": {"native_wei": sb,
                                         "token_wei": stb},
                     "contract_before": {"native_wei": cb,
@@ -762,6 +763,20 @@ def _cast_default(typ):
     if name == "string":
         return ""
     return None
+
+
+def nonzero_args(args):
+    """Copy of probe args with every exact \"0\" uint replaced by \"1\".
+
+    2026-11-15 fix-zero-verified: default_args passes 0 for every
+    uint, so a mint/transfer probed with amount 0 issues 0 and the
+    fork necessarily measures zero. A nonzero variant makes the
+    fork execution measurable. Address/bool/complex args pass
+    through unchanged.
+    """
+    if not args:
+        return list(args or [])
+    return ["1" if str(a) == "0" else a for a in args]
 
 
 def default_args(signature, address):

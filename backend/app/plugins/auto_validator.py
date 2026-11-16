@@ -1015,6 +1015,16 @@ def _finish_bytecode_proven(candidate: Dict[str, Any],
         fork_measured = None
         if fork_status == "zero_delta":
             out["evidence"]["fork_delta"] = fork_delta
+            if _vacuous_zero_probe(fork_delta):
+                out["missing"] = ["nonzero probe amount (the probe "
+                                  "called the function with amount 0)"]
+                out["reason"] = (
+                    "forked-state execution moved 0, but the probe "
+                    "called the flagged function with amount 0, so "
+                    "the fork could not measure any issuance or "
+                    "payout; a zero-amount probe cannot falsify "
+                    "the candidate")
+                return out
             out["verdict"] = "FALSE_POSITIVE"
             out["reason"] = (
                 "forked-state execution of the flagged function "
@@ -1086,6 +1096,26 @@ def _finish_bytecode_proven(candidate: Dict[str, Any],
         "so the payout is unproven")
     return out
 
+
+
+def _vacuous_zero_probe(fork_delta):
+    """True when the fork ran with all-zero integer args.
+
+    2026-11-15 fix-zero-verified: default_args passes 0 for every
+    uint, so a mint/transfer called with amount 0 issues 0 and the
+    fork necessarily measures zero. That proves nothing; a
+    zero_delta from such a probe must stay UNVERIFIED, not
+    FALSE_POSITIVE. Only applies when integer args exist and all
+    are zero - a no-arg function that moves 0 is genuinely dead.
+    """
+    args = (fork_delta or {}).get("args") or []
+    ints = []
+    for a in args:
+        try:
+            ints.append(int(str(a), 0))
+        except (TypeError, ValueError):
+            pass
+    return bool(ints) and all(v == 0 for v in ints)
 
 def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Machine verdict for one candidate finding.
@@ -1518,6 +1548,16 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
             fd = candidate.get("fork_delta") or {}
             if fd.get("status") == "zero_delta":
                 out["evidence"]["fork_delta"] = fd
+                if _vacuous_zero_probe(fd):
+                    out["missing"] = ["nonzero probe amount (the probe "
+                                      "called the function with amount 0)"]
+                    out["reason"] = (
+                        "forked-state execution moved 0, but the probe "
+                        "called the flagged function with amount 0, so "
+                        "the fork could not measure any issuance or "
+                        "payout; a zero-amount probe cannot falsify "
+                        "the candidate")
+                    return out
                 out["verdict"] = "FALSE_POSITIVE"
                 out["reason"] = (
                     "forked-state execution of the flagged "
@@ -1557,6 +1597,16 @@ def validate_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         fork_measured = None
         if fork_status == "zero_delta":
             out["evidence"]["fork_delta"] = fork_delta
+            if _vacuous_zero_probe(fork_delta):
+                out["missing"] = ["nonzero probe amount (the probe "
+                                  "called the function with amount 0)"]
+                out["reason"] = (
+                    "forked-state execution moved 0, but the probe "
+                    "called the flagged function with amount 0, so "
+                    "the fork could not measure any issuance or "
+                    "payout; a zero-amount probe cannot falsify "
+                    "the candidate")
+                return out
             out["verdict"] = "FALSE_POSITIVE"
             out["reason"] = (
                 "forked-state execution of the flagged function "
