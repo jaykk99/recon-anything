@@ -1,0 +1,66 @@
+name: Recon Pipeline CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt pytest
+
+      - name: Verify clean-checkout core imports
+        run: |
+          python3 -c "
+          import sys
+          sys.path.insert(0, 'backend')
+          from app.plugins import auto_validator, anvil_fork_probe
+          from app import valuation, finding_chain
+          from scripts import auto_validate
+          print('All validator modules import cleanly.')
+          "
+
+      - name: Run misfire and unit tests
+        run: pytest tests/
+
+      - name: Verify plugin-set selection rule against live registry
+        run: |
+          python3 -c "
+          import sys
+          sys.path.insert(0, 'backend')
+          from app.plugins.registry import discover
+          reg = discover()
+          assert len(reg) > 1300, f'registry unexpectedly small: {len(reg)}'
+          # Same selection rule as build_plugin_sets.py (stepb). The
+          # lane check must use getattr with a default: most plugins
+          # carry no lane attribute at all, and a bare p.lane
+          # comparison crashes on the live tree (2026-11-15).
+          curated = ['contract_recon', 'crypto_drain_scanner',
+                     'contract_logic', 'recipient_mint_to_caller']
+          for pid in curated:
+              assert pid in reg, f'curated plugin missing: {pid}'
+          extras = []
+          for pid, cls in reg.items():
+              if pid in curated:
+                  continue
+              p = cls()
+              if p.group != 'web3' or p.requires_keys or p.aggressive:
+                  continue
+              if getattr(p, 'lane', 'fast') != 'fast':
+                  continue
+              acc = p.accepts or []
+              if acc and 'crypto_wallet' not in acc:
+                  continue
+              extras.append(pid)
+          assert extras, 'stepb extras pool is empty'
+          print(f'registry {len(reg)} plugins, stepb pool {len(extras)}.')
+          "
