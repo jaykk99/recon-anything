@@ -1,0 +1,83 @@
+```python
+def _analyze_native_vault_inflation(src, spec, compiler, contract_name):
+    scope, fns = _scope_fns(src, contract_name)
+    scoped = scope.scoped_text
+    by_name = {fn["name"]: fn for fn in fns}
+    
+    deposit_fn = None
+    for name, fn in by_name.items():
+        if re.search(r'\b(deposit|mint|stake)\b', name) and fn.get("payable") and "msg.value" in fn["text"]:
+            deposit_fn = fn
+            break
+    
+    if not deposit_fn:
+        return []
+    
+    deposit_text = deposit_fn["text"]
+    if not re.search(r'address\(this\)\.balance', deposit_text):
+        return []
+    
+    if not re.search(r'totalShares|totalSupply', deposit_text):
+        return []
+    
+    if not re.search(r'/\s*address\(this\)\.balance', deposit_text):
+        return []
+    
+    donation_fn = None
+    for name, fn in by_name.items():
+        if fn.get("payable") and name != deposit_fn["name"]:
+            donation_fn = fn
+            break
+    
+    if not donation_fn:
+        if not re.search(r'\breceive\b', scoped) and not re.search(r'\bfallback\b', scoped):
+            return []
+    
+    if re.search(r'_decimalsOffset', scoped):
+        return []
+    
+    if re.search(r'\+\s*1\b', deposit_text) or re.search(r'\+\s*10\*\*', deposit_text):
+        return []
+    
+    if re.search(r'_mint.*address\(0\)', scoped) or re.search(r'_mint.*0x0000000000000000000000000000000000000000', scoped):
+        return []
+    
+    if re.search(r'MINIMUM_SHARES|MINIMUM_LIQUIDITY|MINIMUM_DEPOSIT', scoped):
+        return []
+    
+    if re.search(r'require\s*\(\s*msg\.value\s*>=\s*<?\s*\w+', deposit_text):
+        return []
+    
+    payout_fn = None
+    for name, fn in by_name.items():
+        if re.search(r'address\(this\)\.balance', fn["text"]):
+            if re.search(r'\.call\{value:', fn["text"]) or re.search(r'\.transfer\(', fn["text"]) or re.search(r'\.send\(', fn["text"]):
+                payout_fn = fn
+                break
+    
+    if not payout_fn:
+        return []
+    
+    detail = spec.detail + f" Observed in {deposit_fn['name']} computing shares off address(this).balance, {donation_fn['name']} donating ETH without minting shares, and {payout_fn['name']} draining address(this).balance."
+    
+    item = _hit(spec, deposit_fn["name"], cc._snip(deposit_text), detail)
+    
+    recipient, rdetail = cl.classify_recipient(payout_fn["text"])
+    item["recipient"] = recipient
+    
+    if recipient == "FIXED":
+        item["report_class"] = "trigger_only"
+        item["severity"] = "low"
+        item["detail"] = detail + " FIXED: The deposit function triggers on the current balance before adding msg.value, allowing zero-share deposits after donation."
+    elif recipient == "HOLDER-SELF":
+        item["report_class"] = "candidate"
+        item["severity"] = "medium"
+        item["detail"] = detail + " HOLDER-SELF: The payout function meters the caller's own shares but is priced off the donation-sensitive balance, so the redeeming stranger receives assets beyond their own deposit."
+    else:
+        item["report_class"] = "candidate"
+        item["severity"] = "high"
+    
+    return [item]
+
+SPEC_NATIVE_VAULT_INFLATION = S("native_vault_share_inflation", FAMILY, severity="high", outcome="a", recipient=True, detail="Native-ETH share vaults that price shares directly off address(this).balance are vulnerable to donation-based share inflation. An attacker donates ETH to the vault via a payable function that does not mint or record shares, inflating the balance without increasing totalShares. Subsequent depositors receive near-zero shares due to rounding, while the attacker can later withdraw the full inflated balance.", fix="Price shares off internal accounting (e.g., totalDeposits) instead of address(this).balance, add a virtual-share offset (+1 or +10**offset) to prevent rounding to zero, mint dead shares to address(0) at bootstrap to establish a minimum denominator, or reject deposits that would result in zero shares.")
+```

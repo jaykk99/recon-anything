@@ -77,6 +77,31 @@ SPECS = [
           "totalAssets + 1, totalSupply + 10**offset), mint "
           "dead shares at bootstrap, and reject zero-share "
           "deposits."),
+    # Codegen loop 2026-11-15 (gap: native_vault_share_inflation):
+    # vault_share_inflation above requires a totalAssets() function
+    # and fires 0 times on native-ETH share vaults that price shares
+    # directly off address(this).balance with a bare payable
+    # donate() entry point (proven on the investigator fixture:
+    # VAULT_VULN_SOURCE). Same attack class, no ERC-4626 interface.
+    S("native_vault_share_inflation", FAMILY, severity="high",
+      outcome="a", recipient=True,
+      detail="Native-ETH share inflation (first-depositor / "
+             "donation attack, no ERC-4626 interface): the deposit "
+             "function prices shares directly off address(this)"
+             ".balance, so anyone can move that denominator with a "
+             "payable donation that mints no shares, and the share "
+             "conversion divides by the inflated balance with no "
+             "virtual-share offset, no dead-share bootstrap mint "
+             "and no minimum-shares guard. The first depositor "
+             "mints shares, donates a large sum directly to the "
+             "vault, and later depositors are minted 0 (or dust) "
+             "shares for real money, which the attacker then "
+             "redeems against their deposits.",
+      fix="Price shares off internal accounting (track deposits in "
+          "a state variable, never address(this).balance), add a "
+          "virtual-share offset to the share denominator, mint "
+          "dead shares at bootstrap, and reject deposits that "
+          "would mint zero shares."),
     S("readonly_reentrancy_gap", FAMILY, severity="high",
       outcome="a",
       detail="Read-only reentrancy guard gap: state-changing "
@@ -259,6 +284,162 @@ def _analyze_vault_inflation(src, spec, compiler, contract_name):
                 "the caller's own shares (HOLDER-SELF shape), "
                 "but it is priced off the donation-sensitive "
                 "totalAssets above, so the redeeming stranger "
+                "receives assets beyond their own deposit - "
+                "the excess is CALLER-received, classified "
+                "CANDIDATE under the receive rule.")
+    return [item]
+
+
+def _analyze_native_vault_inflation(src, spec, compiler,
+                                    contract_name):
+    """Native-ETH share inflation: the vault_share_inflation
+    detector requires a totalAssets() function, so native-ETH share
+    vaults that price shares directly off address(this).balance
+    with a bare payable donate() entry point are invisible to it
+    (0 findings on the investigator's planted-vuln fixture).
+
+    Drafted by the Bro-gateway LLM advisor chain (draft saved at
+    backend/scripts/codegen/drafts/native_vault_share_inflation.txt)
+    and REVIEWED before install: the raw draft read a "payable"
+    key off the function dicts, which _Scope never sets, so it
+    could never fire; it also crashed when the donation vector was
+    a receive/fallback (donation_fn None), suppressed on any "+ 1"
+    anywhere in the deposit text, suppressed on a MINIMUM_*
+    constant defined anywhere in scope even if unused, and
+    downgraded HOLDER-SELF to medium (below the runner's
+    high/critical candidate bar). All fixed here; the gate in
+    backend/tests/test_codegen_native_vault.py proves the fixed
+    version fires on the fixture and stays silent on WETH9, real
+    OpenZeppelin ERC4626, and guarded vaults.
+    """
+    scope, fns = _scope_fns(src, contract_name)
+    scoped = scope.scoped_text
+    by_name: Dict[str, Dict[str, Any]] = {}
+    for fn in fns:
+        by_name.setdefault(fn["name"], fn)
+
+    # (a) Deposit leg: a payable deposit/mint/stake function that
+    # takes msg.value, records shares, and divides by the raw
+    # native balance. Payable is read off the SIGNATURE: _Scope
+    # function dicts carry no "payable" key.
+    deposit_fn = None
+    for name, fn in by_name.items():
+        if not re.search(r"deposit|mint|stake", name, re.I):
+            continue
+        if "payable" not in fn.get("signature", ""):
+            continue
+        if "msg.value" not in fn["text"]:
+            continue
+        deposit_fn = fn
+        break
+    if deposit_fn is None:
+        return []
+    deposit_text = deposit_fn["text"]
+    if not re.search(r"address\s*\(\s*this\s*\)\s*\.balance",
+                     deposit_text):
+        return []
+    if not re.search(r"totalShares|totalSupply", deposit_text):
+        return []
+    if not re.search(r"/\s*address\s*\(\s*this\s*\)\s*\.balance",
+                     deposit_text):
+        return []
+    # The deposit must actually record shares; pure view math
+    # off the balance is not an inflation vector.
+    if not re.search(r"shares\s*\[|totalShares\s*\+=|_mint\s*\(",
+                     deposit_text):
+        return []
+
+    # (b) Donation vector: an extra payable entry point that mints
+    # or records NO shares (a bare donate(), receive() or
+    # fallback()). A payable function that also mints shares is a
+    # second deposit leg, not a donation vector.
+    donation_name = None
+    for name, fn in by_name.items():
+        if name == deposit_fn["name"]:
+            continue
+        if "payable" not in fn.get("signature", ""):
+            continue
+        if re.search(r"shares\s*\[|totalShares\s*\+=|_mint\s*\(",
+                     fn["text"]):
+            continue
+        donation_name = name
+        break
+    if donation_name is None:
+        if not re.search(r"\breceive\s*\(\s*\)\s*external\s+payable",
+                         scoped) and not re.search(
+                             r"\bfallback\s*\(\s*\)\s*external"
+                             r"\s+payable", scoped):
+            return []
+        donation_name = "receive/fallback"
+
+    # (c) Protections (any one suppresses): a virtual offset on
+    # the share denominator, a dead-share bootstrap mint, a
+    # minimum-shares constant actually used on the deposit path,
+    # or a minimum-deposit require in the deposit function.
+    if "_decimalsOffset" in scoped:
+        return []
+    if re.search(r"address\s*\(\s*this\s*\)\s*\.balance\s*\+\s*1\b",
+                 deposit_text):
+        return []
+    if re.search(r"(totalShares|totalSupply)\s*\+\s*1\b",
+                 deposit_text):
+        return []
+    if re.search(r"\+\s*10\s*\*\*", deposit_text):
+        return []
+    if re.search(r"_mint\s*\(\s*address\s*\(\s*0\s*\)", scoped):
+        return []
+    if re.search(r"MINIMUM_(SHARES|LIQUIDITY|DEPOSIT)", deposit_text):
+        return []
+    if re.search(r"require\s*\(\s*msg\.value\s*>=",
+                 deposit_text):
+        return []
+
+    # (d) Payout leg: a function that sends the raw native balance
+    # (or a large share of it) out, so the inflated value is
+    # extractable by the attacker.
+    payout_fn = None
+    for name, fn in by_name.items():
+        if not re.search(r"address\s*\(\s*this\s*\)\s*\.balance",
+                         fn["text"]):
+            continue
+        if (re.search(r"\.call\s*\{[^}]*\bvalue\b", fn["text"])
+                or re.search(r"\.transfer\s*\(", fn["text"])
+                or re.search(r"\.send\s*\(", fn["text"])):
+            payout_fn = fn
+            break
+    if payout_fn is None:
+        return []
+
+    detail = spec.detail + (
+        f" Observed: '{deposit_fn['name']}' prices shares off "
+        f"address(this).balance, '{donation_name}' donates ETH "
+        f"without minting shares, and '{payout_fn['name']}' pays "
+        f"out address(this).balance - with no virtual offset, "
+        f"dead-share bootstrap or minimum-shares guard in scope.")
+    item = _hit(spec, deposit_fn["name"], cc._snip(deposit_text),
+                detail)
+    # Recipient classification mirrors vault_share_inflation: the
+    # payout leg meters the caller's own shares in isolation, but
+    # it is priced off the donation-sensitive balance, so the
+    # redeeming stranger receives assets beyond their own deposit.
+    recipient, rdetail = cl.classify_recipient(payout_fn["text"])
+    item["recipient"] = recipient
+    if recipient == "FIXED":
+        item["report_class"] = "trigger_only"
+        item["severity"] = "low"
+        item["detail"] += (
+            f" Recipient analysis: the payout destination is "
+            f"FIXED ({rdetail}), so a stranger can trigger "
+            f"this but receives nothing - classified "
+            f"TRIGGER-ONLY under the receive rule.")
+    else:
+        item["report_class"] = "candidate"
+        if recipient == "HOLDER-SELF":
+            item["detail"] += (
+                " Recipient analysis: the payout leg meters "
+                "the caller's own shares (HOLDER-SELF shape), "
+                "but it is priced off the donation-sensitive "
+                "balance above, so the redeeming stranger "
                 "receives assets beyond their own deposit - "
                 "the excess is CALLER-received, classified "
                 "CANDIDATE under the receive rule.")
@@ -512,6 +693,7 @@ def _analyze_ecrecover_zero(src, spec, compiler, contract_name):
 
 ANALYZERS = {
     "vault_share_inflation": _analyze_vault_inflation,
+    "native_vault_share_inflation": _analyze_native_vault_inflation,
     "readonly_reentrancy_gap": _analyze_readonly_reentrancy,
     "diamond_cut_ungated": _analyze_diamond_cut,
     "aa_validation_ungated": _analyze_aa_validation,
