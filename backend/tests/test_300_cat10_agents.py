@@ -61,7 +61,7 @@ def keys(rows):
 # ---------------------------------------------------------------- registry
 def test_registry_grew_by_30():
     reg = discover()
-    assert len(reg) == 1434
+    assert len(reg) == 1435
     for pid in IDS:
         assert pid in reg, pid
 
