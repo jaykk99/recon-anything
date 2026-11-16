@@ -1,0 +1,1660 @@
+"""Smart-contract chain access + code analysis helpers.
+
+Backs the contract_recon plugin. Everything here is READ-ONLY public
+chain data:
+
+- verified source from keyless Blockscout instances, then the
+  Sourcify v2 API (``sourcify.dev/server/v2``), then the legacy
+  Sourcify repository route as a fallback (Etherscan only when a key
+  is already configured, as an enhancement - never a requirement);
+- deployed bytecode via public JSON-RPC ``eth_getCode``.
+
+No transactions, no eth_call, no state-changing anything. Detection
+only: static analysis of published source and deployed bytecode.
+
+Chains are CONFIG, not code: adding an EVM chain is one CHAINS entry
+(chain id, public RPCs, keyless Blockscout instance, explorer URL).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import time
+from dataclasses import dataclass
+import asyncio
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..ratelimit import fetch
+from ..rpc_guard import RpcWriteBlocked, assert_payload_read_only
+from ..rpc_pool import POOL as _RPC_POOL
+from .cryptopack_util import keccak256
+
+SOURCIFY_REPO = "https://repo.sourcify.dev/contracts"
+SOURCIFY_V2_API = "https://sourcify.dev/server/v2/contract"
+ETH_V2_API = "https://api.etherscan.io/v2/api"
+
+ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+ZERO_ADDRESS = "0x" + "0" * 40
+
+
+# ---------------------------------------------------------------------------
+# Chain configuration
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ChainConfig:
+    id: str                      # canonical id used in targets/findings
+    name: str                    # display name
+    chain_id: int                # EVM chain id (Sourcify / Etherscan v2)
+    rpc_urls: Tuple[str, ...]    # public JSON-RPC endpoints (read-only)
+    blockscout_api: Optional[str]  # keyless Blockscout API base or None
+    explorer_address: str        # address page URL, {addr} placeholder
+    native: str                  # native asset symbol
+
+
+CHAINS: Dict[str, ChainConfig] = {
+    "ethereum": ChainConfig(
+        id="ethereum", name="Ethereum", chain_id=1,
+        rpc_urls=("https://ethereum-rpc.publicnode.com",
+                  "https://eth.llamarpc.com"),
+        blockscout_api="https://eth.blockscout.com/api",
+        explorer_address="https://etherscan.io/address/{addr}",
+        native="ETH"),
+    "bsc": ChainConfig(
+        id="bsc", name="BNB Chain", chain_id=56,
+        # Keyless public endpoints, tried in order by every chain
+        # reader (rpc_get_code / rpc_get_storage_at / contract_sim
+        # eth_call all loop this tuple and move on at the first
+        # failure, so one dead or rate-limited endpoint no longer
+        # degrades the whole chain). The old 2-endpoint list
+        # (publicnode + bnbchain.org) rate-limited / failed for a
+        # full afternoon on 2026-11-03 and degraded every BSC scan
+        # (WBNB, BMB tokens, the BNB-chain sweep) while hand probes
+        # to the Binance dataseed family answered fine - so the
+        # dataseed family leads now and the old pair stays in the
+        # rotation as later fallbacks. Every endpoint below was
+        # verified live (eth_chainId, HTTP 200) on 2026-11-03.
+        rpc_urls=("https://bsc-dataseed.binance.org",
+                  "https://bsc-dataseed1.binance.org",
+                  "https://bsc-dataseed2.binance.org",
+                  "https://bsc-dataseed3.binance.org",
+                  "https://bsc-dataseed4.binance.org",
+                  "https://bsc-dataseed.bnbchain.org",
+                  "https://rpc.ankr.com/bsc",
+                  "https://bsc-rpc.publicnode.com"),
+        blockscout_api="https://bsc.blockscout.com/api",
+        explorer_address="https://bscscan.com/address/{addr}",
+        native="BNB"),
+    "polygon": ChainConfig(
+        id="polygon", name="Polygon", chain_id=137,
+        rpc_urls=("https://polygon-rpc.com",
+                  "https://polygon-bor-rpc.publicnode.com"),
+        blockscout_api="https://polygon.blockscout.com/api",
+        explorer_address="https://polygonscan.com/address/{addr}",
+        native="MATIC"),
+    "arbitrum": ChainConfig(
+        id="arbitrum", name="Arbitrum One", chain_id=42161,
+        rpc_urls=("https://arb1.arbitrum.io/rpc",
+                  "https://arbitrum-one-rpc.publicnode.com"),
+        blockscout_api="https://arbitrum.blockscout.com/api",
+        explorer_address="https://arbiscan.io/address/{addr}",
+        native="ETH"),
+    "base": ChainConfig(
+        id="base", name="Base", chain_id=8453,
+        rpc_urls=("https://mainnet.base.org",
+                  "https://base-rpc.publicnode.com"),
+        blockscout_api="https://base.blockscout.com/api",
+        explorer_address="https://basescan.org/address/{addr}",
+        native="ETH"),
+    "optimism": ChainConfig(
+        id="optimism", name="Optimism", chain_id=10,
+        rpc_urls=("https://mainnet.optimism.io",
+                  "https://optimism-rpc.publicnode.com"),
+        blockscout_api="https://optimism.blockscout.com/api",
+        explorer_address="https://optimistic.etherscan.io/address/{addr}",
+        native="ETH"),
+    # Cronos (2026-11-15 fix-zero-verified): chain 25 was missing
+    # entirely, so every Cronos probe/fork/source-fetch failed at the
+    # CHAINS.get() guard with "unknown chain" before trying any
+    # network call. RPCs + Blockscout from the recon-zero100k
+    # precedent and the crypto.com deep-scan driver; evm.cronos.org
+    # and cronos-evm.publicnode.com verified live (eth_chainId 0x19)
+    # from this VM 2026-11-15; Cronos Blockscout v2 source API
+    # verified 200 for WCRO the same day.
+    "cronos": ChainConfig(
+        id="cronos", name="Cronos", chain_id=25,
+        rpc_urls=("https://evm.cronos.org",
+                  "https://cronos-evm.publicnode.com",
+                  "https://cronos.drpc.org",
+                  "https://evm-cronos.crypto.org"),
+        blockscout_api="https://cronos.blockscout.com/api",
+        explorer_address="https://cronoscan.com/address/{addr}",
+        native="CRO"),
+}
+
+# Target prefixes Jay can type: "bsc:0x...", "eth:0x...", ...
+CHAIN_ALIASES = {
+    "eth": "ethereum", "ethereum": "ethereum", "mainnet": "ethereum",
+    "bsc": "bsc", "bnb": "bsc", "bnbchain": "bsc", "binance": "bsc",
+    "polygon": "polygon", "matic": "polygon",
+    "arbitrum": "arbitrum", "arb": "arbitrum",
+    "base": "base",
+    "optimism": "optimism", "op": "optimism", "optimistic": "optimism",
+    "cronos": "cronos", "cro": "cronos",
+}
+
+# Order used when a bare address target does not name a chain: probe
+# each chain's eth_getCode and recon the contract where code exists.
+DEFAULT_CHAIN_ORDER = ("ethereum", "bsc", "polygon", "arbitrum",
+                       "base", "optimism", "cronos")
+
+
+def parse_target_address(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    """Parse a scan target into (chain_id, address).
+
+    Accepts a bare ``0x...`` address (chain None = probe all) or a
+    ``<chain>:0x...`` prefix using CHAINS ids or CHAIN_ALIASES.
+    Returns (None, None) when the target is not an EVM address.
+    """
+    s = (raw or "").strip()
+    chain: Optional[str] = None
+    if ":" in s:
+        prefix, _, rest = s.partition(":")
+        alias = CHAIN_ALIASES.get(prefix.strip().lower())
+        if alias and ADDRESS_RE.match(rest.strip()):
+            return alias, rest.strip()
+    if ADDRESS_RE.match(s):
+        return chain, s
+    return None, None
+
+
+def explorer_url(chain: ChainConfig, address: str) -> str:
+    return chain.explorer_address.format(addr=address)
+
+
+# ---------------------------------------------------------------------------
+# Read-only chain access (all through the shared rate-limited fetch)
+# ---------------------------------------------------------------------------
+
+# RPC host health: a dead or timing-out endpoint used to cost up to the full
+# per-call timeout on EVERY call, because each helper re-looped the same
+# rpc_urls list from the top. Across getCode / getStorageAt (many slots) /
+# getBalance / batch, for every contract, a couple of dead hosts turned a
+# ~130s scan into ~550s. This process-wide tracker remembers which endpoints
+# just failed and skips them for a cooldown, so a dead host is paid for once
+# per cooldown window, not once per call. Cooling hosts are still tried as a
+# last resort if every endpoint for a chain is cooling, so the tracker can
+# never make a chain permanently unreachable.
+_RPC_COOLDOWN_S = float(os.environ.get("RECON_RPC_COOLDOWN_S", "120"))
+_RPC_DEAD_UNTIL: Dict[str, float] = {}
+
+
+def _rpc_order(urls: List[str]) -> List[str]:
+    """Healthy endpoints first, cooling ones last (as fallback)."""
+    now = time.time()
+    healthy = [u for u in urls if _RPC_DEAD_UNTIL.get(u, 0.0) <= now]
+    cooling = [u for u in urls if _RPC_DEAD_UNTIL.get(u, 0.0) > now]
+    return healthy + cooling
+
+
+def _rpc_mark_dead(url: str) -> None:
+    _RPC_DEAD_UNTIL[url] = time.time() + _RPC_COOLDOWN_S
+
+
+def _rpc_mark_alive(url: str) -> None:
+    if url in _RPC_DEAD_UNTIL:
+        _RPC_DEAD_UNTIL.pop(url, None)
+
+
+async def _rpc_post(ctx: Any, rpc: str, payload: Any) -> Optional[Any]:
+    """One POST to one endpoint, updating its health. Returns the parsed
+    JSON body, or None on any failure (and marks the host dead).
+
+    Health is recorded in two places: the legacy flat-cooldown map
+    above (unchanged contract) and the Track-2 provider pool
+    (app.rpc_pool), whose streak-based breaker + 429 backoff drive
+    the batched transports' endpoint order. Pool bookkeeping is
+    best-effort: it can never break the transport it observes."""
+    try:
+        assert_payload_read_only(payload)
+    except RpcWriteBlocked:
+        return None
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "POST", rpc,
+                        json=payload, timeout=12, max_retries=0)
+        try:
+            _RPC_POOL.note_response(rpc, r.status_code)
+        except Exception:
+            pass
+        if r.status_code != 200:
+            _rpc_mark_dead(rpc)
+            return None
+        d = r.json()
+    except Exception:
+        try:
+            _RPC_POOL.note_transport_error(rpc)
+        except Exception:
+            pass
+        _rpc_mark_dead(rpc)
+        return None
+    _rpc_mark_alive(rpc)
+    return d
+
+
+async def _cached_rpc(ctx: Any, bucket: str, key: tuple, factory):
+    """Per-run cache + singleflight for a read-only chain call.
+
+    A single contract runs hundreds of plugins and ~29 of them read the
+    same bytecode / storage word live; without sharing, each re-fetched it
+    against rate-limited public RPC - a large part of the ~124s/contract.
+    This caches the first successful result on ctx.shared (keyed by chain +
+    address [+ slot], exactly like _source_cache) and coalesces concurrent
+    identical fetches into one in-flight request (like _fetch_page_inflight),
+    so the other callers wait on it instead of issuing duplicates.
+
+    Returns identical values to the uncached call - this is pure dedupe, it
+    changes nothing about what any plugin detects. Failures (None) are not
+    cached, so a transient all-endpoints-down does not poison the run; the
+    dead-host cooldown already makes the retry fast.
+    """
+    shared = getattr(ctx, "shared", None)
+    if shared is None:
+        return await factory()
+    cache = shared.setdefault(bucket, {})
+    if key in cache:
+        return cache[key]
+    inflight = shared.setdefault(bucket + "_inflight", {})
+    task = inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(factory())
+        inflight[key] = task
+        task.add_done_callback(lambda _t: inflight.pop(key, None))
+    result = await asyncio.shield(task)
+    if result is not None:
+        cache[key] = result
+    return result
+
+
+async def _rpc_get_code_uncached(ctx: Any, chain: ChainConfig,
+                                 address: str) -> Optional[str]:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getCode",
+               "params": [address, "latest"]}
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            return d["result"]
+    return None
+
+
+async def rpc_get_code(ctx: Any, chain: ChainConfig,
+                       address: str) -> Optional[str]:
+    """eth_getCode via public JSON-RPC. Read-only.
+
+    Returns the deployed bytecode hex ("0x..." - "0x" itself when the
+    address holds no code), or None when every RPC endpoint failed.
+    Cached and singleflighted per run (bytecode is immutable per address).
+    """
+    return await _cached_rpc(
+        ctx, "_code_cache", (chain.id, address.lower()),
+        lambda: _rpc_get_code_uncached(ctx, chain, address))
+
+
+async def _rpc_get_storage_at_uncached(ctx: Any, chain: ChainConfig,
+                                       address: str,
+                                       slot: str) -> Optional[str]:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getStorageAt",
+               "params": [address, slot, "latest"]}
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            return d["result"]
+    return None
+
+
+async def rpc_get_storage_at(ctx: Any, chain: ChainConfig,
+                             address: str, slot: str) -> Optional[str]:
+    """eth_getStorageAt via public JSON-RPC. Read-only, same access
+    class as eth_getCode: it reads one public storage word and never
+    calls or transacts with the contract.
+
+    Returns the 32-byte word hex ("0x..." + 64 hex chars), or None
+    when every RPC endpoint failed. Cached + singleflighted per run.
+    """
+    return await _cached_rpc(
+        ctx, "_storage_cache", (chain.id, address.lower(), slot.lower()),
+        lambda: _rpc_get_storage_at_uncached(ctx, chain, address, slot))
+
+
+async def rpc_get_balance(ctx: Any, chain: ChainConfig,
+                          address: str) -> Optional[int]:
+    """eth_getBalance via public JSON-RPC. Read-only.
+
+    Returns the native balance in wei, or None when every RPC
+    endpoint failed. Endpoint list is read from the chain config at
+    call time, so config-level endpoint changes apply here too.
+    """
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
+               "params": [address, "latest"]}
+    for rpc in _rpc_order(chain.rpc_urls):
+        d = await _rpc_post(ctx, rpc, payload)
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            try:
+                return int(d["result"], 16)
+            except ValueError:
+                continue
+    return None
+
+
+# Public endpoints commonly cap JSON-RPC batches near 100 calls;
+# larger read sets are split into sequential chunk POSTs (still one
+# round-trip per chunk, not per call).
+RPC_BATCH_MAX = int(os.environ.get("RECON_RPC_BATCH_MAX", "100"))
+
+
+async def _rpc_batch_chunk(ctx: Any, chain: ChainConfig,
+                           calls: List[Tuple[str, list]],
+                           id_offset: int) -> Optional[list]:
+    """One batch POST for one chunk, over pool-ordered endpoints.
+
+    Endpoints come from the Track-2 provider pool (app.rpc_pool):
+    the chain's config URLs plus the pool's extra keyless endpoints,
+    healthy ones first in round-robin rotation, cooling/throttled
+    ones last as fallback. Response items are matched by JSON-RPC
+    id, so an endpoint answering out of order cannot scramble the
+    results. Returns per-call results in request order (None for an
+    individual call that errored or went unanswered), or None when
+    every endpoint failed the batch itself."""
+    payload = [{"jsonrpc": "2.0", "id": id_offset + i + 1, "method": m,
+                "params": p} for i, (m, p) in enumerate(calls)]
+    for rpc in _RPC_POOL.order(chain.id, list(chain.rpc_urls)):
+        d = await _rpc_post(ctx, rpc, payload)
+        if not isinstance(d, list):
+            try:
+                _RPC_POOL.note_batch_failure(rpc)
+            except Exception:
+                pass
+            continue
+        by_id: Dict[Any, Any] = {}
+        for item in d:
+            if isinstance(item, dict) and "id" in item:
+                by_id[item["id"]] = item.get("result")
+        if not by_id:
+            try:
+                _RPC_POOL.note_batch_failure(rpc)
+            except Exception:
+                pass
+            continue
+        return [by_id.get(id_offset + i + 1) for i in range(len(calls))]
+    return None
+
+
+async def rpc_batch(ctx: Any, chain: ChainConfig,
+                    calls: List[Tuple[str, list]]) -> Optional[list]:
+    """Batched JSON-RPC reads: ONE HTTP POST carrying every call.
+
+    ``calls`` is a list of (method, params) read-only calls
+    (eth_getCode / eth_getBalance / eth_getStorageAt / eth_call /
+    ...). Returns the list of raw JSON-RPC ``result`` values in
+    request order (None for an individual call that errored), or
+    None when the batch itself failed on every endpoint - callers
+    then fall back to the per-call helpers above, so a
+    batch-hostile endpoint can never lose data, only the speedup.
+    Goes through the same rate-limited fetch as every other read:
+    one limiter slot for the whole batch, spike backoff untouched.
+    Read sets larger than RPC_BATCH_MAX are chunked into one POST
+    per chunk; if any chunk fails everywhere the whole call returns
+    None, preserving the all-or-fallback contract.
+    """
+    if not calls:
+        return []
+    out: List[Any] = []
+    for start in range(0, len(calls), RPC_BATCH_MAX):
+        chunk = calls[start:start + RPC_BATCH_MAX]
+        part = await _rpc_batch_chunk(ctx, chain, chunk, start)
+        if part is None:
+            return None
+        out.extend(part)
+    return out
+
+
+async def rpc_get_storage_batch(ctx: Any, chain: ChainConfig,
+                                address: str, slots: List[str]
+                                ) -> Optional[Dict[str, Optional[str]]]:
+    """Many eth_getStorageAt reads for one address in ONE POST.
+
+    Returns {slot: word} keyed by the slot strings as passed (None
+    for a slot whose individual call errored), or None when there
+    is no HTTP client or the batch failed on every endpoint - the
+    caller then falls back to rpc_get_storage_at per slot, so the
+    result contract is identical either way. Successful words are
+    seeded into the per-run storage cache, so a later
+    rpc_get_storage_at for the same slot is served without another
+    round-trip. Read-only, same access class as rpc_get_storage_at.
+    """
+    if not slots:
+        return {}
+    if getattr(ctx, "http", None) is None:
+        return None
+    results = await rpc_batch(ctx, chain, [
+        ("eth_getStorageAt", [address, slot, "latest"]) for slot in slots])
+    if results is None:
+        return None
+    out: Dict[str, Optional[str]] = {}
+    shared = getattr(ctx, "shared", None)
+    cache = shared.setdefault("_storage_cache", {}) \
+        if isinstance(shared, dict) else None
+    for slot, word in zip(slots, results):
+        w = word if isinstance(word, str) else None
+        out[slot] = w
+        if w is not None and cache is not None:
+            cache[(chain.id, address.lower(), slot.lower())] = w
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Proxy implementation resolution (read-only)
+# ---------------------------------------------------------------------------
+
+# EIP-1967 slots: keccak256("eip1967.proxy.implementation") - 1 and
+# keccak256("eip1967.proxy.beacon") - 1. Transparent and UUPS proxies
+# both store the implementation at the implementation slot.
+EIP1967_IMPLEMENTATION_SLOT = (
+    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+EIP1967_BEACON_SLOT = (
+    "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50")
+
+
+def address_from_storage_word(word: Optional[str]) -> str:
+    """Extract an address from a 32-byte storage word.
+
+    Returns the checksummed-as-stored lowercase address, or "" when
+    the word is empty, zero, malformed, or has non-zero high bytes
+    (i.e. it is not a packed address at all).
+    """
+    w = (word or "").strip().lower()
+    if w.startswith("0x"):
+        w = w[2:]
+    if len(w) != 64:
+        return ""
+    try:
+        int(w, 16)
+    except ValueError:
+        return ""
+    if w[:24] != "0" * 24:
+        return ""
+    addr = "0x" + w[24:]
+    if addr == ZERO_ADDRESS:
+        return ""
+    return addr
+
+
+def implementation_from_bytecode(code_hex: Optional[str]) -> str:
+    """Implementation address when the deployed bytecode is an
+    EIP-1167 minimal proxy (the whole runtime is the forwarder, so
+    the implementation is baked into the code itself)."""
+    if not code_hex:
+        return ""
+    return analyze_bytecode(code_hex).get("minimal_proxy_impl") or ""
+
+
+async def resolve_implementation(
+        ctx: Any, chain: ChainConfig, address: str,
+        code_hex: Optional[str] = None,
+        source_meta: Optional[Dict[str, Any]] = None
+        ) -> Dict[str, str]:
+    """Resolve a proxy's implementation address, read-only.
+
+    Tries, in order: the explorer-reported implementation (from the
+    verified-source metadata), the EIP-1167 minimal-proxy bytecode
+    pattern, the EIP-1967 implementation storage slot (covers
+    OpenZeppelin transparent and UUPS proxies), and the EIP-1967
+    beacon slot (beacon address, then the beacon's own slot 0, which
+    is where OpenZeppelin's UpgradeableBeacon stores its
+    implementation).
+
+    Returns {"implementation": addr or "", "via": how it was found
+    ("" when unresolved), "beacon": beacon addr or ""}. Detection
+    only: storage reads and bytecode inspection, never a call.
+    """
+    meta = source_meta or {}
+    impl = meta.get("implementation") or ""
+    if isinstance(impl, str) and ADDRESS_RE.match(impl) \
+            and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "explorer",
+                "beacon": ""}
+    impl = implementation_from_bytecode(code_hex)
+    if impl and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "eip1167_bytecode",
+                "beacon": ""}
+    # Track-2 batching: with a live HTTP client, both EIP-1967 slots
+    # are read in ONE batched POST (and seeded into the storage
+    # cache). Without one - or when the batch fails everywhere -
+    # prefetched stays None and the reads below run exactly as
+    # before, one rpc_get_storage_at per slot.
+    prefetched: Optional[Dict[str, Optional[str]]] = None
+    if getattr(ctx, "http", None) is not None:
+        try:
+            prefetched = await rpc_get_storage_batch(
+                ctx, chain, address,
+                [EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT])
+        except Exception:
+            prefetched = None
+    if prefetched is not None:
+        word = prefetched.get(EIP1967_IMPLEMENTATION_SLOT)
+    else:
+        word = await rpc_get_storage_at(ctx, chain, address,
+                                        EIP1967_IMPLEMENTATION_SLOT)
+    impl = address_from_storage_word(word)
+    if impl and impl.lower() != address.lower():
+        return {"implementation": impl, "via": "eip1967_slot",
+                "beacon": ""}
+    if prefetched is not None:
+        word = prefetched.get(EIP1967_BEACON_SLOT)
+    else:
+        word = await rpc_get_storage_at(ctx, chain, address,
+                                        EIP1967_BEACON_SLOT)
+    beacon = address_from_storage_word(word)
+    if beacon:
+        bword = await rpc_get_storage_at(ctx, chain, beacon, "0x0")
+        impl = address_from_storage_word(bword)
+        if impl and impl.lower() != address.lower():
+            return {"implementation": impl, "via": "eip1967_beacon",
+                    "beacon": beacon}
+        return {"implementation": "", "via": "", "beacon": beacon}
+    return {"implementation": "", "via": "", "beacon": ""}
+
+
+def _unwrap_source(raw: str) -> str:
+    """Explorer SourceCode fields sometimes wrap multi-file sources in
+    a JSON object ({"sources": {path: {"content": ...}}}). Flatten to
+    plain concatenated Solidity; return raw text otherwise."""
+    s = (raw or "").strip()
+    if s.startswith("{{") and s.endswith("}}"):
+        s = s[1:-1]
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+        except Exception:
+            return raw
+        sources = d.get("sources") if isinstance(d, dict) else None
+        if isinstance(sources, dict):
+            parts = []
+            for path in sorted(sources):
+                entry = sources[path]
+                content = entry.get("content") if isinstance(entry, dict) \
+                    else None
+                if content:
+                    parts.append(f"\n// ==== {path} ====\n{content}")
+            if parts:
+                return "\n".join(parts)
+    return raw
+
+
+async def _source_blockscout(ctx: Any, chain: ChainConfig,
+                             address: str) -> Optional[Dict[str, Any]]:
+    """Keyless verified source from a public Blockscout instance
+    (Etherscan-compatible getsourcecode action, no API key)."""
+    if not chain.blockscout_api:
+        return None
+    from urllib.parse import urlencode
+    url = f"{chain.blockscout_api}?{urlencode({'module': 'contract', 'action': 'getsourcecode', 'address': address})}"
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                        max_retries=0)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    res = d.get("result") if isinstance(d, dict) else None
+    if not res or not isinstance(res, list):
+        return None
+    info = res[0] or {}
+    src = _unwrap_source(info.get("SourceCode") or "")
+    if len(src) < 60:
+        return None
+    impl = info.get("Implementation") or ""
+    return {
+        "source": src,
+        "contract_name": info.get("ContractName") or "",
+        "compiler": info.get("CompilerVersion") or "",
+        "proxy": str(info.get("Proxy") or "") == "1",
+        "implementation": impl if ADDRESS_RE.match(impl) else "",
+        "origin": "Blockscout",
+    }
+
+
+async def _source_sourcify(ctx: Any, chain: ChainConfig,
+                           address: str) -> Optional[Dict[str, Any]]:
+    """Keyless verified source from the Sourcify repository."""
+    for match in ("full_match", "partial_match"):
+        meta_url = (f"{SOURCIFY_REPO}/{match}/{chain.chain_id}/"
+                    f"{address}/metadata.json")
+        try:
+            r = await fetch(ctx.http, ctx.limiter, "GET", meta_url,
+                            timeout=20, max_retries=0)
+        except Exception:
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            meta = r.json()
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        sources = meta.get("sources") or {}
+        sol_paths = [p for p in sources.keys()
+                     if isinstance(p, str) and p.endswith(".sol")]
+        if not sol_paths:
+            continue
+        parts: List[str] = []
+        for sp in sol_paths[:12]:
+            furl = (f"{SOURCIFY_REPO}/{match}/{chain.chain_id}/{address}"
+                    f"/sources/{sp}")
+            try:
+                fr = await fetch(ctx.http, ctx.limiter, "GET", furl,
+                                 timeout=20, max_retries=0)
+            except Exception:
+                continue
+            if fr.status_code == 200 and fr.text:
+                parts.append(f"\n// ==== {sp} ====\n{fr.text}")
+        if not parts:
+            continue
+        name = ""
+        targets = ((meta.get("settings") or {}).get("compilationTarget")
+                   or {})
+        if isinstance(targets, dict) and targets:
+            name = str(next(iter(targets.values())) or "")
+        return {
+            "source": "\n".join(parts),
+            "contract_name": name,
+            "compiler": str((meta.get("compiler") or {}).get("version")
+                            or ""),
+            "proxy": False,
+            "implementation": "",
+            "origin": "Sourcify",
+        }
+    return None
+
+
+def _parse_sourcify_v2_payload(d: Any, address: str) -> Optional[Dict[str, Any]]:
+    """Parse a Sourcify v2 contract payload into the standard source dict.
+
+    Pure helper (no I/O): ``d`` is the decoded JSON of
+    ``GET /server/v2/contract/{chain_id}/{address}?fields=sources,compilation``,
+    shaped ``{sources: {path: {content}}, compilation: {name,
+    compilerVersion}}``. ``address`` is accepted for signature symmetry
+    with the other routes / future validation; parsing does not need it.
+
+    Source assembly: sorted paths, ``.sol`` files only, each part
+    prefixed with a ``// ==== {path} ====`` header, capped at 40
+    parts, and at least one non-empty part is required.
+    """
+    if not isinstance(d, dict):
+        return None
+    sources = d.get("sources") or {}
+    if not isinstance(sources, dict):
+        return None
+    parts: List[str] = []
+    for path in sorted(sources):
+        if not isinstance(path, str) or not path.endswith(".sol"):
+            continue
+        entry = sources.get(path)
+        content = ""
+        if isinstance(entry, dict):
+            content = entry.get("content") or ""
+        elif isinstance(entry, str):
+            content = entry
+        if content:
+            parts.append(f"\n// ==== {path} ====\n{content}")
+        if len(parts) >= 40:
+            break
+    if not parts:
+        return None
+    comp = d.get("compilation") or {}
+    if not isinstance(comp, dict):
+        comp = {}
+    return {
+        "source": "\n".join(parts),
+        "contract_name": comp.get("name") or "",
+        "compiler": comp.get("compilerVersion") or "",
+        "proxy": False,
+        "implementation": "",
+        "origin": "Sourcify v2",
+    }
+
+
+async def _source_sourcify_v2(ctx: Any, chain: ChainConfig,
+                              address: str) -> Optional[Dict[str, Any]]:
+    """Keyless verified source from the Sourcify v2 API.
+
+    The legacy repo route below relies on Sourcify API v1, which
+    upstream removed; the v2 route serves the same verified sources
+    (plus compilation metadata) in a single call.
+    """
+    url = (f"{SOURCIFY_V2_API}/{chain.chain_id}/{address}"
+           "?fields=sources,compilation")
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                        max_retries=0)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    return _parse_sourcify_v2_payload(d, address)
+
+
+async def _source_etherscan(ctx: Any, chain: ChainConfig, address: str,
+                            key: str) -> Optional[Dict[str, Any]]:
+    """Verified source via Etherscan v2 (multichain). Only used when a
+    key is already configured; the keyless routes above run first."""
+    from urllib.parse import urlencode
+    url = f"{ETH_V2_API}?{urlencode({'chainid': chain.chain_id, 'module': 'contract', 'action': 'getsourcecode', 'address': address, 'apikey': key})}"
+    try:
+        r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=20,
+                        max_retries=0)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    res = d.get("result") if isinstance(d, dict) else None
+    if not res or not isinstance(res, list):
+        return None
+    info = res[0] or {}
+    src = _unwrap_source(info.get("SourceCode") or "")
+    if len(src) < 60:
+        return None
+    impl = info.get("Implementation") or ""
+    return {
+        "source": src,
+        "contract_name": info.get("ContractName") or "",
+        "compiler": info.get("CompilerVersion") or "",
+        "proxy": str(info.get("Proxy") or "") == "1",
+        "implementation": impl if ADDRESS_RE.match(impl) else "",
+        "origin": "Etherscan",
+    }
+
+
+async def fetch_verified_source_with_status(
+        ctx: Any, chain: ChainConfig, address: str,
+        etherscan_key: Optional[str] = None) -> Dict[str, Any]:
+    """Verified source for a contract, with an honest status report.
+
+    Route order: Blockscout, Sourcify v2, legacy Sourcify repo route
+    (fallback), then Etherscan (only when a key is configured).
+
+    Returns {"source": <standard source dict or None>,
+    "status": "ok" | "degraded", "routes_tried": [route names in the
+    order they were attempted]}. Status is "degraded" when every
+    route failed, so callers can distinguish "no verified source
+    exists / source transport is down" from a clean negative.
+
+    Successful results are memoized per run on
+    ``ctx.shared["_source_cache"]`` keyed by (chain.id,
+    address.lower()) when ctx exposes a ``shared`` dict; failures
+    are never cached.
+    """
+    shared = getattr(ctx, "shared", None)
+    cache_key = (chain.id, address.lower())
+    if isinstance(shared, dict):
+        cache = shared.get("_source_cache")
+        if isinstance(cache, dict) and cache_key in cache:
+            return {"source": cache[cache_key], "status": "ok",
+                    "routes_tried": []}
+
+    routes_tried: List[str] = []
+    routes = (
+        ("Blockscout", _source_blockscout),
+        ("Sourcify v2", _source_sourcify_v2),
+        ("Sourcify", _source_sourcify),
+    )
+    got: Optional[Dict[str, Any]] = None
+    for name, route in routes:
+        routes_tried.append(name)
+        try:
+            got = await route(ctx, chain, address)
+        except Exception:
+            got = None
+        if got:
+            break
+    if not got and etherscan_key:
+        routes_tried.append("Etherscan")
+        try:
+            got = await _source_etherscan(ctx, chain, address,
+                                          etherscan_key)
+        except Exception:
+            got = None
+    if got:
+        if isinstance(shared, dict):
+            cache = shared.get("_source_cache")
+            if not isinstance(cache, dict):
+                cache = {}
+                shared["_source_cache"] = cache
+            cache[cache_key] = got
+        return {"source": got, "status": "ok",
+                "routes_tried": routes_tried}
+    return {"source": None, "status": "degraded",
+            "routes_tried": routes_tried}
+
+
+async def fetch_verified_source(ctx: Any, chain: ChainConfig, address: str,
+                                etherscan_key: Optional[str] = None
+                                ) -> Optional[Dict[str, Any]]:
+    """Verified source for a contract, keyless routes first.
+
+    Returns {source, contract_name, compiler, proxy, implementation,
+    origin} or None when no explorer has verified source. Thin
+    wrapper over fetch_verified_source_with_status so existing
+    callers keep their exact return contract.
+    """
+    result = await fetch_verified_source_with_status(
+        ctx, chain, address, etherscan_key)
+    return result["source"]
+
+
+# ---------------------------------------------------------------------------
+# Verified-source analysis: pull the code out and show it
+# ---------------------------------------------------------------------------
+
+def _strip_comments(src: str) -> str:
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    return re.sub(r"//[^\n]*", "", src)
+
+
+_FUNC_START = re.compile(
+    r"\b(function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(|"
+    r"(constructor)\s*\(|(fallback)\s*\(|(receive)\s*\()")
+
+
+def extract_functions(src: str) -> List[Dict[str, str]]:
+    """Extract functions with signature + full body text.
+
+    Returns [{name, signature, text}] where text is the complete code
+    of the function (signature through the closing brace), so findings
+    can SHOW the code. Interface declarations (no body) are included
+    with their declaration as text.
+    """
+    out: List[Dict[str, str]] = []
+    n = len(src)  # hoisted out of the inner char loops (was called per-char)
+    for m in _FUNC_START.finditer(src):
+        name = m.group(2) or m.group(3) or m.group(4) or m.group(5) or ""
+        start = m.start()
+        i = m.end()
+        # walk to the body's opening brace or the ';' of a declaration
+        while i < n and src[i] not in "{;":
+            i += 1
+        if i >= n:
+            continue
+        signature = src[start:i].strip()
+        if src[i] == ";":
+            out.append({"name": name, "signature": signature,
+                        "text": src[start:i + 1].strip(),
+                        "start": start, "end": i + 1})
+            continue
+        depth = 0
+        j = i
+        while j < n:
+            if src[j] == "{":
+                depth += 1
+            elif src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append({"name": name, "signature": signature,
+                    "text": src[start:j + 1].strip(),
+                    "start": start, "end": j + 1})
+    return out
+
+
+def _line_context(src: str, pos: int, before: int = 1,
+                  after: int = 1) -> str:
+    """The source lines around a character offset (for snippets)."""
+    lines = src.splitlines()
+    idx = src[:pos].count("\n")
+    lo = max(0, idx - before)
+    hi = min(len(lines), idx + after + 1)
+    return "\n".join(lines[lo:hi]).strip()
+
+
+_GATE_RE = re.compile(
+    # Named access-control modifiers (OZ + common governance idioms).
+    r"only(Owner|Admin|Role|Minter|Pauser|Governance|Governor|Operator|"
+    r"Manager|Controller|Keeper|Guardian|Timelock|Factory|Self|Authorized|"
+    r"Whitelisted|Gov|DAO|Initializing)|"
+    # OZ initializer guards - a function with these is NOT an open init.
+    r"\binitializer\b|\breinitializer\b|"
+    # OZ internal check helpers and role checks.
+    r"_checkOwner|_checkRole|_authorizeUpgrade|hasRole\s*\(|"
+    # require/if access checks against sender, in the common shapes.
+    r"require\s*\(\s*msg\.sender\s*==|"
+    r"require\s*\(\s*_msgSender\(\)\s*==|"
+    r"require\s*\(\s*owner\(\)\s*==|"
+    r"authorized", re.I)
+
+# Solidity keywords that can legitimately sit between the parameter list and
+# the body WITHOUT being an access modifier. Anything else there is a
+# (usually access-control) modifier.
+_SIG_KEYWORDS = {
+    "public", "external", "internal", "private", "view", "pure", "payable",
+    "virtual", "override", "returns", "memory", "storage", "calldata",
+    "nonpayable", "immutable", "constant",
+}
+# Modifiers that exist but are NOT access control, so their presence alone
+# does not make a function "gated".
+_NON_ACCESS_MODIFIERS = {
+    "nonreentrant", "whennotpaused", "whenpaused", "noreentrancy",
+}
+_MODIFIER_REGION = re.compile(r"\)([^{;]*)", re.S)
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _has_access_modifier(signature: str) -> bool:
+    """True if the function carries a modifier that is plausibly access
+    control. Catches custom/project modifiers (onlyMinterRole, whenAuth...)
+    that a name list can never enumerate, while ignoring visibility,
+    mutability and known non-access modifiers (nonReentrant, whenNotPaused).
+    The truly dangerous functions - the real ungated case - have no modifier
+    here at all."""
+    m = _MODIFIER_REGION.search(signature)
+    if not m:
+        return False
+    region = m.group(1)
+    # drop a trailing returns(...) tuple so its types aren't read as modifiers
+    region = re.split(r"\breturns\b", region)[0]
+    for tok in _IDENT_RE.findall(region):
+        low = tok.lower()
+        if low in _SIG_KEYWORDS or low in _NON_ACCESS_MODIFIERS:
+            continue
+        return True
+    return False
+
+# Privileged-function categories, checked in order; first match wins so
+# a function yields one inventory finding (the most specific role).
+_PRIV_RULES: List[Tuple[str, str, "re.Pattern[str]", str]] = [
+    ("mint", "high",
+     re.compile(r"mint", re.I),
+     "can create new tokens"),
+    ("withdraw_sweep", "high",
+     re.compile(r"withdraw|sweep|drain|rescue|emergency|claimfunds|"
+                r"collect", re.I),
+     "can move funds out of the contract"),
+    ("pause", "medium",
+     re.compile(r"pause|unpause", re.I),
+     "can pause or unpause the contract"),
+    ("blacklist", "medium",
+     re.compile(r"blacklist|black_list|blocklist|denylist|deny_list|"
+                r"freez|banned", re.I),
+     "can blacklist or freeze addresses"),
+    ("owner_admin", "medium",
+     re.compile(r"owner|admin|role|operator|controller|governance|"
+                r"setfee|settax|setlimit|setwallet|setrouter", re.I),
+     "is an owner/admin control"),
+]
+
+_SNIP_CAP = 1400
+
+
+def _snip(text: str, cap: int = _SNIP_CAP) -> str:
+    text = (text or "").strip()
+    if len(text) <= cap:
+        return text
+    return text[:cap] + "\n// ... [truncated]"
+
+
+# Secret-looking string patterns. Per Jay's order (2026-10-29) these
+# are shown IN FULL in findings - never masked - so the owner sees
+# exactly what is sitting in the published contract code.
+_SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("ethereum_private_key",
+     re.compile(r"(?<![0-9a-fA-F])0x[0-9a-fA-F]{64}(?![0-9a-fA-F])")),
+    ("pem_private_key",
+     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("named_secret_assignment",
+     re.compile(r"(?i)(private[_ ]?key|secret|mnemonic|seed[_ ]?phrase|"
+                r"api[_ ]?key|password)\s*[:=]\s*[\"']([^\"']{8,})[\"']")),
+]
+
+_PLACEHOLDER_WORDS = ("example", "sample", "test", "placeholder",
+                      "changeme", "your", "xxxx", "todo")
+
+# 32-byte constants that are structural, not secrets: the EIP-1967
+# storage slots (implementation / admin / beacon) appear in every
+# proxy and must not be reported as private keys.
+_KNOWN_CONSTANTS = {
+    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+    "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
+    "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+}
+
+
+def find_secret_strings(src: str) -> List[Dict[str, str]]:
+    """Secret-looking strings in contract source, values IN FULL."""
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for kind, pat in _SECRET_PATTERNS:
+        for m in pat.finditer(src):
+            value = m.group(2) if (kind == "named_secret_assignment"
+                                   and m.lastindex and m.lastindex >= 2) \
+                else m.group(0)
+            value = (value or "").strip()
+            if not value or value.lower() == "0x" + "0" * 64:
+                continue
+            if value.lower() in _KNOWN_CONSTANTS:
+                continue
+            if any(w in value.lower() for w in _PLACEHOLDER_WORDS):
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append({"kind": kind, "value": value,
+                        "code": _line_context(src, m.start(), 1, 1)})
+    return out
+
+
+_PROXY_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("ERC1967 proxy", re.compile(
+        r"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505"
+        r"d382bbc|ERC1967Proxy|ERC1967Upgrade")),
+    ("Transparent upgradeable proxy", re.compile(
+        r"TransparentUpgradeableProxy")),
+    ("UUPS proxy", re.compile(r"UUPSUpgradeable|proxiableUUID")),
+    ("Beacon proxy", re.compile(r"BeaconProxy|UpgradeableBeacon")),
+    ("Diamond (EIP-2535)", re.compile(r"diamondCut|IDiamondCut|"
+                                      r"LibDiamond")),
+    ("Minimal proxy factory (EIP-1167 clones)", re.compile(
+        r"Clones\.clone|createClone|cloneDeterministic")),
+]
+
+
+def analyze_contract_source(src: str,
+                            meta: Optional[Dict[str, Any]] = None
+                            ) -> List[Dict[str, Any]]:
+    """Static code inventory over verified Solidity source.
+
+    Returns finding dicts {kind, severity, title, function, code,
+    detail}. Every dict carries the actual code (function body or line
+    context) so the finding SHOWS the code, per Jay's order. Detection
+    only - nothing here interacts with the contract.
+    """
+    meta = meta or {}
+    findings: List[Dict[str, Any]] = []
+    clean = _strip_comments(src)
+    funcs = extract_functions(clean)
+
+    # --- identity: name, compiler, pragma, declaration code ----------
+    pragma_m = re.search(r"pragma\s+solidity\s*[^;]+;", clean)
+    decl_m = re.search(
+        r"\b(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)"
+        r"[^{;]*\{", clean)
+    name = meta.get("contract_name") or (decl_m.group(2) if decl_m
+                                         else "")
+    compiler = meta.get("compiler") or ""
+    decl_code = ""
+    if decl_m:
+        decl_code = clean[decl_m.start():decl_m.end()].strip()
+    if pragma_m:
+        decl_code = (pragma_m.group(0) + "\n" + decl_code).strip()
+    findings.append({
+        "kind": "identity", "severity": "low", "function": "",
+        "title": (f"Contract code: {name or 'unknown name'} "
+                  f"(compiler {compiler or 'unknown'}, "
+                  f"{len(src)} bytes of verified source)"),
+        "code": _snip(decl_code),
+        "detail": (f"contract_name={name or 'unknown'}; "
+                   f"compiler={compiler or 'unknown'}; "
+                   f"functions={len(funcs)}"),
+        "contract_name": name, "compiler": compiler,
+        "function_count": len(funcs),
+    })
+
+    # --- proxy / implementation pattern ------------------------------
+    for label, pat in _PROXY_PATTERNS:
+        pm = pat.search(clean)
+        if not pm:
+            continue
+        impl = meta.get("implementation") or ""
+        if not impl:
+            im = re.search(
+                r"implementation\w*\s*=\s*(0x[0-9a-fA-F]{40})", clean, re.I)
+            if im:
+                impl = im.group(1)
+        findings.append({
+            "kind": "proxy", "severity": "medium", "function": "",
+            "title": (f"Proxy pattern: {label}"
+                      + (f"; implementation {impl}" if impl else "")),
+            "code": _snip(_line_context(clean, pm.start(), 2, 2)),
+            "detail": ("Upgradeable/proxy structure: the code at this "
+                       "address can be swapped by whoever controls the "
+                       "proxy admin."
+                       + (f" Implementation: {impl}." if impl else "")),
+            "implementation": impl, "pattern": label,
+        })
+        break  # one proxy finding per contract
+
+    # --- privileged functions (owner/admin, mint, withdraw, ...) -----
+    for fn in funcs:
+        name_l = fn["name"]
+        if not name_l or name_l in ("constructor",):
+            continue
+        sig = fn["signature"]
+        body = fn["text"]
+        gated = bool(_GATE_RE.search(sig) or _GATE_RE.search(body)
+                     or _has_access_modifier(sig))
+        category = None
+        sev = "medium"
+        effect = ""
+        for cat, s2, pat, eff in _PRIV_RULES:
+            if pat.search(name_l):
+                category, sev, effect = cat, s2, eff
+                break
+        if category is None and gated and re.search(
+                r"\b(public|external)\b", sig):
+            category, sev, effect = ("owner_admin", "medium",
+                                     "is access-controlled (gated)")
+        if category is None:
+            continue
+        # Visibility gate: a privileged function is only an attacker risk if
+        # it is externally reachable. _PRIV_RULES matches on the name, so it
+        # also catches internal helpers (_mint, _burn, _beforeTokenTransfer)
+        # that carry no modifier precisely because they are internal and
+        # cannot be called directly - those are not high-severity. Demote any
+        # non-external privileged function to low (inventory, not a finding).
+        # This is the dominant false-"high" source on real contracts.
+        is_external = bool(re.search(r"\b(public|external)\b", sig))
+        is_internal = bool(re.search(r"\b(internal|private)\b", sig))
+        if is_internal and not is_external and sev == "high":
+            sev = "low"
+        # Severity recalibration: a privileged function that IS access-gated
+        # (onlyOwner mint, admin-gated withdraw, ...) is the normal, expected
+        # shape of a contract, not a high-severity issue - so cap it at
+        # medium. High is reserved for an UNGATED privileged function, which
+        # is the genuinely dangerous case. Without this, ~57% of real
+        # contracts tripped a "high" here (measured on a 1k mainnet sample)
+        # purely for having a gated owner function, which made the finding
+        # useless as a triage/escalation signal.
+        if gated and sev == "high":
+            sev = "medium"
+        findings.append({
+            "kind": "privileged_function", "severity": sev,
+            "function": name_l,
+            "title": (f"Privileged function '{name_l}' {effect}"
+                      + (" (access-gated)" if gated else
+                         " (NO access gate found)")),
+            "code": _snip(body),
+            "detail": (f"category={category}; gated={gated}; "
+                       f"signature: {sig[:200]}"),
+            "priv_category": category, "gated": gated,
+        })
+
+    # --- powerful code patterns, with the enclosing function ---------
+    def _enclosing(pos: int) -> Dict[str, str]:
+        # find the function whose text spans this offset in `clean`;
+        # positions are recomputed against function texts.
+        for fn in funcs:
+            idx = clean.find(fn["text"][:80])
+            if idx >= 0 and idx <= pos <= idx + len(fn["text"]):
+                return fn
+        return {"name": "", "text": _line_context(clean, pos, 3, 3)}
+
+    for dm in re.finditer(r"\.delegatecall\s*\(", clean):
+        fn = _enclosing(dm.start())
+        findings.append({
+            "kind": "delegatecall", "severity": "high",
+            "function": fn["name"],
+            "title": ("delegatecall in "
+                      + (f"function '{fn['name']}'" if fn["name"]
+                         else "contract code")
+                      + ": executes other code in this contract's "
+                        "storage context"),
+            "code": _snip(fn["text"]),
+            "detail": "delegatecall runs foreign code with this "
+                      "contract's storage and balance.",
+        })
+        break  # one finding; the snippet shows the function
+
+    for sm in re.finditer(r"\bselfdestruct\s*\(|\bsuicide\s*\(", clean):
+        fn = _enclosing(sm.start())
+        findings.append({
+            "kind": "selfdestruct", "severity": "high",
+            "function": fn["name"],
+            "title": ("selfdestruct in "
+                      + (f"function '{fn['name']}'" if fn["name"]
+                         else "contract code")
+                      + ": can destroy the contract and force-send "
+                        "its balance"),
+            "code": _snip(fn["text"]),
+            "detail": "selfdestruct permanently removes the code and "
+                      "sends the balance to an arbitrary address.",
+        })
+        break
+
+    for tm in re.finditer(r"tx\.origin", clean):
+        findings.append({
+            "kind": "tx_origin", "severity": "high", "function": "",
+            "title": "tx.origin used in contract code (phishing-prone "
+                     "authorization primitive)",
+            "code": _snip(_line_context(clean, tm.start(), 2, 2)),
+            "detail": "tx.origin is the externally-owned account that "
+                      "started the transaction chain; using it for auth "
+                      "lets phishing contracts impersonate the user.",
+        })
+        break
+
+    # --- unchecked external calls ------------------------------------
+    for um in re.finditer(r"\.(call|send)\s*[( {]", clean):
+        before = clean[max(0, um.start() - 120):um.start()]
+        after = clean[um.end():um.end() + 120]
+        handled = bool(re.search(r"(bool|require|assert|if|success)",
+                                 before[-60:] + after[:60]))
+        if handled:
+            continue
+        fn = _enclosing(um.start())
+        findings.append({
+            "kind": "unchecked_call", "severity": "medium",
+            "function": fn["name"],
+            "title": (f"Unchecked low-level .{um.group(1)}() "
+                      + (f"in function '{fn['name']}'" if fn["name"]
+                         else "in contract code")
+                      + ": return value not checked nearby"),
+            "code": _snip(fn["text"]),
+            "detail": "A failed external call would go unnoticed; "
+                      "state may update as if the transfer succeeded.",
+        })
+        break
+
+    # --- Ethernaut "Fallback"-pattern ownership takeover ------------
+    # Detection models the public Ethernaut-style walkthrough pattern
+    # (reel reference in the PR description): a plain ETH transfer or
+    # a small deposit flips ownership, then a full-balance withdraw
+    # drains the contract. DETECTION ONLY - the findings show the
+    # vulnerable code and explain the path in words; nothing here
+    # performs any step of it.
+    fb_funcs = [fn for fn in funcs
+                if fn["name"] in ("receive", "fallback")]
+    _owner_assign = re.compile(
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"(?:payable\s*\(\s*)?msg\.sender\s*\)?\s*;")
+    _state_write = re.compile(
+        r"\b[A-Za-z_][A-Za-z0-9_]*(\s*\[[^\]]*\])?\s*(\+=|=(?![=>]))")
+
+    # 1. receive()/fallback() that hands ownership to the sender.
+    d1_funcs: List[Dict[str, str]] = []
+    for fn in fb_funcs:
+        if _owner_assign.search(fn["text"]):
+            d1_funcs.append(fn)
+            findings.append({
+                "kind": "ownership_takeover_fallback",
+                "severity": "high", "function": fn["name"],
+                "title": (f"Ownership takeover via {fn['name']}(): "
+                          "a plain ETH transfer to this contract "
+                          "makes the sender the owner"),
+                "code": _snip(fn["text"]),
+                "detail": (f"{fn['name']}() assigns msg.sender to the "
+                           "owner variable. Anyone who sends ETH to "
+                           "the contract address becomes its owner - "
+                           "no credentials, no exploit code, just a "
+                           "transfer."),
+            })
+
+    # 2. Deposit-to-own: per-sender deposits tracked in a mapping AND
+    #    an ownership comparison against that same mapping.
+    d2_pieces: List[Dict[str, str]] = []
+    for fn in funcs:
+        tm = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*msg\.sender"
+                       r"\s*\]\s*\+=", fn["text"])
+        if not tm:
+            continue
+        mapping = tm.group(1)
+        cm = re.search(
+            r"\b" + re.escape(mapping) +
+            r"\s*\[\s*msg\.sender\s*\]\s*>\s*" +
+            re.escape(mapping) + r"\s*\[", clean)
+        if not cm:
+            continue
+        enc = _enclosing(cm.start())
+        if not _owner_assign.search(enc["text"]):
+            continue
+        d2_pieces = [fn, enc] if enc["name"] != fn["name"] else [fn]
+        findings.append({
+            "kind": "deposit_to_own", "severity": "high",
+            "function": fn["name"],
+            "title": (f"Deposit-to-own setup in '{fn['name']}': "
+                      f"deposits are tracked per sender in "
+                      f"'{mapping}' and out-depositing the owner "
+                      f"transfers ownership"),
+            "code": _snip("\n\n".join(p["text"] for p in d2_pieces),
+                          2200),
+            "detail": (f"'{fn['name']}' records each sender's total "
+                       f"in {mapping}[msg.sender], and the ownership "
+                       f"logic compares {mapping}[msg.sender] > "
+                       f"{mapping}[owner]. A deposit larger than the "
+                       "owner's recorded contribution seizes "
+                       "ownership."),
+            "mapping": mapping,
+        })
+        break
+
+    # 3. Full-balance withdraw guarded only by the owner check.
+    d3_funcs: List[Dict[str, str]] = []
+    for fn in funcs:
+        if not re.search(r"withdraw|drain", fn["name"], re.I):
+            continue
+        if "address(this).balance" not in fn["text"]:
+            continue
+        if not re.search(r"\.(transfer|send|call)\b", fn["text"]):
+            continue
+        gated = bool(_GATE_RE.search(fn["signature"]) or
+                     _GATE_RE.search(fn["text"]) or
+                     _has_access_modifier(fn["signature"]))
+        d3_funcs.append(fn)
+        findings.append({
+            # Ungated full-balance withdraw is the "anyone drains the whole
+            # contract" bug - high. Owner-gated is a centralization risk -
+            # medium. (Severity drives the confirmed tier, so this is what
+            # promotes a real drain to confirmed while owner-only stays
+            # likely.)
+            "kind": "full_balance_withdraw",
+            "severity": "high" if not gated else "medium",
+            "function": fn["name"],
+            "title": (f"Full-balance withdraw in '{fn['name']}': "
+                      "sends the contract's ENTIRE balance, guarded "
+                      + ("only by the owner check" if gated
+                         else "by no access check at all")),
+            "code": _snip(fn["text"]),
+            "detail": ("The only thing between an attacker and the "
+                       "full balance is the owner variable - whoever "
+                       "controls 'owner' at call time takes "
+                       "everything."),
+            "gated": gated,
+        })
+
+    # 1 or 2 + 3 in one contract = a complete takeover path. Highest
+    # severity tier (high) as ONE combined finding showing all the
+    # code pieces together.
+    if (d1_funcs or d2_pieces) and d3_funcs:
+        steps: List[str] = []
+        seen_names = set()
+        for fn in d2_pieces + d1_funcs + d3_funcs:
+            if fn["name"] in seen_names:
+                continue
+            seen_names.add(fn["name"])
+            steps.append(f"// ---- {fn['name']}() ----\n{fn['text']}")
+        findings.append({
+            "kind": "ownership_takeover_path", "severity": "high",
+            "function": "",
+            "title": ("COMPLETE OWNERSHIP TAKEOVER PATH: acquire "
+                      "ownership via "
+                      + ("receive()/fallback() transfer"
+                         if d1_funcs else "deposit comparison")
+                      + f", then drain the full balance via "
+                        f"'{d3_funcs[0]['name']}'"),
+            "code": _snip("\n\n".join(steps), 2800),
+            "detail": ("All three pieces are present in one "
+                       "contract: (1) ownership can be acquired by "
+                       "an arbitrary sender, (2) the owner gate is "
+                       "therefore no protection, (3) the owner's "
+                       "withdraw sends the entire balance. Anyone "
+                       "can walk this path with ordinary transfers "
+                       "and calls."),
+        })
+
+    # 4. Payable receive()/fallback() that writes state at all.
+    for fn in fb_funcs:
+        if fn in d1_funcs:
+            continue  # already reported as the takeover finding
+        if "payable" not in fn["text"]:
+            continue
+        body = fn["text"][fn["text"].find("{"):]
+        if _state_write.search(body):
+            findings.append({
+                "kind": "fallback_state_write", "severity": "medium",
+                "function": fn["name"],
+                "title": (f"Payable {fn['name']}() writes state: "
+                          "a bare ETH transfer changes contract "
+                          "state"),
+                "code": _snip(fn["text"]),
+                "detail": ("receive()/fallback() runs on every "
+                           "plain transfer, including accidental "
+                           "ones. State changes there are easy to "
+                           "trigger unintentionally and hard to "
+                           "audit."),
+            })
+
+    # --- hardcoded addresses -----------------------------------------
+    addrs: List[str] = []
+    for am in re.finditer(r"0x[0-9a-fA-F]{40}", src):
+        a = am.group(0)
+        if a.lower() != ZERO_ADDRESS and a not in addrs:
+            addrs.append(a)
+    if addrs:
+        samples = []
+        for a in addrs[:5]:
+            pos = src.find(a)
+            samples.append(_line_context(src, pos, 0, 0))
+        findings.append({
+            "kind": "hardcoded_address", "severity": "low",
+            "function": "",
+            "title": (f"{len(addrs)} hardcoded address(es) in the "
+                      f"code: {', '.join(addrs[:5])}"
+                      + (" ..." if len(addrs) > 5 else "")),
+            "code": _snip("\n".join(samples)),
+            "detail": "Hardcoded addresses are fixed trust anchors: "
+                      "whoever controls them matters.",
+            "addresses": addrs[:20],
+        })
+
+    # --- embedded URLs / IPs (raw source, comments included) ---------
+    urls = sorted(set(re.findall(r"https?://[^\s\"'\)\]]+", src)))
+    ips = sorted(set(re.findall(
+        r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b", src)))
+    ips = [ip for ip in ips
+           if all(int(p) <= 255 for p in ip.split(":")[0].split("."))]
+    if urls or ips:
+        samples = []
+        for u in (urls + ips)[:5]:
+            pos = src.find(u)
+            if pos >= 0:
+                samples.append(_line_context(src, pos, 0, 0))
+        findings.append({
+            "kind": "embedded_endpoint", "severity": "low",
+            "function": "",
+            "title": (f"Embedded endpoints in code: "
+                      f"{len(urls)} URL(s), {len(ips)} IP(s)"
+                      + (f": {', '.join((urls + ips)[:4])}"
+                         if (urls or ips) else "")),
+            "code": _snip("\n".join(samples)),
+            "detail": "Off-chain endpoints baked into on-chain code.",
+            "urls": urls[:10], "ips": ips[:10],
+        })
+
+    # --- secret-looking strings (FULL value, per Jay's order) --------
+    for sec in find_secret_strings(src):
+        findings.append({
+            "kind": "secret_string", "severity": "high",
+            "function": "",
+            "title": (f"Secret-looking string in published contract "
+                      f"code ({sec['kind']}): {sec['value']}"),
+            "code": _snip(sec["code"]),
+            "detail": ("Shown in full per Jay's order. Anything in "
+                       "verified source is public to the whole chain; "
+                       "if this is a live key, rotate it and sweep "
+                       "funds to a fresh wallet."),
+            "secret_kind": sec["kind"], "secret_value": sec["value"],
+        })
+
+    # Stamp a confidence on every finding so the read-time confidence tiers
+    # (app/confidence.py) can promote genuinely strong contract findings to
+    # the "confirmed" tier. Without this, contract findings carried no
+    # confidence, defaulted to 60, and NO contract finding could ever reach
+    # confirmed (>=75) - which is why deep scans showed 0 confirmed-real.
+    #
+    # A contract finding is a deterministic match on the verified source,
+    # not a third-party assertion, so a HIGH-severity one (which, after the
+    # gated-privileged recalibration, means an UNGATED drain path:
+    # selfdestruct, ungated full-balance withdraw, tx.origin auth,
+    # arbitrary delegatecall) is confirmed-grade evidence. Gated/contextual
+    # findings stay medium -> likely. Calibration is validated by
+    # tests/test_detection_benchmark.py: every known drain reaches confirmed,
+    # the safe access-gated control never does.
+    # Only an UNAMBIGUOUS drain kind can reach the confirmed tier. These are
+    # definitive source facts with a direct fund-loss or takeover path, not
+    # context. Everything else - privileged_function above all, which fires
+    # on most contracts and is context, not a confirmed drain - is capped in
+    # the likely band no matter its severity, so "confirmed" stays rare and
+    # means something. Calibrated against tests/test_detection_benchmark.py:
+    # the known drains reach confirmed, the safe control does not, and on a
+    # 1k mainnet sample the confirmed rate is a few percent, not ~everything.
+    # Unambiguous drain / takeover kinds only. delegatecall and
+    # deposit_to_own are deliberately NOT here: a delegatecall in a proxy is
+    # normal, not a drain, so it would flood confirmed with benign proxies -
+    # those stay in the likely band for review.
+    _CONFIRMABLE = {
+        "selfdestruct", "tx_origin",
+        "ownership_takeover_path", "ownership_takeover_fallback",
+        "full_balance_withdraw",
+    }
+    _SEV_CONF = {"critical": 90, "high": 80, "medium": 60,
+                 "low": 40, "info": 30}
+    _LIKELY_CAP = 70  # just under CONFIRMED_MIN (75)
+    for f in findings:
+        if "confidence" not in f:
+            base = _SEV_CONF.get(f.get("severity", ""), 55)
+            if f.get("kind") not in _CONFIRMABLE and base > _LIKELY_CAP:
+                base = _LIKELY_CAP
+            f["confidence"] = base
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Bytecode analysis (no verified source needed)
+# ---------------------------------------------------------------------------
+
+_KNOWN_SIGNATURES = [
+    # ERC20
+    "transfer(address,uint256)", "transferFrom(address,address,uint256)",
+    "approve(address,uint256)", "balanceOf(address)",
+    "allowance(address,address)", "totalSupply()", "name()",
+    "symbol()", "decimals()", "increaseAllowance(address,uint256)",
+    "decreaseAllowance(address,uint256)",
+    # ERC721 / ERC1155
+    "ownerOf(uint256)", "safeTransferFrom(address,address,uint256)",
+    "safeTransferFrom(address,address,uint256,uint256,bytes)",
+    "setApprovalForAll(address,bool)", "getApproved(uint256)",
+    "isApprovedForAll(address,address)", "balanceOf(address,uint256)",
+    # Ownable / AccessControl / Pausable
+    "owner()", "transferOwnership(address)", "renounceOwnership()",
+    "hasRole(bytes32,address)", "grantRole(bytes32,address)",
+    "revokeRole(bytes32,address)", "getRoleAdmin(bytes32)",
+    "DEFAULT_ADMIN_ROLE()", "pause()", "unpause()", "paused()",
+    # Token admin / money movement
+    "mint(address,uint256)", "mint(address)", "mint(uint256)",
+    "burn(uint256)", "burnFrom(address,uint256)", "withdraw()",
+    "withdraw(uint256)", "withdrawAll()", "deposit()",
+    "sweep(address)", "blacklist(address)", "setPaused(bool)",
+    "claim()", "rescueTokens(address,uint256)", "setOwner(address)",
+    "getOwner()",
+    # Proxy / upgradeable
+    "upgradeTo(address)", "upgradeToAndCall(address,bytes)",
+    "implementation()", "proxiableUUID()", "admin()",
+    "changeAdmin(address)", "initialize()", "initialize(address)",
+]
+
+SELECTOR_TABLE: Dict[str, str] = {
+    keccak256(sig.encode())[:4].hex(): sig for sig in _KNOWN_SIGNATURES
+}
+
+_SENSITIVE_OPCODES = {
+    0xF1: "CALL", 0xF2: "CALLCODE", 0xF4: "DELEGATECALL",
+    0xF5: "CREATE2", 0xFF: "SELFDESTRUCT",
+}
+
+# EIP-1167 minimal proxy runtime:
+# 363d3d373d3d3d363d73 <20-byte impl> 5af43d82803e903d91602b57fd5bf3
+_MINIMAL_PROXY_RE = re.compile(
+    r"^363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3$")
+
+
+def analyze_bytecode(code_hex: str) -> Dict[str, Any]:
+    """Static analysis of deployed runtime bytecode.
+
+    Returns size, SHA-256 hash, known function selectors (PUSH4
+    immediates matched against SELECTOR_TABLE), sensitive opcode
+    presence, EIP-1167 minimal-proxy detection, and the Solidity
+    metadata (IPFS/swarm hash, compiler version) from the CBOR tail.
+    """
+    h = (code_hex or "").strip().lower()
+    if h.startswith("0x"):
+        h = h[2:]
+    try:
+        code = bytes.fromhex(h) if h else b""
+    except ValueError:
+        code = b""
+    out: Dict[str, Any] = {
+        "size": len(code),
+        "sha256": hashlib.sha256(code).hexdigest() if code else "",
+        "selectors": [],
+        "opcodes": {},
+        "metadata": {"ipfs": None, "swarm": None, "solc": None},
+        "minimal_proxy_impl": None,
+    }
+    if not code:
+        return out
+
+    m = _MINIMAL_PROXY_RE.match(h)
+    if m:
+        out["minimal_proxy_impl"] = "0x" + m.group(1)
+
+    # Linear disassembly walk: PUSHn immediates are data, not opcodes.
+    selectors: Dict[str, Optional[str]] = {}
+    opcodes: Dict[str, int] = {}
+    i = 0
+    while i < len(code):
+        op = code[i]
+        if 0x60 <= op <= 0x7F:  # PUSH1..PUSH32
+            n = op - 0x5F
+            data = code[i + 1:i + 1 + n]
+            if op == 0x63 and len(data) == 4:  # PUSH4: selector
+                sel = data.hex()
+                if sel not in selectors:
+                    selectors[sel] = SELECTOR_TABLE.get(sel)
+            i += 1 + n
+            continue
+        if op in _SENSITIVE_OPCODES:
+            name = _SENSITIVE_OPCODES[op]
+            opcodes[name] = opcodes.get(name, 0) + 1
+        i += 1
+    out["selectors"] = [
+        {"selector": "0x" + sel, "signature": sig}
+        for sel, sig in sorted(selectors.items())]
+    out["opcodes"] = opcodes
+
+    # CBOR metadata tail: last 2 bytes = big-endian length of the
+    # CBOR map that precedes them.
+    if len(code) > 4:
+        cbor_len = int.from_bytes(code[-2:], "big")
+        if 0 < cbor_len <= len(code) - 2:
+            cbor = code[len(code) - 2 - cbor_len:len(code) - 2]
+            idx = cbor.find(b"ipfs")
+            if idx >= 0:
+                seg = cbor[idx + 4:idx + 4 + 2 + 34]
+                if len(seg) == 36 and seg[0] == 0x58 and seg[1] == 0x22:
+                    out["metadata"]["ipfs"] = seg[2:].hex()
+            idx = cbor.find(b"bzzr1")
+            if idx >= 0:
+                seg = cbor[idx + 5:idx + 5 + 2 + 32]
+                if len(seg) == 34 and seg[0] == 0x58 and seg[1] == 0x20:
+                    out["metadata"]["swarm"] = seg[2:].hex()
+            idx = cbor.find(b"solc")
+            if idx >= 0:
+                seg = cbor[idx + 4:idx + 4 + 1 + 3]
+                if len(seg) == 4 and seg[0] == 0x43:
+                    out["metadata"]["solc"] = ".".join(
+                        str(b) for b in seg[1:])
+    return out

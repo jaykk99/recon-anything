@@ -31,6 +31,11 @@ DEFAULT_TIMEOUT = float(env("RECON_TIMEOUT", "20"))
 # pooled connection across execution (the 2026-10-20 outage rule), so
 # slot count does not translate into held connections. Env-overridable.
 MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "32"))
+# JS bundle caps (from master config; the local checkout predates them).
+# js_linkfinder reads these at import time.
+JS_MAX_BUNDLES = int(env("RECON_JS_MAX_BUNDLES", "24"))
+JS_MAX_ENDPOINT_FINDINGS = int(env("RECON_JS_MAX_ENDPOINTS", "60"))
+CHAIN_MAX_ITEMS = int(env("RECON_CHAIN_MAX_ITEMS", "40"))
 # Per-host request pacing. 50 RPS is still polite for authorized testing
 # (a single browser tab bursts more than this) and keeps the bulk-sweep
 # plugins (artifacts, backup, cloud_buckets: hundreds of probe requests
@@ -39,3 +44,9 @@ MAX_CONCURRENCY = int(env("RECON_CONCURRENCY", "32"))
 # rate-limits.
 DEFAULT_RPS = float(env("RECON_RPS", "50"))
 EVIDENCE_DIR = env("RECON_EVIDENCE_DIR", "./evidence")
+
+# Added for master-parity (local checkout predates it).
+CHAIN_MAX_PROBES = int(env("RECON_CHAIN_MAX_PROBES", "60"))
+
+# Added for master-parity (local checkout predates it).
+CHAIN_MAX_SUBLINKS = int(env("RECON_CHAIN_MAX_SUBLINKS", "8"))
