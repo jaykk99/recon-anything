@@ -436,7 +436,13 @@ _ASSIGN_STMT_RE = re.compile(
     r"(\+=|-=|\*=|/=|=(?!=))\s*(.+)$", re.S)
 _FOR_INIT_RE = re.compile(
     r"\bfor\s*\(\s*(?:uint\w*|int\w*|var)?\s*([A-Za-z_]\w*)\s*=")
-_BINOP_RE = re.compile(r"[+\-*/%]")
+_BINOP_RE = re.compile(r"[+\-*]")  # 2026-11-15 findings-fix:
+# only +, -, * (and **) can wrap a uint256. Division, modulo,
+# shifts and bitwise ops cannot overflow (a / b <= a; x % y < y;
+# shifts/bitwise never revert in 0.8 checked arithmetic either),
+# so they are not unchecked-math hazards. The old set [+\-*/%]
+# fired HIGH on OpenZeppelin Math sqrt/log/toString, whose
+# unchecked blocks only divide, modulo and shift.
 _VALUE_MOVE_RE = re.compile(
     r"\.transfer\s*\(|\.call\s*\{\s*value|_mint\s*\(|"
     r"safeTransfer")
@@ -598,8 +604,15 @@ def _bounded_suppressed(text: str, block: str, lhs: str,
             # same function already bounded (a balance is a
             # component of the supply, so p <= balance <=
             # totalSupply whenever any subtraction of p in the
-            # function is bound-checked).
-            if "totalsupply" in _norm_ws(lhs).lower():
+            # function is bound-checked). 2026-11-15
+            # findings-fix: the same conservation covers the
+            # other supply-ledger siblings decremented next to
+            # totalSupply in a burn (maxSupply, totalShares) -
+            # the old totalsupply-only match fired HIGH on the
+            # standard OZ burn shape (`_maxSupply -= value`
+            # beside a checked `_balances[a] = balance - value`).
+            if any(s in _norm_ws(lhs).lower() for s in (
+                    "totalsupply", "maxsupply", "totalshares")):
                 for m in re.finditer(
                         r"([A-Za-z_][\w\.\[\]]*)\s*-\s*([^;]+)",
                         text):
@@ -712,6 +725,22 @@ def _analyze_unchecked_math(src: str, spec: DetectorSpec,
         params = cd._param_names(fn["signature"])
         if not params:
             continue
+        # 2026-11-15 findings-fix: OpenZeppelin Math/Strings pure
+        # helpers cannot overflow - sqrt/log outputs are strictly
+        # smaller than their inputs (Newton iteration stays
+        # <= 2**130 for sqrt; logs shrink) - and the try*
+        # checked wrappers return false on overflow instead of
+        # wrapping. Both shapes fired HIGH on the OpenZeppelin
+        # library itself (C39: sqrt/log2/log256/toString/tryMul/
+        # tryAdd rows), so they are suppressed at the source.
+        _decl = fn.get("signature", "")
+        if re.search(r"\bpure\b", _decl) and fn["name"] in (
+                "sqrt", "log2", "log10", "log256"):
+            continue
+        if re.match(r"^try(?:Add|Sub|Mul|Div|Mod)$",
+                    fn["name"]) and \
+                re.search(r"return\s*\(\s*false\b", text):
+            continue
         param_re = [re.compile(r"\b" + re.escape(p) + r"\b")
                     for p in params]
         loop_vars = set(_FOR_INIT_RE.findall(text))
@@ -731,7 +760,19 @@ def _analyze_unchecked_math(src: str, spec: DetectorSpec,
                     am.group(3)
                 if op == "=" and not _BINOP_RE.search(rhs):
                     continue
-                operands = rhs + (" " + lhs if op != "=" else "")
+                # 2026-11-15 findings-fix: /=, %=, <<=, >>=, &=,
+                # |=, ^= cannot overflow either (see _BINOP_RE).
+                if op in ("/=", "%=", "<<=", ">>=", "&=", "|=",
+                          "^="):
+                    continue
+                # 2026-11-15 findings-fix: strip simple
+                # function-call subexpressions before the hit
+                # test. `length = log10(value) + 1` adds 1 to a
+                # BOUNDED call result (log10 <= 78), not to the
+                # parameter itself; the old whole-RHS match fired
+                # on Strings.toString for the same reason.
+                rhs_bare = re.sub(r"\b\w+\s*\([^()]*\)", "", rhs)
+                operands = rhs_bare + (" " + lhs if op != "=" else "")
                 hit_param = next(
                     (p for p, pre in zip(params, param_re)
                      if pre.search(operands)), None)
