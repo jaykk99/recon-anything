@@ -429,4 +429,4 @@ def test_plugin_multihop_no_source_degrades(monkeypatch):
 def test_registry_discovers_multihop_plugin():
     reg = discover()
     assert "call_graph_multihop" in reg
-    assert len(reg) == 1465
+    assert len(reg) == 1470
