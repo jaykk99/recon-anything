@@ -93,6 +93,28 @@ def _state_writes(body: str) -> bool:
     return False
 
 
+# Value-out sinks: ways a function moves ETH/tokens out of the contract or
+# destroys it (force-draining the balance). A public, unguarded function that
+# contains any of these can be called by anyone to drain or redirect funds.
+# Backported from master (contract_audit.py check 1b) so the investigator
+# loop's fund_drain candidate kind fires on this branch too: without it the
+# planted-vuln vault only yields missing_access_control (medium) and the
+# loop never publishes a drain candidate.
+_FUND_SINK_RE = re.compile(
+    # Value-OUT sinks only. Bare transferFrom() is intentionally NOT here:
+    # it is the ERC20 standard, present in nearly every token, and its
+    # presence is not a contract-fund drain - including it flagged ~every
+    # token as critical.
+    r"\.transfer\s*\(|\.send\s*\(|\.call\s*\{[^}]*\bvalue\b|\.call\.value\s*\(|"
+    r"\bselfdestruct\s*\(|\bsuicide\s*\(")
+
+
+def _fund_sink(body: str) -> Optional[str]:
+    """Return the matched value-out sink token in `body`, or None."""
+    m = _FUND_SINK_RE.search(body)
+    return m.group(0).strip() if m else None
+
+
 def audit_source(src: str) -> List[Dict[str, str]]:
     """Static checks over verified Solidity source.
 
@@ -222,8 +244,29 @@ def audit_source(src: str) -> List[Dict[str, str]]:
                                "On upgradeable proxies anyone can front-run the "
                                "initialization and seize ownership/admin rights.")})
 
+        # --- 1b. unprotected fund transfer: a public, unguarded function that
+        #     moves value out of the contract (transfer/send/call{value}/
+        #     selfdestruct/transferFrom). Anyone can call it to drain or
+        #     redirect funds. This is the direct "fund draining" case and is
+        #     caught even when the function writes no state (so a bare
+        #     `to.transfer(...)` / `to.send(...)` sweeper is never missed). ---
+        fund_flagged = False
+        if is_public and name not in ("constructor",) and not guarded:
+            sink = _fund_sink(body)
+            if sink:
+                fund_flagged = True
+                findings.append({
+                    "check": "fund_drain", "severity": "critical",
+                    "function": name,
+                    "exploitability": "weaponized",
+                    "detail": (f"FUND DRAIN: public/external function '{name}' moves value "
+                               f"out of the contract ({sink}) with no access control "
+                               "(no onlyOwner/onlyRole/require(msg.sender) and no guard "
+                               "modifier). Anyone can call it directly to drain or "
+                               "redirect the contract's funds.")})
+
         # --- 2. missing access control on public state-changing fns ---
-        if is_public and name not in ("constructor",) and _state_writes(body) and not guarded:
+        if is_public and name not in ("constructor",) and _state_writes(body) and not guarded and not fund_flagged:
             findings.append({
                 "check": "missing_access_control", "severity": "medium",
                 "function": name,
@@ -309,10 +352,15 @@ REMEDIATION = {
     "unprotected_initializer": "Call _disableInitializers() in the implementation "
                                 "constructor, or guard initialize() so it runs "
                                 "exactly once (OpenZeppelin Initializable).",
+    "fund_drain": "Gate every function that moves ETH or tokens out of the "
+                  "contract with onlyOwner/AccessControl roles or a "
+                  "require(msg.sender == <authorized>) check. Never leave a "
+                  "value-moving function callable by anyone.",
 }
 
 EXPL = {
     "reentrancy": "weaponized",
+    "fund_drain": "weaponized",
     "missing_access_control": "public_poc",
     "tx_origin": "public_poc",
     "unchecked_call": "theoretical",

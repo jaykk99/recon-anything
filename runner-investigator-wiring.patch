@@ -1,0 +1,130 @@
+--- a/recon-continuous/runner.py
++++ b/recon-continuous/runner.py
+@@ -1253,6 +1253,110 @@
+     return verdict, probe, fork_delta
+ 
+ 
++# --- Investigator loop wiring (Wave 1.1 #177 + call graph #178) ---
++# Env-gated, fail-soft, bounded. The loop re-scans ONE target per run
++# (default) with the deep lanes (deep_audit12-19, bsc_*, recipient_first,
++# deep_lowlevel, deep_solana + the multi-hop call-graph plugin), forms a
++# concrete attack hypothesis, plans fork sequences (sim only, never
++# proof), chains to related contracts found in source, and writes a
++# bounty pack when the pack rule fires. It NEVER overrides the runner's
++# own verdicts: the runner's live validation (validate_one, with the
++# balance-delta bar) stays the only path to VERIFIED_REAL. The loop runs
++# with ctx=None / live=False, so its own validator pass is offline and
++# honestly UNVERIFIED when no live probe backs it; the hypothesis, fork
++# plan and pack are the value, not a second verdict.
++# Requires the investigator package in the backend checkout BACKEND
++# points at; if it is absent (pre-merge), the import fails soft and the
++# batch is unaffected.
++INVESTIGATOR_ENV = "RECON_INVESTIGATOR"
++INVESTIGATOR_MAX_ENV = "RECON_INVESTIGATOR_MAX_PER_RUN"
++
++
++def maybe_run_investigator(recs, summary):
++    """Run the investigator loop over the best candidate targets.
++
++    Returns a small dict for the run summary. Never raises.
++    """
++    if os.environ.get(INVESTIGATOR_ENV, "") != "1":
++        return {"enabled": False, "reason": "RECON_INVESTIGATOR != 1"}
++    try:
++        max_targets = int(
++            os.environ.get(INVESTIGATOR_MAX_ENV, "1") or "1")
++    except ValueError:
++        max_targets = 1
++    max_targets = max(0, min(max_targets, 5))
++    if max_targets == 0:
++        return {"enabled": False, "reason": "max per run is 0"}
++    try:
++        from app.investigator.loop import run_investigation
++    except Exception as e:  # noqa: BLE001 - backend predates the loop
++        return {"enabled": False,
++                "reason": f"investigator not importable: "
++                          f"{type(e).__name__}: {str(e)[:160]}"}
++    # Value-first, same ordering the batch already applied: recs are
++    # sorted by top NN score; take the first EVM recs that actually
++    # produced candidates and have verified source to read.
++    targets = [r for r in recs
++               if r.get("candidates") and r.get("chain") != "solana"
++               and r.get("source_acquired")][:max_targets]
++    if not targets:
++        return {"enabled": True, "ran": 0,
++                "reason": "no candidate target with verified source"}
++    store_dir = HOME / "state" / "investigations"
++    out_path = HOME / "results" / "investigations.jsonl"
++    try:
++        store_dir.mkdir(parents=True, exist_ok=True)
++        out_path.parent.mkdir(parents=True, exist_ok=True)
++    except OSError:
++        pass
++    ran = []
++    for rec in targets:
++        try:
++            src = fetch_source_any(rec["chain"], rec["address"])
++            src_text = (src or {}).get("source") or ""
++            if not src_text:
++                ran.append({"address": rec["address"],
++                            "chain": rec["chain"],
++                            "skipped": "source fetch came back empty"})
++                continue
++            # Value the target so the loop's pack rule can fire on
++            # $100k+ targets. Fail-soft: unknown value is not dust
++            # (live=False, so no floor skip either way).
++            try:
++                value_usd = value_components(
++                    rec["chain"], rec["address"]).get("payout_bound_usd")
++            except Exception:  # noqa: BLE001
++                value_usd = None
++            inv = run_investigation(
++                rec["address"], rec["chain"], source=src_text,
++                contract_name=(src or {}).get("contract_name", ""),
++                value_usd=value_usd, live=False,
++                store_dir=str(store_dir),
++                out_dir=str(store_dir / "packs"))
++            line = {"run_at": summary.get("run_at"),
++                    "investigation_id": inv.id,
++                    "address": inv.address, "chain": inv.chain,
++                    "verdict": inv.verdict,
++                    "value_usd": inv.value_usd,
++                    "hypothesis": (inv.hypothesis or {}).get("function"),
++                    "hypothesis_kind": (inv.hypothesis or {}).get("kind"),
++                    "candidates": len(inv.candidates or []),
++                    "chained": [c.get("address")
++                                for c in (inv.chained or [])],
++                    "pack": (inv.report or {}).get("files", {}).get(
++                        "report")}
++            try:
++                with out_path.open("a") as fh:
++                    fh.write(json.dumps(line) + "\n")
++            except OSError:
++                pass
++            ran.append(line)
++        except Exception as e:  # noqa: BLE001 - one target never kills batch
++            ran.append({"address": rec["address"], "chain": rec["chain"],
++                        "error": f"{type(e).__name__}: {str(e)[:160]}"})
++    return {"enabled": True, "ran": len(ran), "targets": ran}
++
++
+ async def run_plugin(plugin, http, raw, timeout, ctx_holder):
+     ctx = ctx_holder[0]
+     if ctx is None:
+@@ -2020,6 +2124,16 @@
+                         state.get("row_append_failures", 0) + 1
+                 if state.get("tracker") is not None:
+                     state["tracker"].note_alert()
++    # Investigator loop (Wave 1.1 #177 + call graph #178, wired
++    # 2026-11-15 as an env-gated patch): hypothesis + fork plan +
++    # chaining + pack for the best candidate target(s). Fail-soft;
++    # never overrides the runner's own verdicts.
++    try:
++        summary["investigator"] = maybe_run_investigator(recs, summary)
++    except Exception as e:  # noqa: BLE001
++        summary["investigator"] = {
++            "enabled": False,
++            "error": f"{type(e).__name__}: {str(e)[:160]}"}
+     # Point ledger (2026-11-15): fold this batch's adjudicated
+     # candidates into state/nn-points.json (+1 right / -1 wrong,
+     # threshold 0.5). Ledger failure never fails the batch.
