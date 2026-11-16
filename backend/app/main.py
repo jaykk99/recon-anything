@@ -325,6 +325,20 @@ async def _startup():
                 try:
                     stuck = session.query(Run).filter_by(status="running").all()
                     for r in stuck:
+                        # Runs created after this boot started are live
+                        # enqueues in this process, not crash leftovers:
+                        # the scan runs in a background thread and under
+                        # load can land mid-enqueue (target written, jobs
+                        # not yet queued), where the partial-enqueue branch
+                        # below would fail a healthy scan. Same cutoff as
+                        # _recover_pending_runs.
+                        _created = r.created_at
+                        if _created is not None:
+                            if _created.tzinfo is None:
+                                _created = _created.replace(
+                                    tzinfo=dt.timezone.utc)
+                            if _created >= _boot_started:
+                                continue
                         has_jobs = (session.query(PluginJob)
                                     .filter_by(run_id=r.id).count() > 0)
                         if has_jobs:
