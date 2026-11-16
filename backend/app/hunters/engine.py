@@ -710,7 +710,8 @@ def hunter_expand(session, run: Run, accum: Dict,
     # Shares the task budget and the per-pass cap; hot targets
     # (critical/high-value findings) get HIGH-priority chained jobs.
     from .chaining import MAX_CHAIN_JOBS_PER_PASS, plan_chains
-    chain_plan, hot_ids, chain_signals = plan_chains(findings, targets)
+    chain_plan, hot_ids, chain_signals = plan_chains(
+        findings, targets, mode=(getattr(run, "mode", "") or "active"))
     target_by_id = {t.id: t for t in targets}
     chained_now = 0
     for tid, pids in chain_plan.items():

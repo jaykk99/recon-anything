@@ -169,27 +169,35 @@ EXPANSION = {
         ("email_hunter", ["emails", "email_infra"]),
     ],
     "subdomain": [
+        # A newly found subdomain is a fresh web target: run the core
+        # DISCOVERY set a human would run on it, not just fingerprinting.
+        # These surface the signals (tech, endpoints, API maps, forms,
+        # headers, CORS) that finding-driven chaining then cascades on.
+        # Bounded by MAX_PLUGINS_PER_ASSET and the hunter task budget.
         ("dns_hunter", ["dns"]),
-        ("port_hunter", ["ports", "banners"]),
-        ("fingerprint_hunter", ["webtech", "favicon_hash", "headers"]),
+        ("fingerprint_hunter", ["webtech", "headers", "favicon_hash"]),
         ("cert_hunter", ["tls"]),
-        ("passive_dns_hunter", ["passive_dns"]),
+        ("port_hunter", ["ports", "banners"]),
+        ("endpoint_hunter", ["apidiscover", "js_endpoints"]),
+        ("redirect_hunter", ["http_methods", "cors"]),
     ],
     "cert": [
         ("cert_hunter", ["tls"]),
         ("subdomain_hunter", ["subdomains", "subdomain_compiler"]),
     ],
     "ip": [
-        ("dns_hunter", ["dns", "rdap"]),
+        # Only plugins that accept an `ip` target (dns/passive_dns take
+        # domain/url and were silently filtered here before).
+        ("dns_hunter", ["rdap"]),
         ("port_hunter", ["ports", "port_scan", "banners"]),
         ("neighbor_hunter", ["reverse_ip"]),
-        ("passive_dns_hunter", ["passive_dns"]),
     ],
     "url": [
         ("endpoint_hunter", ["apidiscover", "crawler"]),
-        ("js_miner", ["jsminer"]),
+        ("js_miner", ["jsminer", "js_endpoints"]),
         ("secret_hunter", ["secrets"]),
         ("fingerprint_hunter", ["headers", "webtech"]),
+        ("redirect_hunter", ["http_methods", "cors"]),
         ("archive_hunter", ["waybackurls", "gau"]),
     ],
     "endpoint": [
