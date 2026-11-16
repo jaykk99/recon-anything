@@ -11,10 +11,11 @@ rotation remediation. Authorized testing only.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
-from typing import List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
@@ -97,6 +98,48 @@ SECRET_PATTERNS: List[Tuple[str, str, str]] = [
 # words that mark an obvious placeholder/example, not a real secret
 PLACEHOLDER_HINTS = ("example", "placeholder", "changeme", "your-", "xxx",
                      "test123", "abcdef", "123456", "todo", "sample")
+
+# Precompile once at import instead of recompiling 60+ patterns on every
+# run (the matcher below runs them over every JS body it fetched).
+_COMPILED_PATTERNS: List[Tuple[Any, str, str]] = [
+    (re.compile(pat), label, sev) for pat, label, sev in SECRET_PATTERNS]
+
+
+def scan_texts_for_secrets(
+        texts: List[Tuple[str, str, str]],
+        max_findings: int = 40) -> List[Dict[str, str]]:
+    """Pure regex scan of (text, source_url, kind) bodies -> secret hits.
+
+    This is the CPU-heavy core: 60+ patterns x every fetched JS body
+    (bundles run to ~1 MB each). It is a pure function of its input so
+    the caller can hand it to asyncio.to_thread and keep the event loop
+    free - a big Next.js bundle set used to run this synchronously on
+    the loop and freeze EVERY concurrent plugin job (and the timeout
+    watchdog) for the ~100 s it took, so a scan looked hung. Running it
+    off-loop means one heavy page no longer stalls the whole worker.
+    """
+    seen: Set[Tuple[str, str]] = set()
+    hits: List[Dict[str, str]] = []
+    for text, src_url, kind in texts:
+        for rx, label, sev in _COMPILED_PATTERNS:
+            for m in rx.finditer(text):
+                raw = m.group(1) if m.lastindex else m.group(0)
+                if not raw or is_placeholder(raw):
+                    continue
+                low = raw.lower()
+                if any(h in low for h in PLACEHOLDER_HINTS):
+                    continue
+                if len(raw) > 400:
+                    continue
+                sig = (label, raw[:24])
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                hits.append({"label": label, "sev": sev, "raw": raw,
+                             "kind": kind, "src_url": src_url})
+                if len(hits) >= max_findings:
+                    return hits
+    return hits
 
 
 class JsSecretsPlugin(Plugin):
@@ -190,48 +233,32 @@ class JsSecretsPlugin(Plugin):
             except Exception:
                 continue
 
-        # 6. pattern scan
-        seen: Set[str] = set()
-        for text, src_url, kind in texts:
-            for pat, label, sev in SECRET_PATTERNS:
-                for m in re.finditer(pat, text):
-                    raw = m.group(1) if m.lastindex else m.group(0)
-                    if not raw or is_placeholder(raw):
-                        continue
-                    low = raw.lower()
-                    if any(h in low for h in PLACEHOLDER_HINTS):
-                        continue
-                    if len(raw) > 400:
-                        continue
-                    sig = (label, raw[:24])
-                    if sig in seen:
-                        continue
-                    seen.add(sig)
-                    findings.append(self._f(
-                        "leak", "js_secret",
-                        f"{sev.upper()}: {label} exposed in {kind} "
-                        f"({raw})",
-                        source=f"JS secret mining ({kind})",
-                        source_url=src_url,
-                        confidence=80 if sev in ("critical", "high") else 65,
-                        passive=passive,
-                        evidence={"severity": sev,
-                                  "secret_type": label,
-                                  "full_value": raw,
-                                  "where": kind,
-                                  "remediation": ("Rotate this secret immediately "
-                                                  "at the provider, then remove "
-                                                  "it from client-side code. "
-                                                  "Move it server-side."),
-                                  "scope_note": "Full value shown. Rotate "
-                                                "immediately; never ship "
-                                                "secrets client-side."}))
-                    if len(findings) >= 40:
-                        break
-                if len(findings) >= 40:
-                    break
-            if len(findings) >= 40:
-                break
+        # 6. pattern scan - run the CPU-heavy regex matching OFF the event
+        # loop (asyncio.to_thread) so a large bundle set can't freeze every
+        # other concurrent plugin job while it scans.
+        hits = await asyncio.to_thread(scan_texts_for_secrets, texts, 40)
+        for h in hits:
+            sev, label, raw = h["sev"], h["label"], h["raw"]
+            kind, src_url = h["kind"], h["src_url"]
+            findings.append(self._f(
+                "leak", "js_secret",
+                f"{sev.upper()}: {label} exposed in {kind} "
+                f"({raw})",
+                source=f"JS secret mining ({kind})",
+                source_url=src_url,
+                confidence=80 if sev in ("critical", "high") else 65,
+                passive=passive,
+                evidence={"severity": sev,
+                          "secret_type": label,
+                          "full_value": raw,
+                          "where": kind,
+                          "remediation": ("Rotate this secret immediately "
+                                          "at the provider, then remove "
+                                          "it from client-side code. "
+                                          "Move it server-side."),
+                          "scope_note": "Full value shown. Rotate "
+                                        "immediately; never ship "
+                                        "secrets client-side."}))
 
         dur = int((time.monotonic() - t0) * 1000)
         res = self._ok(findings,
