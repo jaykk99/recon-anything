@@ -1,0 +1,71 @@
+{
+ "poc_id": "poc-3-drip-mint",
+ "hypothesis": "DRIP mint(address,uint256) is an ungated mint: the live stranger probe with amount 0 succeeded (eth_call returning 0x0...0) but the validator could not classify a value destination (recipient UNRESOLVED). A stranger minting a decisive 1000 DRIP to themselves should increase their balanceOf by 1000e18 and totalSupply by 1000e18. If the fork shows that delta, the remaining evidence for VERIFIED_REAL is a live decisive-amount probe + live receipt + live balance delta + proof DRIP has value (live pair/reserves).",
+ "chain": "bsc",
+ "address": "0x20f663cea80face82acdfa3aae6862d246ce0333",
+ "fork": "local anvil fork only; no live broadcast",
+ "stranger": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+ "steps": [
+  {
+   "index": 0,
+   "sig": "mint(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "1000000000000000000000"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: Failed to estimate gas: server returned an error response: error code 3: execution reverted: not whitelisted, data: \"0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000f6e6f742077686974656c69737465640000000000000000000000000000000000\": Error(\"not whitelisted\")",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: not whitelisted\n\nContext:\n- server returned an error response: error code 3: execution reverted: not whitelisted, data: \"0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000f6e6f742077686974656c69737465640000000000000000000000000000000000\""
+   }
+  }
+ ],
+ "reads": [
+  {
+   "tag": "before",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x000000000000000000000000000000000000000000c136c61b7d0aab5d1f123a"
+    }
+   }
+  },
+  {
+   "tag": "after_step_0",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x000000000000000000000000000000000000000000c136c61b7d0aab5d1f123a"
+    }
+   }
+  }
+ ],
+ "verdict": "UNVERIFIED",
+ "verdict_reason": "fork/simulation is never proof; VERIFIED_REAL needs a live-chain probe from an unfunded stranger + live receipt + balance-delta evidence",
+ "still_needed_for_verified_real": [
+  "live eth_call probe of mint(stranger, 1000e18) from an unfunded stranger (decisive amount, not 0)",
+  "live transaction receipt showing the mint executed on BSC",
+  "live balanceOf(stranger) delta + totalSupply delta measured on the live chain",
+  "value proof: live DRIP pair/reserves or price showing the minted token is worth something"
+ ],
+ "fork_block": 133853901,
+ "live_block_at_fork": 133853904,
+ "deltas": {
+  "balanceOf(address)": 0,
+  "totalSupply()": 0
+ },
+ "fork_executed": false,
+ "fork_outcome": "attack sequence did NOT execute on the fork (reverted); the live path is not reachable this way with these args"
+}

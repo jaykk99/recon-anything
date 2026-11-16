@@ -1,0 +1,20 @@
+{
+  "poc_id": "poc-3-drip-mint",
+  "chain": "bsc",
+  "rpc_url": "https://bsc-dataseed.binance.org",
+  "address": "0x20f663cea80face82acdfa3aae6862d246ce0333",
+  "hypothesis": "DRIP mint(address,uint256) is an ungated mint: the live stranger probe with amount 0 succeeded (eth_call returning 0x0...0) but the validator could not classify a value destination (recipient UNRESOLVED). A stranger minting a decisive 1000 DRIP to themselves should increase their balanceOf by 1000e18 and totalSupply by 1000e18. If the fork shows that delta, the remaining evidence for VERIFIED_REAL is a live decisive-amount probe + live receipt + live balance delta + proof DRIP has value (live pair/reserves).",
+  "steps": [
+    {"sig": "mint(address,uint256)", "args": ["STRANGER", "1000000000000000000000"]}
+  ],
+  "reads": [
+    {"sig": "balanceOf(address)", "args": ["STRANGER"]},
+    {"sig": "totalSupply()", "args": []}
+  ],
+  "still_needed_for_verified_real": [
+    "live eth_call probe of mint(stranger, 1000e18) from an unfunded stranger (decisive amount, not 0)",
+    "live transaction receipt showing the mint executed on BSC",
+    "live balanceOf(stranger) delta + totalSupply delta measured on the live chain",
+    "value proof: live DRIP pair/reserves or price showing the minted token is worth something"
+  ]
+}

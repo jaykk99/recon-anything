@@ -1,0 +1,43 @@
+{
+ "poc_id": "poc-4-positive-control",
+ "hypothesis": "donation attack on the planted vault: attacker deposits 1 ETH, donates 10 ETH, victim deposits 1 ETH for ~0 shares, attacker withdrawAll() drains ~12 ETH",
+ "chain": "local-anvil",
+ "fork": "fresh local chain, no fork-url",
+ "verdict": "UNVERIFIED",
+ "verdict_reason": "local execution is not a live chain: UNVERIFIED by design; this is a positive control for the PoC machinery",
+ "vault": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+ "steps": [
+  {
+   "step": "attacker deposit 1 ETH",
+   "ok": true,
+   "error": null,
+   "attacker_shares": 1000000000000000000
+  },
+  {
+   "step": "attacker donate 10 ETH",
+   "ok": true,
+   "error": null,
+   "vault_balance_wei": 11000000000000000000
+  },
+  {
+   "step": "victim deposit 1 ETH",
+   "ok": true,
+   "error": null,
+   "victim_shares": 83333333333333333
+  },
+  {
+   "step": "attacker withdrawAll",
+   "ok": true,
+   "error": null
+  }
+ ],
+ "deltas": {
+  "attacker_eth_wei": 999908948737027240,
+  "victim_eth_wei": -1000033308422476041,
+  "vault_balance_wei": 0,
+  "victim_shares": 83333333333333333,
+  "attacker_shares": 1000000000000000000
+ },
+ "fork_executed": true,
+ "fork_outcome": "victim deposited 1 ETH for 83333333333333333 shares; attacker net +0.9999 ETH, victim net -1.0000 ETH, vault left with 0 wei"
+}

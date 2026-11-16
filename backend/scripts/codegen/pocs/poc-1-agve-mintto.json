@@ -1,0 +1,20 @@
+{
+  "poc_id": "poc-1-agve-mintto",
+  "chain": "arbitrum",
+  "rpc_url": "https://arb1.arbitrum.io/rpc",
+  "address": "0x848e0ba28b637e8490d88bae51fa99c87116409b",
+  "hypothesis": "AGVE mintTo(address,uint256) is an ungated mint: the live stranger probe with amount 0 succeeded (eth_call), and the validator could not classify a value destination. A stranger minting a decisive 1 AGVE to themselves should increase their balanceOf by 1e18 and totalSupply by 1e18. If the fork shows that delta, the remaining evidence for VERIFIED_REAL is a live decisive-amount probe + live receipt + live balance delta + proof the issued AGVE has value (live pair/reserves).",
+  "steps": [
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1000000000000000000"]}
+  ],
+  "reads": [
+    {"sig": "balanceOf(address)", "args": ["STRANGER"]},
+    {"sig": "totalSupply()", "args": []}
+  ],
+  "still_needed_for_verified_real": [
+    "live eth_call probe of mintTo(stranger, 1e18) from an unfunded stranger (decisive amount, not 0)",
+    "live transaction receipt showing the mint executed on Arbitrum",
+    "live balanceOf(stranger) delta + totalSupply delta measured on the live chain",
+    "value proof: live AGVE pair/reserves or price showing the minted token is worth something"
+  ]
+}

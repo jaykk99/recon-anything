@@ -1,0 +1,193 @@
+{
+ "poc_id": "poc-1b-agve-mintto-boundary",
+ "hypothesis": "Follow-up to poc-1: mintTo(1e18) reverts 'W37: Too large mint'. Boundary probe (call-only, no state change): find the largest mint a stranger can actually execute. If even 1 wei reverts, the mint is fully gated for strangers and the candidate is a false positive; if a small amount succeeds, the cap is per-call and the drain is bounded by the cap.",
+ "chain": "arbitrum",
+ "address": "0x848e0ba28b637e8490d88bae51fa99c87116409b",
+ "fork": "local anvil fork only; no live broadcast",
+ "stranger": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+ "steps": [
+  {
+   "index": 0,
+   "sig": "mintTo(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "1"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\"",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\""
+   },
+   "call_only": true
+  },
+  {
+   "index": 1,
+   "sig": "mintTo(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "1000000000000"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\"",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\""
+   },
+   "call_only": true
+  },
+  {
+   "index": 2,
+   "sig": "mintTo(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "1000000000000000"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\"",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\""
+   },
+   "call_only": true
+  },
+  {
+   "index": 3,
+   "sig": "mintTo(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "100000000000000000"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\"",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\""
+   },
+   "call_only": true
+  },
+  {
+   "index": 4,
+   "sig": "mintTo(address,uint256)",
+   "args": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "1000000000000000000"
+   ],
+   "ok": false,
+   "tx_hash": null,
+   "receipt": null,
+   "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\"",
+   "call_preview": {
+    "ok": false,
+    "return": null,
+    "error": "Error: execution reverted: W37: Too large mint\n\nContext:\n- server returned an error response: error code 3: execution reverted: W37: Too large mint, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000135733373a20546f6f206c61726765206d696e7400000000000000000000000000\""
+   },
+   "call_only": true
+  }
+ ],
+ "reads": [
+  {
+   "tag": "before",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  },
+  {
+   "tag": "after_step_0",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  },
+  {
+   "tag": "after_step_1",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  },
+  {
+   "tag": "after_step_2",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  },
+  {
+   "tag": "after_step_3",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  },
+  {
+   "tag": "after_step_4",
+   "values": {
+    "balanceOf(address)": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "totalSupply()": {
+     "ok": true,
+     "value": "0x0000000000000000000000000000000000000000000000002842b5af5e6fb599"
+    }
+   }
+  }
+ ],
+ "verdict": "UNVERIFIED",
+ "verdict_reason": "fork/simulation is never proof; VERIFIED_REAL needs a live-chain probe from an unfunded stranger + live receipt + balance-delta evidence",
+ "still_needed_for_verified_real": [
+  "a mint amount that actually executes for a stranger, then the live decisive-amount probe + receipt + balance delta at that amount"
+ ],
+ "fork_block": 524633257,
+ "live_block_at_fork": 524633260,
+ "deltas": {
+  "balanceOf(address)": 0,
+  "totalSupply()": 0
+ },
+ "fork_executed": false,
+ "fork_outcome": "attack sequence did NOT execute on the fork (reverted); the live path is not reachable this way with these args"
+}
