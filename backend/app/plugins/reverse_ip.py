@@ -21,6 +21,7 @@ import time
 from typing import Dict, List, Set
 from urllib.parse import quote
 
+from ..cdn_ranges import classify_ip
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
@@ -28,6 +29,29 @@ _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,24}$")
 _HOST_IN_TEXT_RE = re.compile(r"([a-z0-9][a-z0-9.-]*\.[a-z]{2,24})")
 
 MAX_DOMAINS = 300
+
+# Above this many co-hosted domains on ONE address, treat it as shared
+# hosting even when the IP isn't in a known CDN/PaaS range: a dedicated
+# box fronts a handful of an operator's own sites, not dozens of
+# strangers'. Past the threshold the neighbours are emitted as a single
+# summary note (not promoted into scan targets), so reverse-IP stops
+# ballooning a scan with unrelated co-tenants.
+SHARED_HOST_THRESHOLD = 25
+
+
+def _registrable_root(host: str) -> str:
+    """Cheap registrable-root approximation (last two labels, with a
+    small multi-part-suffix allowance). Good enough to count how many
+    distinct owners sit on an address."""
+    parts = (host or "").strip(".").split(".")
+    if len(parts) <= 2:
+        return host
+    _MULTI = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au",
+              "org.au", "co.jp", "co.nz", "co.za", "com.br", "com.cn"}
+    last2 = ".".join(parts[-2:])
+    if last2 in _MULTI and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return last2
 
 
 def _valid_host(host: str) -> bool:
@@ -103,6 +127,30 @@ class ReverseIpPlugin(Plugin):
             return self._skipped(f"not an IP target: {ip!r}")
         is_v6 = parsed.version == 6
 
+        # A human never reverse-IPs a CDN edge / shared-PaaS address: the
+        # co-tenants are strangers. Skip expansion there and say why,
+        # instead of flooding the scan with hundreds of unrelated
+        # neighbours (what actually happened on a shared Render/Cloudflare
+        # address: 600+ co-tenant findings on one scan).
+        provider = classify_ip(ip)
+        if provider:
+            note = self._f(
+                "graph", "reverse_ip_skipped",
+                f"{ip} is {provider} shared edge/tenant space - reverse-IP "
+                f"skipped (co-hosted domains there are unrelated tenants)",
+                source="reverse IP (shared-infra guard)",
+                confidence=85, passive=True,
+                evidence={"ip": ip, "provider": provider, "severity": "low",
+                          "remediation": "No action: this is informational. "
+                                         "The address is shared CDN/PaaS "
+                                         "infrastructure, so its other "
+                                         "tenants are not part of this "
+                                         "target's attack surface."})
+            res = self._ok([note], f"{ip} is {provider} shared infra - "
+                                   f"reverse-IP skipped")
+            res.duration_ms = int((time.monotonic() - t0) * 1000)
+            return res
+
         async def gather_all():
             results: Dict[str, Set[str]] = {}
 
@@ -155,6 +203,32 @@ class ReverseIpPlugin(Plugin):
         for src, hosts in data.items():
             for host in hosts or []:
                 by_host.setdefault(host, src)
+
+        # Unlisted shared hosting: too many distinct owners on one address
+        # means it is a shared box, not a dedicated one. Don't promote the
+        # neighbours into scan targets - summarise them in one note so the
+        # finding is kept and visible but the hunter can't balloon the scan.
+        distinct_roots = {_registrable_root(h) for h in by_host}
+        if len(by_host) > SHARED_HOST_THRESHOLD and len(distinct_roots) > 10:
+            sample = sorted(by_host)[:12]
+            note = self._f(
+                "graph", "reverse_ip_shared_host",
+                f"{ip} hosts {len(by_host)} domains across "
+                f"{len(distinct_roots)} owners - shared hosting, reverse-IP "
+                f"not expanded (e.g. {', '.join(sample[:5])})",
+                source="reverse IP (shared-host heuristic)",
+                confidence=75, passive=True,
+                evidence={"ip": ip, "domain_count": len(by_host),
+                          "owner_count": len(distinct_roots),
+                          "sample": sample, "severity": "low",
+                          "remediation": "Shared hosting: the co-tenants are "
+                                         "other customers, not this target's "
+                                         "assets. Pivot by reverse-IP only "
+                                         "on dedicated addresses."})
+            res = self._ok([note], f"{ip} is shared hosting "
+                                   f"({len(by_host)} domains) - not expanded")
+            res.duration_ms = int((time.monotonic() - t0) * 1000)
+            return res
 
         findings: List[Finding] = []
         for host in sorted(by_host)[:MAX_DOMAINS]:
