@@ -41,6 +41,7 @@ class _Ctx:
         self.mode = "passive"
         self.cache = _Cache()
         self.shared = {}
+        self.module_overrides = {}
 
     def publish(self, kind, item):
         self.shared.setdefault(kind, []).append(item)
@@ -103,3 +104,30 @@ def test_registrable_root_counts_owners():
     assert _registrable_root("a.example.com") == "example.com"
     assert _registrable_root("x.y.example.co.uk") == "example.co.uk"
     assert _registrable_root("example.com") == "example.com"
+
+
+# -- port_scan shared-edge guard ------------------------------------------
+
+def _port_scan_plugin():
+    from app.plugins.registry import discover
+    cls = discover().get("port_scan")
+    assert cls is not None
+    return cls()
+
+
+def test_port_scan_skips_active_scan_on_shared_edge_ip():
+    # An IP target resolves to itself (no network), so this exercises the
+    # guard offline: active scan of a Render edge IP must be skipped.
+    p = _port_scan_plugin()
+    ctx = _Ctx()
+    ctx.mode = "active"
+    res = asyncio.run(p.run(_T("216.24.57.16"), ctx))
+    keys = [f.key for f in res.findings]
+    assert "port_scan_skipped_shared_edge" in keys
+    # it must NOT have emitted real open-port findings for the provider
+    assert not any(k.startswith("open_port") or k == "port" for k in keys)
+
+
+def test_port_scan_runs_on_ordinary_ip():
+    # A non-shared IP is not short-circuited by the guard (classifier None).
+    assert classify_ip("93.184.216.34") is None

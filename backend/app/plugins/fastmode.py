@@ -156,7 +156,8 @@ class FastmodePlugin(Plugin):
 
         # --- 5. Fast TCP port sweep (threaded, ~2-4s) ------------------
         try:
-            ip = socket.gethostbyname(domain)
+            # blocking DNS: resolve off the event loop
+            ip = await asyncio.to_thread(socket.gethostbyname, domain)
         except Exception:
             ip = ""
         if ip:
