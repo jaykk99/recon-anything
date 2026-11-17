@@ -30,6 +30,7 @@ Crypto.com is never a target.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -1744,7 +1745,11 @@ class DeepInfraPlugin(Plugin):
             m = re.search(r":(\d+)", url)
             if m:
                 port = int(m.group(1))
-            inputs["mqtt_probe"] = _mqtt_probe(host, port)
+            # Blocking socket probe (connect + two recvs, up to ~15s):
+            # run it off the event loop so it can't freeze every other
+            # concurrent plugin job while it waits.
+            inputs["mqtt_probe"] = await asyncio.to_thread(
+                _mqtt_probe, host, port)
         if spec.id == "etcd_raft_consensus_keyspace_dumper" \
                 and "etcd_probe" not in inputs and url:
             base = url.rstrip("/")
