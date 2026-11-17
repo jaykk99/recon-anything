@@ -82,9 +82,15 @@ class WaybackSurfaceWaymorePlugin(Plugin):
             rows = r.json()
         except Exception:
             return []
+        # The CDX API returns a list of rows (first row is the header).
+        # On an error/empty payload it can return a dict or null instead;
+        # slicing/indexing that used to crash the plugin (KeyError on a
+        # dict slice) rather than degrade. Guard the shape.
+        if not isinstance(rows, list):
+            return []
         out: List[Tuple[str, str]] = []
         for row in rows[1:]:
-            if row and row[0]:
+            if isinstance(row, (list, tuple)) and row and row[0]:
                 out.append((str(row[0]),
                             str(row[1]) if len(row) > 1 else ""))
         return out
