@@ -31,13 +31,35 @@ from typing import Any, Dict, List, Optional
 
 from .fork_attack import STRANGER, find_foundry_tool
 from .plugins import contract_chain as cc
+from .proxy_bridge_live import (
+    SLOT_ZEPPELINOS_IMPLEMENTATION as _SLOT_ZEPPELINOS)
+from .proxy_bridge_live import (
+    SLOT_ZEPPELINOS_IMPLEMENTATION_MINUS1 as _SLOT_ZEPPELINOS_MINUS1)
+from .proxy_bridge_live import analyze_upgrade as _analyze_upgrade
+from .proxy_bridge_live import diff_implementations  # noqa: F401
+from .proxy_bridge_live import extract_selectors  # noqa: F401
 
 SLOT_IMPLEMENTATION = (
     "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
 SLOT_ADMIN = (
     "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103")
 SLOT_BEACON = (
-    "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d")
+    "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50")
+# ZeppelinOS implementation slot (Wave 1.3): the ORIGINAL ZeppelinOS
+# lineage (e.g. USDC's FiatTokenProxy) uses the RAW keccak256, no
+# "-1" - read live 2026-11-12, the raw slot holds the live
+# implementation while the keccak-1 slot reads zero. The keccak-1
+# variant is what openzeppelin-sdk's later AdminUpgradeabilityProxy
+# used, so the snapshot reads raw first and falls back to keccak-1.
+# The constant is imported from proxy_bridge_live (single source of
+# truth) so the two modules can never drift apart again.
+# NOTE (Wave 1.3 fix): SLOT_BEACON above was truncated to 62 hex
+# chars (missing the trailing "50") - it read the wrong storage
+# word, so beacon proxies never resolved. The correct 32-byte slot
+# is keccak256("eip1967.proxy.beacon") - 1; see
+# tests/test_proxy_bridge_live.py::test_proxy_slots_are_keccak_minus_one.
+SLOT_ZEPPELINOS_IMPLEMENTATION = _SLOT_ZEPPELINOS
+SLOT_ZEPPELINOS_IMPLEMENTATION_MINUS1 = _SLOT_ZEPPELINOS_MINUS1
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
@@ -175,7 +197,9 @@ def snapshot(chain: str, address: str,
     snap: Dict[str, Any] = {
         "chain": chain, "address": address, "observed_at": now,
         "owner": None, "paused": None, "implementation": None,
-        "admin": None, "beacon": None, "code_hash": None,
+        "admin": None, "beacon": None,
+        "zeppelinos_implementation": None,
+        "code_hash": None,
         "native_wei": None, "allowances": {},
         "unavailable": [],
     }
@@ -207,6 +231,19 @@ def snapshot(chain: str, address: str,
         _storage(chain, address, SLOT_BEACON))
     if snap["beacon"] is None:
         snap["unavailable"].append("beacon")
+    # ZeppelinOS implementation slot (Wave 1.3): pre-EIP-1967
+    # proxies (e.g. old ZeppelinOS / OpenZeppelin 2.x) store the
+    # implementation here instead. Raw keccak first, keccak-1
+    # fallback (see the SLOT_ZEPPELINOS_IMPLEMENTATION note above).
+    # Zero = not that flavour.
+    snap["zeppelinos_implementation"] = _slot_address(
+        _storage(chain, address, SLOT_ZEPPELINOS_IMPLEMENTATION))
+    if snap["zeppelinos_implementation"] is None:
+        snap["zeppelinos_implementation"] = _slot_address(
+            _storage(chain, address,
+                     SLOT_ZEPPELINOS_IMPLEMENTATION_MINUS1))
+    if snap["zeppelinos_implementation"] is None:
+        snap["unavailable"].append("zeppelinos_implementation")
     snap["code_hash"] = _code_hash(chain, address)
     if snap["code_hash"] is None:
         snap["unavailable"].append("code_hash")
@@ -275,3 +312,35 @@ def diff_snapshots(prev: Dict[str, Any],
                             "severity": "low",
                             "note": "allowance shrank for this spender"})
     return changes
+
+
+async def analyze_upgrade(prev: Dict[str, Any], cur: Dict[str, Any],
+                          source_analyzer=None) -> Dict[str, Any]:
+    """Upgrade report between two snapshots (Wave 1.3).
+
+    Thin wrapper over ``proxy_bridge_live.analyze_upgrade`` with a
+    code reader built on the cast transport above (``cast code`` per
+    implementation address). ``source_analyzer(chain, address)``
+    optionally re-runs the repo's analysis on the new
+    implementation's verified source - the plugin path wires that
+    in; the CLI leaves it off and reports bytecode-diff only.
+
+    The report always records an implementation change; findings
+    appear only when the new implementation gains dangerous opcodes
+    or trips re-analysis (notably an open upgrade window on the new
+    implementation). Verdict is "candidate" / "clean" / "degraded";
+    never VERIFIED_REAL.
+    """
+    import asyncio
+
+    async def _code_reader(chain: str, address: str):
+        out, _err = await asyncio.to_thread(
+            _cast, ["code", "--rpc-url", _rpc_urls(chain)[0], address]
+            if _rpc_urls(chain) else ["code", address])
+        if out is None:
+            return None
+        code = out.strip()
+        return code if code.startswith("0x") else None
+
+    return await _analyze_upgrade(prev, cur, _code_reader,
+                                  source_analyzer)

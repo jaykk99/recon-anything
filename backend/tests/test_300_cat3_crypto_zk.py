@@ -51,7 +51,7 @@ def keys(out):
 def test_all_cat3_registered_and_count():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 1445
+    assert len(reg) == 1459
     for pid in IDS:
         assert pid in reg, pid
 
