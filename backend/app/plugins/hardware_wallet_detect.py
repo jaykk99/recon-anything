@@ -539,7 +539,9 @@ class HardwareWalletDetect(Plugin):
             ip = raw
         else:
             host = raw.split("://", 1)[-1].split("/")[0].split(":")[0]
-            ip = resolve_host(host) if host else None
+            # blocking DNS (gethostbyname): resolve off the event loop
+            ip = (await asyncio.to_thread(resolve_host, host)
+                  if host else None)
         if not ip:
             return self._skipped("could not resolve target to an IP")
         try:

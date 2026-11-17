@@ -17,6 +17,7 @@ import ssl
 import time
 from typing import List, Tuple
 
+from ..cdn_ranges import classify_ip
 from ..classifier import domain_from_target
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
@@ -71,7 +72,9 @@ class PortScanPlugin(Plugin):
             return self._skipped("no host for this target type")
         host = host.split(":")[0]
         try:
-            ip = socket.gethostbyname(host)
+            # DNS resolution is blocking - run it off the event loop so a
+            # slow/failing resolve can't freeze every concurrent plugin.
+            ip = await asyncio.to_thread(socket.gethostbyname, host)
         except Exception:
             res = self._degraded(f"could not resolve {host}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -80,6 +83,31 @@ class PortScanPlugin(Plugin):
         findings: List[Finding] = []
         mode = self.module_mode(ctx)
         passive = (mode == "passive")
+
+        # Don't actively port-scan a CDN / shared-PaaS edge: those ports
+        # belong to the provider (Cloudflare, Render, ...), not the
+        # target, so the result is both noise and a scan of someone
+        # else's infrastructure. A human never does this.
+        if not passive:
+            provider = classify_ip(ip)
+            if provider:
+                note = self._f(
+                    "infra", "port_scan_skipped_shared_edge",
+                    f"{host} -> {ip} is {provider} shared edge; active port "
+                    f"scan skipped (the open ports are the provider's, not "
+                    f"this target's)",
+                    source="port scan (shared-infra guard)",
+                    confidence=85, passive=False,
+                    evidence={"ip": ip, "provider": provider,
+                              "severity": "low",
+                              "remediation": "No action: informational. The "
+                                             "host sits behind shared CDN/PaaS "
+                                             "infrastructure; scan the origin "
+                                             "directly if you control it."})
+                res = self._ok([note], f"{ip} is {provider} shared edge - "
+                                       f"active port scan skipped")
+                res.duration_ms = int((time.monotonic() - t0) * 1000)
+                return res
         if passive:
             for port, service, _ in WEB_PORTS:
                 findings.append(self._f(
