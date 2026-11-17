@@ -139,6 +139,9 @@ CONTRACT_BOOST = {
     # deep_audit20 (5)
     "auction_bid_no_prior_refund", "borrow_no_collateral_check", "liquidation_caller_supplied_price", "lzreceive_no_origin_validation",
     "merkle_claim_no_claimed_marker",
+    # deep_audit24 (5)
+    "bridge_release_value_unbound_to_proof", "escape_hatch_unbound_public_inputs", "lp_mint_unverified_caller_supplied",
+    "merkle_proof_unbounded_leaf_index", "token_sell_hook_burns_pair_reserves_sync",
     # deep_lowlevel (12)
     "circom_r1cs_underconstrained_wire_checker", "diamond_erc2535_facet_selector_tree", "eof_container_code_section_verifier", "erc4337_entrypoint_paymaster_simulator",
     "erc7579_modular_account_hook_inspector", "evm_cfg_basic_block_reconstructor", "gnosis_safe_fallback_handler_mutator_check", "halo2_lookup_table_range_profiler",

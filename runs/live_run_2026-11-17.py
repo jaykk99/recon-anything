@@ -1,12 +1,12 @@
-"""Live-use run for deep_audit20 (daily quota grind, 2026-11-17).
+"""Live-use run for deep_audit24 (AI dev, 2026-11-17).
 
-Runs the 5 new batch-20 detectors against the locally cached
-verified sources in ~/workspace/recon-verify/src_cache and
-~/workspace/recon-10k/src_cache (deduplicated by address).
+Runs the 5 new detectors plus relevant existing ones against the
+locally cached verified sources in ~/workspace/recon-verify/src_cache
+and ~/workspace/recon-10k/src_cache (deduplicated by address).
 Detection only: static analysis of cached source, no network,
 no transactions. Writes one JSON object per fire to
-runs/2026-11-17-fires.jsonl in the worktree (falls back to /tmp
-when the disk-quota wave blocks the worktree write).
+runs/2026-11-17-fires.jsonl in the worktree (falls back to /tmp when
+the disk-quota wave blocks the worktree write).
 """
 import glob
 import json
@@ -15,18 +15,52 @@ import re
 import sys
 import traceback
 
-WT = "/home/hatch/workspace/wt/quota/2026-11-17-recon-anything/backend"
+WT = "/home/hatch/workspace/wt/recon-dev-2026-11-17/backend"
 sys.path.insert(0, WT)
 
+from app.plugins import deep_audit2 as da2  # noqa: E402
+from app.plugins import deep_audit6 as da6  # noqa: E402
+from app.plugins import deep_audit13 as da13  # noqa: E402
 from app.plugins import deep_audit20 as da20  # noqa: E402
+from app.plugins import deep_audit24 as da24  # noqa: E402
+from app.plugins import bsc_mev_bridge as mevb  # noqa: E402
+from app.plugins import bsc_bep20 as bepb  # noqa: E402
+from app.plugins.bsc_common import analyze_bsc_source  # noqa: E402
 
-OUT = ("/home/hatch/workspace/wt/quota/2026-11-17-recon-anything/runs/"
+OUT = ("/home/hatch/workspace/wt/recon-dev-2026-11-17/runs/"
        "2026-11-17-fires.jsonl")
 OUT_FALLBACK = "/tmp/2026-11-17-fires.jsonl"
 
 DETECTORS = []
+for spec in da24.SPECS:
+    DETECTORS.append((spec.id, spec, da24.analyze_deep24_source))
 for spec in da20.SPECS:
-    DETECTORS.append((spec.id, spec, da20.analyze_deep20_source))
+    if spec.id in ("merkle_claim_no_claimed_marker",
+                   "lzreceive_no_origin_validation"):
+        DETECTORS.append((spec.id, spec, da20.analyze_deep20_source))
+for spec in da2.SPECS:
+    if spec.id in ("bridge_replay_unbound_digest",
+                   "fee_on_transfer_overcredit"):
+        DETECTORS.append((spec.id, spec, da2.analyze_deep2_source))
+for spec in da13.SPECS:
+    if spec.id == "residual_balance_sweep_ungated":
+        DETECTORS.append((spec.id, spec, da13.analyze_deep13_source))
+for spec in da6.SPECS:
+    if spec.id == "hardcoded_decimals_scaling":
+        DETECTORS.append((spec.id, spec, da6.analyze_deep6_source))
+for spec in mevb.SPECS:
+    if spec.id in ("bridge_wrapped_token_mint_unbacked",
+                   "bridge_withdrawer_identity_spoof"):
+        DETECTORS.append(
+            (spec.id, spec,
+             lambda src, spec, compiler="", contract_name="":
+             analyze_bsc_source(src, spec)))
+for spec in bepb.SPECS:
+    if spec.id == "bep20_mint_cap_bypass":
+        DETECTORS.append(
+            (spec.id, spec,
+             lambda src, spec, compiler="", contract_name="":
+             analyze_bsc_source(src, spec)))
 
 
 def parse_filename(path):
@@ -58,41 +92,63 @@ def main():
                              data.get("contract_name") or
                              data.get("name") or "")
     print(f"unique sources with code: {len(sources)}")
+
     fires = []
     errors = 0
-    for addr, (chain, src, name) in sorted(sources.items()):
+    scanned = 0
+    for addr, (chain, src, cname) in sorted(sources.items()):
+        scanned += 1
         for pid, spec, fn in DETECTORS:
             try:
-                hits = fn(src, spec, "", contract_name=name)
+                hits = fn(src, spec, contract_name=cname)
             except Exception:
                 errors += 1
-                traceback.print_exc()
+                if errors <= 5:
+                    traceback.print_exc()
                 continue
-            for h in hits:
-                fires.append({"address": addr, "chain": chain,
-                              "contract_name": name, "plugin": pid,
-                              "function": h.get("function"),
-                              "severity": h.get("severity"),
-                              "report_class": h.get("report_class"),
-                              "recipient": h.get("recipient"),
-                              "detail": (h.get("detail") or "")[:600],
-                              "code": (h.get("code") or "")[:400]})
-    print(f"fires: {len(fires)} errors: {errors}")
-    by_plugin = {}
+            for h in hits or []:
+                fires.append({
+                    "plugin": pid,
+                    "chain": chain,
+                    "address": addr,
+                    "kind": h.get("kind"),
+                    "function": h.get("function"),
+                    "recipient": h.get("recipient"),
+                    "report_class": h.get("report_class"),
+                    "severity": h.get("severity"),
+                    "contract_name": cname,
+                    "detail": (h.get("detail") or "")[:600],
+                })
+    dedup = {}
     for f in fires:
-        by_plugin[f["plugin"]] = by_plugin.get(f["plugin"], 0) + 1
-    print(f"per-plugin: {by_plugin}")
+        k = (f["plugin"], f["chain"], f["address"], f["kind"],
+             f["function"])
+        dedup.setdefault(k, f)
+    print(f"scanned: {scanned}, analyzer errors: {errors}, "
+          f"raw fires: {len(fires)}, deduped fires: {len(dedup)}")
+    from collections import Counter
+    print("by plugin:", dict(Counter(
+        f["plugin"] for f in dedup.values())))
+    print("by report_class:", dict(Counter(
+        f["report_class"] for f in dedup.values())))
     out = OUT
     try:
-        with open(out, "w") as fh:
-            for f in fires:
+        os.makedirs(os.path.dirname(OUT), exist_ok=True)
+        with open(OUT, "w") as fh:
+            for f in sorted(dedup.values(),
+                            key=lambda x: (x["plugin"], x["chain"],
+                                           x["address"])):
                 fh.write(json.dumps(f) + "\n")
-    except OSError:
+    except OSError as e:
+        print(f"worktree write blocked ({e}); falling back to "
+              f"{OUT_FALLBACK}")
         out = OUT_FALLBACK
         with open(out, "w") as fh:
-            for f in fires:
+            for f in sorted(dedup.values(),
+                            key=lambda x: (x["plugin"], x["chain"],
+                                           x["address"])):
                 fh.write(json.dumps(f) + "\n")
-    print(f"wrote {out}")
+    print(f"wrote {out} ({len(dedup)} lines)")
 
 
 if __name__ == "__main__":
