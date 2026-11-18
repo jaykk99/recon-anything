@@ -446,6 +446,20 @@ EIP1967_IMPLEMENTATION_SLOT = (
     "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
 EIP1967_BEACON_SLOT = (
     "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50")
+# Legacy OpenZeppelin / ZeppelinOS implementation slot:
+# keccak256("org.zeppelinos.proxy.implementation"). Pre-EIP-1967
+# upgradeable proxies store the implementation here, NOT at the
+# EIP-1967 slot - most notably Circle's FiatTokenProxy, which many
+# tokens (incl. Crypto.com's CDCETH -> LiquidETHV1) reuse. Without
+# this, such a proxy resolves to nothing and every downstream detector
+# scans the ~1.5KB proxy shell instead of the real implementation,
+# producing a false "clean" result on a contract never actually read.
+ZEPPELINOS_IMPLEMENTATION_SLOT = (
+    "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3")
+# Legacy EIP-1822 (UUPS "PROXIABLE") logic slot:
+# keccak256("PROXIABLE").
+EIP1822_LOGIC_SLOT = (
+    "0xc5f16f0fcc639fa48a6947836d9850f504798523bf8c9a3a87d5876cf622bcf7")
 
 
 def address_from_storage_word(word: Optional[str]) -> str:
@@ -545,6 +559,19 @@ async def resolve_implementation(
             return {"implementation": impl, "via": "eip1967_beacon",
                     "beacon": beacon}
         return {"implementation": "", "via": "", "beacon": beacon}
+    # Legacy pre-EIP-1967 upgradeable proxies (ZeppelinOS slot, used by
+    # Circle's FiatTokenProxy and its many forks incl. CDCETH; and the
+    # EIP-1822 PROXIABLE slot). These stored the implementation at their
+    # own fixed slot before EIP-1967 standardised one, so a proxy that
+    # reads empty at the EIP-1967 slot is NOT necessarily a non-proxy -
+    # check the legacy slots before giving up, or the whole downstream
+    # analysis runs against the proxy shell.
+    for slot, via in ((ZEPPELINOS_IMPLEMENTATION_SLOT, "zeppelinos_slot"),
+                      (EIP1822_LOGIC_SLOT, "eip1822_slot")):
+        word = await rpc_get_storage_at(ctx, chain, address, slot)
+        impl = address_from_storage_word(word)
+        if impl and impl.lower() != address.lower():
+            return {"implementation": impl, "via": via, "beacon": ""}
     return {"implementation": "", "via": "", "beacon": ""}
 
 
