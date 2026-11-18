@@ -33,7 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .. import remediation
+from .. import remediation_llm as remediation
 from . import allowlist, refusal, service, terminal
 from .orchestrator import Engine, Step
 

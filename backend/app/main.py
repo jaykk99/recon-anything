@@ -1142,7 +1142,7 @@ async def api_remediation_generate(run_id: str, request: Request,
     findings and store them on the run. Uses masked findings; drafts are
     suggestions only - nothing is applied or executed."""
     import asyncio as _asyncio
-    from . import remediation as _rem
+    from . import remediation_llm as _rem
     limit = max(1, min(int(limit), 10))
     session = get_session()
     try:
