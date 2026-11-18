@@ -685,13 +685,16 @@ def test_plugin_follows_eip1967_proxy(monkeypatch):
     assert follow.evidence["implementation_address"] == IMPL_ADDR
     assert follow.evidence["implementation_source_verified"] is True
 
-    # Shell findings tagged proxy_shell, carrying both addresses.
+    # Shell findings tagged proxy_shell. The seed hop carries the proxy's
+    # own address and its implementation (deeper hops carry their own).
     shell = [f for f in res.findings
              if f.evidence.get("contract_role") == "proxy_shell"]
     assert shell, "no proxy_shell-tagged findings"
-    assert all(f.evidence["address"] == PROXY_ADDR for f in shell)
+    seed_shell = [f for f in shell
+                  if f.evidence["address"] == PROXY_ADDR]
+    assert seed_shell, "no proxy_shell finding for the seed proxy"
     assert all(f.evidence["implementation_address"] == IMPL_ADDR
-               for f in shell)
+               for f in seed_shell)
 
     # Implementation findings tagged, addressed at the implementation,
     # and readable as implementation findings in the value text.
@@ -702,12 +705,14 @@ def test_plugin_follows_eip1967_proxy(monkeypatch):
     assert path.evidence["proxy_address"] == PROXY_ADDR
     assert "[implementation behind proxy" in path.value
 
-    # The implementation is itself a proxy (explorer says so): noted,
-    # not followed.
-    assert "contract_implementation_is_proxy" in keys
-    nested = [f for f in res.findings
-              if f.key == "contract_implementation_is_proxy"][0]
-    assert nested.evidence["nested_implementation"] == NESTED_ADDR
+    # The implementation is itself a proxy: the chain is now FOLLOWED one
+    # hop further (not merely noted), reaching the nested implementation.
+    deeper = [f for f in res.findings
+              if f.key == "contract_proxy_implementation"
+              and f.evidence.get("implementation_address") == NESTED_ADDR]
+    assert deeper, "nested proxy implementation was not followed deeper"
+    assert deeper[0].evidence["proxy_address"] == IMPL_ADDR
+    assert deeper[0].evidence["proxy_hop"] == 2
 
 
 def test_plugin_follows_eip1167_minimal_proxy(monkeypatch):
@@ -818,3 +823,47 @@ def test_privileged_view_getters_demoted_to_low():
             f"{getter} should be low (view), got {priv[getter]['severity']}"
     # the real state-changing mint() is not demoted by the view gate
     assert priv["mint"]["severity"] != "low"
+
+
+def _proxy_src(name, impl):
+    return {"source": FALLBACK_SOURCE, "contract_name": name,
+            "compiler": "v0.8.0", "proxy": bool(impl),
+            "implementation": impl, "origin": "Blockscout"}
+
+
+def test_plugin_follows_multi_hop_proxy_chain(monkeypatch):
+    # A -> B -> C : the real logic (C) is two hops behind the seed and
+    # used to be left unanalyzed ("one level only"). It must now be reached.
+    A, B, C = PROXY_ADDR, IMPL_ADDR, NESTED_ADDR
+    _patch_by_address(
+        monkeypatch,
+        {A: _craft_bytecode(), B: _craft_bytecode(), C: _craft_bytecode()},
+        {A: _proxy_src("A", B), B: _proxy_src("B", C),
+         C: _proxy_src("C", "")})
+    res = asyncio.run(contract_recon.ContractReconPlugin().run(
+        Target(raw="base:" + A, type="crypto_wallet",
+               normalized="base:" + A), FakeCtx()))
+    impls = {f.evidence.get("implementation_address")
+             for f in res.findings
+             if f.key == "contract_proxy_implementation"}
+    assert {B, C} <= impls, f"chain not fully followed: {impls}"
+    hops = {f.evidence.get("proxy_hop") for f in res.findings
+            if f.key == "contract_proxy_implementation"}
+    assert 2 in hops, "did not reach the second hop"
+    # the deepest contract's OWN code was analyzed (role=implementation)
+    assert any(f.evidence.get("address") == C and
+               f.evidence.get("contract_role") == "implementation"
+               for f in res.findings), "deepest implementation not analyzed"
+
+
+def test_plugin_proxy_chain_cycle_safe(monkeypatch):
+    # A -> B -> A : must terminate and report the cycle, not loop forever.
+    A, B = PROXY_ADDR, IMPL_ADDR
+    _patch_by_address(
+        monkeypatch,
+        {A: _craft_bytecode(), B: _craft_bytecode()},
+        {A: _proxy_src("A", B), B: _proxy_src("B", A)})
+    res = asyncio.run(contract_recon.ContractReconPlugin().run(
+        Target(raw="base:" + A, type="crypto_wallet",
+               normalized="base:" + A), FakeCtx()))
+    assert "contract_proxy_chain_cycle" in {f.key for f in res.findings}

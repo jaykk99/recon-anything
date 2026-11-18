@@ -34,6 +34,11 @@ from . import chain_data
 
 MAX_ADDRESSES = 4       # addresses reconned per run
 MAX_CHAIN_PAIRS = 4     # (chain, address) pairs analyzed per run
+# How deep to follow a proxy -> implementation chain. One hop reaches
+# the usual impl; a proxy-behind-proxy (beacon-of-beacon, metamorphic
+# upgrades, a logic contract that is itself proxied) needs more, or the
+# real code is never analyzed. Bounded + cycle-safe.
+MAX_PROXY_HOPS = 5
 
 _KIND_TO_KEY = {
     "identity": "contract_code_identity",
@@ -288,81 +293,104 @@ class ContractReconPlugin(Plugin):
         if not impl:
             return
 
-        # One level of following: analyze the implementation itself.
-        impl_url = cc.explorer_url(chain, impl)
-        impl_code = None
-        impl_src = None
-        try:
-            impl_code = await chain_data.get_code(ctx, chain, impl)
-            impl_src = await chain_data.get_source(
-                ctx, chain, impl, key)
-        except Exception:
-            impl_code, impl_src = None, None
-        findings.append(self._f(
-            "web3", "contract_proxy_implementation",
-            f"LOW: {addr} on {chain.name} is a proxy; its "
-            f"implementation is {impl} (resolved via "
-            f"{res.get('via') or 'explorer'}"
-            + (f", beacon {res['beacon']}" if res.get("beacon")
-               else "")
-            + "). The implementation's code is analyzed below - "
-              "findings tagged 'implementation'. The proxy shell's "
-              "own findings are tagged 'proxy_shell'."
-            + ("" if impl_src else
-               " The implementation's verified source is NOT "
-               "published, so it is covered by bytecode analysis "
-               "only."),
-            source="proxy resolution (explorer metadata / EIP-1167 "
-                   "bytecode / EIP-1967 storage slots)",
-            source_url=impl_url, confidence=88, passive=True,
-            evidence={"severity": "low", "address": addr,
-                      "chain": chain.id, "chain_id": chain.chain_id,
-                      "contract_role": "proxy_shell",
-                      "proxy_address": addr,
-                      "implementation_address": impl,
-                      "resolved_via": res.get("via", ""),
-                      "beacon": res.get("beacon", ""),
-                      "implementation_source_verified":
-                          bool(impl_src),
-                      "remediation": _REMEDIATION[
-                          "contract_proxy_implementation"]}))
-        if not impl_code or impl_code == "0x" or len(impl_code) < 4:
-            return  # pointer resolved but no code there to analyze
-        await self._analyze_one(ctx, key, chain, impl, impl_code,
-                                impl_src, findings,
-                                role="implementation", proxy_addr=addr,
-                                impl_addr=impl)
-        # If the implementation is itself a proxy, say so instead of
-        # recursing - one level of following is the contract.
-        try:
-            nested = await chain_data.get_implementation(
-                ctx, chain, impl, impl_code,
-                {"implementation":
-                 (impl_src or {}).get("implementation", "")})
-        except Exception:
-            nested = {"implementation": ""}
-        if nested.get("implementation"):
+        # Follow the WHOLE proxy chain, not just one hop. A proxy whose
+        # implementation is itself a proxy (beacon-of-beacon, a logic
+        # contract that is itself proxied, metamorphic upgrades) used to
+        # stop here, leaving the real logic contract unanalyzed - deeper
+        # into the target is exactly where the exploitable code lives.
+        # Walk up to MAX_PROXY_HOPS, analyzing each implementation's own
+        # code; cycle-safe and depth-bounded.
+        cur_proxy, cur_impl, cur_res = addr, impl, res
+        seen = {addr.lower()}
+        for hop in range(1, MAX_PROXY_HOPS + 1):
+            if cur_impl.lower() in seen:
+                findings.append(self._f(
+                    "web3", "contract_proxy_chain_cycle",
+                    f"MEDIUM: the proxy chain from {addr} on {chain.name} "
+                    f"loops back to {cur_impl} (cyclic implementation "
+                    "pointer) - stopped.",
+                    source="proxy chain resolution",
+                    source_url=cc.explorer_url(chain, cur_impl),
+                    confidence=85, passive=True,
+                    evidence={"severity": "medium", "address": cur_impl,
+                              "chain": chain.id, "chain_id": chain.chain_id,
+                              "contract_role": "implementation",
+                              "proxy_address": cur_proxy,
+                              "remediation": _REMEDIATION[
+                                  "contract_implementation_is_proxy"]}))
+                break
+            seen.add(cur_impl.lower())
+            impl_url = cc.explorer_url(chain, cur_impl)
+            try:
+                impl_code = await chain_data.get_code(ctx, chain, cur_impl)
+                impl_src = await chain_data.get_source(
+                    ctx, chain, cur_impl, key)
+            except Exception:
+                impl_code, impl_src = None, None
             findings.append(self._f(
-                "web3", "contract_implementation_is_proxy",
-                f"MEDIUM: implementation {impl} of proxy {addr} on "
-                f"{chain.name} is itself a proxy (its implementation "
-                f"is {nested['implementation']}, via "
-                f"{nested.get('via') or 'explorer'}). Not followed "
-                "further - one level only. The chain of proxies is "
-                "part of this contract's trust surface.",
-                source="proxy resolution (explorer metadata / "
-                       "EIP-1167 bytecode / EIP-1967 storage slots)",
-                source_url=impl_url, confidence=85, passive=True,
-                evidence={"severity": "medium", "address": impl,
-                          "chain": chain.id,
-                          "chain_id": chain.chain_id,
-                          "contract_role": "implementation",
-                          "proxy_address": addr,
-                          "implementation_address": impl,
-                          "nested_implementation":
-                              nested["implementation"],
+                "web3", "contract_proxy_implementation",
+                f"LOW: {cur_proxy} on {chain.name} is a proxy; its "
+                f"implementation is {cur_impl} (hop {hop}, resolved via "
+                f"{cur_res.get('via') or 'explorer'}"
+                + (f", beacon {cur_res['beacon']}" if cur_res.get("beacon")
+                   else "")
+                + "). The implementation's code is analyzed below - "
+                  "findings tagged 'implementation'."
+                + ("" if impl_src else
+                   " The implementation's verified source is NOT "
+                   "published, so it is covered by bytecode analysis "
+                   "only."),
+                source="proxy resolution (explorer metadata / EIP-1167 "
+                       "bytecode / EIP-1967 storage slots)",
+                source_url=impl_url, confidence=88, passive=True,
+                evidence={"severity": "low", "address": cur_proxy,
+                          "chain": chain.id, "chain_id": chain.chain_id,
+                          "contract_role": "proxy_shell",
+                          "proxy_address": cur_proxy,
+                          "implementation_address": cur_impl,
+                          "proxy_hop": hop,
+                          "resolved_via": cur_res.get("via", ""),
+                          "beacon": cur_res.get("beacon", ""),
+                          "implementation_source_verified":
+                              bool(impl_src),
                           "remediation": _REMEDIATION[
-                              "contract_implementation_is_proxy"]}))
+                              "contract_proxy_implementation"]}))
+            if not impl_code or impl_code == "0x" or len(impl_code) < 4:
+                break  # pointer resolved but no code there to analyze
+            await self._analyze_one(ctx, key, chain, cur_impl, impl_code,
+                                    impl_src, findings,
+                                    role="implementation",
+                                    proxy_addr=cur_proxy, impl_addr=cur_impl)
+            # does THIS implementation point further down the chain?
+            try:
+                nested = await chain_data.get_implementation(
+                    ctx, chain, cur_impl, impl_code,
+                    {"implementation":
+                     (impl_src or {}).get("implementation", "")})
+            except Exception:
+                nested = {"implementation": ""}
+            nxt = nested.get("implementation") or ""
+            if not nxt or nxt.lower() == cur_impl.lower():
+                break
+            if hop == MAX_PROXY_HOPS:
+                findings.append(self._f(
+                    "web3", "contract_proxy_chain_truncated",
+                    f"MEDIUM: the proxy chain from {addr} on {chain.name} "
+                    f"is deeper than {MAX_PROXY_HOPS} hops ({cur_impl} "
+                    f"still points to {nxt}); stopped - audit the rest of "
+                    "the chain manually.",
+                    source="proxy chain resolution",
+                    source_url=cc.explorer_url(chain, nxt),
+                    confidence=80, passive=True,
+                    evidence={"severity": "medium", "address": nxt,
+                              "chain": chain.id, "chain_id": chain.chain_id,
+                              "contract_role": "implementation",
+                              "proxy_address": cur_impl,
+                              "nested_implementation": nxt,
+                              "remediation": _REMEDIATION[
+                                  "contract_implementation_is_proxy"]}))
+                break
+            cur_proxy, cur_impl, cur_res = cur_impl, nxt, nested
 
     async def _analyze_one(self, ctx: Ctx, key: Optional[str],
                            chain: cc.ChainConfig, addr: str,
