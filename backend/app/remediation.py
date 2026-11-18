@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from . import poc_codegen
 from . import precision
 
 PRIORITY_NOW = 0
@@ -376,6 +377,13 @@ def build_plan(rows: List[Dict[str, Any]],
                     "findings": [],
                     "verify": [],
                 }
+                # Write code, not just prose: a concrete fix patch and a
+                # runnable PoC skeleton generated from the finding. Pure
+                # text; nothing is executed or sent (app/poc_codegen.py).
+                try:
+                    item["code"] = poc_codegen.code_for_item(family, row)
+                except Exception:
+                    item["code"] = {}
                 items[key] = item
             item["findings"].append({
                 "id": row.get("id"), "plugin": row.get("plugin"),
@@ -510,5 +518,16 @@ def to_markdown(rows: List[Dict[str, Any]], limit: int = 8) -> str:
                 f"{c['label']}: `{c['cmd']}`" for c in item["verify"][:2]))
         lines.append(f"- Re-test: run {', '.join(item['retest'])}. "
                      f"Done when: {item['acceptance']}")
+        code = item.get("code") or {}
+        fix = code.get("fix") or {}
+        if fix.get("code"):
+            lines += ["", f"- Fix ({fix.get('note', '')}):",
+                      "", f"```{fix.get('language', '')}",
+                      fix["code"].rstrip(), "```"]
+        poc = code.get("poc") or {}
+        if poc.get("code"):
+            lines += ["", f"- PoC — {poc.get('note', '')}",
+                      "", f"```{poc.get('language', '')}",
+                      poc["code"].rstrip(), "```"]
         lines.append("")
     return "\n".join(lines)
