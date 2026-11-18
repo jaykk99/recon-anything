@@ -53,6 +53,44 @@ DEEP_ONLY_PLUGIN_IDS = [
     "feroxbuster", "gobuster", "dir_brute", "subdomain_brute",
 ]
 
+# Task workflows: purpose-built scans for one kind of job, not a
+# breadth tier. Each is a curated plugin set run in active mode with a
+# sensible depth. They all share WORKFLOW_BASE - the discovery +
+# expansion plugins the hunter engine dispatches on new assets - so that
+# "selected means run" does not starve expansion/chaining: a workflow
+# still turns a found subdomain/IP/endpoint into deeper work, it just
+# keeps the follow-up focused on the task's own plugins.
+WORKFLOW_BASE = [
+    "dns", "dns_infra", "subdomains", "passive_subdomains", "subfinder",
+    "rapiddns", "tls", "rdap", "headers", "webtech", "tech_fingerprint",
+    "favicon_hash", "httpx_probe", "robots", "wayback", "ports", "banners",
+    "reverse_ip", "passive_dns", "cdn_detect",
+]
+
+TAKEOVER_IDS = WORKFLOW_BASE + ["takeover", "cloudflare_detect"]
+
+SECRETS_IDS = WORKFLOW_BASE + [
+    "js_secrets", "jsdeep", "js_endpoints", "jsminer", "sourcemap",
+    "secrets", "keyleak", "keyharvest", "gitleaks_scan", "git_exposed",
+    "git", "s3", "cloud_buckets", "cloud_enum",
+]
+
+API_IDS = WORKFLOW_BASE + [
+    "apidiscover", "graphql", "graphql_deep", "graphql_probe",
+    "param_discovery", "param_fuzzer", "idor", "bola", "idor_comparator",
+    "jwt", "jwt_audit", "cors", "openid_discovery",
+    "oauth_redirect_uri_validator", "auth", "auth_surface", "endpointauth",
+    "browser_render", "js_endpoints",
+]
+
+WEBAPP_IDS = WORKFLOW_BASE + [
+    "crawler", "deepcrawl", "browser_render", "hiddenpaths", "dirsearch",
+    "backup", "cves", "nuclei_cve_pack", "xss", "sqli", "ssrf", "cmdi",
+    "ssti", "traversal", "cors", "csp_audit", "cookie_security",
+    "clickjack", "http_methods", "forms", "redirect_chain", "smuggling",
+    "js_endpoints", "js_secrets", "apidiscover",
+]
+
 PRESETS: Dict[str, Dict] = {
     "quick": {
         "id": "quick",
@@ -87,6 +125,60 @@ PRESETS: Dict[str, Dict] = {
         "mode": "active",
         "max_depth": None,  # None = engine default cap
         "plugin_ids": None,
+        "exclude_deep_only": False,
+    },
+    # -- task workflows -------------------------------------------------
+    "takeover": {
+        "id": "takeover",
+        "label": "Subdomain Takeover Hunt",
+        "description": "Enumerate subdomains from every passive source, "
+                       "resolve them, and confirm dangling / unclaimed "
+                       "records that can be taken over. Expands two hops.",
+        "mode": "active",
+        "max_depth": 2,
+        "plugin_ids": TAKEOVER_IDS,
+    },
+    "secrets": {
+        "id": "secrets",
+        "label": "Secret & Leak Sweep",
+        "description": "Mine JS bundles, source maps, exposed VCS and "
+                       "cloud storage for credentials and secrets, then "
+                       "sweep anything a leak points at.",
+        "mode": "active",
+        "max_depth": 2,
+        "plugin_ids": SECRETS_IDS,
+    },
+    "api": {
+        "id": "api",
+        "label": "API & Auth Security",
+        "description": "Map the API surface (incl. live XHR/fetch via a "
+                       "headless render), then test it for broken object-"
+                       "level access control, parameter flaws, JWT and "
+                       "CORS weaknesses.",
+        "mode": "active",
+        "max_depth": 1,
+        "plugin_ids": API_IDS,
+    },
+    "webapp": {
+        "id": "webapp",
+        "label": "Web App Deep Dive",
+        "description": "Full web-app assessment: crawl + headless render, "
+                       "content/path discovery, CVEs, and the injection / "
+                       "misconfig probe set. Active, one hop of expansion.",
+        "mode": "active",
+        "max_depth": 1,
+        "plugin_ids": WEBAPP_IDS,
+    },
+    "contract": {
+        "id": "contract",
+        "label": "Smart Contract Audit",
+        "description": "Full contract-analysis stack on a chain address: "
+                       "source/bytecode recon, logic flaws, drain checks, "
+                       "auditor tooling and the deep-audit detectors. "
+                       "Applicable plugins only, maximum depth.",
+        "mode": "active",
+        "max_depth": None,
+        "plugin_ids": None,   # full applicable set = the contract stack
         "exclude_deep_only": False,
     },
 }

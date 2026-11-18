@@ -89,11 +89,9 @@ class ScreenshotsPlugin(Plugin):
 
         try:
             async with async_playwright() as pw:
+                from ..browser import launch_chromium
                 try:
-                    browser = await pw.chromium.launch(
-                        headless=True,
-                        args=["--no-sandbox", "--disable-dev-shm-usage"],
-                    )
+                    browser = await launch_chromium(pw, headless=True)
                 except Exception as e:
                     return self._degraded(f"browser launch failed: {e}")
                 try:

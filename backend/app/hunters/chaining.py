@@ -104,7 +104,9 @@ _TAKEOVER_KEYS = {"takeover_candidate", "takeover_possible", "takeover_note",
 _API_KEYS = {"openapi_paths", "api_docs", "api_map_entries", "api_call",
              "api_endpoint", "endpoint", "bank_api_surface",
              "hidden_api_endpoint", "hidden_endpoint", "options_allow",
-             "swagger", "wsdl", "grpc_endpoint"}
+             "swagger", "wsdl", "grpc_endpoint",
+             # live surface recovered by the headless-browser render pass
+             "rendered_endpoint", "rendered_form"}
 
 # Parameter keys: a reflected or accepted parameter is where injection
 # and object-level flaws live. accepted -> the whole param/injection
