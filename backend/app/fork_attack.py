@@ -14,6 +14,11 @@ for a live probe, never proof: VERIFIED_REAL still requires a
 live-chain probe from an unfunded stranger plus live
 receipt/balance evidence.
 
+A payout must actually move value (``payout_gate``): the stranger
+gains AND the contract loses the same amount, per asset. A call
+that executes and moves nothing reports ``candidate_status``
+``NO_VALUE_MOVED`` - a successful ``eth_call`` is not a finding.
+
 Hard refusals (this harness can never do these):
 - any broadcast hypothesis (no --broadcast flag exists here,
   no private key is ever accepted, no mainnet RPC is ever
@@ -135,6 +140,60 @@ def _parse_int(out: Optional[str]) -> Optional[int]:
         return None
 
 
+def payout_gate(stranger_native: Optional[int] = None,
+                contract_native: Optional[int] = None,
+                stranger_tokens: Optional[Dict[str, Optional[int]]] = None,
+                contract_tokens: Optional[Dict[str, Optional[int]]] = None,
+                ) -> Dict[str, Any]:
+    """The only bar that matters: value must MOVE, on both sides.
+
+    A successful call proves the path executes; it says nothing about
+    value. This gate requires the stranger to gain AND the contract to
+    lose the same amount, per asset (the caller has already gas-adjusted
+    the stranger's native gain). A call that executes and moves nothing is
+    not a finding - that is the MVK shape: ``eth_call`` succeeded, the
+    mint path ran, and the stranger received zero.
+    """
+
+    def _check(gain: Any, loss: Any) -> tuple:
+        ok = (isinstance(gain, int) and isinstance(loss, int)
+              and gain > 0 and loss == -gain)
+        return gain, loss, ok
+
+    native_gain, native_loss, native_ok = _check(stranger_native,
+                                                 contract_native)
+    tokens: Dict[str, Any] = {}
+    token_ok = False
+    names = sorted(set(stranger_tokens or {}) | set(contract_tokens or {}))
+    for token in names:
+        gain, loss, ok = _check((stranger_tokens or {}).get(token),
+                                (contract_tokens or {}).get(token))
+        tokens[token] = {"stranger_delta_raw": gain,
+                         "contract_delta_raw": loss, "balanced": ok}
+        token_ok = token_ok or ok
+    moved = bool(native_ok or token_ok)
+    gained_anything = (isinstance(native_gain, int) and native_gain > 0) or any(
+        isinstance(v["stranger_delta_raw"], int) and v["stranger_delta_raw"] > 0
+        for v in tokens.values())
+    if moved:
+        reason = ("value moved: the stranger gained exactly what the "
+                  "contract lost")
+    elif gained_anything:
+        reason = ("the stranger's balance changed without a matching "
+                  "contract decrease - not a payout from this contract "
+                  "(airdrop, rebase, or another party paid)")
+    else:
+        reason = ("no value moved: the call executed without paying the "
+                  "stranger. A successful call is not a finding")
+    return {
+        "value_moved": moved,
+        "native": {"stranger_delta_wei": native_gain,
+                   "contract_delta_wei": native_loss, "balanced": native_ok},
+        "tokens": tokens,
+        "reason": reason,
+    }
+
+
 def run_fork_attack(chain: str, address: str, hypothesis: Dict[str, Any],
                     timeout_s: float = 300,
                     anvil_bin: Optional[str] = None,
@@ -234,8 +293,23 @@ def run_fork_attack(chain: str, address: str, hypothesis: Dict[str, Any],
                  token, "balanceOf(address)(uint256)", STRANGER], 15)
             return _parse_int(out)
 
+        def _native_of(addr: str) -> Optional[int]:
+            out, _e = _run_cmd(
+                [cast, "balance", "--rpc-url", local, addr], 15)
+            return _parse_int(out)
+
+        def _token_bal_of(token: str, holder: str) -> Optional[int]:
+            out, _e = _run_cmd(
+                [cast, "call", "--from", STRANGER, "--rpc-url", local,
+                 token, "balanceOf(address)(uint256)", holder], 15)
+            return _parse_int(out)
+
         before_native = _native()
         before_tokens = {t: _token_bal(t) for t in tokens}
+        # The other half of the bar: what the CONTRACT holds.
+        contract_native_before = _native_of(address)
+        contract_tokens_before = {t: _token_bal_of(t, address)
+                                  for t in tokens}
 
         calls = hypothesis.get("steps") or [{
             "function": hypothesis["function"],
@@ -288,6 +362,9 @@ def run_fork_attack(chain: str, address: str, hypothesis: Dict[str, Any],
 
         after_native = _native()
         after_tokens = {t: _token_bal(t) for t in tokens}
+        contract_native_after = _native_of(address)
+        contract_tokens_after = {t: _token_bal_of(t, address)
+                                 for t in tokens}
         received_tokens: Dict[str, Any] = {}
         for t in tokens:
             b, a = before_tokens.get(t), after_tokens.get(t)
@@ -299,8 +376,25 @@ def run_fork_attack(chain: str, address: str, hypothesis: Dict[str, Any],
             # reserve, so the contract's payout is the native delta
             # plus what the attack spent on gas.
             received_native = (after_native - before_native) + gas_spent
+        contract_native_delta = (
+            None if contract_native_before is None
+            or contract_native_after is None
+            else contract_native_after - contract_native_before)
+        contract_token_deltas: Dict[str, Optional[int]] = {}
+        for t in tokens:
+            b, a = contract_tokens_before.get(t), contract_tokens_after.get(t)
+            contract_token_deltas[t] = None if b is None or a is None else a - b
+        payout = payout_gate(
+            stranger_native=received_native,
+            contract_native=contract_native_delta,
+            stranger_tokens=received_tokens,
+            contract_tokens=contract_token_deltas)
         return {**base,
                 "status": "completed",
+                "candidate_status": ("VALUE_MOVED" if payout["value_moved"]
+                                     else "NO_VALUE_MOVED"),
+                "payout": payout,
+                "payout_note": payout["reason"],
                 "fork_rpc_host": rpc.split("/")[2] if "://" in rpc
                 else rpc,
                 "steps": steps,
@@ -312,6 +406,8 @@ def run_fork_attack(chain: str, address: str, hypothesis: Dict[str, Any],
                 "balances": {
                     "native_before_wei": before_native,
                     "native_after_wei": after_native,
+                    "contract_native_before_wei": contract_native_before,
+                    "contract_native_after_wei": contract_native_after,
                 }}
     finally:
         if proc is not None:

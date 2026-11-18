@@ -53,6 +53,22 @@ BREAKER_OPEN_S = float(os.environ.get("RECON_BREAKER_OPEN_S", "20"))
 # Generic (unfingerprinted) 403s also count, but it takes a few of them to
 # trigger graceful mode - a single 403 is often just a path ACL, not a WAF.
 WAF_BLOCK_THRESHOLD = 3
+# Global request-shaping knobs (2026-11-14). Defaults are conservative:
+# per-request jitter is OFF (graceful mode already jitters), so ordinary
+# scans keep their measured throughput; set RECON_HTTP_JITTER_MS for targets
+# where robotic timing matters. The per-host in-flight cap is ON by default
+# (16): it bounds what one noisy host sees at once without touching the
+# per-host RPS pacing or the global cap.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+HTTP_JITTER_S = max(
+    0.0, float(os.environ.get("RECON_HTTP_JITTER_MS", "0")) / 1000.0)
+HOST_CONCURRENCY = _env_int("RECON_HOST_CONCURRENCY", 16)
 
 
 def parse_retry_after(value: object) -> Optional[float]:
@@ -84,8 +100,16 @@ class RateLimiter:
                  spike_window: int = 20, spike_min_samples: int = 8,
                  spike_ratio: float = 0.4, backoff_base_s: float = 10.0,
                  backoff_max_s: float = 120.0,
-                 global_concurrency: Optional[int] = None) -> None:
+                 global_concurrency: Optional[int] = None,
+                 host_concurrency: Optional[int] = None,
+                 jitter_s: Optional[float] = None) -> None:
         self.default_rps = default_rps
+        # Request shaping (see HTTP_JITTER_S / HOST_CONCURRENCY above).
+        self._jitter_s = HTTP_JITTER_S if jitter_s is None else max(0.0, jitter_s)
+        self._host_concurrency = (HOST_CONCURRENCY if host_concurrency is None
+                                  else int(host_concurrency))
+        self._host_sems: Dict[str, asyncio.Semaphore] = {}
+        self._host_sem_loop = None
         self._rps: Dict[str, float] = {}
         self._next: Dict[str, float] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -257,6 +281,38 @@ class RateLimiter:
             self._locks[host] = asyncio.Lock()
         return self._locks[host]
 
+    def shape(self) -> Dict:
+        """Request-shaping policy actually in force (observability)."""
+        return {"jitter_ms": int(round(self._jitter_s * 1000)),
+                "host_concurrency": self._host_concurrency,
+                "global_concurrency": self._global_concurrency,
+                "default_rps": self.default_rps}
+
+    @contextlib.asynccontextmanager
+    async def host_slot(self, host: str):
+        """Per-host in-flight cap: what ONE host sees at a time.
+
+        The global cap bounds the whole process; this bounds a single
+        target so a 64-plugin fan-out cannot look like a 64-request burst
+        to one WAF. <= 0 disables. Semaphores are per event loop, like the
+        global one (a scan worker never shares a limiter across loops)."""
+        if self._host_concurrency <= 0:
+            yield
+            return
+        loop = asyncio.get_running_loop()
+        if self._host_sem_loop is not loop:
+            self._host_sems = {}
+            self._host_sem_loop = loop
+        sem = self._host_sems.get(host)
+        if sem is None:
+            sem = self._host_sems[host] = asyncio.Semaphore(
+                self._host_concurrency)
+        await sem.acquire()
+        try:
+            yield
+        finally:
+            sem.release()
+
     async def wait(self, host: str) -> None:
         protected = self._waf.get(host, {}).get("active", False)
         async with self._lock(host):
@@ -293,6 +349,11 @@ class RateLimiter:
             b["updated"] = now
             if b["tokens"] >= 1.0:
                 b["tokens"] -= 1.0
+                if self._jitter_s > 0:
+                    # Average-neutral-looking spacing: a random extra gap
+                    # below the configured ceiling. Bounded per request,
+                    # so it cannot stall a host (see HTTP_JITTER_S).
+                    self._next[host] = now + random.uniform(0, self._jitter_s)
                 return
             deficit = (1.0 - b["tokens"]) / rps
             await asyncio.sleep(deficit)
@@ -435,8 +496,16 @@ async def fetch(client: httpx.AsyncClient, limiter: RateLimiter, method: str,
             # breaker hooks: limiter stand-ins without it keep the
             # exact pre-existing behavior).
             _slot = getattr(limiter, "global_slot", None)
-            if _slot is not None:
+            _hslot = getattr(limiter, "host_slot", None)
+            if _slot is not None and _hslot is not None:
                 async with _slot():
+                    async with _hslot(host):
+                        resp = await client.request(method, url, **kwargs)
+            elif _slot is not None:
+                async with _slot():
+                    resp = await client.request(method, url, **kwargs)
+            elif _hslot is not None:
+                async with _hslot(host):
                     resp = await client.request(method, url, **kwargs)
             else:
                 resp = await client.request(method, url, **kwargs)

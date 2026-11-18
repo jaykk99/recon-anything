@@ -91,6 +91,63 @@ POOL_LIMITS = httpx.Limits(max_connections=400,
                            max_keepalive_connections=100)
 
 
+# ---------------------------------------------------------------------------
+# Proxy rotation (2026-11-14). One env proxy is fine for a single scan; a
+# fleet or a hostile target wants a pool. RECON_PROXY_URLS takes a
+# comma-separated list and each new HTTP client gets the next healthy entry
+# (round-robin). A proxy that fails at the transport level is put on a
+# cooldown instead of being handed out again, so one dead exit node cannot
+# fail every plugin. Rotation is per CLIENT (per plugin invocation), which
+# keeps each request inside one connection pool - per-request rotation would
+# defeat keep-alive and look worse to a WAF, not better.
+PROXY_COOLDOWN_S = float(os.environ.get("RECON_PROXY_COOLDOWN_S", "60"))
+_PROXY_STATE: dict = {"index": 0, "down": {}}
+
+
+def proxy_pool() -> list:
+    """Configured rotation pool (RECON_PROXY_URLS), empty when unset."""
+    raw = os.environ.get("RECON_PROXY_URLS") or ""
+    return [u.strip() for u in raw.split(",") if u.strip()]
+
+
+def _proxy_is_down(url: str) -> bool:
+    import time as _time
+    until = _PROXY_STATE["down"].get(url, 0.0)
+    return until > _time.monotonic()
+
+
+def select_proxy() -> Optional[str]:
+    """Next proxy for a new client: rotated pool entry, else env proxy.
+
+    Deterministic round-robin over healthy entries. When every entry is
+    cooling down after a failure, the one whose cooldown expires first is
+    used anyway (fail open to the environment instead of to no egress).
+    """
+    pool = proxy_pool()
+    if not pool:
+        return egress_proxy()
+    for _ in range(len(pool)):
+        url = pool[_PROXY_STATE["index"] % len(pool)]
+        _PROXY_STATE["index"] = (_PROXY_STATE["index"] + 1) % len(pool)
+        if not _proxy_is_down(url):
+            return url
+    return pool[_PROXY_STATE["index"] % len(pool)]
+
+
+def note_proxy_failure(url: Optional[str]) -> None:
+    """Put a proxy on cooldown after a transport-level failure."""
+    if not url:
+        return
+    import time as _time
+    _PROXY_STATE["down"][url] = _time.monotonic() + max(1.0, PROXY_COOLDOWN_S)
+
+
+def proxy_state() -> dict:
+    """Rotation observability: pool size, current index, cooling entries."""
+    return {"pool": len(proxy_pool()), "index": _PROXY_STATE["index"],
+            "cooling": [u for u in _PROXY_STATE["down"] if _proxy_is_down(u)]}
+
+
 def egress_proxy() -> Optional[str]:
     """Proxy URL from the environment, or None for direct egress."""
     p = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")

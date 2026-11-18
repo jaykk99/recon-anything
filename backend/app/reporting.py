@@ -247,6 +247,29 @@ def to_markdown(run: Run, targets: List[Target], rows: List[Dict]) -> str:
                 for cm in cmds[:6]:
                     L.append(f"  - {cm.get('label','')}: `{cm.get('cmd','')}`")
             L.append("")
+    # Manual-testing funnel (2026-11-14): where a human should take over,
+    # with the uncertainty stated. Read-time, best-effort; omitted when the
+    # run has nothing worth handing off.
+    try:
+        from .lineage import from_findings as _lineage_input
+        from .lineage import cluster as _lineage_cluster, \
+            render_markdown as _lineage_md
+        _lineage_md_out = _lineage_md(_lineage_cluster(**_lineage_input(rows)),
+                                      limit=6)
+        if _lineage_md_out:
+            L += [_lineage_md_out, ""]
+    except Exception:
+        pass
+    try:
+        from .funnel import render_markdown as _funnel_md
+        from .lineage import augment as _lineage_augment
+        _hint = targets[0].normalized if targets else None
+        _section = _funnel_md(_lineage_augment(rows), host_hint=_hint,
+                              limit=10)
+        if _section:
+            L += [_section, ""]
+    except Exception:
+        pass
     L += ["## Executive summary",
           f"- {len(rows)} findings across {len(by_cat)} categories",
           f"- {sum(1 for r in rows if r['category'] == 'leak')} leak/exposure findings",
