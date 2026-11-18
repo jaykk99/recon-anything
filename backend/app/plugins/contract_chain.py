@@ -1034,12 +1034,44 @@ _PLACEHOLDER_WORDS = ("example", "sample", "test", "placeholder",
 
 # 32-byte constants that are structural, not secrets: the EIP-1967
 # storage slots (implementation / admin / beacon) appear in every
-# proxy and must not be reported as private keys.
+# proxy, and the secp256k1 curve constants + keccak256("") appear in
+# every ECDSA/EIP-712 implementation. Reporting any of them as a
+# "private key" is a pure false positive (observed firing ~8x on a
+# single Circle FiatToken fork).
 _KNOWN_CONSTANTS = {
+    # EIP-1967 implementation / beacon / admin slots
     "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
     "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
     "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+    # legacy ZeppelinOS impl slot / EIP-1822 PROXIABLE slot
+    "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+    "0xc5f16f0fcc639fa48a6947836d9850f504798523bf8c9a3a87d5876cf622bcf7",
+    # secp256k1 field prime P, group order N, half-order N/2 (ECDSA /
+    # signature-malleability guards) and keccak256("")
+    "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
+    "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+    "0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0",
+    "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
 }
+
+# Tokens near a 32-byte literal that mark it as a structural constant
+# (a typehash, role id, storage slot, bitmask, domain separator, ...),
+# never a leaked key. A real private key is never declared as a
+# `bytes32 public constant` in verified, publicly deployed source.
+_STRUCTURAL_RE = re.compile(
+    r"(?i)\b(constant|immutable|keccak256|bytes32|sha256|typehash|"
+    r"_role\b|_slot\b|_hash\b|domain[_ ]?separator|selector|_mask\b|"
+    r"magic|merkle|_root\b)")
+
+
+def _is_structural_constant(src: str, start: int, value: str) -> bool:
+    """A 64-hex literal that is a structural constant, not a secret:
+    it is a known crypto/slot constant, or its declaration context
+    (the ~140 chars before it) marks it as a typehash/role/slot/etc."""
+    if value.lower() in _KNOWN_CONSTANTS:
+        return True
+    window = src[max(0, start - 140):start]
+    return bool(_STRUCTURAL_RE.search(window))
 
 
 def find_secret_strings(src: str) -> List[Dict[str, str]]:
@@ -1053,6 +1085,11 @@ def find_secret_strings(src: str) -> List[Dict[str, str]]:
                 else m.group(0)
             value = (value or "").strip()
             if not value or value.lower() == "0x" + "0" * 64:
+                continue
+            # structural 32-byte constants (slots, typehashes, role ids,
+            # secp256k1 constants) are not keys - skip them
+            if kind == "ethereum_private_key" and \
+                    _is_structural_constant(src, m.start(), value):
                 continue
             if value.lower() in _KNOWN_CONSTANTS:
                 continue
@@ -1178,6 +1215,15 @@ def analyze_contract_source(src: str,
         is_external = bool(re.search(r"\b(public|external)\b", sig))
         is_internal = bool(re.search(r"\b(internal|private)\b", sig))
         if is_internal and not is_external and sev == "high":
+            sev = "low"
+        # Mutability gate: a view/pure function is read-only - it CANNOT
+        # mint, move funds, pause or blacklist, whatever its name. The
+        # name-based rules otherwise flag getters like minterAllowance(),
+        # isMinter(), rescuer(), paused() as high/medium fund-movers (the
+        # dominant false-"high" on real tokens - observed on CDCETH).
+        # "view"/"pure" only after the params' closing paren, so a param
+        # named "view" can't trip it. Demote to low inventory.
+        if re.search(r"\)[^{;]*\b(view|pure)\b", sig):
             sev = "low"
         # Severity recalibration: a privileged function that IS access-gated
         # (onlyOwner mint, admin-gated withdraw, ...) is the normal, expected
