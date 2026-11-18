@@ -4,7 +4,7 @@ Per plugin: the vulnerable fixture MUST fire with the plugin's
 own finding kind + code evidence; its clean control MUST stay
 silent under ALL five detectors; every other plugin's vulnerable
 fixture MUST stay silent under this one (no cross-talk); the
-registry discovers exactly 1470 plugins including all five.
+registry discovers exactly 1475 plugins including all five.
 """
 import os
 import sys
@@ -32,10 +32,10 @@ def test_five_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1470():
+def test_registry_count_1475():
     reg = discover()
-    assert len(reg) == 1470, \
-        f"registry size {len(reg)}, expected 1470"
+    assert len(reg) == 1475, \
+        f"registry size {len(reg)}, expected 1475"
 
 
 def test_vuln_fires_with_own_kind_and_evidence():

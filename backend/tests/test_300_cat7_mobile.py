@@ -747,8 +747,8 @@ def test_device_ids_vuln_clean():
 # Cross-cutting: registry, malformed inputs, wrapper smoke
 # ------------------------------------------------------------------
 
-def test_registry_count_1470():
-    assert len(REG) == 1470, f"registry size {len(REG)}, expected 1470"
+def test_registry_count_1475():
+    assert len(REG) == 1475, f"registry size {len(REG)}, expected 1475"
     for pid in IDS:
         assert pid in REG, pid
         assert REG[pid].group == "mobile"
