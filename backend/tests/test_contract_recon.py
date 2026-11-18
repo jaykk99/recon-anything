@@ -867,3 +867,47 @@ def test_plugin_proxy_chain_cycle_safe(monkeypatch):
         Target(raw="base:" + A, type="crypto_wallet",
                normalized="base:" + A), FakeCtx()))
     assert "contract_proxy_chain_cycle" in {f.key for f in res.findings}
+
+
+def test_extract_linked_addresses_roles_and_filters():
+    src = ("contract T {"
+           "address public constant ORACLE = "
+           "0x1111111111111111111111111111111111111111;"
+           "IRegistry reg = IRegistry("
+           "0x2222222222222222222222222222222222222222);"
+           "address admin = 0x3333333333333333333333333333333333333333;"
+           "uint256 constant N = 0xfffffffffffffffffffffffffffffffe"
+           "baaedce6af48a03bbfd25e8cd0364141;"
+           "address zero = 0x0000000000000000000000000000000000000000;}")
+    links = {l["address"]: l["role"]
+             for l in contract_recon.extract_linked_addresses(src)}
+    assert links["0x1111111111111111111111111111111111111111"] == "oracle"
+    assert links["0x2222222222222222222222222222222222222222"] == "registry"
+    assert links["0x3333333333333333333333333333333333333333"] == "admin"
+    assert "0x" + "0" * 40 not in links          # zero address filtered
+    assert not any("ffffffff" in a.lower() for a in links)  # secp256k1 N
+
+
+def test_plugin_surfaces_and_publishes_linked_contracts(monkeypatch):
+    la1 = "0x" + "aa" * 20
+    la2 = "0x" + "bb" * 20
+    src = {"source": ("contract T {"
+                      f"address public constant ORACLE = {la1};"
+                      f"address public vault = {la2};"
+                      "function f() external {} }"),
+           "contract_name": "T", "compiler": "v0.8.20",
+           "proxy": False, "implementation": "", "origin": "Blockscout"}
+    _patch_by_address(monkeypatch, {PROXY_ADDR: _craft_bytecode()},
+                      {PROXY_ADDR: src})
+    ctx = FakeCtx()
+    res = asyncio.run(contract_recon.ContractReconPlugin().run(
+        Target(raw="base:" + PROXY_ADDR, type="crypto_wallet",
+               normalized="base:" + PROXY_ADDR), ctx))
+    linked = [f for f in res.findings if f.key == "linked_contract"]
+    got = {f.evidence["address"] for f in linked}
+    assert {la1, la2} <= got, f"linked contracts not surfaced: {got}"
+    roles = {f.evidence["link_role"] for f in linked}
+    assert "oracle" in roles and "vault" in roles
+    # published to the bus so the hunter promotes them into scan targets
+    assert la1 in ctx.shared.get("linked_contracts", [])
+    assert la1 in ctx.shared.get("wallets", [])

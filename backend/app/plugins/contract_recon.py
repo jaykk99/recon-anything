@@ -25,6 +25,7 @@ order (2026-10-29) - never masked.
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +35,62 @@ from . import chain_data
 
 MAX_ADDRESSES = 4       # addresses reconned per run
 MAX_CHAIN_PAIRS = 4     # (chain, address) pairs analyzed per run
+MAX_LINKED = 20         # linked contracts surfaced per contract
+
+# Linked-contract extraction. A contract's real trust surface is not just
+# its own code - it is the contracts it is wired to: the oracle it reads
+# prices from, the proxy admin that can upgrade it, the registry/vault/
+# router/token it calls. Those addresses are baked into the verified
+# source as address constants/immutables/typed wrappers. Pulling them out
+# (and scanning them too) is how a scan goes deeper than one contract into
+# the whole on-chain dependency graph. Zero address and the self address
+# are filtered by the caller.
+_LINK_RE = re.compile(
+    r"([A-Za-z_]\w*)\s*(?:=|\()\s*(?:address\s*\(\s*)?"
+    r"(0x[0-9a-fA-F]{40})\b")
+# var-name token -> role of the linked contract
+_ROLE_TOKENS = (
+    ("oracle", "oracle"), ("price", "oracle"), ("aggregator", "oracle"),
+    ("feed", "oracle"), ("admin", "admin"), ("owner", "admin"),
+    ("governor", "governance"), ("governance", "governance"),
+    ("timelock", "governance"), ("registry", "registry"),
+    ("vault", "vault"), ("router", "router"), ("factory", "factory"),
+    ("treasury", "treasury"), ("fee", "treasury"),
+    ("implementation", "implementation"), ("logic", "implementation"),
+    ("beacon", "beacon"), ("token", "token"), ("asset", "token"),
+    ("weth", "token"), ("usdc", "token"), ("pair", "pool"),
+    ("pool", "pool"), ("bridge", "bridge"), ("minter", "minter"),
+    ("rescuer", "rescuer"), ("pauser", "pauser"), ("validator", "validator"))
+
+
+def _role_for(name: str) -> str:
+    n = (name or "").lower()
+    for tok, role in _ROLE_TOKENS:
+        if tok in n:
+            return role
+    return "dependency"
+
+
+def extract_linked_addresses(src_text: str) -> List[Dict[str, str]]:
+    """Pull wired-in contract addresses out of verified Solidity source,
+    with the role inferred from the variable name. Pure; deduped by
+    address (first name/role wins)."""
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for m in _LINK_RE.finditer(src_text or ""):
+        name, addr = m.group(1), m.group(2)
+        low = addr.lower()
+        if low in seen:
+            continue
+        if low == "0x" + "0" * 40:
+            continue
+        if low in cc._KNOWN_CONSTANTS:  # structural, not a contract
+            continue
+        seen.add(low)
+        out.append({"address": addr, "name": name, "role": _role_for(name)})
+        if len(out) >= MAX_LINKED:
+            break
+    return out
 # How deep to follow a proxy -> implementation chain. One hop reaches
 # the usual impl; a proxy-behind-proxy (beacon-of-beacon, metamorphic
 # upgrades, a logic contract that is itself proxied) needs more, or the
@@ -459,6 +516,10 @@ class ContractReconPlugin(Plugin):
                            f"source ({chain.name})",
                     source_url=url,
                     confidence=88, passive=True, evidence=ev))
+            # Go deeper than this contract: surface the contracts it is
+            # wired to (oracle, admin, registry, token, ...) and publish
+            # them so the hunter scans them as targets of their own.
+            self._emit_linked(ctx, chain, addr, src["source"], findings)
             findings.append(self._bytecode_finding(
                 chain, addr, url, bc, base_ev, source_available=True))
             return
@@ -481,6 +542,47 @@ class ContractReconPlugin(Plugin):
                                      "block explorer."}))
         findings.append(self._bytecode_finding(
             chain, addr, url, bc, base_ev, source_available=False))
+
+    def _emit_linked(self, ctx: Ctx, chain: cc.ChainConfig, addr: str,
+                     src_text: str, findings: List[Finding]) -> None:
+        """Surface + publish the contracts this one depends on."""
+        seen = ctx.shared.setdefault("_linked_seen", set()) \
+            if getattr(ctx, "shared", None) is not None else set()
+        self_low = addr.lower()
+        for link in extract_linked_addresses(src_text):
+            la = link["address"]
+            low = la.lower()
+            if low == self_low or low in seen:
+                continue
+            seen.add(low)
+            if len(seen) > MAX_LINKED * MAX_CHAIN_PAIRS:
+                break
+            # Publish so the hunter promotes it into a scan target, and
+            # mirror onto the wallet bus (contract addresses classify as
+            # crypto_wallet) for the finding-chaining layer.
+            try:
+                ctx.publish("linked_contracts", la)
+                ctx.publish("wallets", la)
+            except Exception:
+                pass
+            findings.append(self._f(
+                "web3", "linked_contract",
+                f"LOW: linked {link['role']} contract {la} on "
+                f"{chain.name} - trusted by this target (source field "
+                f"'{link['name']}', from {addr[:10]}...). Part of its "
+                "trust surface; scanned as its own target.",
+                source=f"linked-contract extraction ({chain.name})",
+                source_url=cc.explorer_url(chain, la),
+                confidence=75, passive=True,
+                evidence={"severity": "low", "address": la,
+                          "chain": chain.id, "chain_id": chain.chain_id,
+                          "linked_from": addr, "link_role": link["role"],
+                          "link_name": link["name"],
+                          "remediation": (
+                              "Review the linked contract: a weakness in an "
+                              "oracle, admin, registry or token this contract "
+                              "trusts is reachable through it. It is scanned "
+                              "as its own target.")}))
 
     def _bytecode_finding(self, chain: cc.ChainConfig, addr: str,
                           url: str, bc: Dict[str, Any],
