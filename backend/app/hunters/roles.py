@@ -141,6 +141,7 @@ KEY_TO_ASSET = {
     "script_src": ("js_file", "js_miner"),
     "email": ("email", "email_hunter"),
     "registrant_org": ("org", "osint_hunter"),
+    "linked_contract": ("wallet", "contract_hunter"),
     "crypto_btc_address": ("wallet", "wallet_hunter"),
     "crypto_eth_address": ("wallet", "wallet_hunter"),
     "wallet_address": ("wallet", "wallet_hunter"),
@@ -215,7 +216,12 @@ EXPANSION = {
     ],
     "wallet": [
         ("wallet_hunter", ["walletcheck", "keyleak"]),
-        ("contract_hunter", ["token_rugcheck", "rugpull"]),
+        # A "wallet" asset that is actually a CONTRACT (e.g. a linked
+        # oracle/admin/registry surfaced by contract_recon) gets the core
+        # contract-analysis stack, so the dependency graph is scanned, not
+        # just rug-checked. On an EOA these degrade cheaply (no code).
+        ("contract_hunter", ["token_rugcheck", "rugpull", "contract_recon",
+                             "contract_logic", "crypto_drain_scanner"]),
     ],
     "repo": [
         ("repo_hunter", ["github", "github_dorking", "gitleaks_scan"]),
