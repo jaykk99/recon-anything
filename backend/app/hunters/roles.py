@@ -135,6 +135,7 @@ KEY_TO_ASSET = {
     "passive_host": ("domain", "passive_dns_hunter"),
     "endpoint": ("endpoint", "endpoint_hunter"),
     "api_endpoint": ("endpoint", "endpoint_hunter"),
+    "rendered_endpoint": ("endpoint", "endpoint_hunter"),
     "js_endpoint": ("endpoint", "js_miner"),
     "js_file": ("js_file", "js_miner"),
     "script_src": ("js_file", "js_miner"),

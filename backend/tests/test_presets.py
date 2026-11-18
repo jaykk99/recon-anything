@@ -35,9 +35,13 @@ def client():
 
 # -- pure resolution -------------------------------------------------------
 
-def test_three_presets_listed():
+def test_presets_listed():
     ids = [p["id"] for p in list_presets()]
-    assert ids == ["quick", "standard", "deep"]
+    # the three breadth tiers come first, in order...
+    assert ids[:3] == ["quick", "standard", "deep"]
+    # ...followed by the task workflows
+    assert set(ids) >= {"quick", "standard", "deep", "takeover", "secrets",
+                        "api", "webapp", "contract"}
 
 
 def test_quick_is_passive_shallow_and_fast_set_only():
@@ -92,7 +96,11 @@ def test_presets_endpoint(client):
     r = client.get("/api/presets")
     assert r.status_code == 200
     presets = {p["id"]: p for p in r.json()["presets"]}
-    assert set(presets) == {"quick", "standard", "deep"}
+    assert set(presets) >= {"quick", "standard", "deep", "takeover",
+                            "secrets", "api", "webapp", "contract"}
+    for wf in ("takeover", "secrets", "api", "webapp"):
+        assert presets[wf]["mode"] == "active"
+        assert presets[wf]["plugin_count"] > 0
     assert presets["quick"]["plugin_count"] > 0
     assert presets["quick"]["mode"] == "passive"
     assert presets["deep"]["plugin_count"] is None
@@ -164,3 +172,18 @@ def test_run_without_preset_unchanged(client, monkeypatch):
     run = _run_row(r.json()["run_id"])
     assert run.summary["preset"] is None
     assert run.summary["pending_enqueue"]["max_depth"] is None
+
+
+def test_task_workflows_include_base_and_task_plugins():
+    from app.presets import resolve_preset, WORKFLOW_BASE
+    base = set(WORKFLOW_BASE)
+    for wf in ("takeover", "secrets", "api", "webapp"):
+        got = set(resolve_preset(wf)["plugins"])
+        assert not (base - got), f"{wf} dropped base plugins: {base - got}"
+    assert "takeover" in resolve_preset("takeover")["plugins"]
+    assert {"js_secrets", "gitleaks_scan"} <= set(
+        resolve_preset("secrets")["plugins"])
+    assert {"apidiscover", "idor", "jwt", "browser_render"} <= set(
+        resolve_preset("api")["plugins"])
+    assert {"browser_render", "xss", "cves"} <= set(
+        resolve_preset("webapp")["plugins"])

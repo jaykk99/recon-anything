@@ -7,7 +7,7 @@ detector's own kind + code evidence; the timelock / gated
 variant MUST stay silent; every clean control MUST stay silent
 under ALL detectors. The fork harness MUST refuse any broadcast
 hypothesis and MUST always report UNVERIFIED. The registry
-discovers exactly 1464 plugins including all five new ones and
+discovers exactly 1465 plugins including all five new ones and
 the four Wave 1.3 live plugins (proxy_live_upgrade_window,
 bridge_live_locked_vs_minted, bridge_live_validator_quorum,
 bridge_live_nonce_continuity).
@@ -273,8 +273,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_1464():
     reg = discover()
-    assert len(reg) == 1464, \
-        f"registry size {len(reg)}, expected 1464"
+    assert len(reg) == 1465, \
+        f"registry size {len(reg)}, expected 1465"
 
 
 # ---------------------------------------------------------------------------

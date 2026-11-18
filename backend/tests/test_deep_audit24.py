@@ -13,7 +13,7 @@ stay silent under the relevant neighbours
 (merkle_claim_no_claimed_marker, lzreceive_no_origin_validation,
 bridge_replay_unbound_digest, bridge_wrapped_token_mint_unbacked,
 bridge_withdrawer_identity_spoof, callback_token_cei_violation);
-the registry discovers exactly 1464 plugins including all five.
+the registry discovers exactly 1465 plugins including all five.
 """
 import os
 import sys
@@ -54,8 +54,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_1464():
     reg = discover()
-    assert len(reg) == 1464, \
-        f"registry size {len(reg)}, expected 1464"
+    assert len(reg) == 1465, \
+        f"registry size {len(reg)}, expected 1465"
 
 
 def test_vuln_fires_candidate_with_evidence():
