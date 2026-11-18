@@ -28,6 +28,7 @@ FAMILY_MODULES = {
     "gamefi": "bsc_gamefi",
     "mev_bridge": "bsc_mev_bridge",
     "math_system": "bsc_math_system",
+    "parlia": "bsc_parlia",
 }
 
 

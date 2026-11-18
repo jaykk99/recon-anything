@@ -1,15 +1,18 @@
 """BSC-100 cross-detector guarantees.
 
-1. The registered spec set is EXACTLY Jay's 100 ordered ids
-   (guards against typos, drops and duplicates).
+1. The registered spec set is EXACTLY the ordered ids below
+   (Jay's 100 + the 9 Parlia system-contract detectors added
+   2026-11-17; guards against typos, drops and duplicates).
 2. Dedupe: on every vulnerable fixture, the intended detector
    fires, and no OTHER new detector fires on the SAME function
    (the same code span). Cross-span contract-scope observations
    on a different span are allowed only when pattern-true.
 3. Every clean control (one per family) produces ZERO findings
-   from ALL 100 new detectors.
-4. Registry discovery registers exactly these 100 new plugin
-   ids on top of the 655 base (761 total with ast_visual_audit and the 5 deep-audit detectors).
+   from ALL new detectors.
+4. Registry discovery registers exactly these new plugin ids
+   on top of the 655 base (761 total with ast_visual_audit and
+   the 5 deep-audit detectors, before the later additions
+   counted in test_registry_discovers_761_with_all_100_new).
 """
 import os
 import sys
@@ -132,6 +135,16 @@ EXPECTED_IDS = [
     "system_selfdestruct_funds_trap",
     "system_assembly_memory_overwrite",
     "system_unbounded_fee_parameter",
+    # Parlia / BNB system contracts (2026-11-17)
+    "parlia_block_denominated_jail",
+    "parlia_stale_block_time_scope",
+    "parlia_no_vote_participation_penalty",
+    "parlia_deterministic_mining_shuffle",
+    "parlia_slash_asymmetry",
+    "parlia_malicious_vote_slash_toggle",
+    "parlia_silent_downtime_slash_failure",
+    "parlia_candidate_churn_no_reliability_gate",
+    "parlia_governable_consensus_params",
 ]
 
 SPECS = all_specs()
@@ -139,7 +152,7 @@ SPECS = all_specs()
 
 def test_exactly_jays_100_ids():
     assert sorted(SPECS) == sorted(EXPECTED_IDS)
-    assert len(SPECS) == 100
+    assert len(SPECS) == 109
     assert set(fx.VULN) == set(EXPECTED_IDS)
 
 
@@ -170,7 +183,7 @@ def test_every_clean_control_silent_under_all_100():
 def test_registry_discovers_761_with_all_100_new():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 1470, f"registry size {len(reg)}, expected 1470"  # + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 5 deep-audit batch-10 detectors (deep_audit10) + 5 deep-audit batch-11 detectors (deep_audit11) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129) + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
+    assert len(reg) == 1480, f"registry size {len(reg)}, expected 1480"  # + 4 deep-analysis plugins (deep_layers) + 5 deep3 detectors + 3 deep-audit batch-4 detectors (deep_audit4) + 8 deep-audit batch-9 detectors (deep_audit9) + 5 deep-audit batch-10 detectors (deep_audit10) + 5 deep-audit batch-11 detectors (deep_audit11) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129) + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin + 9 Parlia system-contract detectors (bsc_parlia, 2026-11-17) + 1 BNB system-state reader (bnb_system_state) + 5 dependency-graph plugins (PR #202: cap_counter_reset_by_setter, finalize_recallable_drains_pot, interest_accrual_near_zero_denominator_inflation, internal_transfer_credit_without_debit, stale_capacity_snapshot_after_payout)
     missing = [pid for pid in EXPECTED_IDS if pid not in reg]
     assert missing == [], f"not registered: {missing}"
     for pid in EXPECTED_IDS:

@@ -1,11 +1,11 @@
-"""Fixtures for the 100 BSC detectors.
+"""Fixtures for the BSC detectors (100 base + 9 Parlia).
 
 VULN[id]    = a compact source that MUST produce a finding of
               exactly that detector's type (and, per the dedupe
               gate in test_bsc100_dedupe.py, no other new
               detector may fire on the same function).
 CLEAN[family] = a properly-built contract of that family that
-              MUST produce zero findings from all 100 detectors.
+              MUST produce zero findings from all detectors.
 
 Fixtures are pattern snippets in the house style of
 test_contract_logic.py - small, readable, one flaw each.
@@ -1870,6 +1870,217 @@ contract CleanMath {
     }
     function memRead() external pure returns (uint256 x) {
         assembly { x := mload(0x40) }
+    }
+}
+"""
+
+# ===========================================================================
+# Parlia / BNB system contracts
+# ===========================================================================
+
+VULN["parlia_block_denominated_jail"] = r"""
+pragma solidity ^0.8.20;
+contract SlashIndicator {
+    uint256 public constant MISDEMEANOR_THRESHOLD = 50;
+    uint256 public constant FELONY_THRESHOLD = 150;
+    uint256 public misdemeanorThreshold = 50;
+    uint256 public felonyThreshold = 150;
+    mapping(address => uint256) public missedCount;
+    function slash(address validator) external {
+        missedCount[validator] += 1;
+        uint256 count = missedCount[validator];
+        if (count % felonyThreshold == 0) {
+            missedCount[validator] = 0;
+            felony(validator);
+        } else if (count % misdemeanorThreshold == 0) {
+            misdemeanor(validator);
+        }
+    }
+    function felony(address validator) internal {}
+    function misdemeanor(address validator) internal {}
+}
+"""
+
+VULN["parlia_stale_block_time_scope"] = r"""
+pragma solidity ^0.8.20;
+contract SlashIndicator {
+    uint256 public constant INIT_FELONY_SLASH_SCOPE = 28800; // 1 days(block number)
+    uint256 public felonySlashScope;
+    struct Vote { uint256 tarNum; }
+    struct FinalityEvidence { Vote voteA; Vote voteB; }
+    function submitFinalityViolationEvidence(FinalityEvidence memory _evidence) public {
+        if (felonySlashScope == 0) {
+            felonySlashScope = INIT_FELONY_SLASH_SCOPE;
+        }
+        require(
+            _evidence.voteA.tarNum + felonySlashScope > block.number
+                && _evidence.voteB.tarNum + felonySlashScope > block.number,
+            "evidence out of scope"
+        );
+    }
+}
+"""
+
+VULN["parlia_no_vote_participation_penalty"] = r"""
+pragma solidity ^0.8.20;
+interface IStakeHub {
+    function downtimeSlash(address validator) external;
+}
+contract SlashIndicator {
+    address public constant STAKE_HUB_ADDR = 0x0000000000000000000000000000000000002002;
+    mapping(address => uint256) public missedCount;
+    function slash(address validator) external {
+        missedCount[validator] += 1;
+        _downtimeSlash(validator, missedCount[validator], false);
+    }
+    function _downtimeSlash(address validator, uint256 count, bool shouldRevert) internal {
+        if (shouldRevert) {
+            IStakeHub(STAKE_HUB_ADDR).downtimeSlash(validator);
+        } else {
+            try IStakeHub(STAKE_HUB_ADDR).downtimeSlash(validator) { } catch { }
+        }
+    }
+}
+"""
+
+VULN["parlia_deterministic_mining_shuffle"] = r"""
+pragma solidity ^0.8.20;
+contract BSCValidatorSet {
+    address[] public validators;
+    function getValidators() public view returns (address[] memory) {
+        return validators;
+    }
+    function getMiningValidators() external view returns (address[] memory, bytes[] memory) {
+        uint256 _shuffleInterval = 200;
+        address[] memory vals = getValidators();
+        bytes[] memory voteAddrs = new bytes[](vals.length);
+        uint256 shuffleNumber = block.number / _shuffleInterval;
+        shuffle(vals, voteAddrs, shuffleNumber);
+        return (vals, voteAddrs);
+    }
+    function shuffle(address[] memory vals, bytes[] memory addrs, uint256 seed) internal pure {
+        uint256 random = uint256(keccak256(abi.encodePacked(seed, uint256(0)))) % vals.length;
+        (vals[0], vals[random]) = (vals[random], vals[0]);
+        (addrs[0], addrs[random]) = (addrs[random], addrs[0]);
+    }
+}
+"""
+
+VULN["parlia_slash_asymmetry"] = r"""
+pragma solidity ^0.8.20;
+contract StakeHub {
+    uint256 public downtimeSlashAmount;
+    uint256 public felonySlashAmount;
+    uint256 public downtimeJailTime;
+    uint256 public felonyJailTime;
+    function initialize() external {
+        downtimeSlashAmount = 10 ether;
+        felonySlashAmount = 200 ether;
+        downtimeJailTime = 2 days;
+        felonyJailTime = 30 days;
+    }
+}
+"""
+
+VULN["parlia_malicious_vote_slash_toggle"] = r"""
+pragma solidity ^0.8.20;
+contract SlashIndicator {
+    bool public enableMaliciousVoteSlash;
+    struct Vote { uint256 tarNum; }
+    struct FinalityEvidence { Vote voteA; Vote voteB; }
+    function submitFinalityViolationEvidence(FinalityEvidence memory _evidence) public {
+        require(enableMaliciousVoteSlash, "malicious vote slash not enabled");
+    }
+    function updateParam(string calldata key, bytes calldata value) external {
+        if (keccak256(bytes(key)) == keccak256("enableMaliciousVoteSlash")) {
+            enableMaliciousVoteSlash = value[31] == 0x01;
+        }
+    }
+}
+"""
+
+VULN["parlia_silent_downtime_slash_failure"] = r"""
+pragma solidity ^0.8.20;
+interface IStakeHub {
+    function downtimeSlash(address validator) external;
+}
+contract SlashIndicator {
+    address public constant STAKE_HUB_ADDR = 0x0000000000000000000000000000000000002002;
+    event failedFelony(address indexed validator, uint256 count, bytes reason);
+    function _downtimeSlash(address validator, uint256 count, bool shouldRevert) internal {
+        if (shouldRevert) {
+            IStakeHub(STAKE_HUB_ADDR).downtimeSlash(validator);
+        } else {
+            try IStakeHub(STAKE_HUB_ADDR).downtimeSlash(validator) { }
+            catch Error(string memory reason) {
+                emit failedFelony(validator, count, bytes(reason));
+            } catch (bytes memory lowLevelData) {
+                emit failedFelony(validator, count, lowLevelData);
+            }
+        }
+    }
+}
+"""
+
+VULN["parlia_candidate_churn_no_reliability_gate"] = r"""
+pragma solidity ^0.8.20;
+contract BSCValidatorSet {
+    uint256 public maxNumOfWorkingCandidates = 3;
+    uint256 public numOfCabinets = 21;
+    address[] public validators;
+    function getValidators() public view returns (address[] memory) {
+        return validators;
+    }
+    function getMiningValidators() external view returns (address[] memory) {
+        address[] memory vals = getValidators();
+        uint256 candidateSlots = maxNumOfWorkingCandidates;
+        shuffle(vals, candidateSlots);
+        return vals;
+    }
+    function shuffle(address[] memory vals, uint256 slots) internal pure {
+        for (uint256 i = 0; i < slots && i < vals.length; i++) {
+            uint256 j = uint256(keccak256(abi.encodePacked(i))) % vals.length;
+            (vals[i], vals[j]) = (vals[j], vals[i]);
+        }
+    }
+}
+"""
+
+VULN["parlia_governable_consensus_params"] = r"""
+pragma solidity ^0.8.20;
+contract SlashIndicator {
+    uint256 public misdemeanorThreshold = 50;
+    uint256 public felonyThreshold = 150;
+    function updateParam(string calldata key, bytes calldata value) external {
+        if (keccak256(bytes(key)) == keccak256("misdemeanorThreshold")) {
+            misdemeanorThreshold = uint256(bytes32(value));
+        } else if (keccak256(bytes(key)) == keccak256("felonyThreshold")) {
+            felonyThreshold = uint256(bytes32(value));
+        }
+    }
+}
+"""
+
+CLEAN["parlia"] = r"""
+pragma solidity ^0.8.20;
+contract ParliaClean {
+    uint256 public totalStaked;
+    uint256 public maxValidators = 45;
+    address[] public members;
+    mapping(address => uint256) public stakeOf;
+    function register(address member, uint256 stake) external {
+        require(stake >= 2000 ether, "stake too low");
+        require(members.length < maxValidators, "set full");
+        members.push(member);
+        stakeOf[member] = stake;
+        totalStaked += stake;
+    }
+    function memberCount() external view returns (uint256) {
+        return members.length;
+    }
+    function setMaxValidators(uint256 cap) external {
+        require(cap >= 21 && cap <= 100, "cap out of range");
+        maxValidators = cap;
     }
 }
 """
