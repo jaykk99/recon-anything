@@ -585,6 +585,36 @@ def test_resolve_via_beacon(monkeypatch):
     assert res["beacon"] == BEACON_ADDR.lower()
 
 
+def test_resolve_via_zeppelinos_legacy_slot(monkeypatch):
+    # Circle's FiatTokenProxy (reused by CDCETH -> LiquidETHV1 and many
+    # forks) predates EIP-1967: the EIP-1967 slot reads empty and the
+    # implementation lives at the legacy ZeppelinOS slot. Without this
+    # path the proxy resolves to nothing and the whole analysis runs
+    # against the ~1.5KB proxy shell.
+    async def fake_storage(ctx, chain, address, slot):
+        if address == PROXY_ADDR and \
+                slot == cc.ZEPPELINOS_IMPLEMENTATION_SLOT:
+            return _word(IMPL_ADDR)
+        return "0x" + "0" * 64
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+    res = asyncio.run(cc.resolve_implementation(
+        FakeCtx(), cc.CHAINS["ethereum"], PROXY_ADDR, "0x6000", {}))
+    assert res["implementation"] == IMPL_ADDR.lower()
+    assert res["via"] == "zeppelinos_slot"
+
+
+def test_resolve_via_eip1822_logic_slot(monkeypatch):
+    async def fake_storage(ctx, chain, address, slot):
+        if address == PROXY_ADDR and slot == cc.EIP1822_LOGIC_SLOT:
+            return _word(IMPL_ADDR)
+        return "0x" + "0" * 64
+    monkeypatch.setattr(cc, "rpc_get_storage_at", fake_storage)
+    res = asyncio.run(cc.resolve_implementation(
+        FakeCtx(), cc.CHAINS["ethereum"], PROXY_ADDR, "0x6000", {}))
+    assert res["implementation"] == IMPL_ADDR.lower()
+    assert res["via"] == "eip1822_slot"
+
+
 def test_resolve_not_a_proxy(monkeypatch):
     async def fake_storage(ctx, chain, address, slot):
         return "0x" + "0" * 64
