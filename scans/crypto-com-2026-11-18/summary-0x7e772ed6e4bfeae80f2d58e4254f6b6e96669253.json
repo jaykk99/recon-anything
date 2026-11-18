@@ -1,0 +1,26 @@
+{
+  "chain": "ethereum",
+  "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+  "name": "LiquidETHV1 (CDCETH implementation)",
+  "scanned_at": "2026-11-18T12:49:04.861935+00:00",
+  "status": "genuine",
+  "degraded_reason": null,
+  "source_acquired": true,
+  "source_origin": "Blockscout",
+  "contract_name": "LiquidETHV1",
+  "source_chars": 81452,
+  "registry_total": 1470,
+  "plugins_run": 30,
+  "plugins_errored": 0,
+  "findings_count": 0,
+  "findings_by_severity": {},
+  "candidates_count": 0,
+  "secs": 70.4,
+  "total_secs": 70.5,
+  "notes": [],
+  "outputs": {
+    "findings": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/findings-0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253.jsonl",
+    "candidates": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/candidates-0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253.jsonl",
+    "summary": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/summary-0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253.json"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "chain": "cronos",
+  "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+  "name": "CDCWrappedBTC (CDCBTC implementation)",
+  "scanned_at": "2026-11-18T12:49:29.367736+00:00",
+  "status": "genuine",
+  "degraded_reason": null,
+  "source_acquired": true,
+  "source_origin": "Blockscout",
+  "contract_name": "FiatTokenV2_1",
+  "source_chars": 77642,
+  "registry_total": 1470,
+  "plugins_run": 30,
+  "plugins_errored": 0,
+  "findings_count": 0,
+  "findings_by_severity": {},
+  "candidates_count": 0,
+  "secs": 24.4,
+  "total_secs": 24.4,
+  "notes": [],
+  "outputs": {
+    "findings": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/findings-0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2.jsonl",
+    "candidates": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/candidates-0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2.jsonl",
+    "summary": "/home/hatch/workspace/wt/quota/2026-11-18-recon-anything/scans/crypto-com-2026-11-18/summary-0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2.json"
+  }
+}
