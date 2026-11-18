@@ -8,7 +8,7 @@ candidate); every clean control MUST stay silent under ALL four
 detectors; every other plugin's vulnerable fixture MUST stay
 silent under this one (no cross-talk); the batch-12/deep16
 fixtures MUST stay silent under all four (no cross-batch
-noise); the registry discovers exactly 1459 plugins including
+noise); the registry discovers exactly 1464 plugins including
 all four.
 """
 import os
@@ -41,10 +41,10 @@ def test_four_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1459():
+def test_registry_count_1464():
     reg = discover()
-    assert len(reg) == 1459, \
-        f"registry size {len(reg)}, expected 1459"
+    assert len(reg) == 1464, \
+        f"registry size {len(reg)}, expected 1464"
 
 
 def test_vuln_fires_candidate_with_evidence():
