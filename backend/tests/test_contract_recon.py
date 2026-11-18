@@ -766,3 +766,55 @@ def test_plugin_skips_cleanly_without_addresses():
     res = asyncio.run(p.run(target, FakeCtx()))
     assert res.status == PluginStatus.OK
     assert res.findings == []
+
+
+# -- precision: structural 32-byte constants are not private keys ----------
+
+def test_secret_scan_ignores_structural_constants():
+    # secp256k1 order N, keccak256(""), an EIP-712 typehash declared as a
+    # bytes32 constant, and an EIP-1967 slot: all structural, none a key.
+    src = (
+        'uint256 constant _N = '
+        '0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141;\n'
+        'bytes32 public constant PERMIT_TYPEHASH = '
+        '0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b1c9a7e3c1d0a9c3b1e7f2a4d6c;\n'
+        'bytes32 private constant _HASHED = keccak256("x");\n'
+        'bytes32 slot = '
+        '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;\n'
+    )
+    hits = [h for h in cc.find_secret_strings(src)
+            if h["kind"] == "ethereum_private_key"]
+    assert hits == [], f"structural constants flagged as keys: {hits}"
+
+
+def test_secret_scan_still_flags_bare_key_literal():
+    # a 32-byte literal with NO structural context is still reported, so
+    # the guard narrows rather than blinds the detector.
+    src = ('string memory leaked = '
+           '"0x4c0883a69102937d6231471b5dbb6204fe512961708279b3f3c1d2e0a1b2c3d4";')
+    hits = [h for h in cc.find_secret_strings(src)
+            if h["kind"] == "ethereum_private_key"]
+    assert len(hits) == 1
+
+
+# -- precision: view/pure getters are not fund-movers ----------------------
+
+def test_privileged_view_getters_demoted_to_low():
+    src = """
+    pragma solidity ^0.8.0;
+    contract T {
+        function minterAllowance(address m) external view returns (uint256) { return 0; }
+        function isMinter(address a) external view returns (bool) { return false; }
+        function rescuer() external view returns (address) { return address(0); }
+        function mint(address to, uint256 a) external { _b[to]+=a; }
+    }
+    """
+    out = cc.analyze_contract_source(src, {})
+    priv = {f["function"]: f for f in out
+            if f["kind"] == "privileged_function"}
+    for getter in ("minterAllowance", "isMinter", "rescuer"):
+        assert getter in priv, f"{getter} missing"
+        assert priv[getter]["severity"] == "low", \
+            f"{getter} should be low (view), got {priv[getter]['severity']}"
+    # the real state-changing mint() is not demoted by the view gate
+    assert priv["mint"]["severity"] != "low"
