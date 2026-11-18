@@ -521,6 +521,123 @@ def run_progress(session, run_id: str) -> Dict:
             "estimated_s": estimated_s, "running": running}
 
 
+def dual_perspective_summary(rows: List[Dict]) -> Dict:
+    """Dual-perspective scan summary, rule-based (ARTEX AIAnalyst port).
+
+    ARTEX's AI analyst produced an owner view ("what to fix") and a
+    hunter view ("how this gets attacked") via Groq/Llama3, with a
+    rule-based fallback when no key was set. The Groq half is NOT
+    ported (needs GROQ_API_KEY; keyless rule) — this is the rule-based
+    half as a pure function over findings_dump rows, plus ARTEX's 0-100
+    risk score adapted to ReconAnything rows (bounty tiers instead of
+    ARTEX vuln lists, finding volume instead of subdomain counts).
+
+    Suppressed rows (contradicted claims) are counted but never scored
+    or listed as targets. Never raises: bad rows degrade to empty.
+    """
+    live = [r for r in (rows or [])
+            if isinstance(r, dict) and not r.get("suppressed")]
+    suppressed = len(rows or []) - len(live)
+
+    def _severity(r: Dict) -> str:
+        ev = r.get("evidence") or {}
+        sev = str(ev.get("severity") or ev.get("risk") or "").lower()
+        if sev in ("low", "medium", "high"):
+            return sev
+        bv = str(r.get("bounty_value") or "").lower()
+        if bv in ("critical", "high"):
+            return "high"
+        if bv == "medium":
+            return "medium"
+        return "low"
+
+    by_severity = {"high": 0, "medium": 0, "low": 0}
+    n_crit = n_high = n_med = 0
+    for r in live:
+        by_severity[_severity(r)] += 1
+        bv = str(r.get("bounty_value") or "").lower()
+        if bv == "critical":
+            n_crit += 1
+        elif bv == "high":
+            n_high += 1
+        elif bv == "medium":
+            n_med += 1
+
+    # ARTEX _calculate_risk_score: crit x20 + high x10 + exposure tiers.
+    score = 20 * n_crit + 10 * n_high + 3 * n_med
+    if len(live) > 100:
+        score += 30
+    elif len(live) > 50:
+        score += 20
+    elif len(live) > 20:
+        score += 10
+    score = min(100, score)
+    band = "high" if score >= 70 else "medium" if score >= 40 else "low"
+
+    ranked = sorted(
+        live,
+        key=lambda r: ({"high": 3, "medium": 2, "low": 1}[_severity(r)],
+                       r.get("confidence") or 0),
+        reverse=True)
+    top = ranked[:5]
+
+    def _fix(r: Dict) -> Dict:
+        ev = r.get("evidence") or {}
+        return {"key": r.get("key"), "value": str(r.get("value") or "")[:160],
+                "plugin": r.get("plugin"), "severity": _severity(r),
+                "remediation": str(ev.get("remediation") or "")[:300]}
+
+    cats: Dict[str, int] = {}
+    for r in live:
+        c = str(r.get("category") or "unknown")
+        cats[c] = cats.get(c, 0) + 1
+    top_cats = sorted(cats.items(), key=lambda kv: kv[1], reverse=True)[:5]
+
+    keys = {r.get("key") for r in live}
+    chaining = []
+    if "origin_ip_exposed" in keys:
+        chaining.append("Origin IP exposed: the CDN/WAF can be bypassed, "
+                        "so every other weakness is directly reachable.")
+    if any(str(k).startswith("tls_") for k in keys):
+        chaining.append("TLS weaknesses present: downgrade the transport "
+                        "first, then the app layer is easier to reach.")
+    if "subdomain_takeover" in keys:
+        chaining.append("Subdomain takeover present: a dangling record "
+                        "hands an attacker a trusted hostname.")
+
+    owner_headline = (
+        f"{len(live)} live finding(s): {by_severity['high']} high, "
+        f"{by_severity['medium']} medium, {by_severity['low']} low. "
+        + (f"Fix first: {top[0].get('key')} — "
+           f"{str(top[0].get('value') or '')[:100]}." if top
+           else "Nothing actionable found."))
+    hunter_headline = (
+        f"Attack surface spans {len(cats)} categor(ies): "
+        + ", ".join(f"{c} ({n})" for c, n in top_cats)
+        + (". Highest-value targets: "
+           + ", ".join(str(t.get('key')) for t in top[:3]) + "."
+           if top else ". No clear targets."))
+
+    return {
+        "risk_score": score,
+        "risk_band": band,
+        "total_findings": len(live),
+        "suppressed": suppressed,
+        "by_severity": by_severity,
+        "owner": {
+            "headline": owner_headline,
+            "top_fixes": [_fix(r) for r in top],
+        },
+        "hunter": {
+            "headline": hunter_headline,
+            "top_categories": [{"category": c, "count": n}
+                               for c, n in top_cats],
+            "top_targets": [_fix(r) for r in top],
+            "chaining_notes": chaining,
+        },
+    }
+
+
 def executive_summary(rows: List[Dict]) -> Dict:
     techs = sorted({r["value"] for r in rows if r["key"] == "tech"})
     leaks = [r for r in rows if r["category"] == "leak"]

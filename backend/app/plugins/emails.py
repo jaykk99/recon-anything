@@ -30,6 +30,44 @@ MAILTO_RE = re.compile(r"(?i)mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z
 JSONLD_EMAIL_RE = re.compile(
     r"(?i)\"email\"\s*:\s*\"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,24})\"")
 
+# Obfuscated addresses, ported from ARTEX EmailUserEnumerator (which
+# matched [at]/[dot] and (at)/(dot) spellings). Sites publish addresses
+# as "name [at] example [dot] com" to dodge scrapers; the address is
+# still public, just spelled out. Matches the full obfuscated shape
+# (local + at-separator + domain + dot-separators + TLD) so prose like
+# "meet at noon" or "a dot in the sky" never matches. Separators allow
+# optional surrounding whitespace so "[at]", " [at] ", "(at)" and
+# bare " at " all match.
+_AT_SEP = r"\s*(?:\[at\]|\(at\)|at)\s*"
+_DOT_SEP = r"\s*(?:\[dot\]|\(dot\)|dot)\s*"
+_OBFUSCATED_EMAIL_RE = re.compile(
+    r"([a-zA-Z0-9._%+\-]+)" + _AT_SEP +
+    r"([a-zA-Z0-9\-]+(?:" + _DOT_SEP + r"[a-zA-Z0-9\-]+)*)" +
+    _DOT_SEP + r"([a-zA-Z]{2,24})", re.IGNORECASE)
+
+
+def deobfuscate_emails(text: str) -> List[str]:
+    """Reconstruct obfuscated addresses ("name [at] example [dot] com").
+
+    Pure helper, unit-tested. Returns lowercased addresses. Matches
+    whose final segment is a plain English word (never a TLD) are
+    skipped, so prose like "meet at noon dot com" cannot match — while
+    real obfuscated addresses (including .net/.org/.io) still do.
+    """
+    out: List[str] = []
+    for m in _OBFUSCATED_EMAIL_RE.finditer(text or ""):
+        local, domain, tld = m.group(1), m.group(2), m.group(3)
+        if tld.lower() in ("the", "and", "for", "with", "from", "that",
+                           "this"):
+            continue
+        # The captured domain still carries its separators
+        # ("example dot co", "example[dot]co") — normalize them to dots.
+        domain = re.sub(_DOT_SEP, ".", domain).strip(".")
+        email = f"{local}@{domain}.{tld}".lower()
+        if len(email) <= 80 and email not in out:
+            out.append(email)
+    return out
+
 
 class EmailsPlugin(Plugin):
     id = "emails"
@@ -62,11 +100,17 @@ class EmailsPlugin(Plugin):
                 r = await fetch(ctx.http, ctx.limiter, "GET", url, timeout=12)
                 if r.status_code != 200:
                     return []
-                found = [m.group(0).lower() for m in EMAIL_RE.finditer(r.text)]
+                found = [(m.group(0).lower(), False)
+                         for m in EMAIL_RE.finditer(r.text)]
                 # NEW: mailto: links
-                found += [m.group(1).lower() for m in MAILTO_RE.finditer(r.text)]
+                found += [(m.group(1).lower(), False)
+                          for m in MAILTO_RE.finditer(r.text)]
                 # NEW: JSON-LD structured data emails
-                found += [m.group(1).lower() for m in JSONLD_EMAIL_RE.finditer(r.text)]
+                found += [(m.group(1).lower(), False)
+                          for m in JSONLD_EMAIL_RE.finditer(r.text)]
+                # NEW (ARTEX port): obfuscated addresses, e.g.
+                # "name [at] example [dot] com".
+                found += [(e, True) for e in deobfuscate_emails(r.text)]
                 return found
             except Exception:
                 return []
@@ -76,7 +120,7 @@ class EmailsPlugin(Plugin):
 
         for path, emails_found in zip(CONTACT_PATHS, page_emails):
             url = base + path if path != "/" else base
-            for email in emails_found:
+            for email, obfuscated in emails_found:
                 if email in seen:
                     continue
                 if any(s in email for s in skip_patterns):
@@ -86,12 +130,12 @@ class EmailsPlugin(Plugin):
                 seen.add(email)
                 # Classify the email
                 local, _, edomain = email.partition("@")
-                note = ""
+                note = " (obfuscated on page)" if obfuscated else ""
                 if edomain == domain:
-                    note = " (company email)"
+                    note += " (company email)"
                     conf = 85
                 elif "gmail" in edomain or "yahoo" in edomain or "hotmail" in edomain:
-                    note = " (personal email on company site)"
+                    note += " (personal email on company site)"
                     conf = 70
                 else:
                     conf = 60
