@@ -31,7 +31,7 @@ import statistics
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------

@@ -1826,3 +1826,136 @@ No em dashes in user-facing text.
 ## Live URL
 
 https://recon-anything.onrender.com
+
+## End-to-end workflow (recon -> rank -> remediate -> verify -> report)
+
+One command runs everything against a running API (start it first, see
+Quick start):
+
+```bash
+cd backend
+python -m app.workflow example.com                 # passive scan, full pipeline
+python -m app.workflow example.com --mode active --authorized
+python -m app.workflow --run-id <run_id>           # resume / re-report a run
+python -m app.workflow example.com --no-llm        # skip fix drafting
+```
+
+1. **recon**: starts the scan and waits for it (or resumes `--run-id`)
+2. **rank**: every finding carries the neural engine score, and the run gets one too
+3. **remediate**: the top-scored findings get a drafted fix plus a regression test (below)
+4. **verify**: drafted tests are compile-checked, never executed
+5. **report**: `workflow_out/<run_id>/report.md`, `summary.json`, `findings.json`, `drafts/`
+
+Plugin errors (unreachable hosts, missing input) are left out of the ranking.
+Active mode needs `--authorized`. Set `RECON_API` / `RECON_ACCESS_CODE` if
+the API is not at `http://localhost:8000` or is gated. From GitHub, use
+**Actions -> recon-workflow -> Run workflow** (passive; add an
+`ANTHROPIC_API_KEY` secret to enable drafting).
+
+## Neural engine: evaluate and refit
+
+```bash
+cd backend
+python -m app.nn_train --self-report                    # current model + metrics
+python -m app.nn_train --eval labels.jsonl              # score CURRENT weights on your labels
+python -m app.nn_train --corpus labels.jsonl --dry-run  # train, print metrics, write nothing
+python -m app.nn_train --corpus labels.jsonl            # refit and write app/nn_weights.json
+```
+
+### Training on real outcomes
+
+Open any finding on a run page and give it a verdict: **Real**, **Real, not
+worth fixing**, **False positive** or **Unsure**. Each verdict is stored with
+a masked snapshot of the finding (`finding_feedback` table) and becomes a
+training label: real 1.0, not worth fixing 0.3, false positive 0.0 (unsure is
+never used).
+
+```bash
+curl -s -H "X-Access-Code: $CODE" localhost:8000/api/feedback/stats   # counts + how the current model ranks your labels
+curl -s -H "X-Access-Code: $CODE" localhost:8000/api/feedback/export > labels.jsonl
+cd backend
+python -m app.nn_train --with-feedback labels.jsonl --dry-run   # see what would change
+python -m app.nn_train --with-feedback labels.jsonl             # promote if the gate passes
+```
+
+`--with-feedback` mixes your labels into the distilled corpus (each repeated
+`--feedback-weight` times, default 5). New weights only replace the shipped
+ones if they pass the **promotion gate**: the severity and confidence ordering
+still holds, and the candidate ranks your held-out labels no worse than the
+current model. Otherwise nothing is written and the command exits 3 with the
+reasons (`--force` overrides). With only a handful of labels the gate will
+usually, and correctly, refuse; collect a few hundred before expecting a
+promotion.
+
+`labels.jsonl` is one `{"finding": {...}, "label": 0..1}` per line. `--eval`
+needs no numpy; training does. `tests/test_nn_eval.py` pins the ranking
+properties every refit must keep: severity is monotone (info < low < medium
+< high < critical) and higher confidence never lowers a score.
+
+## Suggested fixes in the UI
+
+Each run page has a **Suggested fixes** panel: *Draft fixes* calls
+`POST /api/runs/{id}/remediation`, which drafts a fix + regression test for
+the top neural-ranked findings and stores them on the run
+(`GET /api/runs/{id}/remediation` reads them back). Needs an LLM provider on
+the server (see `.env.example`); without one the panel says so.
+
+## Profiling a run
+
+```bash
+cd backend
+python3 scripts/run_profile.py <run_id>   # wall vs plugin time, timeouts, slowest plugins
+```
+
+## Multi-step agent plan
+
+A checkpointed, resumable agent plan chains the existing gated tools into one
+run:
+
+```
+gate -> rank -> investigate -> terminal_probe -> remediate -> verify -> report
+```
+
+```bash
+cd backend
+python -m app.agent.plan_cli <run_id> --objective "assess my site"
+python -m app.agent.plan_cli <run_id> --authorized \
+    --command "dig example.com" --command "whois example.com"
+```
+
+Or `POST /api/agent/plan` (owner-only) with `{run_id, objective, authorized,
+commands}`.
+
+- **gate** refuses the whole plan if the objective trips a hard boundary
+  (`app/agent/refusal.py`), and resolves target authorization once.
+- **rank** scores findings with the neural engine.
+- **investigate / terminal_probe** are the ACTIVE steps: live verification
+  through the detection-only browser/terminal layer and extra allowlisted
+  commands. They run only with `--authorized` AND allowlisted targets
+  (`app/agent/allowlist.py`); otherwise they skip with a recorded reason. The
+  terminal stays locked to its allowlist (no shell, writes, or installs) and
+  SSRF-checked (a `curl` to `169.254.169.254` is blocked).
+- **remediate / verify** draft a fix + regression test per top finding and
+  compile-check them.
+- **report** writes `report.md` and the full `audit.json` (every step and
+  tool call). State is checkpointed after each step, so re-running the same
+  `run_id` + objective resumes where it stopped.
+
+The plan never runs drafted proof-of-concept or exploit code against a
+target; it drafts fixes and tests and stops there.
+
+## Recon -> remediation workflow
+
+After a scan, the neural engine's scores pick the findings worth acting on and
+an LLM drafts a fix plus a pytest regression test for each:
+
+```bash
+cd backend
+python -m app.remediation_llm <run_id> --min-score 40 --limit 5 --out remediation_out
+```
+
+Defensive only: masked findings in, credential-shaped strings redacted before
+anything leaves the process, files out for human review, nothing applied or
+executed. The provider is pluggable (`RECON_LLM_PROVIDER`: `anthropic`, or
+`openai` for any OpenAI-compatible endpoint including a self-hosted model);
+see `.env.example`.

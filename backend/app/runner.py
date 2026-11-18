@@ -16,9 +16,8 @@ import os
 import ssl
 import threading
 import time
-import uuid
 import zlib
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 

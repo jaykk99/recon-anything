@@ -2,9 +2,7 @@
 Flags hooks that accept without checking hook_account/originator, unbounded loops with no GUARD, state writes, and emit() calls with no emission check."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

@@ -2,9 +2,7 @@
 Flags Clock/Rent/Instructions passed as raw AccountInfo without the typed Sysvar wrapper, instruction introspection without program checks, and clock-derived randomness."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

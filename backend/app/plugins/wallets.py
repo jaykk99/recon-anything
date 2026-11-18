@@ -14,7 +14,7 @@ from typing import List
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch, fetch_many
+from ..ratelimit import fetch_many
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .secretutils import evidence_block, finding_value, is_placeholder

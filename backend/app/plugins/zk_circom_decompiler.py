@@ -1,7 +1,7 @@
 """SHIP 61: parse supplied R1CS (JSON form) and emit its constraints as readable equations. Local artifact parsing only."""
 from __future__ import annotations
 import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import first, rx, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

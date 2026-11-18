@@ -16,9 +16,8 @@ Authorized testing only.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
-from typing import List, Set
+from typing import List
 from urllib.parse import parse_qsl, urlparse
 
 from ..classifier import domain_from_target

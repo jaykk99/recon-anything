@@ -1,7 +1,7 @@
 """VARIANT 82: PBKDF2-specific iteration-count pass over supplied code/config."""
 from __future__ import annotations
 import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import find_values, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

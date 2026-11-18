@@ -1,17 +1,11 @@
 """Obfuscation-entropy-calc: per-section/per-region entropy and structural distribution metrics over an operator-supplied native binary, grading packing/obfuscation boundaries against known packer profiles (e.g. UPX-style section layouts). Distinct from the binwalk carver: this grades obfuscation in the binary itself.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, load_artifacts,
+    parse_any, shannon_entropy)
 
 
 PACKER_SECTIONS = ("UPX0", "UPX1", "UPX2", ".aspack", ".adata", "MEW", ".petite", ".nsp0", ".nsp1", "Themida", ".vmp0", ".vmp1")

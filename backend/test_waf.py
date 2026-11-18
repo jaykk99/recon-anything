@@ -220,7 +220,7 @@ def t_fetch_integration():
 
 def t_runner_suppression():
     # _run_plugin suppresses aggressive plugins on WAF hosts, runs the rest.
-    from app.plugins.base import Ctx, Plugin, PluginResult, Target
+    from app.plugins.base import Ctx, Plugin, Target
     from app import runner as R
 
     events = []

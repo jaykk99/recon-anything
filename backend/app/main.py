@@ -1017,6 +1017,168 @@ async def api_finding_retest(run_id: str, finding_id: int,
         raise HTTPException(e.status_code, e.detail, headers=headers)
 
 
+# -- finding feedback: real-outcome labels for the neural engine ----------
+class FeedbackIn(BaseModel):
+    verdict: str
+    note: Optional[str] = None
+
+
+def _reviewer(request: Request) -> str:
+    actor = getattr(request.state, "actor", {"kind": "open"})
+    if actor.get("kind") == "user" and actor.get("user") is not None:
+        return f"user:{actor['user'].id}"
+    return "owner"
+
+
+def _feedback_row(session, run_id: str, finding_id: int) -> Dict:
+    """The one finding as the UI shows it (secrets masked)."""
+    from .reporting import SECRET_KEYS, _mask
+    f = (session.query(Finding)
+         .filter_by(id=finding_id, run_id=run_id).first())
+    if f is None:
+        raise HTTPException(404, "finding not found in this run")
+    value = _mask(f.value) if f.key in SECRET_KEYS else f.value
+    return {"id": f.id, "plugin": f.plugin_id, "category": f.category,
+            "key": f.key, "value": value, "source": f.source,
+            "source_url": f.source_url, "confidence": f.confidence,
+            "passive": f.passive,
+            "bounty_value": getattr(f, "bounty_value", "low"),
+            "evidence": f.evidence or {}}
+
+
+@app.put("/api/runs/{run_id}/findings/{finding_id}/feedback",
+         dependencies=[Depends(gate)])
+def api_feedback_set(run_id: str, finding_id: int, body: FeedbackIn,
+                     request: Request):
+    """Record your verdict on a finding (confirmed / not_actionable /
+    false_positive / unsure). Re-sending updates it."""
+    from .feedback import FeedbackError, set_verdict
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        row = _feedback_row(session, run_id, finding_id)
+        try:
+            fb = set_verdict(session, run_id, row, body.verdict,
+                             _reviewer(request), body.note)
+        except FeedbackError as e:
+            raise HTTPException(400, str(e))
+        return {"finding_id": finding_id, "verdict": fb.verdict,
+                "note": fb.note}
+    finally:
+        session.close()
+
+
+@app.delete("/api/runs/{run_id}/findings/{finding_id}/feedback",
+            dependencies=[Depends(gate)])
+def api_feedback_clear(run_id: str, finding_id: int, request: Request):
+    from .feedback import clear_verdict
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        return {"cleared": clear_verdict(session, finding_id,
+                                         _reviewer(request))}
+    finally:
+        session.close()
+
+
+@app.get("/api/runs/{run_id}/feedback", dependencies=[Depends(gate)])
+def api_feedback_for_run(run_id: str, request: Request):
+    """Your verdicts on this run, keyed by finding id."""
+    from .feedback import verdicts_for_run
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        return {"verdicts": verdicts_for_run(session, run_id,
+                                             _reviewer(request))}
+    finally:
+        session.close()
+
+
+@app.get("/api/feedback/stats", dependencies=[Depends(gate)])
+def api_feedback_stats(request: Request):
+    """Verdict counts and how the current model ranks your labels."""
+    from .feedback import stats
+    session = get_session()
+    try:
+        return stats(session, _reviewer(request))
+    finally:
+        session.close()
+
+
+@app.get("/api/feedback/export", dependencies=[Depends(gate)])
+def api_feedback_export(request: Request):
+    """All labels as JSONL for `python -m app.nn_train --corpus`.
+    Owner / local-dev only: customers' verdicts are not pooled out."""
+    from .feedback import export_labels
+    if getattr(request.state, "actor", {}).get("kind") == "user":
+        raise HTTPException(403, "label export is owner-only")
+    session = get_session()
+    try:
+        recs = export_labels(session)
+    finally:
+        session.close()
+    body = "".join(json.dumps(r, default=str) + "\n" for r in recs)
+    return PlainTextResponse(body, media_type="application/x-ndjson",
+                             headers={"Content-Disposition":
+                                      "attachment; filename=labels.jsonl"})
+
+
+@app.get("/api/runs/{run_id}/remediation", dependencies=[Depends(gate)])
+def api_remediation_get(run_id: str, request: Request):
+    """Stored fix + regression-test drafts for this run (app/remediation.py),
+    or an empty list when none were generated yet."""
+    session = get_session()
+    try:
+        run = _owned_run(session, run_id, request)
+        return (run.summary or {}).get("remediation") or {"results": []}
+    finally:
+        session.close()
+
+
+@app.post("/api/runs/{run_id}/remediation", dependencies=[Depends(gate)])
+async def api_remediation_generate(run_id: str, request: Request,
+                                   min_score: int = 40, limit: int = 5):
+    """Draft fixes + regression tests for the run's top neural-ranked
+    findings and store them on the run. Uses masked findings; drafts are
+    suggestions only - nothing is applied or executed."""
+    import asyncio as _asyncio
+    from . import remediation_llm as _rem
+    limit = max(1, min(int(limit), 10))
+    session = get_session()
+    try:
+        _owned_run(session, run_id, request)
+        rows = findings_dump(session, run_id, show_secrets=False)
+    finally:
+        session.close()
+    try:
+        complete = _rem.get_completer()
+    except RuntimeError as e:
+        raise HTTPException(503, f"no LLM provider configured: {e}")
+    results = await _asyncio.to_thread(
+        _rem.run_pipeline, rows, complete, min_score, limit)
+    for r in results:  # same compile-only check the CLI workflow uses
+        if r.get("test"):
+            try:
+                compile(r["test"], "<draft>", "exec")
+                r["test_check"] = "compiles"
+            except SyntaxError as e:
+                r["test_check"] = f"syntax error line {e.lineno}"
+        else:
+            r["test_check"] = "missing"
+    payload = {"generated_at": dt.datetime.utcnow().isoformat() + "Z",
+               "min_score": min_score, "results": results}
+    session = get_session()
+    try:
+        run = _owned_run(session, run_id, request)
+        summary = dict(run.summary or {})
+        summary["remediation"] = payload
+        run.summary = summary  # reassign so the JSON column is saved
+        session.commit()
+    finally:
+        session.close()
+    return payload
+
+
 @app.get("/api/runs/{run_id}/graph", dependencies=[Depends(gate)])
 def api_graph(run_id: str, request: Request):
     session = get_session()
@@ -1052,7 +1214,6 @@ def api_apimap(run_id: str, request: Request):
     ``groups``: pages, api_routes, forms, js_endpoints, websockets,
     graphql. Each entry: {url, method, status, auth, params, note}.
     """
-    from urllib.parse import urlparse
     session = get_session()
     try:
         _owned_run(session, run_id, request)
@@ -1242,7 +1403,6 @@ async def api_fetch_file(run_id: str, request: Request,
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(400, "only http/https allowed")
-    import httpx
     try:
         async with net.async_client(timeout=20, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "ReconAnything/1.0"})
@@ -1377,7 +1537,6 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
     import asyncio
     import re
     import time as _time
-    import httpx
 
     session = get_session()
     try:
@@ -1462,7 +1621,6 @@ async def api_probe_port(run_id: str, request: Request,
     """
     import asyncio
     import re
-    import httpx
 
     host = host.strip().lower().rstrip(".")
     if not re.match(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$", host) or not (1 <= port <= 65535):

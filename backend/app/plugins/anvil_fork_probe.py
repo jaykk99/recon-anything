@@ -23,7 +23,6 @@ Anvil is used only when already installed (operator audit tree
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import time

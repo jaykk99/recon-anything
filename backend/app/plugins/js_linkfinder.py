@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from typing import Dict, List, Set, Tuple
+from typing import List, Set, Tuple
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 from ..classifier import domain_from_target

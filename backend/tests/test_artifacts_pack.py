@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 
 import httpx
-import pytest
 
 from app.cache import Cache
 from app.plugins.artifacts_deep import DA_IDS

@@ -2,9 +2,7 @@
 Flags exported actor methods that mutate state or move value with no caller validation in the actor."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

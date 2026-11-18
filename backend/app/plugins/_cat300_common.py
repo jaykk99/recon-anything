@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from .base import Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc

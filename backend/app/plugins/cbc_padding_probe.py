@@ -1,7 +1,6 @@
 """VARIANT 86: crypto-specific differential posture over supplied samples/code only."""
 from __future__ import annotations
-import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import find_values, has, rx, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

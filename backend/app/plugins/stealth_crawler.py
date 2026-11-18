@@ -16,7 +16,7 @@ import asyncio
 import random
 import re
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target

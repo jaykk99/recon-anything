@@ -7,7 +7,6 @@ join keys between a target's web presence and its crypto footprint.
 """
 from __future__ import annotations
 
-import re
 
 from .cryptopack_util import PackPlugin, bech32_decode
 

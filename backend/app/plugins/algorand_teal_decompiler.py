@@ -2,9 +2,7 @@
 Reconstructs the opcode listing and applies the classic TEAL safety checks: an approval program that returns success without checking RekeyTo, CloseRemainderTo, or AssetCloseTo lets a signer be rekeyed / drained on close."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

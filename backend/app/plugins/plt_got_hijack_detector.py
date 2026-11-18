@@ -1,17 +1,12 @@
 """PLT-GOT-hijack-detector: looks for evidence of actual runtime GOT patching in an operator-supplied ELF (and/or its dump) - GOT entries pre-filled with values pointing into the binary's own text or outside legitimate library mappings, and tampered PLT stubs. Distinct from the static PLT configuration audit.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+import struct
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, detect_format, elf_section, load_artifacts,
+    parse_elf)
 
 
 def analyze(data: bytes, name: str = "") -> List[Dict[str, Any]]:

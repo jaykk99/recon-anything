@@ -2,9 +2,7 @@
 Parses entrypoints / instruction trace from Michelson or Micheline JSON; flags TRANSFER_TOKENS paths with no SENDER check and FA2-style transfers with no operator validation."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

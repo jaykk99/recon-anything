@@ -32,7 +32,6 @@ instructions to take funds.
 """
 from __future__ import annotations
 
-import os
 from typing import Dict, List, Optional
 
 # Suggested model for the paste-in step, verified live 2026-11-12.

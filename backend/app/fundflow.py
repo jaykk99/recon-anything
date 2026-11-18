@@ -23,7 +23,7 @@ and different contracts. Totals must key on the token CONTRACT address,
 never on the symbol.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # keccak256("Transfer(address,address,uint256)") — the only log topic
 # this module trusts.

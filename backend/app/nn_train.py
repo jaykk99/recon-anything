@@ -27,6 +27,9 @@ the network never saw:
     python -m app.nn_train                       # distill policy, write weights
     python -m app.nn_train --corpus labels.jsonl # fit real labels
     python -m app.nn_train --self-report
+    python -m app.nn_train --corpus labels.jsonl --dry-run  # metrics only
+    python -m app.nn_train --eval labels.jsonl   # score CURRENT weights
+    python -m app.nn_train --with-feedback labels.jsonl  # distill + real labels, gated
 
 ``spearman`` on the holdout is the metric that matters for a ranker:
 1.0 means the network orders findings exactly like the policy it was
@@ -44,7 +47,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
+try:  # training needs numpy; --eval / --self-report do not
+    import numpy as np
+except ImportError:  # pragma: no cover - exercised only without numpy
+    np = None
 
 from . import nn_engine
 from .correlate import _detect_signals as _signals_of
@@ -177,6 +183,24 @@ def build_corpus(plugin_dir: Path = PLUGIN_DIR) -> List[Tuple[Dict[str, Any], fl
         row2["evidence"]["exploitability"] = "unknown"
         row2["evidence"]["commands"] = []
         out.append((row2, _target(row2), pid))
+        # Controlled contrast grid (every 5th capability): the same finding
+        # at every severity x a confidence sweep. The fixed variants above
+        # tie severity to confidence (low always ships low confidence), so
+        # without this the network cannot separate the two effects and
+        # learned non-monotone ones (info above low; more confidence
+        # scoring lower). The policy labels the grid, so it teaches the
+        # ordering the policy already encodes.
+        if i % 5 == 0:
+            for gsev in ("info", "low", "medium", "high", "critical"):
+                for gconf in (30, 60, 90):
+                    g = json.loads(json.dumps(row))
+                    g["confidence"] = gconf
+                    g["bounty_value"] = gsev
+                    g["evidence"]["severity"] = gsev
+                    g["evidence"]["exploitability"] = "unknown"
+                    g["evidence"]["commands"] = []
+                    g["evidence"]["needs_manual_verification"] = True
+                    out.append((g, _target(g), pid))
     for key, cat, sev in _EXTRA_KEYS:
         for expl in ("weaponized", "unknown"):
             row = {
@@ -310,17 +334,72 @@ def _export(params, hidden: int, metrics: Dict[str, Any],
                           "utf-8")
 
 
+def _is_holdout(group: str) -> bool:
+    return int(hashlib.sha1(group.encode()).hexdigest(), 16) % 5 == 0
+
+
+_PROBE_SEVS = ("info", "low", "medium", "high", "critical")
+_PROBES = (("headers", "web", "generic_issue"),
+           ("ports", "network", "open_service"),
+           ("keyharvest", "leak", "exposed_token"))
+
+
+def check_properties(model: Dict[str, Any]) -> List[str]:
+    """Ranking properties every promoted model must keep. Returns the
+    violations (empty list = pass): severity monotone across
+    info<low<medium<high<critical, and confidence never lowering a
+    score, on a few representative finding shapes."""
+    def p(plugin, cat, key, sev, conf):
+        row = {"plugin": plugin, "category": cat, "key": key, "value": "v",
+               "confidence": conf,
+               "evidence": {"severity": sev, "exploitability": "unknown"}}
+        return nn_engine._forward(model, nn_engine.features(row))[0]
+    bad: List[str] = []
+    for plugin, cat, key in _PROBES:
+        sev_scores = [p(plugin, cat, key, s, 80) for s in _PROBE_SEVS]
+        for (a, sa), (b, sb) in zip(zip(_PROBE_SEVS, sev_scores),
+                                    zip(_PROBE_SEVS[1:], sev_scores[1:])):
+            if sb + 1e-9 < sa:
+                bad.append(f"{plugin}: {b} ({sb:.3f}) scores below {a} ({sa:.3f})")
+        for sev in _PROBE_SEVS[1:]:
+            c = [p(plugin, cat, key, sev, conf) for conf in (30, 60, 95)]
+            if c[1] + 1e-9 < c[0] or c[2] + 1e-9 < c[1]:
+                bad.append(f"{plugin}/{sev}: confidence lowers score {[round(x, 3) for x in c]}")
+    return bad
+
+
 def run(corpus_path: Optional[Path] = None, *, hidden: int = 16,
-        epochs: int = 500, out: Path = WEIGHTS_PATH) -> Dict[str, Any]:
+        epochs: int = 500,
+        out: Optional[Path] = WEIGHTS_PATH,
+        feedback_path: Optional[Path] = None, feedback_weight: int = 5,
+        force: bool = False) -> Dict[str, Any]:
+    """Train, then gate promotion. ``out=None`` is a dry run.
+
+    ``feedback_path``: real verdict labels (GET /api/feedback/export) mixed
+    into the corpus, each repeated ``feedback_weight`` times so a few
+    hundred human labels are not drowned by thousands of distilled ones.
+
+    Promotion gate (skipped with ``force``): the candidate is written to a
+    temp file, loaded through nn_engine's own validator, and only replaces
+    ``out`` when (1) check_properties finds no violation and (2) with
+    feedback, it ranks the held-out feedback labels no worse than the
+    current model (spearman within 0.01). Otherwise ``out`` is untouched
+    and ``metrics["promoted"]`` is False with the reasons.
+    """
+    if np is None:
+        raise SystemExit("training needs numpy: pip install numpy")
     corpus = (load_labeled_corpus(corpus_path) if corpus_path
               else build_corpus())
     if not corpus:
         raise SystemExit("empty training corpus")
+    fb = load_labeled_corpus(feedback_path) if feedback_path else []
+    if feedback_path and not fb:
+        raise SystemExit(f"no usable labels in {feedback_path}")
+    corpus = corpus + fb * max(1, int(feedback_weight))
     x = np.array([nn_engine.features(f) for f, _y, _g in corpus], dtype=float)
     y = np.array([yy for _f, yy, _g in corpus], dtype=float)
     groups = [g for _f, _y, g in corpus]
-    holdout = np.array([int(hashlib.sha1(g.encode()).hexdigest(), 16) % 5 == 0
-                        for g in groups])
+    holdout = np.array([_is_holdout(g) for g in groups])
     if holdout.sum() < 10 or (~holdout).sum() < 10:
         holdout = np.arange(len(y)) % 5 == 0
     params = train(x[~holdout], y[~holdout], hidden=hidden, epochs=epochs)
@@ -338,8 +417,122 @@ def run(corpus_path: Optional[Path] = None, *, hidden: int = 16,
     auc = _auc(gold, pred)
     if auc is not None:
         metrics["holdout_auc"] = auc
-    _export(params, hidden, metrics, out)
+    if fb:
+        metrics["feedback_labels"] = len(fb)
+        metrics["feedback_weight"] = max(1, int(feedback_weight))
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cand_path = Path(td) / "candidate.json"
+        _export(params, hidden, metrics, cand_path)
+        cand = nn_engine.load_model(cand_path)
+        if cand is None:
+            raise SystemExit("candidate weights failed nn_engine validation")
+        reasons: List[str] = []
+        violations = check_properties(cand)
+        metrics["property_violations"] = violations
+        if violations:
+            reasons.append(f"{len(violations)} ranking-property violation(s)")
+        if fb:
+            held = [r for r in fb if _is_holdout(r[2])]
+            scope = "holdout"
+            if len(held) < 4 or len({r[1] for r in held}) < 2:
+                held, scope = fb, "in_sample (too few held-out labels)"
+            # compare against what is live now: the target file, or the
+            # shipped weights on a dry run
+            cur_path = Path(out) if out is not None else WEIGHTS_PATH
+            cur = nn_engine.load_model(cur_path) if cur_path.exists() else None
+            fe = {"scope": scope,
+                  "candidate": evaluate_records(held, model=cand,
+                                                k=min(10, len(held)))}
+            if cur is not None:
+                fe["current"] = evaluate_records(held, model=cur,
+                                                 k=min(10, len(held)))
+                if fe["candidate"]["spearman"] < fe["current"]["spearman"] - 0.01:
+                    reasons.append(
+                        "ranks your feedback labels worse than the current "
+                        f"model ({fe['candidate']['spearman']} < "
+                        f"{fe['current']['spearman']})")
+            metrics["feedback_eval"] = fe
+        if out is None:
+            metrics["promoted"] = False
+            metrics["gate"] = reasons or ["passed"]
+            return metrics
+        if reasons and not force:
+            metrics["promoted"] = False
+            metrics["gate"] = reasons
+            return metrics
+        metrics["promoted"] = True
+        metrics["gate"] = (["forced past: " + "; ".join(reasons)] if reasons
+                           else ["passed"])
+        _export(params, hidden, metrics, out)
     return metrics
+
+
+def _rank(v: List[float]) -> List[float]:
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    r = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            r[order[k]] = (i + j) / 2.0
+        i = j + 1
+    return r
+
+
+def _spearman_py(a: List[float], b: List[float]) -> float:
+    if len(a) < 2:
+        return 0.0
+    ra, rb = _rank(a), _rank(b)
+    ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    va = sum((x - ma) ** 2 for x in ra) ** 0.5
+    vb = sum((y - mb) ** 2 for y in rb) ** 0.5
+    return cov / (va * vb) if va and vb else 0.0
+
+
+def evaluate_records(corpus: List[Tuple[Dict[str, Any], float, str]],
+                     weights: Path = WEIGHTS_PATH, k: int = 10,
+                     model: Optional[Dict[str, Any]] = None
+                     ) -> Dict[str, Any]:
+    """Score a model against (finding, label, group) records, no training.
+
+    Pure stdlib (works without numpy). Reports rank agreement
+    (spearman), mean absolute error, and precision@k: of the k findings
+    the model ranks highest, the share labelled actionable (>= 0.5).
+    """
+    model = model or nn_engine.load_model(weights)
+    if model is None:
+        raise SystemExit(f"no model at {weights}")
+    if not corpus:
+        raise SystemExit("empty evaluation corpus")
+    pred, gold = [], []
+    for finding, label, _g in corpus:
+        p, _c = nn_engine._forward(model, nn_engine.features(finding))
+        pred.append(float(p))
+        gold.append(float(label))
+    top = sorted(range(len(pred)), key=lambda i: -pred[i])[:max(1, k)]
+    return {
+        "records": len(pred),
+        "model_version": model.get("version"),
+        "spearman": round(_spearman_py(pred, gold), 4),
+        "mae": round(sum(abs(p - g) for p, g in zip(pred, gold)) / len(pred), 4),
+        f"precision_at_{len(top)}": round(
+            sum(1 for i in top if gold[i] >= 0.5) / len(top), 4),
+    }
+
+
+def evaluate(corpus_path: Path, weights: Path = WEIGHTS_PATH,
+             k: int = 10) -> Dict[str, Any]:
+    """evaluate_records over a labelled JSONL file."""
+    corpus = load_labeled_corpus(corpus_path)
+    if not corpus:
+        raise SystemExit("empty evaluation corpus")
+    return {"corpus": str(corpus_path),
+            **evaluate_records(corpus, weights, k)}
 
 
 def self_report(path: Path = WEIGHTS_PATH) -> int:
@@ -368,13 +561,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--out", type=Path, default=WEIGHTS_PATH)
     ap.add_argument("--self-report", action="store_true")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="train and print metrics, but do not write weights")
+    ap.add_argument("--eval", type=Path, default=None, metavar="LABELS",
+                    help="evaluate the current weights on a labelled JSONL "
+                         "(no training, no numpy needed)")
+    ap.add_argument("--with-feedback", type=Path, default=None,
+                    metavar="LABELS",
+                    help="mix real verdict labels (GET /api/feedback/export) "
+                         "into the training corpus")
+    ap.add_argument("--feedback-weight", type=int, default=5,
+                    help="times each feedback label is repeated (default 5)")
+    ap.add_argument("--force", action="store_true",
+                    help="write weights even if the promotion gate fails")
+    ap.add_argument("--k", type=int, default=10,
+                    help="k for precision@k in --eval")
     args = ap.parse_args(argv)
     if args.self_report:
         return self_report(args.out)
+    if args.eval:
+        print(json.dumps(evaluate(args.eval, args.out, args.k), indent=1))
+        return 0
     metrics = run(args.corpus, hidden=args.hidden, epochs=args.epochs,
-                  out=args.out)
+                  out=None if args.dry_run else args.out,
+                  feedback_path=args.with_feedback,
+                  feedback_weight=args.feedback_weight, force=args.force)
     print(json.dumps(metrics, indent=1))
-    print(f"wrote {args.out}")
+    if args.dry_run:
+        print("dry run: weights not written")
+        return 0
+    if not metrics.get("promoted"):
+        print("NOT promoted, weights unchanged: " + "; ".join(metrics["gate"]))
+        return 3
+    print(f"promoted: wrote {args.out}")
     return 0
 
 

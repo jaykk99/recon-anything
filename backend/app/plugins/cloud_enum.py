@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

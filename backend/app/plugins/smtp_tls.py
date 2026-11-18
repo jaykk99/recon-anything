@@ -15,7 +15,7 @@ import re
 import socket
 import ssl
 import time
-from typing import List, Optional
+from typing import List
 
 import dns.asyncresolver
 

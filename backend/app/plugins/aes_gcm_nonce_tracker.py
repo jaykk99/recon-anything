@@ -1,7 +1,7 @@
 """SHIP 71: static scanning plus supplied-record IV set comparison. Never attempts decryption."""
 from __future__ import annotations
 import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import find_values, rx, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
-from xml.etree import ElementTree
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat8_common import collect, host_of, load_artifacts

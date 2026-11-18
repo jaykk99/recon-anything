@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import struct
 from typing import Any, Dict, List, Optional
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target

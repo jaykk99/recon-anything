@@ -13,7 +13,7 @@ import asyncio
 import re
 import time
 from typing import List, Set
-from urllib.parse import urljoin, urlparse, parse_qsl
+from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

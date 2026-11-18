@@ -19,7 +19,6 @@ import os
 import sys
 
 import httpx
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from app.cache import Cache  # noqa: E402
 from app.plugins.base import Ctx, Target  # noqa: E402
 from app.plugins.card_leak_detectors import (  # noqa: E402
-    TEST_PANS,
     brand_of,
     is_test_pan,
     scan_text_for_pans,

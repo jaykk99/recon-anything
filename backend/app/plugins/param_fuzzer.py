@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target

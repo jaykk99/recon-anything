@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.plugins.base import Ctx, Finding, PluginResult, PluginStatus, Target  # noqa: E402
+from app.plugins.base import Finding, PluginResult, PluginStatus, Target  # noqa: E402
 from app.plugins.registry import discover  # noqa: E402
 
 IDS = ["reconftw_pipeline", "rengine_scan_engine", "osmedeus_workflow",
@@ -163,7 +163,7 @@ def test_all_ten_registered_and_count_863():
 
 
 def test_orchestration_never_dispatches_orchestrators():
-    from app.plugins._orchestration import ORCHESTRATION_IDS, classify_ids
+    from app.plugins._orchestration import classify_ids
     ctx = vuln_ctx()
     groups = classify_ids(ctx, ["headers", "lifecycle_orchestrator",
                                 "reconftw_pipeline", "no_such_plugin"])

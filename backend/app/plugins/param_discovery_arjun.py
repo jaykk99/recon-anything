@@ -29,12 +29,11 @@ homepage.
 """
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 import uuid
 from typing import Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..net import web_base

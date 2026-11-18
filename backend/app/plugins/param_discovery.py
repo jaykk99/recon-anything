@@ -21,8 +21,8 @@ import asyncio
 import re
 import time
 import uuid
-from typing import Dict, List, Set
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from typing import List, Set
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

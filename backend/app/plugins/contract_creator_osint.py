@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List
 
-from ._cat4_common import artifact_dicts, fetch_json, find_addresses
+from ._cat4_common import artifact_dicts, fetch_json
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 BLOCKSCOUT = "https://eth.blockscout.com/api/v2"

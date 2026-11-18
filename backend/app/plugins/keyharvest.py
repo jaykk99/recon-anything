@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import List, Optional
+from typing import List
 
 from ..classifier import domain_from_target
 from ..net import web_base

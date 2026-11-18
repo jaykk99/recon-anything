@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..classifier import domain_from_target
 from ..ratelimit import fetch, fetch_many
 from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
-                   safe_json_dict, safe_json_list)
+                   safe_json_dict)
 
 # --- sources (all keyless, read-only) ---------------------------------
 GOPLUS_EVM = ("https://api.gopluslabs.io/api/v1/token_security/{chain}"

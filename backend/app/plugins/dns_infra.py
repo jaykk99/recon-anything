@@ -12,7 +12,6 @@ queries to public resolvers and the domain's own nameservers.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Dict, List
 

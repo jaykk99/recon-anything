@@ -20,7 +20,7 @@ from urllib.parse import quote_plus
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch
-from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
+from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 
 # (dork suffix, label, severity) - full query becomes '"{domain}" ' + suffix
 SECRET_DORKS = [

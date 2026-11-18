@@ -17,7 +17,6 @@ from typing import Dict, List, Set
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
 from ..net import web_base
 from .base import (Cost, Ctx, Finding, Plugin, PluginResult, Target,
                   gather_capped)

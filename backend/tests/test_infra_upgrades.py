@@ -127,7 +127,6 @@ def test_result_from_checkpoint_roundtrip():
 
 
 def _mk_run(session, run_id, target_id, job_plugin="reverse_ip"):
-    import datetime as dt
     session.add(Run(id=run_id, mode="passive", source_type="website",
                     status="running"))
     session.add(Target(id=target_id, run_id=run_id, raw="example.com",

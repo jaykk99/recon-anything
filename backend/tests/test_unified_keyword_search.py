@@ -19,7 +19,7 @@ sys.path.insert(
 from app.plugins.base import Ctx, Target  # noqa: E402
 from app.plugins.registry import discover  # noqa: E402
 from app.plugins.unified_keyword_search import (  # noqa: E402
-    Keyword, UnifiedKeywordSearchPlugin, parse_keywords, unified_search)
+    UnifiedKeywordSearchPlugin, parse_keywords, unified_search)
 
 ADDR_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # both keywords
 ADDR_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"  # delegatecall only

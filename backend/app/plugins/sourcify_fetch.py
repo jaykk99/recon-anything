@@ -12,7 +12,6 @@ This plugin reports exactly that remainder. Keyless.
 from __future__ import annotations
 
 import re
-import time
 from typing import List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target

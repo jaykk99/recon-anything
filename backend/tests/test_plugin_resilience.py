@@ -9,7 +9,6 @@ per-plugin status, never a fatal throw.
 Network-free by construction: socket, DNS and HTTP are all stubbed.
 """
 import asyncio
-import importlib
 import os
 import socket
 import sys

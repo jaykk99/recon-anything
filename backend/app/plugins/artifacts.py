@@ -12,7 +12,6 @@ from typing import List
 from urllib.parse import urlparse
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .wayback import fetch_cdx

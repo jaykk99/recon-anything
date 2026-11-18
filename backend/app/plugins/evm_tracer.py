@@ -10,7 +10,7 @@ transaction is ever sent.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from . import _tier10_common as C
 from .base import Cost, Ctx, Plugin, PluginResult, Target

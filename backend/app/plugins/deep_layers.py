@@ -99,7 +99,7 @@ import datetime as dt
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import contract_chain as cc

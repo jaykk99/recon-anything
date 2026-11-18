@@ -12,7 +12,6 @@ import time
 from typing import List
 
 from ..classifier import domain_from_target
-from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 

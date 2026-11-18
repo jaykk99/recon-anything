@@ -17,8 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
-from typing import List, Optional
+from typing import List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 

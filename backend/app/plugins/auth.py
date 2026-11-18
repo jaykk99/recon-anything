@@ -57,7 +57,7 @@ class AuthPlugin(Plugin):
                 raise RuntimeError("homepage fetch failed")
             html = page["text"][:400000]
             page_url = page["url"]
-            headers = dict(r.headers)
+            headers = {str(k).lower(): v for k, v in (page.get("headers") or {}).items()}
         except Exception as e:
             res = self._degraded(f"fetch failed: {str(e)[:200]}")
             res.duration_ms = int((time.monotonic() - t0) * 1000)

@@ -30,7 +30,7 @@ Blockscout facts learned live (Nov 2026, do not re-derive by guessing):
 
 import os
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 

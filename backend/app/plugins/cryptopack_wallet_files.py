@@ -27,7 +27,7 @@ import asyncio
 import json
 import re
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import unquote, urljoin, urlparse
 
 from ..classifier import domain_from_target
@@ -37,7 +37,6 @@ from .cryptopack_util import (
     PackPlugin, b58check_verify, collect_texts, eip55_state,
     segwit_verify, xmr_verify,
 )
-from .injutil import same_domain
 
 B58 = r"1-9A-HJ-NP-Za-km-z"
 

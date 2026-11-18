@@ -1,17 +1,13 @@
 """Hardware-breakpoint-hook (STATIC detector): detects use of hardware-breakpoint / debug-register machinery in an operator-supplied binary - DR0-DR7 references, context-thread calls used to arm debug registers, and vectored exception handlers keyed to debug exceptions. No live hooking of any process is built.
 """
 from __future__ import annotations
-import re, struct, time
-from typing import Any, Dict, List, Tuple
+import re
+from typing import Any, Dict, List
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 from ._cat5_common import (
-    DANGEROUS_IMPORTS, BUFFER_IMPORTS, REMEDIATION, block_edges,
-    code_section_bytes, decode_one, detect_format, elf_imports,
-    elf_section, extract_strings, find_string_xrefs, load_artifacts,
-    mask_secret, offset_to_vaddr, parse_any, parse_elf, parse_macho,
-    parse_pe, pe_all_import_names, shannon_entropy, split_blocks,
-    strings_only, try_capstone_disasm, window_entropies, PT_GNU_STACK,
-    PT_GNU_RELRO, PF_W, PF_X)
+    REMEDIATION, elf_imports,
+    load_artifacts,
+    parse_any, pe_all_import_names, strings_only)
 
 
 def analyze(data: bytes, name: str = "") -> List[Dict[str, Any]]:

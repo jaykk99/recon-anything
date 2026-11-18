@@ -6,10 +6,8 @@ look for. All checks are custom-built, no API keys needed.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import List
-from urllib.parse import urljoin
 
 from ..classifier import domain_from_target
 from ..ratelimit import fetch

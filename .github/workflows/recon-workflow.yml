@@ -1,0 +1,72 @@
+# Run the full recon -> rank -> remediate -> verify -> report pipeline
+# (backend/app/workflow.py) from the Actions tab. Manual trigger only.
+# Boots the API on the runner, scans the target in PASSIVE mode, and
+# uploads report.md / summary.json / findings.json / drafts as an artifact.
+# LLM drafting runs when the ANTHROPIC_API_KEY secret is set; otherwise the
+# report is produced without drafts.
+name: recon-workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target to scan (passive). Only scan what you own or are authorized to assess."
+        required: true
+      min_score:
+        description: "Minimum neural score to draft a fix for"
+        default: "40"
+      limit:
+        description: "Max findings to draft"
+        default: "5"
+
+permissions:
+  contents: read
+
+jobs:
+  workflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: sqlite:///./workflow.db
+      RECON_ACCESS_CODE: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start API
+        run: |
+          nohup python -m uvicorn app.main:app --port 8000 > api.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fs localhost:8000/api/health && exit 0; sleep 1
+          done
+          cat api.log; exit 1
+
+      - name: Run workflow
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          LLM=""; [ -z "$ANTHROPIC_API_KEY" ] && LLM="--no-llm"
+          python -m app.workflow "$TARGET" --out workflow_out \
+            --min-score "${{ inputs.min_score }}" --limit "${{ inputs.limit }}" \
+            --timeout 4800 $LLM
+          cat workflow_out/*/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recon-workflow-${{ github.run_id }}
+          path: |
+            backend/workflow_out
+            backend/api.log

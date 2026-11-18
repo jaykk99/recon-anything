@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from ..classifier import domain_from_target
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target

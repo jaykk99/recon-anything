@@ -2,9 +2,7 @@
 Delta: TVM opcode dialect (incl. TRON token/call-token opcodes) instead of plain EVM decoding; same dangerous-flow scan with TVM labels."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

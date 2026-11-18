@@ -1,7 +1,6 @@
 """VARIANT 68: general Merkle bypass matrix over supplied verifier code/config."""
 from __future__ import annotations
-import re
-from ._cat3_common import find_values, first, has, rx, run_cat3
+from ._cat3_common import first, rx, run_cat3
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 
 

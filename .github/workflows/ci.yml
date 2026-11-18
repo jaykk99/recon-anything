@@ -88,3 +88,31 @@ jobs:
         run: pytest tests/test_nn_mlp.py tests/test_nn_features.py tests/test_nn_pipeline.py tests/test_nn_viewer.py tests/test_nn_train.py -q
         # test_nn_train skips itself on CI (no scanner data there); the
         # viewer test reads the metrics embedded at train time.
+
+  # The per-step gates above are the fast PR check. This runs the WHOLE
+  # backend suite (offline-safe: tool- and network-dependent tests skip
+  # themselves) so the rest of the suite cannot silently rot again.
+  full-suite:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Full backend test suite
+        run: pytest tests -q -p no:cacheprovider

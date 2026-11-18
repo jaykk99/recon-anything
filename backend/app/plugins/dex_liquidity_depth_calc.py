@@ -13,7 +13,7 @@ trading, no simulation of trades against live pools.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ._cat4_common import artifact_dicts, fetch_json
 from .base import Cost, Ctx, Plugin, PluginResult, Target

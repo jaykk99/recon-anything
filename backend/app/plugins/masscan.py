@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import List
 
 from ._tier2_common import (RISKY_PORTS, SERVICE_LABELS, host_of,
                             resolve_ips, tcp_banner)

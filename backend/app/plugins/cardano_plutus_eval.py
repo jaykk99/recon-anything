@@ -2,9 +2,7 @@
 Anchor-gated missing-check analysis: a validator that never finds its own input (double satisfaction), never checks the datum, or never verifies value paid out."""
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List
 
 from .base import Plugin
 

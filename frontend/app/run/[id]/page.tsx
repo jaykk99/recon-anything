@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { getCode, api } from "../../../lib/api";
 import {
   POLL_BASE_MS,
@@ -307,6 +307,48 @@ function SecretValue({ value }: { value: string }) {
   );
 }
 
+// ---- finding verdicts (feedback -> neural engine labels) --------------
+type VerdictMap = Record<string, { verdict: string; note?: string | null }>;
+const VerdictCtx = createContext<{
+  runId: string; verdicts: VerdictMap;
+  setVerdict: (fid: number, v: string | null) => Promise<void>;
+} | null>(null);
+const VERDICT_OPTS: [string, string, string][] = [
+  ["confirmed", "✓ Real", "text-emerald-300 border-emerald-600/60 bg-emerald-950/40"],
+  ["not_actionable", "Real, not worth fixing", "text-sky-300 border-sky-600/60 bg-sky-950/40"],
+  ["false_positive", "✗ False positive", "text-rose-300 border-rose-600/60 bg-rose-950/40"],
+  ["unsure", "Unsure", "text-slate-300 border-slate-500/60 bg-slate-800/60"],
+];
+
+function VerdictBadge({ f }: { f: Finding }) {
+  const ctx = useContext(VerdictCtx);
+  const v = f.id != null ? ctx?.verdicts[String(f.id)]?.verdict : undefined;
+  const opt = VERDICT_OPTS.find((o) => o[0] === v);
+  if (!opt) return null;
+  return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${opt[2]}`}
+    title="your verdict (training label)">you: {opt[1]}</span>;
+}
+
+function VerdictBar({ f }: { f: Finding }) {
+  const ctx = useContext(VerdictCtx);
+  if (!ctx || f.id == null) return null;
+  const fid = f.id;
+  const cur = ctx.verdicts[String(fid)]?.verdict;
+  return (
+    <div className="flex items-center gap-2 flex-wrap pt-1">
+      <span className="text-slate-500">Your verdict:</span>
+      {VERDICT_OPTS.map(([v, label, cls]) => (
+        <button key={v} aria-pressed={cur === v}
+          onClick={() => ctx.setVerdict(fid, cur === v ? null : v)}
+          className={`px-3 py-2 min-h-[44px] rounded-lg border ${cur === v ? cls : "text-slate-400 border-slate-700 bg-slate-900/40"}`}>
+          {label}
+        </button>
+      ))}
+      <span className="text-slate-600 text-[11px] w-full">Verdicts become training labels for the neural ranking. Tap again to clear.</span>
+    </div>
+  );
+}
+
 // One finding as an expandable card. Used in both the top-findings list
 // and inside collapsed noise groups.
 function FindingCard({ f, open, onToggle, onPlayground }: {
@@ -331,6 +373,7 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
               title="bounty impact score, 1-10">impact {impactOf(f)}/10</span>
           )}
           <code className="text-amber-300 text-xs font-mono break-all">{f.key}</code>
+          <VerdictBadge f={f} />
           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${tierBadge(tierOfFinding(f))}`}
             title={f.confidence_reason || "confidence tier"}>
             {tierLabel(tierOfFinding(f))}
@@ -377,6 +420,7 @@ function FindingCard({ f, open, onToggle, onPlayground }: {
           {ev.explorer && (
             <a href={ev.explorer} target="_blank" rel="noopener" className="text-sky-400 inline-block px-2 py-1.5 min-h-[36px]">open in explorer</a>
           )}
+          <VerdictBar f={f} />
           <div className="flex gap-2 flex-wrap pt-1">
             {f.source_url && (
               <a href={f.source_url} target="_blank" rel="noopener"
@@ -1093,10 +1137,33 @@ function RunPageInner({ params }: { params: { id: string } }) {
   // exists), and made a fast run look ~6x slower than it was. Show the
   // real observed concurrency instead: how many plugins are in flight
   // right now, which is live data, not a guess.
+  // Human verdicts on findings (real-outcome labels for the neural
+  // engine, backend app/feedback.py). Loaded once; updated optimistically.
+  const [verdicts, setVerdicts] = useState<VerdictMap>({});
+  useEffect(() => {
+    api<{ verdicts: VerdictMap }>(`/api/runs/${id}/feedback`)
+      .then((d) => setVerdicts(d.verdicts || {}))
+      .catch(() => {});
+  }, [id]);
+  const setVerdict = async (fid: number, v: string | null) => {
+    const prev = verdicts;
+    const next = { ...verdicts };
+    if (v) next[String(fid)] = { verdict: v }; else delete next[String(fid)];
+    setVerdicts(next);
+    try {
+      await api(`/api/runs/${id}/findings/${fid}/feedback`, v
+        ? { method: "PUT", body: JSON.stringify({ verdict: v }) }
+        : { method: "DELETE" });
+    } catch {
+      setVerdicts(prev);  // roll back on failure
+    }
+  };
+
   const runningNow = Object.values(plugins).filter((p) => p.status === "running");
   const runningNames = runningNow.slice(0, 8).map((p) => p.plugin).join(", ");
 
   return (
+    <VerdictCtx.Provider value={{ runId: id, verdicts, setVerdict }}>
     <div className="space-y-4 max-w-full">
       {/* header */}
       <div className="card p-4">
@@ -1263,6 +1330,10 @@ function RunPageInner({ params }: { params: { id: string } }) {
       <ExposureBanner exposure={deriveExposure(findings, summary)}
         pathCount={attackPaths(findings).length}
         onOpen={() => setTab("paths")} />
+
+      {/* Suggested fixes: LLM-drafted fix + regression test for the
+          top neural-ranked findings (backend app/remediation.py). */}
+      <FixesPanel runId={id} />
 
       {/* tabs - thumb reachable, 44px targets. The atm tab only exists on
           ATM source-type runs; website scans never show it. */}
@@ -1553,6 +1624,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
         </div>
       )}
     </div>
+    </VerdictCtx.Provider>
   );
 }
 
@@ -2020,6 +2092,76 @@ function ExposureBanner({ exposure, pathCount, onOpen }:
           className="chip px-4 py-2.5 min-h-[44px] text-rose-200 border border-rose-500/40 bg-rose-950/30 whitespace-nowrap">
           ⚡ {pathCount} attack path{pathCount === 1 ? "" : "s"} →
         </button>
+      )}
+    </div>
+  );
+}
+
+// ---- Suggested fixes panel ---------------------------------------------
+interface FixDraft {
+  id: number; key: string; plugin: string; score: number; status: string;
+  fix?: string; test?: string; error?: string; test_check?: string;
+}
+
+function FixesPanel({ runId }: { runId: string }) {
+  const [drafts, setDrafts] = useState<FixDraft[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    api<{ results: FixDraft[] }>(`/api/runs/${runId}/remediation`)
+      .then((d) => setDrafts(d.results || []))
+      .catch(() => setDrafts([]));
+  }, [runId]);
+
+  const generate = async () => {
+    setBusy(true); setErr("");
+    try {
+      const d = await api<{ results: FixDraft[] }>(
+        `/api/runs/${runId}/remediation?min_score=40&limit=5`, { method: "POST" });
+      setDrafts(d.results || []); setOpen(true);
+    } catch (e) {
+      setErr(String((e as Error).message || e).replace(/^HTTP \d+: /, ""));
+    } finally { setBusy(false); }
+  };
+
+  const n = drafts?.length || 0;
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <button onClick={() => setOpen(!open)} disabled={!n}
+          className="font-semibold text-sm text-left flex-1 min-w-[160px] min-h-[44px]">
+          🛠 Suggested fixes {n ? `(${n})` : ""}
+          <span className="block text-xs text-slate-500 font-normal">
+            Drafted fix + regression test for the top neural-ranked findings. Review before applying.
+          </span>
+        </button>
+        <button onClick={generate} disabled={busy}
+          className="chip px-4 py-2.5 min-h-[44px] border border-sky-500/40 bg-sky-950/30 text-sky-200 whitespace-nowrap">
+          {busy ? "drafting..." : n ? "Redraft" : "Draft fixes"}
+        </button>
+      </div>
+      {err && <div className="text-xs text-amber-300 mt-2">{err}</div>}
+      {open && n > 0 && (
+        <div className="mt-3 space-y-2 min-w-0">
+          {drafts!.map((d) => (
+            <details key={`${d.id}-${d.key}`} className="border border-slate-700/60 rounded p-2 min-w-0 overflow-hidden">
+              <summary className="cursor-pointer text-sm">
+                <span className="font-mono">{d.key}</span>
+                <span className="text-slate-500 text-xs ml-2">
+                  score {d.score} · {d.status} · test {d.test_check || "n/a"}
+                </span>
+              </summary>
+              <div className="text-xs uppercase text-slate-500 mt-2">Fix</div>
+              <pre className="whitespace-pre-wrap text-sm text-slate-200">{d.fix || d.error || "(none)"}</pre>
+              {d.test && (<>
+                <div className="text-xs uppercase text-slate-500 mt-2">Regression test</div>
+                <pre className="whitespace-pre text-xs text-slate-300 overflow-x-auto max-w-full">{d.test}</pre>
+              </>)}
+            </details>
+          ))}
+        </div>
       )}
     </div>
   );

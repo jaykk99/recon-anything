@@ -10,7 +10,6 @@ import asyncio
 import sys
 import time
 
-import httpx
 
 sys.path.insert(0, ".")
 

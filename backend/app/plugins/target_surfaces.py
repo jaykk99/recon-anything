@@ -65,7 +65,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import bsc_common as bc

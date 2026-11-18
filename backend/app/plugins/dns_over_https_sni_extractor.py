@@ -16,13 +16,12 @@ a single public-resolver query about the target itself.
 """
 from __future__ import annotations
 
-import json
 import re
 import struct
 from typing import Any, Dict, List
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
-from ._cat9_common import (collect, is_private_ip, packet_payloads,
+from ._cat9_common import (collect, packet_payloads,
                            parse_pcap, text_of)
 
 _INTERNAL_SUFFIX = (".internal", ".corp", ".lan", ".local", ".intranet",

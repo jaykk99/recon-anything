@@ -36,7 +36,6 @@ from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from .cards import BRANDS, CARD_CTX, PAN_RE, luhn_ok
 from .secretpack import SCOPE_NOTE, fingerprint, safe_evidence
-from .secretutils import is_placeholder
 
 # ---------------------------------------------------------------------------
 # Shared text collection (mirrors exchange_key_leak: homepage + inline

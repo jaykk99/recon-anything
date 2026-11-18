@@ -9,7 +9,6 @@ import time
 from typing import List
 from urllib.parse import quote_plus
 
-from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 

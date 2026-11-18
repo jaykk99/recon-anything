@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Set
+from typing import List, Set
 from urllib.parse import urljoin, urlparse
 
 from ..classifier import domain_from_target

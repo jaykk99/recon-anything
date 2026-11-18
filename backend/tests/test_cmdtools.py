@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 
 import app.plugins.cmdtools as cmd  # noqa: E402
-from app.plugins.base import Ctx, Target  # noqa: E402
+from app.plugins.base import Target  # noqa: E402
 
 
 class _CtxStub:

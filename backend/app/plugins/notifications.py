@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import urllib.request
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from .base import Cost, Ctx, Plugin, PluginResult, Target
 

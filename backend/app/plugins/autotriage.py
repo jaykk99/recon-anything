@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Set, Tuple
+from typing import List, Set, Tuple
 
 from ..classifier import domain_from_target
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target

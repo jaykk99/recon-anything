@@ -17,7 +17,8 @@ import logging
 import os
 
 from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
-                        JSON, String, Text, create_engine)
+                        JSON, String, Text, UniqueConstraint,
+                        create_engine)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from .config import DATABASE_URL as _RAW_DATABASE_URL
@@ -215,6 +216,29 @@ class RunEvent(Base):
     event = Column(String)  # run_start | plugin_start | plugin_done | progress | finding | run_done ...
     data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class FindingFeedback(Base):
+    """A human verdict on one finding: the real-outcome labels the neural
+    engine is evaluated and refit on (app/feedback.py, app/nn_train.py).
+
+    One row per (finding, reviewer); setting a new verdict updates it.
+    ``snapshot`` keeps the finding as it was judged (plugin, key, value,
+    evidence), so the label survives run deletion and later re-scoring.
+    """
+    __tablename__ = "finding_feedback"
+    __table_args__ = (UniqueConstraint("finding_id", "reviewer",
+                                       name="uq_feedback_finding_reviewer"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, index=True)
+    finding_id = Column(Integer, index=True)
+    reviewer = Column(String, default="owner")  # "owner" or "user:<id>"
+    verdict = Column(String, index=True)  # confirmed|not_actionable|false_positive|unsure
+    note = Column(Text, nullable=True)
+    snapshot = Column(JSON)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow,
+                        onupdate=_utcnow)
 
 
 class PluginJob(Base):
