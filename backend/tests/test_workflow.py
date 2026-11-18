@@ -1,4 +1,11 @@
 """End-to-end workflow (app/workflow.py): offline, fake API + fake LLM."""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
 import json
 
 import httpx

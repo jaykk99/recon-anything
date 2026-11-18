@@ -1,4 +1,11 @@
 """Recon -> remediation workflow (app/remediation.py): offline, fake LLM."""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
 import json
 
 from app import remediation_llm as rem

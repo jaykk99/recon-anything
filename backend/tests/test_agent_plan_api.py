@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import config, remediation  # noqa: E402
+from app import config, remediation_llm as remediation  # noqa: E402
 from app.agent import plan as plan_mod  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Finding, Run, Target, get_session, init_db  # noqa: E402
