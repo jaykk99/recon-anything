@@ -46,9 +46,17 @@ _dmarc
 """.split()
 
 
-# Interesting-subdomain classifier: turns a subdomain list into
-# actionable findings. (label_prefix, severity, why)
-CRITICAL_SUBS = {
+# Interesting-subdomain classifier: turns a subdomain list into leads to
+# investigate. A name in a CT log only tells us the host *exists* - not
+# that it is reachable, unhardened, or exposing anything. So a name match
+# is a LOW/informational lead, never critical on its own; it escalates
+# only when an actual observation corroborates it (a staleness signal
+# below bumps it to medium). HIGHER_INTEREST names (admin, jenkins, db,
+# vpn...) and NOTABLE names (api, docs, static...) differ only in the
+# `why` guidance text and in priority, not in base severity. Rating a
+# host CRITICAL because it is called "dev" is exactly the kind of
+# shape-only false finding that buries real ones.
+HIGHER_INTEREST_SUBS = {
     "admin": "admin panels are the first target for brute force and auth bypass",
     "administrator": "admin panels are the first target for brute force and auth bypass",
     "backend": "backend hosts often lack the hardening of the main site",
@@ -84,7 +92,7 @@ CRITICAL_SUBS = {
     "backup": "backup hosts may expose archives of the whole site",
     "bak": "backup hosts may expose archives of the whole site",
 }
-MEDIUM_SUBS = {
+NOTABLE_SUBS = {
     "api": "api surface: enumerate endpoints and check auth per route",
     "app": "app host: check for debug endpoints and version disclosure",
     "mobile": "mobile api host: check for weak cert pinning assumptions",
@@ -128,16 +136,21 @@ STALE_TITLE_PATTERNS = [
 
 
 def classify_subdomain(sub: str, domain: str):
-    """Return (severity, why) if the subdomain looks interesting."""
+    """Return (severity, why) if the subdomain name is a lead worth a look.
+
+    A name match is only a lead - the host's existence is all we know - so
+    the base severity is "low". The emitter escalates to "medium" when an
+    observation (staleness) corroborates it. Never "critical" on a name.
+    """
     first = sub.split(".")[0].lower()
     # strip common numeric suffixes: admin2, dev01
     base = first.rstrip("0123456789")
     for key in (first, base):
-        if key in CRITICAL_SUBS:
-            return ("critical", CRITICAL_SUBS[key])
+        if key in HIGHER_INTEREST_SUBS:
+            return ("low", HIGHER_INTEREST_SUBS[key])
     for key in (first, base):
-        if key in MEDIUM_SUBS:
-            return ("medium", MEDIUM_SUBS[key])
+        if key in NOTABLE_SUBS:
+            return ("low", NOTABLE_SUBS[key])
     return (None, None)
 
 
@@ -428,6 +441,9 @@ class SubdomainsPlugin(Plugin):
                 stale_note = ""
                 if stale_signals:
                     stale_note = f" STALENESS: {'; '.join(stale_signals)}. This host looks abandoned."
+                    # An observed staleness signal corroborates the name
+                    # lead: bump low -> medium. Still never critical.
+                    sev = "medium"
                 findings.append(self._f(
                     "dns", "interesting_subdomain",
                     f"{sev.upper()}: {sub} looks interesting: {why}.{stale_note}",
