@@ -31,7 +31,7 @@ def test_investigator_tools_registered():
     names = {t["name"] for t in mcp_server.TOOLS}
     assert {"investigate", "investigation_status",
             "validate_candidate", "bounty_pack"} <= names
-    assert len(mcp_server.TOOLS) == 59  # 56 + 3 (recon_capabilities, recon_funnel, recon_lineage)
+    assert len(mcp_server.TOOLS) == 60  # 56 + 3 (recon_capabilities, recon_funnel, recon_lineage) + 1 (recon_verify_contract)
 
 
 def _wait_closed(inv_id, timeout_s=120):

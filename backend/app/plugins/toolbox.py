@@ -305,8 +305,17 @@ def _tool_env() -> Dict[str, str]:
     PATH (solc-select's solc shim lives in the slither venv), and the
     z3 4.12 shared library from the z3-solver wheel on
     LD_LIBRARY_PATH so solc's SMTChecker can actually load a solver
-    (without it CHC/BMC silently report 'solver not available')."""
+    (without it CHC/BMC silently report 'solver not available').
+    A TMPDIR/TEMP/TMP pointing at a directory that does not exist is
+    dropped: Python's tempfile falls back on its own, but node tools
+    (surya's `temp` lib calls realpathSync on TMPDIR at startup)
+    crash with ENOENT before doing any work, and the adapter then
+    silently reports zero hits for an installed tool."""
     env = dict(os.environ)
+    for _tmp_key in ("TMPDIR", "TEMP", "TMP"):
+        _tmp_val = env.get(_tmp_key)
+        if _tmp_val and not os.path.isdir(_tmp_val):
+            del env[_tmp_key]
     extra = [AUDIT_BIN, os.path.join(SLITHER_VENV, "bin"),
              os.path.join(SEMGREP_VENV, "bin"),
              os.path.join(WAKE_VENV, "bin"),

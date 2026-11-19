@@ -463,6 +463,20 @@ def test_round2_missing_binaries_are_silent(tmp_path, monkeypatch):
     assert toolbox.tool_binary("wake") is None
 
 
+def test_tool_env_drops_missing_tmpdir(monkeypatch, tmp_path):
+    # A TMPDIR pointing at a directory that does not exist must not
+    # reach tool subprocesses: node tools (surya's `temp` lib)
+    # crash with ENOENT at startup and the adapter then silently
+    # reports zero hits for an installed tool. Regression: the live
+    # surya adapter returned 0 hits while TMPDIR=/srv/quota-tmp did
+    # not exist yet.
+    missing = str(tmp_path / "does-not-exist")
+    monkeypatch.setenv("TMPDIR", missing)
+    assert "TMPDIR" not in toolbox._tool_env()
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    assert toolbox._tool_env()["TMPDIR"] == str(tmp_path)
+
+
 # -- live adapter runs (skip when the tool is not installed here) ---
 
 def _require(tool):
