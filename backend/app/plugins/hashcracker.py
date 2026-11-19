@@ -93,6 +93,36 @@ SCAN_RES: List[Tuple[str, re.Pattern]] = [
 MAX_SHA1_LOOKUPS = 5
 MAX_MD5_LOOKUPS = 5
 
+# A bare hex string is a hash by shape only. On a public page the vast
+# majority are NOT password hashes: site-verification meta tags
+# (p:domain_verify, google-site-verification, msvalidate, yandex),
+# subresource-integrity and asset/chunk fingerprints, ETags, CSP nonces,
+# build ids, request signatures. The hex regexes are structurally correct
+# but context-blind, so a Pinterest verification token became an "MD5
+# password crackable in seconds". Gate the four bare-hex specs on context:
+# a real leaked credential hash sits next to a credential label; the noise
+# sits next to verification/integrity/asset markers.
+_BARE_HEX = {"md5", "sha1", "sha256", "sha512"}
+_HASH_CRED_CTX = re.compile(
+    r"(?i)(pass(word|wd|phrase)?|pwd|credential|login|secret|auth|"
+    r"digest|\bhash\b|md5|sha1|sha256|sha512|user(name)?|account)")
+_HASH_NOISE_CTX = re.compile(
+    r"(?i)(verif|site-verification|domain_verify|msvalidate|yandex|"
+    r"google-site|facebook-domain|pinterest|integrity|sri|sourcemap|"
+    r"nonce|etag|e-tag|build[-_]?id|asset|chunk|bundle|cache|manifest|"
+    r"sig=|signature=|csrf|request-?id|trace-?id|commit|revision)")
+
+
+def _hex_in_credential_context(html: str, start: int, end: int) -> bool:
+    """True when a bare hex match looks like a leaked credential hash and
+    not page/asset metadata. Credential label must precede it; a
+    verification/integrity/asset marker on either side disqualifies it."""
+    before = html[max(0, start - 48):start]
+    around = html[max(0, start - 72):min(len(html), end + 72)]
+    if _HASH_NOISE_CTX.search(around):
+        return False
+    return bool(_HASH_CRED_CTX.search(before))
+
 # Gromweb result page anchor: "... was successfully reversed into the
 # string <a class="String" href="/?string=X">X</a>". The JSON API the
 # plugin originally used is gone (the endpoint serves HTML only now),
@@ -270,6 +300,12 @@ class HashcrackerPlugin(Plugin):
                 val = m.group(1) if m.groups() else m.group(0)
                 if (re.fullmatch(r"0+", val) or re.fullmatch(r"f+", val, re.I)
                         or is_placeholder(val)):
+                    continue
+                # Bare hex only counts as a credential hash when it sits in
+                # a credential context - not a verification tag, SRI hash,
+                # ETag or asset fingerprint.
+                if hid in _BARE_HEX and not _hex_in_credential_context(
+                        html, m.start(), m.end()):
                     continue
                 key = f"{hid}:{val.lower()}"
                 if key in seen:

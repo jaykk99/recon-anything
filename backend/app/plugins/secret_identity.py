@@ -22,8 +22,10 @@ Tests and canaries use invented fake values only.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import time
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..classifier import domain_from_target
@@ -154,6 +156,54 @@ def _is_placeholder(value: str) -> bool:
     return low in _PLACEHOLDERS or "example" in low or "sample" in low
 
 
+# Key names that merely CONTAIN a secret-ish word but never carry a secret:
+# i18n/UI strings (tokenDescription, footer_resources_list_your_token),
+# config pointers (tokenizedStockBaseUrl, *Endpoint, *Address). Matching
+# these is what turned crypto.com's translation strings into 40 fake
+# "exposed secret" findings.
+_KEY_DENY = re.compile(
+    r"(?i)(description|_?name|label|title|tooltip|placeholder|message|"
+    r"_?text|_?list|count|index|_?url|uri|base_?url|endpoint|address|"
+    r"symbol|_?type|_id$|heading|header|footer|i18n|locale|translation|"
+    r"caption|resources|filter_|desc$)")
+
+# Real-credential prefixes: if the value starts like a known token it is a
+# secret regardless of entropy (short known tokens still matter).
+_SECRET_PREFIX = re.compile(
+    r"(?i)(sk_|pk_|rk_|ey[A-Za-z0-9_-]{8}|AKIA|ASIA|AIza|ghp_|gho_|ghs_|"
+    r"github_pat_|xox[baprs]-|glpat-|hf_|sk-|npm_|SG\.|-----BEGIN)")
+
+
+def _shannon(s: str) -> float:
+    """Shannon entropy in bits/char. Prose ~2.8-3.1; random keys 3.5-5."""
+    n = len(s) or 1
+    return -sum((c / n) * math.log2(c / n) for c in Counter(s).values())
+
+
+def _looks_like_secret(value: str) -> bool:
+    """True only for values that actually look like a credential.
+
+    A real API key, token or secret has no internal whitespace, is not a
+    URL or path, and is either high-entropy or carries a known token
+    prefix. This rejects natural-language i18n values ("List your token",
+    "Powering the Crypto.com Ecosystem") and config URLs, which is where
+    the substring-only key match produced its false positives.
+    """
+    v = (value or "").strip()
+    if len(v) < 16:
+        return False
+    if any(ch.isspace() for ch in v):
+        return False
+    if v.lower().startswith(("http://", "https://", "/", "www.", "data:")):
+        return False
+    if _SECRET_PREFIX.search(v):
+        return True
+    if _shannon(v) < 3.2:
+        return False
+    token_chars = sum(1 for ch in v if ch.isalnum() or ch in "-_+/=.~")
+    return token_chars / len(v) >= 0.95
+
+
 # Generic assignment shapes: a variable/field whose name says it carries
 # a secret, followed by a quoted value. Narrow on purpose: this plugin
 # identifies exposures, it does not try to enumerate every key format
@@ -223,6 +273,15 @@ class SecretIdentityPlugin(Plugin):
             for match in _ASSIGNMENT_RE.finditer(text):
                 var_name, value = match.group(1), match.group(2)
                 if _is_placeholder(value):
+                    continue
+                # The key name only contains "token"/"secret" as a
+                # substring (tokenDescription, list_your_token) - not a
+                # secret-bearing field.
+                if _KEY_DENY.search(var_name):
+                    continue
+                # The value does not look like a credential (prose, URL,
+                # low entropy). Identification requires an actual secret.
+                if not _looks_like_secret(value):
                     continue
                 fp = fingerprint(value)
                 if fp in seen:
