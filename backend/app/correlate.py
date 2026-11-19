@@ -174,6 +174,26 @@ _CONTRACT_UNGATED_KEY = re.compile(
     r"unprotected_?withdraw|ungated_?drain)")
 _ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 
+# Advisory / recon findings: a lead to investigate, not an observation of a
+# real exposure. A Google/paste dork is a search query to run; an
+# "interesting subdomain" is a note to go look; an autotriage route picks
+# which scanners to focus; a port suggestion says a port "commonly hosts"
+# something and to verify manually. None of them is evidence that the thing
+# they point at actually exists, so they must never raise an exploit signal
+# or chain into an attack path - doing so manufactures confident-looking
+# paths out of "you should check whether...". They stay in the run as the
+# leads they are; they are only withheld from path synthesis and scoring.
+_ADVISORY_KEYS = frozenset({
+    "google_dork", "dork", "paste_dork", "github_manual_dorks",
+    "interesting_subdomain", "subdomain_enum_note", "takeover_note",
+    "triage_route", "port_suggestion",
+})
+
+
+def _is_advisory(r: Dict[str, Any]) -> bool:
+    """True for recon leads that point at a thing without observing it."""
+    return _norm(r.get("key")) in _ADVISORY_KEYS
+
 # A finding counts as "high-value credential material" if its key hits the
 # cloud-cred or wallet pattern. These are what blast-radius rules pivot on.
 _PORT_VAL_META = re.compile(r"\b(22|3389|3306|5432|27017|6379|9200|21|23|"
@@ -1368,7 +1388,18 @@ def correlate(rows: List[Dict[str, Any]], host_hint: Optional[str] = None
     skipped, the worst case is fewer paths.
     """
     safe_rows = [r for r in rows if isinstance(r, dict)]
-    idx = _build_index(safe_rows)
+    # Synthesis gate: chain and score only observed findings. Drop recon
+    # leads (dorks, "interesting" notes, triage routes, port suggestions)
+    # and claims the run's own evidence left unproven (claim_status
+    # "candidate") or contradicted ("suppressed"). The caller already drops
+    # suppressed rows, but gating here keeps correlate() correct on its own
+    # for any caller and finishes the precision gate the pipeline intends:
+    # a candidate - a name-guessed bucket, a CVE with no observed version -
+    # must not become a confident attack path or inflate the exposure score.
+    graded = [r for r in safe_rows
+              if not _is_advisory(r)
+              and _norm(r.get("claim_status")) not in ("candidate", "suppressed")]
+    idx = _build_index(graded)
     paths: List[Dict[str, Any]] = []
     seen: Set[str] = set()
     for rule in RULES:
@@ -1394,5 +1425,5 @@ def correlate(rows: List[Dict[str, Any]], host_hint: Optional[str] = None
         -_EXPL_RANK.get(_norm(p["evidence"].get("exploitability")), 0),
         -int(p.get("confidence") or 0),
         p["value"]))
-    exposure = _exposure_score(safe_rows, paths)
+    exposure = _exposure_score(graded, paths)
     return paths, exposure
