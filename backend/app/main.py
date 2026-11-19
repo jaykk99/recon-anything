@@ -1597,6 +1597,15 @@ def api_vuln_dry_run(run_id: str, body: DryRunIn, request: Request):
 
 class SubVerifyIn(BaseModel):
     force: bool = False
+    # Deep mode: for each LIVE host, also run the per-host deep probe
+    # (CORS-with-credentials, security headers, content-verified exposed
+    # files). This is the depth that turns "N live hosts" into "what each
+    # host actually exposes". Opt-in because it sends more requests.
+    deep: bool = False
+    # How many hosts to verify. The old hard cap of 100 silently dropped
+    # ~80% of a big target's surface (crypto.com has ~569); raise the
+    # default and let callers go wider.
+    limit: int = 250
 
 
 @app.post("/api/runs/{run_id}/subdomains/verify", dependencies=[Depends(gate)])
@@ -1626,10 +1635,25 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
             v = (r.get("value") or "").split()[0].strip().lower().rstrip(".")
             if v and re.match(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$", v) and v not in hosts:
                 hosts.append(v)
-    hosts = hosts[:100]
+    hosts = hosts[:max(1, min(body.limit, 1000))]
 
     cached = summary.get("subdomain_status") or {}
     now = _time.time()
+
+    async def _deep(host: str) -> List[Dict]:
+        from .deep_host_probe import deep_probe_host_async
+
+        async def afetch(url: str, extra: Dict[str, str]):
+            async with net.async_client(
+                    timeout=8, follow_redirects=True,
+                    headers={"User-Agent": "ReconAnything/1.0", **extra}
+                    ) as client:
+                resp = await client.get(url)
+            return (resp.status_code, dict(resp.headers), resp.text[:8192])
+        try:
+            return await deep_probe_host_async(host, afetch)
+        except Exception:
+            return []
 
     async def check(host: str):
         c = cached.get(host)
@@ -1658,6 +1682,11 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
                     break
             except Exception:
                 continue
+        # Deep probe only live hosts (the ones worth the extra requests).
+        if body.deep and result.get("live"):
+            deep = await _deep(host)
+            if deep:
+                result = dict(result, deep_findings=deep)
         return host, result
 
     sem = asyncio.Semaphore(10)
@@ -1680,7 +1709,20 @@ async def api_subdomain_verify(run_id: str, body: SubVerifyIn,
     finally:
         session.close()
     live_count = sum(1 for v in out.values() if v.get("live"))
-    return {"hosts": out, "count": len(out), "live": live_count}
+    # Flatten per-host deep findings into one ranked list so confirmed
+    # exposures and CORS issues across the whole surface are visible at a
+    # glance, not buried inside each host blob.
+    _sev = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    deep_findings: List[Dict] = []
+    for host, v in out.items():
+        for f in (v.get("deep_findings") or []):
+            deep_findings.append(f)
+    deep_findings.sort(key=lambda f: _sev.get(f.get("severity"), 5))
+    resp = {"hosts": out, "count": len(out), "live": live_count}
+    if body.deep:
+        resp["deep_findings"] = deep_findings
+        resp["deep_finding_count"] = len(deep_findings)
+    return resp
 
 
 @app.get("/api/runs/{run_id}/probe/port", dependencies=[Depends(gate)])
