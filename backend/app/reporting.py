@@ -544,6 +544,63 @@ def run_progress(session, run_id: str) -> Dict:
             "estimated_s": estimated_s, "running": running}
 
 
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _row_severity(row: Dict) -> str:
+    ev = row.get("evidence") or {}
+    sev = (ev.get("severity") or row.get("severity") or "").lower()
+    return sev if sev in _SEV_RANK else "info"
+
+
+def top_findings(rows: List[Dict], limit: int = 25) -> List[Dict]:
+    """The run's confirmed findings, ranked, with proof - the thing a
+    user actually wants to see first.
+
+    Only ``claim_status == 'verified'`` rows: the precision gate has
+    matched each against the run's own captured evidence, so these are
+    the findings backed by proof, not leads. Ranked by severity then
+    confidence, each carrying the proof snippet (from the content
+    verifier, the live probe, or the finding's own evidence) so it is
+    actionable and checkable without opening the full finding. This is
+    read-time and pure; old runs get the same view.
+    """
+    verified = [r for r in rows if r.get("claim_status") == "verified"]
+
+    def _rank(r: Dict):
+        ev = r.get("evidence") or {}
+        return (_SEV_RANK[_row_severity(r)], -int(r.get("confidence") or 0),
+                str(r.get("plugin") or ""))
+
+    out = []
+    for r in sorted(verified, key=_rank)[:limit]:
+        ev = r.get("evidence") or {}
+        proof = (ev.get("proof") or ev.get("detail")
+                 or (r.get("precision") or {}).get("basis") or "")
+        if isinstance(proof, list):
+            proof = "; ".join(str(p) for p in proof[:3])
+        out.append({
+            "severity": _row_severity(r),
+            "plugin": r.get("plugin"),
+            "key": r.get("key"),
+            "value": str(r.get("value") or "")[:200],
+            "confidence": r.get("confidence"),
+            "proof": str(proof)[:200],
+            "source_url": r.get("source_url") or "",
+        })
+    return out
+
+
+def verified_by_severity(rows: List[Dict]) -> Dict[str, int]:
+    """Count of confirmed findings per severity - the headline number a
+    paying user reads first (e.g. '2 high, 1 medium confirmed')."""
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for r in rows:
+        if r.get("claim_status") == "verified":
+            counts[_row_severity(r)] += 1
+    return counts
+
+
 def executive_summary(rows: List[Dict]) -> Dict:
     techs = sorted({r["value"] for r in rows if r["key"] == "tech"})
     leaks = [r for r in rows if r["category"] == "leak"]
@@ -572,8 +629,15 @@ def executive_summary(rows: List[Dict]) -> Dict:
         plan_block = _plan_summary(rows)
     except Exception:
         pass
+    confirmed = top_findings(rows)
+    by_sev = verified_by_severity(rows)
     return {
         "total_findings": len(rows),
+        # Lead with the confirmed findings so a user sees what is real
+        # before the full flood of leads and recon rows.
+        "confirmed_count": sum(by_sev.values()),
+        "confirmed_by_severity": by_sev,
+        "top_findings": confirmed,
         "confidence_tiers": tiers,
         "precision": precision_block,
         "plan": plan_block,
