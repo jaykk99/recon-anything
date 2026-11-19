@@ -21,6 +21,7 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 
 _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _tmp.close()
@@ -150,9 +151,16 @@ def test_run_one_job_checkpoint_wiring(tmp_path, monkeypatch):
     cp_mod._default_store = None
     try:
         session = get_session()
+        # Unique per process: in a big suite another module may bind
+        # the engine to the persistent ./recon.db before this
+        # module's temp DATABASE_URL is read, so fixed ids collide
+        # with rows left by an earlier run (UNIQUE runs.id).
+        suffix = uuid.uuid4().hex[:8]
         try:
-            j1 = _mk_run(session, "cp-run-1", "cp-t-1")
-            j2 = _mk_run(session, "cp-run-2", "cp-t-2")
+            j1 = _mk_run(session, f"cp-run-1-{suffix}",
+                          f"cp-t-1-{suffix}")
+            j2 = _mk_run(session, f"cp-run-2-{suffix}",
+                          f"cp-t-2-{suffix}")
         finally:
             session.close()
         asyncio.run(runner._run_one_job(j1))
@@ -542,4 +550,4 @@ def test_mcp_knowledge_tools(tmp_path, monkeypatch):
 
 def test_registry_still_794():
     from app.plugins.registry import discover
-    assert len(discover()) == 1485  # infra adds no plugins; 786 master + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10) + 5 deep-audit batch-11 detectors (deep_audit11) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129) + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
+    assert len(discover()) == 1490  # infra adds no plugins; 786 master + 8 deep-audit batch-9 detectors (deep_audit9) + 1 unified keyword search plugin (unified_keyword_search) + 5 deep-audit batch-10 detectors (deep_audit10) + 5 deep-audit batch-11 detectors (deep_audit11) + 6 beyond-recon plugins (nuclei_templates, lifecycle, content_discovery, param_discovery_arjun, js_linkfinder, wayback_surface) + 5 sec_* secret-exposure detectors (secretpack) + 1 idorleak detector (idor-error-leak) + 1 meta_orchestrator plugin (PR #77) + 10 Tier-1 OSINT plugins (PR #119) + 8 Tier-2 Enumeration plugins (PR #124) + 6 Tier-3 Fuzzing plugins (PR #121) + 10 Tier-4 Vuln/CVE plugins (PR #125) + 10 Tier-5 Orchestration plugins (PR #123) + 8 Tier-6 Detection plugins (PR #126) + 10 Tier-7 Blockchain Ingestion plugins (PR #127) + 5 Tier-8 Static Analysis plugins (PR #129) + 8 Tier-9 plugins (PR #128) + 10 Tier-10 Mempool/MEV plugins (PR #130) + 1 cache_control_audit plugin
