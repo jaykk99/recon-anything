@@ -569,6 +569,11 @@ _SEP_NAME_RE = re.compile(
 _VERIFYISH_RE = re.compile(
     r"ecrecover|ECDSA|recover\s*\(|permit|verify|signature",
     re.I)
+# A live separator accessor's name: DOMAIN_SEPARATOR,
+# domainSeparator, getDomainSeparator - but NOT a
+# make/build-prefixed builder (makeDomainSeparator).
+_ACCESSOR_NAME_RE = re.compile(
+    r"(get_?|_)?domain_?separator", re.I)
 
 
 _CHAIN_TERM_RE = re.compile(
@@ -576,6 +581,48 @@ _CHAIN_TERM_RE = re.compile(
     r"\bchainId\w*\b|\b\w*[Cc]hainID\w*\b")
 _CHAIN_READ_RE = re.compile(
     r"block\.chainid|chainid\s*\(\s*\)", re.I)
+# Chain-id accessors that do not spell out block.chainid in the
+# calling function: the PancakeSwap ChainId library
+# (ChainId.get() -> chainid() opcode) and the OZ / Centre
+# getChainId() helper. Matched case-insensitively so the
+# assembly opcode chainid() is covered too.
+_CHAIN_ID_ACCESSOR_RE = re.compile(
+    r"ChainId\s*\.\s*get\s*\(|getChainId\s*\(|"
+    r"\bchainId\s*\(\s*\)", re.I)
+
+
+def _chain_readers(fns) -> set:
+    """Names of functions that read the live chain id, closed
+    transitively over the call graph: a helper that calls a
+    reader is itself a reader (initialize -> makeDomainSeparator
+    -> chainid(); DOMAIN_SEPARATOR -> ChainId.get() ->
+    chainid()). The helper may live in a library or another
+    file, so callers pass the whole-source fn list."""
+    readers = {fn["name"] for fn in fns
+               if _CHAIN_READ_RE.search(fn["text"])
+               or _CHAIN_ID_ACCESSOR_RE.search(fn["text"])}
+    changed = True
+    while changed:
+        changed = False
+        for fn in fns:
+            if fn["name"] in readers:
+                continue
+            if any(re.search(r"\b" + re.escape(h) + r"\s*\(",
+                             fn["text"]) for h in readers):
+                readers.add(fn["name"])
+                changed = True
+    return readers
+
+
+def _reads_chain_id(text: str, readers) -> bool:
+    """True when text reads the live chain id directly
+    (block.chainid, the chainid() opcode, a ChainId.get() /
+    getChainId() accessor) or calls a function in readers
+    (transitively chain-reading)."""
+    if _CHAIN_READ_RE.search(text) or _CHAIN_ID_ACCESSOR_RE.search(text):
+        return True
+    return any(re.search(r"\b" + re.escape(h) + r"\s*\(",
+                         text) for h in readers)
 
 
 def _chain_bound_at_deploy(text_all: str, fns) -> bool:
@@ -587,18 +634,17 @@ def _chain_bound_at_deploy(text_all: str, fns) -> bool:
     fork replay, an accepted ecosystem-wide design (Dai, Uni,
     UniswapV2Pair all ship it). The chain term may sit in a
     helper (_chainID() / _getChainID()) called from the
-    separator builder or constructor."""
-    helpers = {fn["name"] for fn in fns
-               if fn["name"] != "constructor"
-               and _CHAIN_READ_RE.search(fn["text"])}
+    separator builder or constructor, or two hops down
+    (initialize -> EIP712.makeDomainSeparator() -> chainid()
+    in assembly); helper resolution is transitive."""
+    readers = _chain_readers(fns)
     for fn in fns:
         t = fn["text"]
         if not (_SEP_USE_RE.search(t) or "EIP712Domain" in t):
             continue
         if _CHAIN_TERM_RE.search(t):
             return True
-        if any(re.search(r"\b" + re.escape(h) + r"\s*\(", t)
-               for h in helpers):
+        if _reads_chain_id(t, readers):
             return True
     return False
 
@@ -612,13 +658,44 @@ def _analyze_separator(src: str, spec: DetectorSpec,
     if not _SEP_USE_RE.search(text_all):
         return []
     # SILENT: some non-constructor function recomputes a
-    # separator from block.chainid at call time.
+    # separator from the live chain id at call time, directly
+    # (block.chainid) or through a chain-id accessor / helper
+    # (ChainId.get(), getChainId(), the chainid() opcode, or a
+    # helper that reads it - PancakeSwap ChainId / Centre
+    # EIP712 shapes). The helper may live in a library or
+    # another file, so resolve it over the whole source.
+    # A builder called only from the constructor / initializer
+    # is NOT a live recompute: it caches the separator once
+    # (deploy-bound, handled below). So a chain-reading
+    # separator fn silences only when it is a verify fn that
+    # inline-recomputes, a *domainSeparator* accessor (not a
+    # make/build-prefixed builder), or a helper called from a
+    # verify path. An initializer is excluded outright.
+    _, all_fns = _scope_fns(src, "")
+    readers = _chain_readers(all_fns)
     for fn in fns:
         if fn["name"] == "constructor":
             continue
-        if "block.chainid" in fn["text"] and _SEP_USE_RE.search(
-                fn["text"]):
-            return []
+        if fn["name"].lower().startswith("initialize"):
+            continue
+        if not _SEP_USE_RE.search(fn["text"]):
+            continue
+        if not _reads_chain_id(fn["text"], readers):
+            continue
+        if _VERIFYISH_RE.search(fn["text"] + fn["name"]):
+            return []  # verify fn inline-recomputes
+        if _ACCESSOR_NAME_RE.fullmatch(fn["name"]):
+            return []  # live separator accessor
+        for vf in fns:
+            if vf["name"] == "constructor":
+                continue
+            if vf["name"].lower().startswith("initialize"):
+                continue
+            if not _VERIFYISH_RE.search(vf["text"] + vf["name"]):
+                continue
+            if re.search(r"\b" + re.escape(fn["name"]) + r"\s*\(",
+                         vf["text"]):
+                return []  # helper called from a verify path
     # Is the separator cached / unbound? Cached = assigned in
     # the constructor, declared immutable, or never assigned
     # inside any function body (a plain state var set once).
@@ -651,6 +728,21 @@ def _analyze_separator(src: str, spec: DetectorSpec,
     if not (cached or constructed_unbound or inline_unbound):
         return []
     deploy_bound = _chain_bound_at_deploy(text_all, fns)
+    if not deploy_bound:
+        # The separator construction may live in a helper /
+        # library in another file: a scoped separator-using
+        # function that reads the live chain id (directly or
+        # through a helper resolved over the whole source) is
+        # deployment-chain-bound too (Centre FiatToken:
+        # initialize() caches DOMAIN_SEPARATOR from
+        # EIP712.makeDomainSeparator(), which reads chainid()
+        # in assembly).
+        for fn in fns:
+            if not _SEP_USE_RE.search(fn["text"]):
+                continue
+            if _reads_chain_id(fn["text"], readers):
+                deploy_bound = True
+                break
     out: List[Dict[str, Any]] = []
     for fn in fns:
         if fn["name"] == "constructor":

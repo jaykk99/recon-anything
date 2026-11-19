@@ -207,6 +207,39 @@ contract PermitTokenClean is EIP712 {{
 }}
 """
 
+# Domain machinery in another file (FP elimination, 2026-11-18):
+# the permit builds its digest through a library helper in a
+# separate file, and the EIP-712 domain binding (DOMAIN_SEPARATOR
+# / block.chainid) lives only in that file, outside the target
+# contract's scope. Must stay silent: the full-source check sees
+# the binding. A raw-digest permit with no domain binding anywhere
+# in the source must still fire (see _PERMIT_VULN).
+_PERMIT_DOMAIN_IN_OTHER_FILE = """
+// ==== contracts/PermitToken.sol ====
+contract PermitToken {
+    bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    mapping(address => uint256) public nonces;
+
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline));
+        bytes32 digest = LibEIP712.toTypedDataHash(structHash);
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == owner, "bad sig");
+    }
+}
+
+// ==== contracts/libraries/LibEIP712.sol ====
+library LibEIP712 {
+    function toTypedDataHash(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\\x19\\x01", DOMAIN_SEPARATOR(), structHash));
+    }
+
+    function DOMAIN_SEPARATOR() internal view returns (bytes32) {
+        return keccak256(abi.encode(keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"), keccak256(bytes("Token")), keccak256(bytes("1")), block.chainid, address(this)));
+    }
+}
+"""
+
 # ---------------------------------------------------------------------------
 # 4. weak_onchain_randomness
 # ---------------------------------------------------------------------------
