@@ -25,7 +25,7 @@ claim_guard_wrong_key_replay, claim_callback_before_claimed_flag,
 merkle_proof_unbounded_leaf_index, merkle_leaf_single_hash,
 recipient_unbacked_claim, gamefi_state_desync_reward_claim,
 staking_reward_compounding_reentrancy);
-the registry discovers exactly 1480 plugins including all five.
+the registry discovers exactly 1485 plugins including all five.
 """
 import os
 import sys
@@ -85,8 +85,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_1480():
     reg = discover()
-    assert len(reg) == 1480, \
-        f"registry size {len(reg)}, expected 1480"
+    assert len(reg) == 1485, \
+        f"registry size {len(reg)}, expected 1485"
 
 
 def test_vuln_fires_candidate_with_evidence():
