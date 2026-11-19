@@ -120,6 +120,23 @@ def test_no_cross_talk_between_vuln_fixtures():
                 f"{hits}")
 
 
+def test_permit_domain_in_other_file_is_silent():
+    # FP elimination (2026-11-18): the permit builds its digest
+    # through a library helper in another file, and the EIP-712
+    # domain binding lives only in that file, outside the target
+    # contract's scope. The contract name is passed explicitly
+    # (as the scanner does): with an empty name the scope would
+    # swallow the whole compilation and the old code would already
+    # see the binding, hiding the regression.
+    hits = analyze_deep19_source(
+        fx._PERMIT_DOMAIN_IN_OTHER_FILE,
+        SPECS_BY_ID["permit_no_domain_separator"],
+        contract_name="PermitToken")
+    assert hits == [], (
+        f"permit fired although the domain binding is in another "
+        f"file: {hits}")
+
+
 def test_no_cross_talk_from_variant_fixtures():
     for var_id, src in fx.VARIANT.items():
         for pid in IDS:

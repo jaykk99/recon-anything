@@ -409,6 +409,101 @@ _MPT_CLEAN = {
 _MPT_VULN = dict(_MPT_CLEAN)
 _MPT_VULN["expected_value"] = b"hellx".hex()
 
+# ---------------------------------------------------------------------------
+# Live-gate regression fixtures (2026-11-18): shapes the evening BNB /
+# crypto.com scans adjudicated FALSE_POSITIVE because the detectors fired
+# on the static shape without modeling the live gate. Each MUST stay
+# silent under its own detector; the matching vulnerable fixtures above
+# MUST still fire (see test_deep_lowlevel.py).
+# ---------------------------------------------------------------------------
+
+# Legacy (pre-EOF) deployed bytecode: every mainnet contract today.
+# The EOF verifier's "not an EOF container" sentinel is not a failure.
+_EOF_LEGACY = "0x608060405234801561001057600080fd5b50"
+
+# Storage written ONLY in the constructor from a parameter
+# (PancakeSwap V3 NFPM _tokenDescriptor / V3 Factory poolDeployer /
+# V2 Factory feeToSetter shape): set once at deploy, never
+# attacker-controllable afterwards.
+_Z3_CONSTRUCTOR_ONLY = """
+contract DescriptorShape {
+    address public tokenDescriptor;
+
+    constructor(address _tokenDescriptor) {
+        tokenDescriptor = _tokenDescriptor;
+    }
+
+    function getDescriptor() external view returns (address) {
+        return tokenDescriptor;
+    }
+}
+"""
+
+# Storage written ONLY in a one-time initializer (OZ initializer
+# modifier / require(!initialized) shape, e.g. the crypto.com
+# FiatToken initialize() writes).
+_Z3_INITIALIZER_ONLY = """
+contract InitializerShape {
+    address public feeTo;
+    bool private _initialized;
+
+    modifier initializer() {
+        require(!_initialized, "already initialized");
+        _;
+        _initialized = true;
+    }
+
+    function initialize(address _feeTo) external initializer {
+        feeTo = _feeTo;
+    }
+}
+"""
+
+# Negated early-return guard (Venus Unitroller _acceptAdmin shape):
+# `if (msg.sender != pendingAdmin || ...) return 1;` makes the
+# rest of the function guarded; the admin write below it is safe.
+_CFG_NEGATED_GUARD = """
+contract AdminShape {
+    address public admin;
+    address public pendingAdmin;
+
+    function _acceptAdmin() external returns (uint256) {
+        if (msg.sender != pendingAdmin || msg.sender == address(0)) {
+            return 1;
+        }
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
+        return 0;
+    }
+}
+"""
+
+# Signature-authorized entrypoint (PancakeSwap V3 NFPM permit shape):
+# the ecrecover over a nonce-bound digest is the gate, not msg.sender.
+# The `address owner = ownerOf(tokenId);` read is the operation the
+# old code flagged (its `owner =` pattern cannot tell a local read
+# from a state write).
+_CFG_SIGNATURE_GATE = """
+contract PermitShape {
+    mapping(uint256 => uint256) private _nonces;
+
+    function permit(address spender, uint256 tokenId, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public {
+        bytes32 digest = keccak256(abi.encode(spender, tokenId, _nonces[tokenId]++, deadline));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == spender, "bad signature");
+        address owner = ownerOf(tokenId);
+        _approve(spender, tokenId, owner);
+    }
+
+    function ownerOf(uint256 tokenId) public view returns (address) {
+        return address(uint160(tokenId));
+    }
+
+    function _approve(address spender, uint256 tokenId, address owner) internal {
+    }
+}
+"""
+
 VULN = {
     "evm_cfg_basic_block_reconstructor": _CFG_VULN,
     "symbolic_z3_storage_taint_tracer": _Z3_VULN,

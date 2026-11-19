@@ -146,6 +146,42 @@ def test_separator_deploy_bound_is_trigger_only():
             assert h["severity"] == "low"
 
 
+def test_separator_chainid_helper_is_silent():
+    # FP elimination (2026-11-18, BNB NFPM): DOMAIN_SEPARATOR()
+    # recomputes from the live chain id at call time through a
+    # library accessor (ChainId.get() -> chainid() opcode).
+    # Must stay silent. The contract name is passed explicitly
+    # (as the scanner does): the ChainId library is not an
+    # ancestor, so it is outside the target scope and only the
+    # whole-source helper resolution sees it.
+    from app.plugins.deep_audit5 import analyze_deep5_source
+    hits = analyze_deep5_source(
+        fx._SEPARATOR_CHAINID_HELPER,
+        SPECS_BY_ID["eip712_separator_unbound"],
+        contract_name="ERC721PermitShape")
+    assert hits == [], f"chain-id helper shape fired: {hits}"
+
+
+def test_separator_initialize_helper_is_trigger_only():
+    # FP elimination (2026-11-18, crypto.com FiatToken V2_1):
+    # initialize() caches DOMAIN_SEPARATOR from
+    # EIP712.makeDomainSeparator(), which reads chainid() in
+    # assembly two hops down. Deployment-chain-bound: fires,
+    # but never as a candidate. The contract name is passed
+    # explicitly (as the scanner does): with an empty name the
+    # scope would swallow the whole compilation and the old code
+    # would already downgrade it, hiding the regression.
+    from app.plugins.deep_audit5 import analyze_deep5_source
+    hits = analyze_deep5_source(
+        fx._SEPARATOR_INITIALIZE_HELPER,
+        SPECS_BY_ID["eip712_separator_unbound"],
+        contract_name="FiatTokenShape")
+    assert hits, "initialize-helper shape went silent"
+    for h in hits:
+        assert h["report_class"] == "trigger_only"
+        assert h["severity"] == "low"
+
+
 def test_nonce_helper_consumption_stays_silent():
     # OZ ERC20Permit shape: the verify function reads the
     # nonce through _useNonce(); the state write lives in

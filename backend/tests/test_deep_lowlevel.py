@@ -108,3 +108,47 @@ def test_no_cross_talk_between_plugins():
             hits = hits_for(src, pid)
             assert hits == [], (
                 f"{pid} fired on {vuln_id}'s fixture: {hits}")
+
+
+def test_eof_legacy_bytecode_is_silent():
+    # FP elimination (2026-11-18): legacy deployed bytecode is not
+    # an EOF container at all - the verifier's "not an EOF container
+    # (bad magic/version)" sentinel is nothing to verify, not a
+    # failure. Fired on 12/12 BNB + 2/2 crypto.com targets before
+    # the fix (every mainnet contract is legacy bytecode).
+    hits = hits_for(fx._EOF_LEGACY,
+                    "eof_container_code_section_verifier")
+    assert hits == [], f"EOF verifier fired on legacy bytecode: {hits}"
+
+
+def test_z3_construction_only_writes_are_silent():
+    # FP elimination (2026-11-18): storage written only in the
+    # constructor or a one-time initializer is set at deploy, not
+    # attacker-controllable post-deploy. Fired 3x BNB + 8x
+    # crypto.com before the fix (poolDeployer / _tokenDescriptor /
+    # feeToSetter / initialize writes).
+    for src in (fx._Z3_CONSTRUCTOR_ONLY, fx._Z3_INITIALIZER_ONLY):
+        hits = hits_for(src, "symbolic_z3_storage_taint_tracer")
+        assert hits == [], (
+            f"z3 tracer fired on construction-only write: {hits}")
+
+
+def test_cfg_negated_early_return_guard_is_silent():
+    # FP elimination (2026-11-18): a negated guard clause
+    # (`if (msg.sender != pendingAdmin || ...) return 1;`) guards
+    # everything after it. Venus Unitroller _acceptAdmin shape.
+    hits = hits_for(fx._CFG_NEGATED_GUARD,
+                    "evm_cfg_basic_block_reconstructor")
+    assert hits == [], (
+        f"CFG fired behind a negated early-return guard: {hits}")
+
+
+def test_cfg_signature_gated_entrypoint_is_silent():
+    # FP elimination (2026-11-18): a signature-authorized
+    # entrypoint (ecrecover over a nonce-bound digest) is gated by
+    # the signature, not msg.sender. PancakeSwap V3 NFPM permit
+    # shape.
+    hits = hits_for(fx._CFG_SIGNATURE_GATE,
+                    "evm_cfg_basic_block_reconstructor")
+    assert hits == [], (
+        f"CFG fired on a signature-gated entrypoint: {hits}")
