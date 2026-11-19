@@ -1,0 +1,1199 @@
+{
+  "label": "after-cherrypick-3cbaf36b",
+  "backend": "/home/hatch/workspace/wt/crypto-com-loop-2026-11-19/backend",
+  "measured_at": "2026-11-19T17:26:25.723955+00:00",
+  "plugin_ids": [
+    "evm_cfg_basic_block_reconstructor",
+    "symbolic_z3_storage_taint_tracer",
+    "recipient_mint_to_caller",
+    "eip712_separator_unbound",
+    "unchecked_math_user_input"
+  ],
+  "targets": [
+    {
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)"
+    },
+    {
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xe44Fd7fCb2b1581822D0c862B68222998a0c299a",
+      "name": "Wrapped Ether (WETH)"
+    },
+    {
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xF2001B145b43032AAF5Ee2884e456CCd805F677D",
+      "name": "Crypto.com Bridged DAI"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)"
+    },
+    {
+      "chain": "ethereum",
+      "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "name": "LiquidETHV1 (CDCETH impl)"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "name": "CDCWrappedBTC (CDCBTC impl)"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)"
+    },
+    {
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT"
+    }
+  ],
+  "total_findings": 33,
+  "findings_per_plugin": {
+    "evm_cfg_basic_block_reconstructor": 6,
+    "symbolic_z3_storage_taint_tracer": 7,
+    "recipient_mint_to_caller": 6,
+    "eip712_separator_unbound": 8,
+    "unchecked_math_user_input": 6
+  },
+  "total_candidates": 25,
+  "candidates_per_plugin": {
+    "evm_cfg_basic_block_reconstructor": 6,
+    "symbolic_z3_storage_taint_tracer": 7,
+    "recipient_mint_to_caller": 6,
+    "eip712_separator_unbound": 0,
+    "unchecked_math_user_input": 6
+  },
+  "expected_total": 36,
+  "matched_expected": [
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0x062e66477faf219f25d27dced647bf57c3107d52",
+      "setOwner"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0x66e428c3f67a68878562e79a0234c1f83c208770",
+      "setOwner"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xae50f345502ad3395db0099d38692f609f829b58",
+      "approve"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xb888d8dd1733d72681b30c00ee76bde93ae7aa93",
+      "setOwner"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xc21223249ca28397b4b6541dffaecc539bff0c59",
+      "setOwner"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xf2001b145b43032aaf5ee2884e456ccd805f677d",
+      "setOwner"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0x062e66477faf219f25d27dced647bf57c3107d52",
+      "mint"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0x66e428c3f67a68878562e79a0234c1f83c208770",
+      "mint"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0xb888d8dd1733d72681b30c00ee76bde93ae7aa93",
+      "mint"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0xc21223249ca28397b4b6541dffaecc539bff0c59",
+      "mint"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0xe44fd7fcb2b1581822d0c862b68222998a0c299a",
+      "mint"
+    ],
+    [
+      "recipient_mint_to_caller",
+      "0xf2001b145b43032aaf5ee2884e456ccd805f677d",
+      "mint"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0x062e66477faf219f25d27dced647bf57c3107d52",
+      "setOwner"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0x66e428c3f67a68878562e79a0234c1f83c208770",
+      "setOwner"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xae50f345502ad3395db0099d38692f609f829b58",
+      "updateMaxSupply"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xb888d8dd1733d72681b30c00ee76bde93ae7aa93",
+      "setOwner"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xc21223249ca28397b4b6541dffaecc539bff0c59",
+      "setOwner"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xccef054e827a5e867194ad2cfbf8a83545d00cbf",
+      "updateMaxSupply"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xe44fd7fcb2b1581822d0c862b68222998a0c299a",
+      "setOwner"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xae50f345502ad3395db0099d38692f609f829b58",
+      "_mint"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xae50f345502ad3395db0099d38692f609f829b58",
+      "_mintERC2309"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xae50f345502ad3395db0099d38692f609f829b58",
+      "_safeMint"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xccef054e827a5e867194ad2cfbf8a83545d00cbf",
+      "_mint"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xccef054e827a5e867194ad2cfbf8a83545d00cbf",
+      "_mintERC2309"
+    ],
+    [
+      "unchecked_math_user_input",
+      "0xccef054e827a5e867194ad2cfbf8a83545d00cbf",
+      "_safeMint"
+    ]
+  ],
+  "missing_expected_silenced": [
+    [
+      "eip712_separator_unbound",
+      "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "_cancelAuthorization"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "_permit"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "_receiveWithAuthorization"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "_transferWithAuthorization"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "_cancelAuthorization"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "_permit"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "_receiveWithAuthorization"
+    ],
+    [
+      "eip712_separator_unbound",
+      "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "_transferWithAuthorization"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xccef054e827a5e867194ad2cfbf8a83545d00cbf",
+      "approve"
+    ],
+    [
+      "evm_cfg_basic_block_reconstructor",
+      "0xe44fd7fcb2b1581822d0c862b68222998a0c299a",
+      "setOwner"
+    ],
+    [
+      "symbolic_z3_storage_taint_tracer",
+      "0xf2001b145b43032aaf5ee2884e456ccd805f677d",
+      "setOwner"
+    ]
+  ],
+  "extra_candidates_not_in_round1": [],
+  "errors": [],
+  "candidates": [
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xe44Fd7fCb2b1581822D0c862B68222998a0c299a",
+      "name": "Wrapped Ether (WETH)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xe44Fd7fCb2b1581822D0c862B68222998a0c299a",
+      "name": "Wrapped Ether (WETH)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xF2001B145b43032AAF5Ee2884e456CCd805F677D",
+      "name": "Crypto.com Bridged DAI",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xF2001B145b43032AAF5Ee2884e456CCd805F677D",
+      "name": "Crypto.com Bridged DAI",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "approve",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "updateMaxSupply",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mint",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mintERC2309",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_safeMint",
+      "recipient": "CALLER-SUPPLIED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "CALLER-SUPPLIED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "updateMaxSupply",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mint",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mintERC2309",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_safeMint",
+      "recipient": "CALLER-SUPPLIED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "CALLER-SUPPLIED",
+        "report_class": "candidate"
+      }
+    }
+  ],
+  "all_findings": [
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
+      "name": "Bridged USDC (USDC.e)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x66e428c3f67a68878562e79A0234c1F83c208770",
+      "name": "Bridged USDT",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xe44Fd7fCb2b1581822D0c862B68222998a0c299a",
+      "name": "Wrapped Ether (WETH)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xe44Fd7fCb2b1581822D0c862B68222998a0c299a",
+      "name": "Wrapped Ether (WETH)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0x062E66477Faf219F25D27dCED647BF57C3107d52",
+      "name": "Bridged WBTC",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xF2001B145b43032AAF5Ee2884e456CCd805F677D",
+      "name": "Crypto.com Bridged DAI",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xF2001B145b43032AAF5Ee2884e456CCd805F677D",
+      "name": "Crypto.com Bridged DAI",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "setOwner",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "recipient_mint_to_caller",
+      "key": "recipient_mint_to_caller",
+      "severity": "high",
+      "function": "mint",
+      "recipient": "CALLER",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xB888d8Dd1733d72681b30c00ee76BDE93ae7aa93",
+      "name": "ATOM (IBC-bridged)",
+      "recipient_class": "CALLER",
+      "evidence": {
+        "recipient": "CALLER",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_transferWithAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "ethereum",
+      "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "name": "LiquidETHV1 (CDCETH impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_receiveWithAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "ethereum",
+      "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "name": "LiquidETHV1 (CDCETH impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_cancelAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "ethereum",
+      "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "name": "LiquidETHV1 (CDCETH impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_permit",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "ethereum",
+      "address": "0x7e772ed6e4bfeae80f2d58e4254f6b6e96669253",
+      "name": "LiquidETHV1 (CDCETH impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_transferWithAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "cronos",
+      "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "name": "CDCWrappedBTC (CDCBTC impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_receiveWithAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "cronos",
+      "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "name": "CDCWrappedBTC (CDCBTC impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_cancelAuthorization",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "cronos",
+      "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "name": "CDCWrappedBTC (CDCBTC impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "eip712_separator_unbound",
+      "key": "eip712_separator_unbound",
+      "severity": "low",
+      "function": "_permit",
+      "recipient": "UNRESOLVED",
+      "report_class": "trigger_only",
+      "chain": "cronos",
+      "address": "0xddcde8de19284cc5aab6db5ac6af1dcda175f5e2",
+      "name": "CDCWrappedBTC (CDCBTC impl)",
+      "recipient_class": "TRIGGER_ONLY",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "trigger_only"
+      }
+    },
+    {
+      "plugin": "evm_cfg_basic_block_reconstructor",
+      "key": "evm_cfg_basic_block_reconstructor",
+      "severity": "high",
+      "function": "approve",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "updateMaxSupply",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mint",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mintERC2309",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_safeMint",
+      "recipient": "CALLER-SUPPLIED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xaE50f345502aD3395DB0099d38692f609F829B58",
+      "name": "Expedition Gear NFT (ExpGear)",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "CALLER-SUPPLIED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "symbolic_z3_storage_taint_tracer",
+      "key": "symbolic_z3_storage_taint_tracer",
+      "severity": "high",
+      "function": "updateMaxSupply",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mint",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_mintERC2309",
+      "recipient": "UNRESOLVED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "UNRESOLVED",
+        "report_class": "candidate"
+      }
+    },
+    {
+      "plugin": "unchecked_math_user_input",
+      "key": "unchecked_math_user_input",
+      "severity": "high",
+      "function": "_safeMint",
+      "recipient": "CALLER-SUPPLIED",
+      "report_class": "candidate",
+      "chain": "cronos",
+      "address": "0xcCEf054E827A5e867194aD2cfBf8A83545D00cBF",
+      "name": "Match Ready Lions NFT",
+      "recipient_class": "CALLER-SUPPLIED",
+      "evidence": {
+        "recipient": "CALLER-SUPPLIED",
+        "report_class": "candidate"
+      }
+    }
+  ]
+}

@@ -282,6 +282,64 @@ def _caller_gated(fn: Dict[str, Any], scope) -> bool:
     sig, text = fn["signature"], fn["text"]
     if _ONLY_MOD_RE.search(sig) or _IDENTITY_GATE_RE.search(text):
         return True
+    if _modifier_gated(fn, scope):
+        return True
+    return False
+
+
+# DSAuth-style identity modifiers (Round-1 crypto.com FP, 2026-11-19):
+# CronosCRC20 `setOwner` / `mint(address,uint)` carry `auth`, which
+# gates on `isAuthorized(msg.sender, msg.sig)` in the DSAuth
+# definition - but `auth` is not an only* modifier, so the CFG/Z3
+# gate checks missed it and fired on owner-only writes. A modifier
+# token gates when its DEFINITION (when present in the bundle)
+# gates on the caller, or - definition absent from the bundle -
+# when its NAME is a known identity-gate modifier (auth/adminOnly/
+# onlyBy: the same name trust crypto_drain._is_gated applies). A
+# definition that is present and does NOT gate on the caller wins
+# over the name: an empty or non-identity `auth` gates nothing.
+_IDENTITY_MOD_NAMES = {"auth", "adminOnly", "onlyBy"}
+_FN_TAIL_KEYWORDS = {
+    "public", "external", "internal", "private", "view", "pure",
+    "payable", "virtual", "override", "returns", "constant",
+}
+_MOD_BODY_CALLER_RE = re.compile(r"msg\.sender|_msgSender\s*\(\s*\)")
+_MOD_BODY_AUTH_RE = re.compile(
+    r"isAuthorized\s*\(|authorized\s*\(|hasRole\s*\(|"
+    r"_checkOwner|_checkRole")
+
+
+def _modifier_body_gated(body: str) -> bool:
+    if not body or not _MOD_BODY_CALLER_RE.search(body):
+        return False
+    return bool(re.search(r"==|!=", body) or
+                _MOD_BODY_AUTH_RE.search(body))
+
+
+def _modifier_gated(fn: Dict[str, Any], scope) -> bool:
+    """True when a modifier named on the function's signature is
+    an identity gate: only* by name, or any modifier whose
+    definition in the bundle gates on the caller."""
+    sig = fn["signature"]
+    stripped = re.sub(r"returns\s*\([^)]*\)", "", sig)
+    i = stripped.find("(")
+    if i < 0:
+        return False
+    _, close = _balanced(stripped, i)
+    tail = stripped[close + 1:]
+    modifiers = getattr(scope, "modifiers", None) or {}
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail):
+        if tok in _FN_TAIL_KEYWORDS:
+            continue
+        if _ONLY_MOD_RE.search(tok):
+            return True
+        body = modifiers.get(tok)
+        if body is not None:
+            if _modifier_body_gated(body):
+                return True
+            continue
+        if tok in _IDENTITY_MOD_NAMES:
+            return True
     return False
 
 
@@ -411,6 +469,24 @@ _SIG_GATE_RE = re.compile(
     r"\.recover\s*\(|_?verif(?:y|ySignature)\s*\(|_?checkSignature\s*\(")
 
 
+# A local declaration is not a state write (Round-1 crypto.com FP,
+# 2026-11-19): ERC721A `approve` declares `address owner =
+# ownerOf(tokenId);` and the owner/admin/price branch of
+# _SENSITIVE_OP_RE matched the `owner =` in it as a privilege
+# change. A `<type> <name> =` declaration is skipped; a bare
+# `owner = ...` statement (the state write) still fires.
+_TYPE_RE = re.compile(
+    r"\b(?:address\s+payable|address|uint\d*|int\d*|bool|bytes\d*|"
+    r"string)\s*$")
+_STATE_WRITE_NAME_RE = re.compile(r"^(owner|admin|price)\s*=$")
+
+
+def _is_local_declaration(head: str, op) -> bool:
+    if not _STATE_WRITE_NAME_RE.match(op.group(0).strip()):
+        return False
+    return bool(_TYPE_RE.search(head[:op.start()]))
+
+
 def _is_guard_cond(cond: str) -> bool:
     return bool(_GUARD_COND_RE.search(cond))
 
@@ -451,6 +527,8 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
         # Statements before the next control point.
         head = body[i:next_pos]
         for op in _SENSITIVE_OP_RE.finditer(head):
+            if _is_local_declaration(head, op):
+                continue
             if not cur_guarded:
                 detail = spec.detail + (
                     f" Observed: '{fn['name']}' reaches "
@@ -531,7 +609,8 @@ def _analyze_cfg(src: str, spec: DetectorSpec, compiler: str = "",
         if fn["name"] == "constructor":
             # Deploy-time only: a stranger cannot call it.
             continue
-        if _ONLY_MOD_RE.search(fn["signature"]):
+        if _ONLY_MOD_RE.search(fn["signature"]) or \
+                _modifier_gated(fn, scope):
             continue
         text = fn["text"]
         # Signature-authorized entrypoint (permit and similar): the

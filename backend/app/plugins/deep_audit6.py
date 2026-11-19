@@ -379,10 +379,75 @@ def _caller_gated(fn: Dict[str, Any], scope) -> bool:
         tail = stripped[pend + 1:]
         for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail):
             body = scope.modifiers.get(tok)
-            if body and ("msg.sender" in body and
-                         ("==" in body or "!=" in body)):
+            # DSAuth `auth` gates on isAuthorized(msg.sender, ...)
+            # with no == / != in the definition; a bare msg.sender
+            # comparison is not the only identity-gate shape.
+            if body and ("msg.sender" in body or
+                         "_msgSender(" in body) and (
+                    "==" in body or "!=" in body or
+                    "isAuthorized(" in body or
+                    "authorized(" in body or
+                    "hasRole(" in body or
+                    "_checkOwner" in body or
+                    "_checkRole" in body):
                 return True
     return False
+
+
+def _is_entry(fn: Dict[str, Any]) -> bool:
+    sig = fn["signature"]
+    if re.search(r"\b(internal|private)\b", sig):
+        return False
+    return bool(re.search(r"\b(public|external)\b", sig))
+
+
+def _entry_points_gated(fn: Dict[str, Any], scope,
+                        fns: List[Dict[str, Any]]) -> bool:
+    """Entry-point gating for an internal/private helper (Round-1
+    crypto.com FP, 2026-11-19: ERC721A `_mint` / `_mintERC2309` /
+    `_safeMint` are internal and every entry reaching them -
+    `safeMint` / `batchMint` - is hasRole-gated). Silence when
+    every external/public entry that can reach the helper is
+    caller-gated, or when no entry reaches it at all (dead code,
+    or deploy-only via the constructor: a stranger cannot call
+    it). Any ungated reachable entry keeps the finding: fail
+    closed. The call graph is name-based, which over-approximates
+    reachability across overloads - a spurious ungated caller
+    keeps the finding, never silences one. Public/external
+    functions are NOT silenced here: a gate does not bound the
+    arithmetic for the callers who are allowed through, so the
+    existing lane still fires on them (see
+    test_unchecked_gated_local_result_fires)."""
+    target = fn["name"]
+    calls: Dict[int, set] = {}
+    for g in fns:
+        # Body only: a signature line contains a `name(` match
+        # for its own name, which would add a spurious self-edge.
+        text = g["text"]
+        brace = text.find("{")
+        body = text[brace + 1:] if brace >= 0 else text
+        names = set()
+        for m in re.finditer(
+                r"(?:(?<![\w.])|super\.)([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                body):
+            names.add(m.group(1))
+        calls[id(g)] = names
+    reaching: set = set()
+    seen_names = {target}
+    stack = [target]
+    while stack:
+        cur = stack.pop()
+        for g in fns:
+            if cur in calls.get(id(g), set()) and \
+                    g["name"] not in seen_names:
+                seen_names.add(g["name"])
+                stack.append(g["name"])
+                reaching.add(id(g))
+    entries = [g for g in fns
+               if id(g) in reaching and _is_entry(g)]
+    if not entries:
+        return True
+    return all(_caller_gated(e, scope) for e in entries)
 
 
 def _conditions(text: str) -> List[str]:
@@ -758,6 +823,15 @@ def _analyze_unchecked_math(src: str, spec: DetectorSpec,
                 break
         if not fired:
             continue
+        # Internal helpers are only reachable through the bundle's
+        # entry points: silence when every entry reaching the
+        # helper is caller-gated (or none reaches it at all).
+        # Public/external functions keep firing even when gated:
+        # the gate does not bound the arithmetic for allowed
+        # callers.
+        if re.search(r"\b(internal|private)\b", fn["signature"]):
+            if _entry_points_gated(fn, scope, fns):
+                continue
         hit_param, lhs, stmt_txt = fired
         gated = _caller_gated(fn, scope)
         detail = spec.detail + (

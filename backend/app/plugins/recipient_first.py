@@ -299,6 +299,96 @@ def _finish(spec_id: str, fn: Dict[str, Any], extra: str,
 # 1. Ungated mint to caller
 # ---------------------------------------------------------------------------
 
+def _paren_close(text: str, open_pos: int) -> int:
+    depth = 0
+    for i in range(open_pos, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text) - 1
+
+
+def _split_top(text: str) -> List[str]:
+    depth = 0
+    parts: List[str] = []
+    cur: List[str] = []
+    for ch in text:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
+
+
+def _param_count(signature: str) -> int:
+    i = signature.find("(")
+    if i < 0:
+        return 0
+    close = _paren_close(signature, i)
+    return len(_split_top(signature[i + 1:close]))
+
+
+_CALL_SITE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def _delegates_to_gated(fn: Dict[str, Any], scope,
+                        max_depth: int = 2) -> bool:
+    """True when `fn` delegates to a same-bundle function that is
+    itself caller-gated (Round-1 crypto.com FP, 2026-11-19:
+    CronosCRC20 `mint(uint)` external delegates to
+    `mint(address,uint)` public `auth`; a child `mint` delegates
+    via `super.mint` to a minter-gated parent mint). Only
+    unqualified calls and `super.` calls resolve in-bundle - any
+    other `x.name(` call is an external call, not a delegation.
+    Arity-matched, so overloads do not cross-resolve, and the
+    entry itself is never a callee. Gating is judged with the
+    existing _gated_deep (modifiers by name and definition,
+    internal-helper following), so this adds no parallel gate
+    logic; the walk runs at most two hops out from the entry."""
+    seen = {id(fn)}
+    frontier = [fn]
+    for _ in range(max_depth):
+        nxt: List[Dict[str, Any]] = []
+        for cur in frontier:
+            # Body only: the signature line itself contains a
+            # `name(` match, which would self-resolve an entry
+            # against a same-arity gated overload it never calls.
+            text = cur["text"]
+            brace = text.find("{")
+            body = text[brace + 1:] if brace >= 0 else text
+            for m in _CALL_SITE_RE.finditer(body):
+                name = m.group(1)
+                prefix = body[:m.start()]
+                is_super = prefix.endswith("super.")
+                if not is_super and re.search(r"[\w.]$", prefix):
+                    continue
+                close = _paren_close(body, m.end() - 1)
+                arity = len(_split_top(
+                    body[m.end():close])) if close > m.end() else 0
+                for cand in scope.functions:
+                    if id(cand) in seen or cand["name"] != name:
+                        continue
+                    if _param_count(cand["signature"]) != arity:
+                        continue
+                    seen.add(id(cand))
+                    if cl._gated_deep(cand, scope):
+                        return True
+                    nxt.append(cand)
+        frontier = nxt
+        if not frontier:
+            break
+    return False
+
+
 def _analyze_mint(src, spec_id, compiler, contract_name):
     scope, fns = _fns(src, contract_name)
     out = []
@@ -311,6 +401,8 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
         if not _MINT_CALL_RE.search(path_text):
             continue
         if cl._gated_deep(fn, scope):
+            continue
+        if _delegates_to_gated(fn, scope):
             continue
         if "balanceOf(address(this))" in path_text:
             continue  # AMM pair mint: liquidity is metered
