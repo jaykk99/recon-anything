@@ -488,7 +488,12 @@ def _analyze_permit_no_domain(src, spec, compiler,
             continue
         if "keccak256" not in text:
             continue
-        if _domain_bound(text) or _domain_bound(scoped):
+        # Check the full source too, not just this function and its
+        # contract scope: the EIP-712 domain machinery (DOMAIN_SEPARATOR /
+        # _hashTypedDataV4 / EIP712 base) usually lives in an inherited
+        # base in another file. Missing it flagged chain-bound permits
+        # (e.g. PancakeV3 NonfungiblePositionManager) as replayable.
+        if _domain_bound(text) or _domain_bound(scoped) or _domain_bound(src):
             continue
         detail = spec.detail + (
             f" Observed: '{fn['name']}' builds its permit "

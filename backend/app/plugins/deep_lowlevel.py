@@ -285,6 +285,29 @@ def _caller_gated(fn: Dict[str, Any], scope) -> bool:
     return False
 
 
+# One-time construction/initialization context: the constructor (runs once
+# at deploy, a stranger can never call it) or an initializer gated so it
+# runs once (OZ initializer/reinitializer modifier, or a require(!init...)
+# flag like FiatToken's). A storage write here is set at deploy/init, not
+# attacker-controllable post-deploy, so taint/assignment detectors that
+# treat its parameter as caller-controlled produce pure false positives
+# (poolDeployer, _tokenDescriptor, feeToSetter, initialize...).
+_INIT_GUARD_RE = re.compile(
+    r"\binitializer\b|\breinitializer\s*\(|"
+    r"require\s*\(\s*!\s*\w*(?:initialized|initializing)\b|"
+    r"\b_?initialized\s*(?:==|!=)\s*(?:true|false|0|1)\b")
+
+
+def _construction_only(fn: Dict[str, Any]) -> bool:
+    if fn.get("name") == "constructor":
+        return True
+    if re.search(r"\b(?:initializer|reinitializer)\b", fn.get("signature", "")):
+        return True
+    if _INIT_GUARD_RE.search(fn.get("text", "")):
+        return True
+    return False
+
+
 def _balanced(text: str, open_pos: int) -> Tuple[str, int]:
     depth = 0
     for i in range(open_pos, len(text)):
@@ -365,6 +388,28 @@ _REQUIRE_RE = re.compile(r"require\s*\(")
 _IF_RE = re.compile(r"\bif\s*\(")
 _ELSE_RE = re.compile(r"\belse\b")
 
+# A *negated* identity check: `if (msg.sender != owner) revert;` is a
+# guard clause - the unauthorized caller exits, so the REST of the block
+# is guarded. Only the negative polarity makes the remainder guarded
+# (a positive `if (isOwner) {...; return;}` leaves the unauthorized path
+# as the remainder), so this is deliberately conservative to avoid
+# suppressing a real finding.
+_NEG_GUARD_RE = re.compile(
+    r"msg\.sender\s*!=|!=\s*msg\.sender|"
+    r"\bowner\s*!=|!=\s*owner\b|"
+    r"!\s*(?:isOwner|hasRole|_?checkOwner|_?checkRole|"
+    r"_?isAuthorized|authorized)\s*\(")
+_EARLY_EXIT_RE = re.compile(r"\b(return|revert)\b")
+
+# A signature-authorized function (ecrecover / ECDSA.recover over a
+# nonce-bound digest, OZ SignatureChecker) is gated by the signature, not
+# by msg.sender: a stranger with no valid signature cannot pass it. The
+# CFG model's msg.sender/role guard set does not include this, so permit()
+# and similar signed-authorization entrypoints looked unguarded.
+_SIG_GATE_RE = re.compile(
+    r"\becrecover\s*\(|ECDSA\s*\.\s*recover|\bSignatureChecker\b|"
+    r"\.recover\s*\(|_?verif(?:y|ySignature)\s*\(|_?checkSignature\s*\(")
+
 
 def _is_guard_cond(cond: str) -> bool:
     return bool(_GUARD_COND_RE.search(cond))
@@ -436,6 +481,22 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
         j = close + 1
         while j < n and body[j] in " \t\r\n":
             j += 1
+        # Guard clause: `if (<negated identity check>) revert/return;`
+        # (braced or braceless). The unauthorized caller has exited, so
+        # everything after this if is guarded.
+        if _NEG_GUARD_RE.search(cond):
+            if j < n and body[j] == "{":
+                gend = _brace_span(body, j)
+                clause = body[j + 1:gend]
+                nxt = gend + 1
+            else:
+                semi = body.find(";", close + 1)
+                clause = body[close + 1:semi if semi >= 0 else n]
+                nxt = (semi + 1) if semi >= 0 else n
+            if _EARLY_EXIT_RE.search(clause):
+                cur_guarded = True
+                i = nxt
+                continue
         if j < n and body[j] == "{":
             end = _brace_span(body, j)
             _scan_block(body[j + 1:end],
@@ -473,6 +534,10 @@ def _analyze_cfg(src: str, spec: DetectorSpec, compiler: str = "",
         if _ONLY_MOD_RE.search(fn["signature"]):
             continue
         text = fn["text"]
+        # Signature-authorized entrypoint (permit and similar): the
+        # signature over a nonce-bound digest is the gate, not msg.sender.
+        if _SIG_GATE_RE.search(text):
+            continue
         brace = text.find("{")
         if brace < 0:
             continue
@@ -562,6 +627,10 @@ def _analyze_z3_taint(src: str, spec: DetectorSpec, compiler: str = "",
         if _skip_fn(fn, scope):
             continue
         if _caller_gated(fn, scope):
+            continue
+        # Constructor / one-time initializer writes are set at deploy, not
+        # attacker-controllable: a stranger cannot re-run them.
+        if _construction_only(fn):
             continue
         params = _fn_params(fn)
         if not params:
@@ -926,6 +995,19 @@ def verify_eof_hex(hexdata: str) -> List[str]:
     return _verify_eof_container(raw)
 
 
+# Verifier outputs that mean "this input is not an EOF container at all",
+# so there is nothing to verify. Legacy bytecode (every mainnet contract
+# today - EOF is not live) and non-hex input land here. These are NOT
+# verification failures: emitting them flags every contract for the crime
+# of not being an EOF container, which fires on 100% of real targets and
+# buries any genuine EOF fault. Only a real EOF container (magic 0xEF00)
+# that fails verification is a finding.
+_EOF_NOT_APPLICABLE = frozenset({
+    "not an EOF container (bad magic/version)",
+    "not valid hex",
+})
+
+
 def _analyze_eof(src: str, spec: DetectorSpec, compiler: str = "",
                  contract_name: str = "") -> List[Dict[str, Any]]:
     # Bytecode input: the whole input is one hex container.
@@ -939,7 +1021,12 @@ def _analyze_eof(src: str, spec: DetectorSpec, compiler: str = "",
             m.group(0) for m in re.finditer(
                 r"0xEF00[0-9a-fA-F]+", src, re.I))
     for cand in candidates:
-        problems = verify_eof_hex(cand)
+        problems = [p for p in verify_eof_hex(cand)
+                    if p not in _EOF_NOT_APPLICABLE]
+        # No real EOF container here, or it verified clean: nothing to
+        # report. (A non-EOF input is not a failed EOF container.)
+        if not problems:
+            continue
         for problem in problems:
             detail = spec.detail + f" Observed: {problem}."
             item = _hit(spec, "", cand[:120], detail,
