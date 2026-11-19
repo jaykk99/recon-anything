@@ -179,9 +179,15 @@ async def rpc(ctx, method: str, params: list,
 
 
 async def eth_call(ctx, to: str, data: str,
-                   timeout: int = 15) -> Tuple[Optional[str], str]:
-    result, err = await rpc(ctx, "eth_call",
-                            [{"to": to, "data": data}, "latest"], timeout)
+                   timeout: int = 15,
+                   from_: Optional[str] = None) -> Tuple[Optional[str], str]:
+    # `from_` lets a caller probe from a chosen address (e.g. a stranger
+    # 0x1111...). Without it, access-control checks are meaningless - the
+    # node defaults to the zero address, which some gates happen to allow.
+    tx = {"to": to, "data": data}
+    if from_:
+        tx["from"] = from_
+    result, err = await rpc(ctx, "eth_call", [tx, "latest"], timeout)
     if isinstance(result, str) and result.startswith("0x") \
             and result != "0x":
         return result, ""

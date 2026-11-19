@@ -47,7 +47,7 @@ EXPECTED_TOOLS = {
     "recon_set_owned_assets", "recon_run_detail",
     "recon_agent_activity", "recon_retest_finding",
     "recon_get_apimap", "recon_export_run", "recon_fetch_run_file",
-    "recon_list_vulns", "recon_test_vulns",
+    "recon_list_vulns", "recon_test_vulns", "recon_verify_contract",
     "recon_verify_subdomains", "recon_probe_port", "recon_diff_runs",
     "recon_atm_locate", "recon_list_schedules",
     "recon_create_schedule", "recon_delete_schedule",

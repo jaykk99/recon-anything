@@ -950,6 +950,55 @@ def _tool_test_vulns(args: Dict) -> Dict:
     return report
 
 
+def _tool_verify_contract(args: Dict) -> Dict:
+    """Live read-only verification of a smart-contract candidate via
+    eth_call (app/contract_verifier.py). Closes the candidate shapes
+    that dominate real scans: a drain candidate whose contract holds a
+    zero balance (nothing to steal) and an access-control candidate
+    whose function reverts for a stranger (the gate holds). Read-only:
+    eth_call / eth_getBalance only, never a transaction.
+
+    Args: chain (id/alias, e.g. 'bsc'), contract (0x address). Optional:
+    token (ERC-20 to read balanceOf(contract) instead of native),
+    selector (0x8-hex) or signature (e.g. 'setOwner(address)') to probe
+    an access-control function as a stranger, key (candidate label), or
+    candidates (a list of such dicts to verify in one call)."""
+    from . import contract_verifier as cv
+    from .plugins import contract_chain as ccx
+
+    chain_arg = str(args.get("chain") or "").strip().lower()
+    chain = ccx.CHAINS.get(chain_arg) or ccx.CHAINS.get(
+        ccx.CHAIN_ALIASES.get(chain_arg, ""))
+    if not chain:
+        raise ToolError(
+            f"unknown chain '{chain_arg}'. Known: "
+            + ", ".join(sorted(ccx.CHAINS)))
+    rpc = cv.HttpRpc(chain.rpc_urls)
+
+    cands = args.get("candidates")
+    if not isinstance(cands, list) or not cands:
+        contract = str(args.get("contract") or "").strip()
+        if not contract:
+            raise ToolError("provide a contract address (or a candidates list)")
+        c = {"contract": contract, "key": str(args.get("key") or "")}
+        for k in ("token", "selector", "signature"):
+            if args.get(k):
+                c[k] = str(args[k])
+        # Default the family: a selector/signature means access-control,
+        # otherwise read the balance at stake.
+        if not c["key"]:
+            c["key"] = "access_control_flaw" if (c.get("selector") or
+                                                 c.get("signature")) else "sweep"
+        cands = [c]
+    else:
+        for c in cands:
+            c.setdefault("contract", str(args.get("contract") or ""))
+
+    summary = cv.verify_candidates(cands, rpc)
+    summary["chain"] = chain.id
+    return summary
+
+
 async def _tool_verify_subdomains(args: Dict) -> Dict:
     """Probe every subdomain from this run's findings for HTTP
     liveness (same SSRF guard, caching, and read-only GETs as
@@ -2550,6 +2599,45 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["run_id"],
         },
         "handler": _tool_test_vulns,
+    },
+    {
+        "name": "recon_verify_contract",
+        "description": ("Live read-only verification of a smart-contract "
+                        "candidate via eth_call: closes a drain candidate "
+                        "when the contract holds zero balance (nothing to "
+                        "steal) and an access-control candidate when the "
+                        "function reverts for a stranger (gate holds). "
+                        "Read-only (eth_call / eth_getBalance), never a "
+                        "transaction; a read never stamps VERIFIED_REAL."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "description": "Chain id or alias, e.g. 'bsc', "
+                                         "'ethereum', 'cronos'."},
+                "contract": {"type": "string",
+                             "description": "Contract address (0x...)."},
+                "token": {"type": "string",
+                          "description": "ERC-20 to read balanceOf(contract) "
+                                         "instead of native balance."},
+                "selector": {"type": "string",
+                             "description": "4-byte selector (0x+8 hex) of a "
+                                            "privileged function to probe as "
+                                            "a stranger."},
+                "signature": {"type": "string",
+                              "description": "Function signature to hash into "
+                                             "a selector, e.g. "
+                                             "'setOwner(address)'."},
+                "key": {"type": "string",
+                        "description": "Candidate label / family hint."},
+                "candidates": {"type": "array",
+                               "description": "Verify many at once; each item "
+                                              "is a dict like the fields "
+                                              "above."},
+            },
+            "required": ["chain"],
+        },
+        "handler": _tool_verify_contract,
     },
     {
         "name": "recon_verify_subdomains",
