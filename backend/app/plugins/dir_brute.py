@@ -18,6 +18,7 @@ from ..classifier import domain_from_target
 from ..ratelimit import fetch
 from ..net import web_base
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
+from .exposure_signatures import confirm_exposure, signature_expected
 
 WORDLIST = """admin administrator admin1 admin-panel adminpanel
 admincp administrator-index adm manage management manager
@@ -138,25 +139,64 @@ class DirBrutePlugin(Plugin):
                 hits.append({"path": path, "url": url, "status": status,
                              "length": probed.get("length", len(body)),
                              "location": loc[:120],
+                             "headers": probed.get("headers", {}),
+                             "body": body[:4096],
                              "snippet": body[:300].replace("\n", " ")[:300]})
 
         def _findings_from(hit_list: List[Dict]) -> List[Finding]:
             out = []
             for h in sorted(hit_list, key=lambda x: x["path"]):
-                sev = "high" if h["status"] == 200 else "medium"
+                body = h.get("body", "")
+                # 1. Content-verified exposure: the body proves the path
+                #    IS the sensitive artifact. This is a real, reportable
+                #    finding - high confidence, with proof a human checks.
+                conf = confirm_exposure(h["path"], h["status"], body,
+                                        h.get("headers", {})) \
+                    if h["status"] in (200, 201, 206) else None
+                if conf:
+                    val = (f"{conf['severity'].upper()}: {conf['label']} at "
+                           f"{h['path']} - CONFIRMED by content. "
+                           f"Proof: {conf['proof']}")
+                    out.append(self._f(
+                        "web", "exposed_file_confirmed", val,
+                        source="directory brute force (content-verified)",
+                        source_url=h["url"], confidence=conf["confidence"],
+                        passive=False,
+                        evidence={"severity": conf["severity"],
+                                  "path": h["path"], "status": h["status"],
+                                  "proof": conf["proof"],
+                                  "verified": True, "report_class": "verified",
+                                  "remediation": (
+                                      "Remove this artifact from the web root "
+                                      "and block the path at the server/CDN; "
+                                      "rotate any credential it exposed.")}))
+                    continue
+                # 2. A sensitive path whose content did NOT confirm: a bare
+                #    200/403 here is almost always an SPA catch-all, WAF
+                #    page or login wall, not an exposure. Do NOT raise a
+                #    scary finding - that noise is what buries real hits.
+                if signature_expected(h["path"]) and h["status"] in (
+                        200, 201, 206):
+                    continue
+                # 3. Non-sensitive path that responds (admin panel, open
+                #    redirect target, auth-gated area): report as a lead,
+                #    not content-verified, at modest confidence.
+                sev = "medium" if h["status"] in (200, 301, 302) else "low"
                 label = {"401": "auth-gated", "403": "forbidden"}.get(
                     str(h["status"]), f"HTTP {h['status']}")
-                val = (f"{sev.upper()}: hidden path {h['path']} exists "
-                       f"({label}, {h['length']} bytes)")
+                val = (f"{sev.upper()}: path {h['path']} responds "
+                       f"({label}, {h['length']} bytes) - not "
+                       f"content-verified, investigate manually")
                 if h["location"]:
                     val += f" -> {h['location']}"
                 out.append(self._f(
                     "web", "dir_brute_hit", val,
                     source="directory brute force", source_url=h["url"],
-                    confidence=85 if h["status"] == 200 else 70,
+                    confidence=60 if h["status"] == 200 else 50,
                     passive=False,
                     evidence={"severity": sev, "path": h["path"],
-                              "status": h["status"],
+                              "status": h["status"], "verified": False,
+                              "report_class": "candidate",
                               "remediation": ("Remove or access-control this path. "
                                               "Backup/config files must never be "
                                               "web-reachable; admin panels need "
