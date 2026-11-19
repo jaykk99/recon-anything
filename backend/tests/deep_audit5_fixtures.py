@@ -228,6 +228,103 @@ contract PermitVaultClean {
 }
 """
 
+# Live recompute through a library chain-id accessor (FP
+# elimination, 2026-11-18): PancakeSwap V3 NFPM shape -
+# DOMAIN_SEPARATOR() recomputes from the live chain id at
+# call time via ChainId.get() (chainid() opcode in a library
+# in another file). Must stay silent.
+_SEPARATOR_CHAINID_HELPER = """
+library ChainId {
+    function get() internal pure returns (uint256 chainId) {
+        assembly {
+            chainId := chainid()
+        }
+    }
+}
+
+contract ERC721PermitShape {
+    bytes32 private immutable nameHash;
+    bytes32 private immutable versionHash;
+    bytes32 public constant PERMIT_TYPEHASH =
+        keccak256("Permit(address spender,uint256 tokenId,uint256 deadline)");
+
+    constructor(string memory name_, string memory version_) {
+        nameHash = keccak256(bytes(name_));
+        versionHash = keccak256(bytes(version_));
+    }
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            nameHash,
+            versionHash,
+            ChainId.get(),
+            address(this)
+        ));
+    }
+
+    function permit(address spender, uint256 tokenId, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public {
+        bytes32 digest = keccak256(abi.encodePacked(
+            "\\x19\\x01", DOMAIN_SEPARATOR(),
+            keccak256(abi.encode(PERMIT_TYPEHASH, spender, tokenId, deadline))));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == spender, "bad signature");
+    }
+}
+"""
+
+# Separator cached once by an initializer through a helper
+# (FP elimination, 2026-11-18): Centre FiatToken V2_1 shape -
+# initialize() caches DOMAIN_SEPARATOR from
+# EIP712.makeDomainSeparator(), which reads chainid() in
+# assembly two hops down. Deployment-chain-bound: fires, but
+# only as trigger-only at low severity, never a candidate.
+_SEPARATOR_INITIALIZE_HELPER = """
+library EIP712 {
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    function makeDomainSeparator(string memory name, string memory version)
+        internal
+        view
+        returns (bytes32)
+    {
+        uint256 chainId;
+        assembly {
+            chainId := chainid()
+        }
+        return keccak256(abi.encode(
+            EIP712_DOMAIN_TYPEHASH,
+            keccak256(bytes(name)),
+            keccak256(bytes(version)),
+            chainId,
+            address(this)
+        ));
+    }
+}
+
+contract FiatTokenShape {
+    bytes32 public DOMAIN_SEPARATOR;
+    bool private initialized;
+    bytes32 public constant TRANSFER_WITH_AUTHORIZATION_TYPEHASH =
+        keccak256("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)");
+
+    function initialize(string memory tokenName) public {
+        require(!initialized, "already initialized");
+        initialized = true;
+        DOMAIN_SEPARATOR = EIP712.makeDomainSeparator(tokenName, "2");
+    }
+
+    function transferWithAuthorization(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, uint8 v, bytes32 r, bytes32 s) public {
+        bytes32 digest = keccak256(abi.encodePacked(
+            "\\x19\\x01", DOMAIN_SEPARATOR,
+            keccak256(abi.encode(TRANSFER_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce))));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == from, "bad signature");
+    }
+}
+"""
+
 # ---------------------------------------------------------------------------
 # 5. erc2771_msg_sender_unbound
 # ---------------------------------------------------------------------------
@@ -626,6 +723,8 @@ CLEAN = {
     "erc1155_batch_receiver_missing": _1155_CLEAN,
     "erc1155_batch_receiver_missing_neither": _1155_CLEAN_NEITHER,
     "eip712_separator_unbound": _SEPARATOR_CLEAN,
+    "eip712_separator_unbound_chainid_helper":
+        _SEPARATOR_CHAINID_HELPER,
     "erc2771_msg_sender_unbound": _2771_CLEAN,
     "eip1271_magic_value_unchecked": _1271_CLEAN,
     "two_step_ownership_missing": _TWO_STEP_CLEAN,
