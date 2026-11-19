@@ -155,7 +155,11 @@ def _depth_array(src: str) -> List[int]:
 
 
 _DECL_RES = [
-    re.compile(r"mapping\s*\([^)]*\)\s*"
+    # Nested mappings: mapping(address => mapping(address =>
+    # LockInfo)) - the key type may itself contain parens, so
+    # the value type allows one level of nested parens
+    # (TokenHub lockInfoMap was missed entirely before this).
+    re.compile(r"mapping\s*\((?:[^()]|\([^()]*\))*\)\s*"
                r"(?:(?:public|private|internal)\s+)?([A-Za-z_]\w*)"),
     re.compile(r"\b(?:uint\d*|int\d*|address|bool|bytes32)\s+"
                r"(?:(?:public|private|internal|constant|immutable)\s+)*"
@@ -373,6 +377,25 @@ class _Scope:
             all_spans.extend(spans)
             self.contract_names.update(
                 s["name"] for s in spans if s["name"])
+        # Transitive ancestors per contract (for resolving a bare
+        # call to a function the entry's contract inherits from a
+        # sibling base: fTokenEIP2612Deposits.mintWithSignature
+        # calls mint(...) defined in fTokenActions).
+        self.contract_ancestors: Dict[str, set] = {}
+        _by_name_all = {s["name"]: s for s in all_spans
+                        if s["name"]}
+        for _name in self.contract_names:
+            _seen_anc: set = set()
+            _stack = list(_by_name_all.get(_name, {}).get(
+                "ancestors", []))
+            while _stack:
+                _a = _stack.pop()
+                if _a in _seen_anc:
+                    continue
+                _seen_anc.add(_a)
+                _stack.extend(_by_name_all.get(_a, {}).get(
+                    "ancestors", []))
+            self.contract_ancestors[_name] = _seen_anc
         pool = [s for s in all_spans
                 if not _TEST_SEGMENT_RE.search(s["path"])] or all_spans
         kept = pool
@@ -419,10 +442,25 @@ class _Scope:
         self.scoped_text = "\n".join(texts)
 
 
-def _gated_deep(fn: Dict[str, Any], scope: _Scope) -> bool:
+def _gated_deep(fn: Dict[str, Any], scope: _Scope,
+                _depth: int = 0, _seen=None) -> bool:
     """Gate check over the function, its custom modifiers'
-    DEFINITIONS, and the internal helpers it calls (FP fix 2:
-    the gate may live one hop down the internal call path)."""
+    DEFINITIONS, the internal helpers it calls, AND the
+    implementations it delegates to via super.<fn>,
+    <Parent>.<fn> or a same-contract public overload (FP fix,
+    2026-11-19: the gate may live in the parent implementation
+    an override delegates to - Tranche.mint -> ERC20.mint `auth`,
+    VANRY 3-arg mint -> super.mint hasRole, PToken 2-arg mint ->
+    4-arg mint `require(_msgSender() == pNetwork)`, Shares
+    mintAndCall -> Shares.mint onlyOwner, DripToken.mint ->
+    MintableToken.mint onlyWhitelisted)."""
+    if _depth > 2:
+        return False
+    if _seen is None:
+        _seen = set()
+    if id(fn) in _seen:
+        return False
+    _seen.add(id(fn))
     sig, text = fn["signature"], fn["text"]
     if cd._is_gated(sig, text):
         return True
@@ -439,6 +477,9 @@ def _gated_deep(fn: Dict[str, Any], scope: _Scope) -> bool:
             continue
         if re.search(r"\b" + re.escape(name) + r"\s*\(", text) and \
                 cd._is_gated(helper["signature"], helper["text"]):
+            return True
+    for _key, impl in _called_impls(text, fn, scope):
+        if _gated_deep(impl, scope, _depth + 1, _seen):
             return True
     return False
 
@@ -1241,15 +1282,105 @@ def _call_args(text: str, open_paren: int) -> List[str]:
     return [a.strip() for a in cd._split_top(inner)]
 
 
+def _called_impls(text: str, entry_fn: Dict[str, Any],
+                  scope: _Scope) -> List[Tuple[str, Dict[str, Any]]]:
+    """Implementations reached from `text` through calls that are
+    NOT internal helpers: `super.<name>(...)`, `<Parent>.<name>(...)`
+    and same-contract public `<name>(...)` (overload delegation).
+
+    An override that delegates to a gated parent implementation
+    (Tranche.mint -> ERC20.mint `auth`, VANRY 3-arg mint ->
+    super.mint hasRole, PToken 2-arg mint -> 4-arg mint
+    `require(_msgSender() == pNetwork)`, Shares.mintAndCall ->
+    Shares.mint onlyOwner) IS gated, but the old code only ever
+    looked at internal helpers, so the parent's gate was invisible.
+    Returns (key, fn) pairs; the first same-named implementation
+    in scope order wins for `super.` (parents precede children in
+    a flattened source), while a qualified `<Parent>.<name>` is
+    resolved exactly by contract name.
+    """
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    entry_contract = entry_fn.get("contract")
+    ancestors = set()
+    try:
+        ancestors = scope.contract_ancestors.get(
+            entry_contract, set())
+    except AttributeError:
+        ancestors = set()
+
+    # Index once: first bodied implementation per (contract,
+    # name), so the per-call-site lookup is O(1).
+    by_contract_name: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    same_contract_public: Dict[str, Dict[str, Any]] = {}
+    ancestor_public: Dict[str, Dict[str, Any]] = {}
+    ancestor_named: Dict[str, Dict[str, Any]] = {}
+    for cand in scope.functions:
+        if cand is entry_fn or "{" not in cand["text"]:
+            continue
+        by_contract_name.setdefault(
+            (cand.get("contract"), cand["name"]), cand)
+        if cand.get("contract") in ancestors:
+            # super.<name> may target an internal base function
+            # (ERC4626._deposit), so this index is not
+            # visibility-filtered.
+            ancestor_named.setdefault(cand["name"], cand)
+        if re.search(r"\b(internal|private)\b",
+                     cand["signature"]):
+            continue
+        if cand.get("contract") == entry_contract:
+            same_contract_public.setdefault(cand["name"], cand)
+        elif cand.get("contract") in ancestors:
+            ancestor_public.setdefault(cand["name"], cand)
+
+    # super.<name> resolves to a base contract's implementation.
+    for m in re.finditer(r"\bsuper\s*\.\s*(\w+)\s*\(", text):
+        cand = ancestor_named.get(m.group(1))
+        if cand is not None:
+            out.append(("super:" + m.group(1), cand))
+    for m in re.finditer(
+            r"\b([A-Za-z_]\w*)\s*\.\s*(\w+)\s*\(", text):
+        qual, name = m.group(1), m.group(2)
+        if qual in ("super", "msg", "address", "this"):
+            continue
+        if qual not in scope.contract_names:
+            continue
+        cand = by_contract_name.get((qual, name))
+        if cand is not None:
+            out.append((qual + ":" + name, cand))
+    # Bare calls resolve in the entry contract, then in its
+    # bases (a call in fTokenEIP2612Deposits to mint(...) is the
+    # fTokenActions.mint it inherits, not an unrelated same-named
+    # function elsewhere in the compilation). Skip names that are
+    # internal helpers (handled by the helpers loop) and the entry
+    # itself (recursion).
+    for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", text):
+        name = m.group(1)
+        if name in scope.helpers:
+            continue
+        cand = same_contract_public.get(name) or \
+            ancestor_public.get(name)
+        if cand is not None:
+            out.append((name, cand))
+    return out
+
+
 def bound_path_text(scope: _Scope, fn: Dict[str, Any],
                     max_depth: int = 3) -> str:
     """The flagged function's text plus the bodies of the
     internal helpers it calls, transitively (depth <= 3), WITH
     argument binding: at every call site the helper's parameters
     are replaced by the actual argument expressions, so each
-    appended helper body is written in its caller's frame."""
+    appended helper body is written in its caller's frame.
+
+    Super / parent-qualified / same-contract-public calls are
+    followed the same way: the bound path is the actual execution
+    path, so a parent ERC4626 _deposit that pulls the caller's
+    assets (sNUSD/fToken mint) and a parent mint that carries the
+    role gate both belong in it.
+    """
     parts = [fn["text"]]
     seen = {fn["name"]}
+    seen_impls = {id(fn)}
 
     def expand(text: str, depth: int) -> None:
         if depth > max_depth:
@@ -1275,6 +1406,27 @@ def bound_path_text(scope: _Scope, fn: Dict[str, Any],
                     htext[brace + 1:], child)
             parts.append(htext)
             expand(htext, depth + 1)
+        for key, impl in _called_impls(text, fn, scope):
+            if id(impl) in seen_impls:
+                continue
+            seen_impls.add(id(impl))
+            cm = re.search(r"(?:super\s*\.\s*|"
+                           r"(?:[A-Za-z_]\w*\s*\.\s*)?)" +
+                           re.escape(impl["name"]) + r"\s*\(",
+                           text)
+            if not cm:
+                continue
+            args = _call_args(text, cm.end() - 1)
+            params = _positional_params(impl["signature"])
+            child = {p: args[i] for i, p in enumerate(params)
+                     if p is not None and i < len(args)}
+            itext = impl["text"]
+            brace = itext.find("{")
+            if brace >= 0 and child:
+                itext = itext[:brace + 1] + _bind_substitute(
+                    itext[brace + 1:], child)
+            parts.append(itext)
+            expand(itext, depth + 1)
 
     expand(fn["text"], 1)
     return "\n".join(parts)
@@ -1424,6 +1576,68 @@ _EXT_AUTH_RE = re.compile(
     re.I)
 
 
+def _operate_callback_funded(text: str) -> str:
+    """External operate-with-callback deposit (Fluid fToken shape):
+    the mint calls LIQUIDITY.operate(asset, amount, ...,
+    abi.encode(msg.sender)) and mints shares computed from that
+    same amount. The external contract pulls the caller's assets
+    through the callback, so the shares are caller-funded even
+    though no transferFrom appears in this source. Returns a
+    reason string or "".
+    """
+    cb_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*abi\.encode\s*\([^;]*?"
+            r"(msg\.sender|_msgSender\s*\(\s*\))", text):
+        cb_vars.add(m.group(1))
+    for m in re.finditer(r"\.operate\s*\(", text):
+        paren = text.find("(", m.start())
+        if paren < 0:
+            continue
+        args, _ = _balanced_local(text, paren)
+        arg_list = [a.strip() for a in cd._split_top(args)]
+        has_cb = any(
+            "abi.encode" in a and
+            ("msg.sender" in a or "_msgSender()" in a)
+            for a in arg_list) or any(
+            a.strip("() ") in cb_vars for a in arg_list)
+        if not has_cb:
+            continue
+        amt_vars = set()
+        for a in arg_list:
+            if "abi.encode" in a:
+                continue
+            for v in re.findall(r"[A-Za-z_]\w*", a):
+                # lowercase/mixed-case locals only: all-caps
+                # names are token/constant identifiers, not
+                # the operated amount.
+                if v not in ("address", "SafeCast", "toInt256",
+                             "toUint256", "uint256", "int256") and \
+                        not v.isupper():
+                    amt_vars.add(v)
+        if not amt_vars:
+            continue
+        derived = set(amt_vars)
+        for v in list(amt_vars):
+            for am in re.finditer(
+                    r"(\w+)\s*=\s*[^;]*\b" + re.escape(v) + r"\b",
+                    text):
+                derived.add(am.group(1))
+        for mm in re.finditer(
+                r"_safeMint\s*\(\s*\w+\s*,\s*(\w+)|"
+                r"_mint\s*\(\s*\w+\s*,\s*(\w+)", text):
+            amt = mm.group(1) or mm.group(2)
+            if amt in derived:
+                return ("caller-funded: the mint deposits "
+                        "through an external operate() call "
+                        "whose callback data encodes the caller, "
+                        "and the minted shares are computed from "
+                        "the operated amount, so the payout is "
+                        "backed by the caller's own assets pulled "
+                        "through the callback")
+    return ""
+
+
 def _fp_downgrade_reason(text: str, scope: _Scope,
                          state: set) -> str:
     """Structural reasons an ungated sensitive function is
@@ -1448,9 +1662,15 @@ def _fp_downgrade_reason(text: str, scope: _Scope,
     """
     expanded = _expand_helpers_local(text, scope)
     caller_ids = {"msg.sender"}
+    # NOTE: no trailing \b - it never matches after the closing
+    # paren of _msgSender() (')' followed by ';' has no word
+    # boundary), so `address user = _msgSender();` never
+    # registered `user` as a caller alias and the DOG8004
+    # caller-funded pull was missed (2026-11-19). The negative
+    # lookahead keeps `msg.senderFoo` from matching instead.
     for m in re.finditer(
             r"(\w+)\s*=\s*(?:_msgSender\s*\(\s*\)|"
-            r"msg\.sender)\b", expanded):
+            r"msg\.sender)(?![A-Za-z0-9_])", expanded):
         caller_ids.add(m.group(1))
     # helper params bound to the caller at a call site
     for hname, helper in scope.helpers.items():
@@ -1475,6 +1695,15 @@ def _fp_downgrade_reason(text: str, scope: _Scope,
                 if a in ("msg.sender", "_msgSender()") \
                         and i < len(params):
                     caller_ids.add(params[i])
+    # Recipients of _mint in this path: a pull whose FROM is the
+    # mint recipient is funded by the recipient, not the contract
+    # (ERC20Plus mintManyERC20: transferFrom(_to, address(this),..)
+    # then _mint(_to, ..)). A stranger can only mint to an address
+    # that pays for the tokens itself.
+    mint_recipients = set()
+    for mm in re.finditer(r"_safeMint\s*\(\s*(\w+)|"
+                          r"_mint\s*\(\s*(\w+)", expanded):
+        mint_recipients.add(mm.group(1) or mm.group(2))
     for m in _CALLER_PULL_RE.finditer(expanded):
         # Determine the FROM argument positionally:
         # transferFrom(from, to, amt) / _transfer(from, ...)
@@ -1497,6 +1726,14 @@ def _fp_downgrade_reason(text: str, scope: _Scope,
                     "burned) inside the function, so the "
                     "payout is backed by the caller's own "
                     "money")
+        if any(a in mint_recipients for a in from_args):
+            return ("recipient-funded: value is pulled from "
+                    "the mint recipient itself inside the "
+                    "function, so the payout is backed by the "
+                    "recipient's own money, not the contract's")
+    _op_cb = _operate_callback_funded(expanded)
+    if _op_cb:
+        return _op_cb
     if "balanceOf(address(this))" in expanded:
         return ("self-balance accounting: the payout is "
                 "metered from the contract's own token "
@@ -1519,6 +1756,481 @@ def _fp_downgrade_reason(text: str, scope: _Scope,
                     f"{m.group(2)}(...) on a state-held "
                     f"external contract")
     return ""
+
+
+def _caller_aliases(text: str) -> set:
+    """Local names bound to the caller: msg.sender, _msgSender(),
+    and variables assigned from either."""
+    out = {"msg.sender", "_msgSender()"}
+    for m in re.finditer(
+            r"(\w+)\s*=\s*(?:_msgSender\s*\(\s*\)|"
+            r"msg\.sender)(?![A-Za-z0-9_])", text):
+        out.add(m.group(1))
+    return out
+
+
+def _guarded_cmp(text: str, pattern: str) -> bool:
+    """True when `pattern` (a comparison shape) appears inside a
+    require(...) condition, or inside an if(...) whose body
+    reverts/returns. require() is a guard by construction; an
+    if() only guards when the failing branch exits."""
+    for m in re.finditer(
+            r"require\s*\(\s*(?:" + pattern + r")", text):
+        return True
+    for m in re.finditer(
+            r"\bif\s*\(\s*(?:" + pattern + r")", text):
+        paren = text.find("(", m.start())
+        if paren < 0:
+            continue
+        _inner, close = _balanced_local(text, paren)
+        tail = text[close + 1:close + 120]
+        if re.search(r"\brevert\b|\breturn\b", tail):
+            return True
+    return False
+
+
+def _live_gate_reason(text: str, state: set, compiler: str = "",
+                      for_claim: bool = False) -> str:
+    """Live gates a path text models that _gated_deep misses
+    (they live in a helper / parent body on the bound path, or
+    are state-based rather than modifier-based). Returns a reason
+    string or "". Silent-gate shapes only: a stranger cannot pass
+    them at all.
+
+    - minter/whitelist membership: require(<map>[caller]) as a
+      boolean, <set>.contains(caller), require(minters[caller]).
+    - caller-keyed limit: a local assigned from a caller-keyed
+      limit read compared against the amount (XERC20
+      mintingCurrentLimitOf, GravityTokenG _minterMint,
+      BridgedToken bridgeSupply cap).
+    - role-helper calls in require/if (isSenderInRole, hasRole).
+    - caller-vs-stored-address require / if-revert
+      (USSD stakingContract, E2EssenceToken _masterAccount).
+    - ownership of the claimed item: require(ownerOf(x) ==
+      msg.sender) (Gold8V2 Goose claim).
+    - caller-balance bound: require(<balance-var> >= amount)
+      where the var reads the caller's balance (THREEHUNDRED).
+    - PoW / challenge digest: a keccak256 digest compared
+      against a stored target with revert/require (AutumnToken).
+    - minter-allowance underflow (0.8+ checked arithmetic):
+      <map>[caller] -= amount (HATToken).
+
+    With for_claim=True only the access shapes apply
+    (membership, role-helper, caller-vs-authority, ownership):
+    limit / balance / PoW shapes are entitlements for a claim,
+    and the claim detector adjudicates those by payout
+    derivation, not by silencing here.
+    """
+    callers = _caller_aliases(text)
+    caller_alt = r"(?:" + "|".join(
+        re.escape(c) for c in sorted(callers, key=len,
+                                      reverse=True)) + r")"
+
+    def _membership():
+        # require(<map>[caller]) as a boolean, or == true, or
+        # <set>.contains(caller)
+        if re.search(
+                r"(?:require|if)\s*\([^;]*?[A-Za-z_]\w*\s*\[\s*" +
+                caller_alt + r"\s*\]\s*(?:\)|,|==\s*true\b|"
+                r"&&|\|\|)", text):
+            return True
+        if re.search(
+                r"(?:require|if)\s*\([^;]*?\.\s*contains\s*\(\s*" +
+                caller_alt + r"\s*\)", text):
+            return True
+        return False
+
+    def _role_helper():
+        return bool(re.search(
+            r"(?:require|if)\s*\(\s*!?\s*[A-Za-z_]\w*[Rr]ole\w*"
+            r"\s*\(", text))
+
+    def _caller_vs_stored():
+        stored_alt = r"(?:" + "|".join(
+            re.escape(s) for s in sorted(state, key=len,
+                                          reverse=True)) + r")"
+        if not state:
+            return False
+        pat = (r"(?:" + caller_alt + r")\s*(==|!=)\s*" +
+               stored_alt + r"\b|" + stored_alt +
+               r"\s*(==|!=)\s*(?:" + caller_alt + r")")
+        return _guarded_cmp(text, pat)
+
+    def _ownership():
+        return bool(re.search(
+            r"(?:require|if)\s*\([^;]*?ownerOf\s*\([^)]*\)\s*"
+            r"(==|!=)\s*(?:" + caller_alt + r")|"
+            r"(?:require|if)\s*\([^;]*?(?:" + caller_alt +
+            r")\s*(==|!=)\s*ownerOf\s*\(", text))
+
+    if _membership():
+        return ("minter/whitelist membership: the caller must be "
+                "recorded in a minter/allowlist mapping or set")
+    if _role_helper():
+        return ("role-helper gate: a require/if on a role check "
+                "call (isSenderInRole / hasRole)")
+    if _caller_vs_stored():
+        return ("caller-vs-stored-address gate: the caller must "
+                "equal a stored authorized address")
+    if _ownership():
+        return ("ownership gate: the caller must own the item "
+                "being claimed against (ownerOf == caller)")
+    if for_claim:
+        return ""
+    # --- mint-only shapes below (entitlements for a claim) ---
+    # Caller-keyed limit: a local assigned from a caller-keyed
+    # limit read, compared against an amount.
+    limit_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?(?:[Ll]imit\w*|"
+            r"[A-Za-z_]\w*)\s*\(\s*(?:" + caller_alt + r")",
+            text):
+        limit_vars.add(m.group(1))
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?[A-Za-z_]\w*\s*\[\s*" +
+            caller_alt + r"\s*\]\s*\.\s*[Ll]imit\b", text):
+        limit_vars.add(m.group(1))
+    for v in limit_vars:
+        if _guarded_cmp(
+                text, r"\b" + re.escape(v) +
+                r"\b\s*(>=|>|<=|<|==|!=)|"
+                r"(>=|>|<=|<|==|!=)\s*\b" + re.escape(v) + r"\b"):
+            return ("caller-keyed minter limit: the mint amount "
+                    "is checked against the caller's recorded "
+                    "minter limit")
+    # Caller-keyed mapping read compared against an amount
+    # (bridge cap, minter allowance).
+    if _guarded_cmp(
+            text, r"[A-Za-z_]\w*\s*\[\s*" + caller_alt +
+            r"\s*\]\s*(>=|>|<=|<|==|!=)"):
+        return ("caller-keyed cap: the mint amount is checked "
+                "against the caller's recorded cap")
+    # Record-field guard: a require/if-revert on a field of a
+    # local bound to a caller-keyed mapping read (BridgedToken:
+    # Supply storage b = bridgeSupply[msg.sender];
+    # require(b.cap > 0); require(b.total <= b.cap)). The record
+    # is zero/absent for a stranger, so the require is the gate.
+    record_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?\[[^\];]*?" + caller_alt +
+            r"\b[^\];]*?\]", text):
+        record_vars.add(m.group(1))
+    for v in record_vars:
+        if _guarded_cmp(
+                text, r"\b" + re.escape(v) +
+                r"\.\w+\s*(>=|>|<=|<|==|!=)|"
+                r"(>=|>|<=|<|==|!=)\s*\b" + re.escape(v) +
+                r"\.\w+|\b" + re.escape(v) +
+                r"\b\s*(>=|>|<=|<|==|!=)"):
+            return ("record-field gate: the mint amount is "
+                    "checked against the caller's stored record")
+    # Caller-balance bound.
+    bal_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?(?:balanceOf|[A-Za-z_]*[Bb]alance\w*)"
+            r"\s*\(\s*(?:" + caller_alt + r")\s*\)", text):
+        bal_vars.add(m.group(1))
+    for v in bal_vars:
+        if _guarded_cmp(
+                text, r"\b" + re.escape(v) +
+                r"\b\s*(>=|>|<=|<|==|!=)|"
+                r"(>=|>|<=|<|==|!=)\s*\b" + re.escape(v) + r"\b"):
+            return ("caller-balance bound: the mint amount is "
+                    "checked against the caller's own balance")
+    if _guarded_cmp(
+            text, r"balanceOf\s*\(\s*(?:" + caller_alt +
+            r")\s*\)\s*(>=|>|<=|<|==|!=)"):
+        return ("caller-balance bound: the mint amount is "
+                "checked against the caller's own balance")
+    # PoW / challenge digest.
+    digest_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?keccak256\s*\(", text):
+        digest_vars.add(m.group(1))
+    for v in digest_vars:
+        if _guarded_cmp(
+                text, r"(?:uint256\s*\(\s*)?\b" + re.escape(v) +
+                r"\b\s*\)?\s*(>=|>|<=|<|==|!=)\s*[A-Za-z_]|"
+                r"[A-Za-z_]\w*\s*(>=|>|<=|<|==|!=)\s*"
+                r"(?:uint256\s*\(\s*)?\b" + re.escape(v) +
+                r"\b\s*\)?"):
+            return ("proof-of-work / challenge gate: the mint "
+                    "requires a digest below a stored target or "
+                    "matching a challenge")
+    # Minter-allowance underflow (0.8+ checked arithmetic only:
+    # pre-0.8 the subtraction wraps instead of reverting).
+    if compiler:
+        mver = re.search(r"(\d+)\.(\d+)", compiler)
+        if mver and (int(mver.group(1)), int(mver.group(2))) >= (0, 8):
+            if re.search(
+                    r"[A-Za-z_]\w*\s*\[\s*" + caller_alt +
+                    r"\s*\]\s*-=\s*[A-Za-z_]\w*", text):
+                return ("minter-allowance underflow: the caller's "
+                        "recorded minter allowance is decremented "
+                        "by the mint amount (0.8 checked "
+                        "arithmetic reverts for a non-minter)")
+    return ""
+
+
+def _priced_mint_reason(text: str) -> str:
+    """The mint charges the caller: a msg.value comparison
+    against a non-zero price expression. A bare `msg.value > 0`
+    does NOT count (1 wei is not a price). Returns a reason
+    string or ""."""
+    for m in re.finditer(
+            r"(?:require|if)\s*\(([^;]*)msg\.value([^;]*)\)", text):
+        lhs, rhs = m.group(1), m.group(2)
+        other = (lhs + rhs).strip()
+        other = re.sub(r"^(>=|<=|==|!=|>|<)\s*", "", other)
+        other = re.sub(r"\s*(>=|<=|==|!=|>|<)$", "", other)
+        if other and other not in ("0", "0x0", "0.0"):
+            return ("priced mint: the caller must pay msg.value "
+                    "against a non-zero price for the minted "
+                    "amount")
+    return ""
+
+
+def _entitlement_bounded_reason(text: str,
+                                mint_only: bool = False) -> str:
+    """The payout amount derives from a caller/recipient-keyed
+    recorded position, so a stranger with no record gets zero.
+    Modelled as a small dataflow fixpoint over the bound path:
+
+    - bound values start as the caller and the payout
+      recipients; a require/if-equality against a bound value
+      binds the other side (Hedron: require(hsiAddress ==
+      _hsiAddress) where _hsiAddress came from
+      hsiLists(msg.sender, ...)).
+    - a local assigned from a key-keyed mapping read (incl.
+      storage pointers and nested keys) is an entitlement
+      record; a local loaded by a call fed a bound value whose
+      fields a require/if then guards is one too (Hedron:
+      share = _hsiLoad(hsiAddress), guarded by
+      share._stake.lockedDay / share._isLoaned checks).
+    - a local assigned from an expression mentioning an
+      entitlement record derives from it.
+    - a payout amount that is a call to a helper whose body
+      reads a caller-keyed record and gates on it is bounded
+      too (HELIOS: _mint(..., _claimMint(_msgSender(), id, ...))
+      where _claimMint reverts when the caller's mint record
+      does not exist or is not mature).
+
+    Returns a reason string or ""."""
+    keys = _caller_aliases(text)
+    for m in re.finditer(
+            r"_safeMint\s*\(\s*(\w+)|_mint\s*\(\s*(\w+)|"
+            r"(?:safeTransfer|transfer)\s*\(\s*(\w+)", text):
+        for g in m.groups():
+            if g:
+                keys.add(g)
+    bound = set(keys)
+    ent = set()
+    # Helpers whose return is a value read from a
+    # caller/recipient-keyed record (computed once; the fixpoint
+    # below only looks the set up).
+    loader_helpers = set()
+    for _fm in re.finditer(r"function\s+(\w+)\s*\(", text):
+        if _helper_loads_caller(text, _fm.group(1), keys):
+            loader_helpers.add(_fm.group(1))
+    changed = True
+    while changed:
+        changed = False
+        # Require / if-equality binding.
+        for m in re.finditer(
+                r"require\s*\([^;]*?(\w+)\s*==\s*(\w+)[^;]*?\)|"
+                r"\bif\s*\(\s*(\w+)\s*!=\s*(\w+)[^;]*?\)", text):
+            a, b = m.group(1) or m.group(3), \
+                m.group(2) or m.group(4)
+            if a in bound and b not in bound:
+                bound.add(b)
+                changed = True
+            elif b in bound and a not in bound:
+                bound.add(a)
+                changed = True
+        # Assignments.
+        for m in re.finditer(
+                r"(?:^|[;{}])\s*(?:\w+\s+)?(?:storage\s+|memory\s+)?"
+                r"(\w+)\s*=\s*([^;{}]+)", text):
+            var, rhs = m.group(1), m.group(2)
+            if var in ent:
+                continue
+            # Key-keyed mapping read.
+            keyed = False
+            for k in bound:
+                if re.search(r"\[\s*" + re.escape(k) + r"\b",
+                             rhs):
+                    keyed = True
+                    break
+            if keyed:
+                ent.add(var)
+                bound.add(var)
+                changed = True
+                continue
+            # Call to a helper that loads the caller's record
+            # (Hedron mintNative: stake =
+            # _hexStakeLoad(stakeIndex), where _hexStakeLoad
+            # returns _hx.stakeLists(msg.sender, stakeIndex)).
+            for cm in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", rhs):
+                if cm.group(1) in loader_helpers:
+                    ent.add(var)
+                    bound.add(var)
+                    changed = True
+                    keyed = True
+                    break
+            if keyed:
+                continue
+            # Call fed a bound value: the result is bound to the
+            # caller too (Hedron: _hsiAddress =
+            # _hsim.hsiLists(msg.sender, hsiIndex)); when the
+            # result is a record whose fields a require/if then
+            # guards, it is an entitlement record (share =
+            # _hsiLoad(hsiAddress), guarded by
+            # share._stake.lockedDay / share._isLoaned).
+            if re.search(r"\b[A-Za-z_]\w*\s*\(", rhs):
+                fed = any(re.search(
+                    r"\b" + re.escape(b) + r"\b", rhs)
+                    for b in bound)
+                if fed:
+                    if var not in bound:
+                        bound.add(var)
+                        changed = True
+                    if re.search(
+                            r"(?:require|if)\s*\([^;]*\b" +
+                            re.escape(var) + r"\.\w+", text):
+                        if var not in ent:
+                            ent.add(var)
+                            changed = True
+            # Derivation from an entitlement record.
+            for e in ent:
+                if re.search(r"\b" + re.escape(e) + r"\b", rhs):
+                    ent.add(var)
+                    bound.add(var)
+                    changed = True
+                    break
+    if not ent and not _helper_is_entitlement(text, None, keys):
+        return ""
+    for m in re.finditer(
+            r"_safeMint\s*\([^;]*?\)|_mint\s*\([^;]*?\)|"
+            r"(?:safeTransfer|transfer)\s*\([^;]*?\)", text):
+        call = m.group(0)
+        if mint_only and not re.match(
+                r"_safeMint\s*\(|_mint\s*\(", call):
+            # A transfer payout is bounded only by consumption
+            # (_record_debit_bounded): an entitlement read with
+            # no debit is the double-claim shape, which must
+            # still fire. Only mint-shaped payouts (newly
+            # minted value gated by record existence) downgrade
+            # here.
+            continue
+        for e in ent:
+            if re.search(r"\b" + re.escape(e) + r"\b", call):
+                return ("entitlement-bounded payout: the minted / "
+                        "paid amount derives from the caller or "
+                        "recipient's recorded position, so a "
+                        "stranger with no record receives zero")
+        # Payout amount is a call to an entitlement helper.
+        paren = call.find("(")
+        if paren >= 0:
+            inner, _ = _balanced_local(call, paren)
+            for a in _split_top(inner):
+                a = a.strip()
+                hm = re.match(r"([A-Za-z_]\w*)\s*\(", a)
+                if hm and _helper_is_entitlement(text, hm.group(1),
+                                                 keys):
+                    return ("entitlement-bounded payout: the "
+                            "minted / paid amount is the return of "
+                            "a helper that reads the caller or "
+                            "recipient's recorded position and "
+                            "gates on it, so a stranger with no "
+                            "record receives zero")
+    return ""
+
+
+def _helper_is_entitlement(text: str, name, keys: set) -> bool:
+    """True when the named helper's body (in the bound path)
+    reads a caller/recipient-keyed record and gates on it.
+    With name=None, true when ANY function chunk in the text
+    does (used as a fast pre-check)."""
+    for m in re.finditer(r"function\s+(\w+)\s*\(", text):
+        if name is not None and m.group(1) != name:
+            continue
+        start = text.find("{", m.start())
+        if start < 0:
+            continue
+        nxt = text.find("\nfunction ", start)
+        body = text[start:nxt if nxt >= 0 else len(text)]
+        keyed = any(re.search(r"\[\s*" + re.escape(k) + r"\b",
+                              body) for k in keys)
+        if not keyed:
+            continue
+        # A require/if on a var read from that record.
+        rec_vars = set()
+        for am in re.finditer(
+                r"(\w+)\s*=\s*[^;]*?\[[^\];]*?" +
+                r"(?:" + "|".join(re.escape(k) for k in keys) +
+                r")\b[^\];]*?\]", body):
+            rec_vars.add(am.group(1))
+        for v in rec_vars:
+            if re.search(
+                    r"(?:require|if)\s*\([^;]*\b" +
+                    re.escape(v) + r"\b", body):
+                return True
+    return False
+
+
+def _helper_loads_caller(text: str, name: str, keys: set) -> bool:
+    """True when the named helper's body returns a value read
+    from a caller/recipient-keyed record: a mapping read
+    [<key>] or an external call with the key as an argument,
+    whose result flows into the helper's return (directly, or
+    via a single / tuple assignment that the return then
+    mentions). Hedron: _hexStakeLoad returns
+    _hx.stakeLists(msg.sender, stakeIndex)."""
+    for m in re.finditer(r"function\s+" + re.escape(name) +
+                         r"\s*\(", text):
+        start = text.find("{", m.start())
+        if start < 0:
+            continue
+        nxt = text.find("\nfunction ", start)
+        body = text[start:nxt if nxt >= 0 else len(text)]
+
+        def _keyed(expr: str) -> bool:
+            for k in keys:
+                if re.search(r"\[\s*" + re.escape(k) + r"\b",
+                             expr):
+                    return True
+                if re.search(r"\b\w+\s*\([^;]*\b" +
+                             re.escape(k) + r"\b[^;]*\)", expr):
+                    return True
+            return False
+
+        # Direct return of a caller-keyed read/call.
+        for rm in re.finditer(r"return\b([^;]*)", body):
+            if _keyed(rm.group(1)):
+                return True
+        # Vars assigned from a caller-keyed read/call.
+        loaded = set()
+        for am in re.finditer(
+                r"(?<![=!<>])(\w+)\s*=(?!=)\s*([^;]*)", body):
+            if _keyed(am.group(2)):
+                loaded.add(am.group(1))
+        # Tuple assignment: (a, b, ...) = f(key, ...), or
+        # (uint40 a, uint72 b) = f(key, ...) - the component
+        # may carry its type, so the var is the last word.
+        for tm in re.finditer(
+                r"\(([\w\s,]+)\)\s*=\s*([^;]*)", body):
+            if _keyed(tm.group(2)):
+                for v in tm.group(1).split(","):
+                    parts = v.split()
+                    if parts:
+                        loaded.add(parts[-1])
+        # Any loaded var returned?
+        for rm in re.finditer(r"return\b([^;]*)", body):
+            for v in loaded:
+                if re.search(r"\b" + re.escape(v) + r"\b",
+                             rm.group(1)):
+                    return True
+    return False
 
 
 def analyze_logic_source(src: str, compiler: str = "",

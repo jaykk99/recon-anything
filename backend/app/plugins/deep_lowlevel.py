@@ -369,6 +369,8 @@ def _fn_params(fn: Dict[str, Any]) -> List[str]:
 _GUARD_COND_RE = re.compile(
     r"msg\.sender\s*(==|!=)|"
     r"(==|!=)\s*msg\.sender|"
+    r"_msgSender\s*\(\s*\)\s*(==|!=)|"
+    r"(==|!=)\s*_msgSender\s*\(\s*\)|"
     r"hasRole\s*\(|onlyOwner|isOwner\s*\(|"
     r"owner\s*(==|!=)|"
     r"(==|!=)\s*owner\b|"
@@ -411,8 +413,251 @@ _SIG_GATE_RE = re.compile(
     r"\.recover\s*\(|_?verif(?:y|ySignature)\s*\(|_?checkSignature\s*\(")
 
 
-def _is_guard_cond(cond: str) -> bool:
-    return bool(_GUARD_COND_RE.search(cond))
+def _is_guard_cond(cond: str, ctx=None) -> bool:
+    if _GUARD_COND_RE.search(cond):
+        return True
+    if ctx is None:
+        return False
+    # State-record guard (TokenHub withdrawUnlockedToken):
+    # a require on a field of a local bound to a state-mapping
+    # read (lockInfo.amount > 0, lockInfo.unlockAt <=
+    # block.timestamp), or a time-lock against such a field /
+    # state variable. The record is zero for an unentitled
+    # caller, so the require is the gate even though no
+    # msg.sender check appears.
+    record_vars = ctx.get("record_vars") or set()
+    state_vars = ctx.get("state_vars") or set()
+    if record_vars:
+        rv_alt = r"(?:" + "|".join(
+            re.escape(v) for v in sorted(record_vars, key=len,
+                                          reverse=True)) + r")"
+        if re.search(
+                r"\b" + rv_alt + r"\.\w+\s*(>=|>|<=|<|==|!=)|"
+                r"(>=|>|<=|<|==|!=)\s*\b" + rv_alt + r"\.\w+",
+                cond):
+            return True
+        if re.search(
+                r"block\.timestamp\s*(>=|<=|>|<)\s*\b" + rv_alt +
+                r"\.\w+|" + r"\b" + rv_alt +
+                r"\.\w+\s*(>=|<=|>|<)\s*block\.timestamp", cond):
+            return True
+    if state_vars:
+        sv_alt = r"(?:" + "|".join(
+            re.escape(v) for v in sorted(state_vars, key=len,
+                                          reverse=True)) + r")"
+        if re.search(
+                r"block\.timestamp\s*(>=|<=|>|<)\s*\b" + sv_alt +
+                r"\b|" + r"\b" + sv_alt +
+                r"\b\s*(>=|<=|>|<)\s*block\.timestamp", cond):
+            return True
+    # Direct caller-keyed state comparison in the require:
+    # require(balances[msg.sender] >= amount),
+    # require(balanceOf(msg.sender) > 0).
+    if re.search(
+            r"\[\s*msg\.sender\s*\]\s*(>=|>|<=|<|==|!=)|"
+            r"balanceOf\s*\(\s*msg\.sender\s*\)\s*(>=|>|<=|<|==|!=)",
+            cond):
+        return True
+    return False
+
+
+# Type keywords that introduce a local declaration: `address
+# owner = ownerOf(tokenId);` is a read, not a state write.
+_TYPE_KW_RE = re.compile(
+    r"\b(address|uint256|uint128|uint64|uint32|uint16|uint8|uint|"
+    r"int256|int128|int64|int32|int16|int8|int|bool|bytes32|"
+    r"bytes| string)\s*$")
+
+
+def _cfg_ctx(fn_text: str, state_vars: set) -> Dict[str, Any]:
+    """Per-function context for the CFG scan: locals bound to a
+    state-mapping read (record vars), caller-funded value
+    variables (msg.value-derived, pulled from the caller, or
+    debited from the caller's balance), and wrap-then-transfer
+    amount expressions (WETH deposit then transfer of the same
+    amount)."""
+    record_vars = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?\b([A-Za-z_]\w*)\s*\[", fn_text):
+        if m.group(2) in state_vars:
+            record_vars.add(m.group(1))
+    funded = set()
+    changed = True
+    while changed:
+        changed = False
+        for m in re.finditer(
+                r"(?:^|[;{}])\s*(?:\w+\s+)?(\w+)\s*=\s*([^;{}]+)",
+                fn_text):
+            var, rhs = m.group(1), m.group(2)
+            if var in funded:
+                continue
+            if "msg.value" in rhs or "msg.sender" in rhs or \
+                    "_msgSender()" in rhs:
+                funded.add(var)
+                changed = True
+                continue
+            # Propagate only through pure computations on funded
+            # values (copies, arithmetic, casts): if the RHS
+            # mentions any other lowercase identifier (a state
+            # var, a reserve, a price), the result is not purely
+            # the caller's money.
+            if not funded:
+                continue
+            if not any(re.search(r"\b" + re.escape(f) + r"\b",
+                                 rhs) for f in funded):
+                continue
+            rest = rhs
+            for f in funded:
+                rest = re.sub(r"\b" + re.escape(f) + r"\b", "",
+                              rest)
+            rest = re.sub(
+                r"\b(?:msg\.value|msg\.sender|_msgSender\s*\(\s*\)|"
+                r"uint256|uint128|uint64|uint32|uint16|uint8|uint|"
+                r"int256|int128|int64|int32|int16|int8|int|address|"
+                r"bool|bytes32|bytes)\b", "", rest)
+            rest = re.sub(r"\b[A-Z][A-Z0-9_]*\b", "", rest)
+            rest = re.sub(r"\b\d+(?:\.\d+)?\b", "", rest)
+            rest = re.sub(r"[\s+\-*/%()\[\].,]", "", rest)
+            if rest == "":
+                funded.add(var)
+                changed = True
+    # Caller-balance debit: balances[msg.sender] -= wad (WBNB
+    # withdraw) makes wad caller-funded. A debit-funded amount
+    # is the caller's own money ONLY when it is sent back to
+    # the caller (a withdrawal); sent to an arbitrary address
+    # it is still flagged (VaultVuln: debit then to.call{value:
+    # amount} must fire). Track msg.value-derived vars
+    # separately: attached ETH is the caller's own funds
+    # whatever the destination.
+    for m in re.finditer(
+            r"[A-Za-z_]\w*\s*\[\s*msg\.sender\s*\]\s*-=\s*"
+            r"([A-Za-z_]\w*)", fn_text):
+        funded.add(m.group(1))
+    for m in re.finditer(
+            r"balanceOf\s*\(\s*msg\.sender\s*\)\s*-=\s*"
+            r"([A-Za-z_]\w*)", fn_text):
+        funded.add(m.group(1))
+    msgvalue_funded = set()
+    for m in re.finditer(
+            r"(?:^|[;{}])\s*(?:\w+\s+)?(\w+)\s*=\s*([^;{}]+)",
+            fn_text):
+        var, rhs = m.group(1), m.group(2)
+        if "msg.value" in rhs:
+            msgvalue_funded.add(var)
+    changed = True
+    while changed:
+        changed = False
+        for m in re.finditer(
+                r"(?:^|[;{}])\s*(?:\w+\s+)?(\w+)\s*=\s*([^;{}]+)",
+                fn_text):
+            var, rhs = m.group(1), m.group(2)
+            if var in msgvalue_funded:
+                continue
+            if any(re.search(r"\b" + re.escape(f) + r"\b", rhs)
+                   for f in msgvalue_funded):
+                msgvalue_funded.add(var)
+                changed = True
+    # Wrap-then-transfer: X.deposit{value: E}() then X.transfer(.., E).
+    wrapped_amounts = set()
+    for m in re.finditer(
+            r"\.deposit\s*\{\s*value\s*:\s*([^},]+)\}", fn_text):
+        wrapped_amounts.add(re.sub(r"\s+", "", m.group(1)))
+    return {"record_vars": record_vars, "state_vars": state_vars,
+            "funded": funded, "msgvalue_funded": msgvalue_funded,
+            "wrapped_amounts": wrapped_amounts}
+
+
+def _op_is_fp(head: str, op_match, ctx: Dict[str, Any]) -> bool:
+    """True when a matched sensitive op is not a stranger-reachable
+    drain: a delegatecall to address(this) (multicall just calls
+    the contract's own public functions), a local declaration
+    that only looks like a state write (`address owner = ...`),
+    or a value move of the caller's own funds. The caller's own
+    funds are msg.value (attached ETH, any destination), a
+    just-wrapped amount, or a debit-funded amount sent back to
+    the caller (a withdrawal). A debit-funded amount sent to an
+    arbitrary address is NOT safe (VaultVuln: debit then
+    to.call{value: amount} must fire)."""
+    op = op_match.group(0).strip()
+    funded = ctx.get("funded") or set()
+    msgvalue_funded = ctx.get("msgvalue_funded") or set()
+    wrapped = ctx.get("wrapped_amounts") or set()
+    state_vars = ctx.get("state_vars") or set()
+
+    def _refs_msgvalue(expr: str) -> bool:
+        if "msg.value" in expr:
+            return True
+        for f in msgvalue_funded:
+            if re.search(r"\b" + re.escape(f) + r"\b", expr):
+                return True
+        return False
+
+    def _refs_funded(expr: str) -> bool:
+        for f in funded:
+            if re.search(r"\b" + re.escape(f) + r"\b", expr):
+                return True
+        return False
+
+    def _is_caller(expr: str) -> bool:
+        e = re.sub(r"\s+", "", expr)
+        return e in ("msg.sender", "_msgSender()",
+                     "_msgSender", "msgSender()")
+
+    def _receiver_before(op_start: int) -> str:
+        before = head[:op_start].rstrip()
+        m = re.search(r"([A-Za-z_][\w\.]*\s*(?:\(\s*\))?)\s*$",
+                      before)
+        return m.group(1).strip() if m else ""
+
+    if op.startswith(".delegatecall"):
+        before = head[:op_match.start()].rstrip()
+        if before.endswith("address(this)") or \
+                before.endswith("address(this))"):
+            return True  # delegatecall to self: no new authority
+        return False
+    if re.match(r"^(owner|admin|price)\s*=$", op):
+        name = op.split()[0]
+        before = head[:op_match.start()]
+        if _TYPE_KW_RE.search(before):
+            return True  # local declaration, not a state write
+        if name not in state_vars:
+            return True  # not a contract state variable
+        return False
+    if op.startswith(".call{"):
+        # value expression inside the braces: .call{value: X, ...}
+        rest = head[op_match.end():]
+        m = re.search(r"\s*([^,}]+)", rest)
+        if not m:
+            return False
+        value = m.group(1)
+        if _refs_msgvalue(value):
+            return True  # attached ETH, any destination
+        if _refs_funded(value):
+            # Debit-funded: only safe when it goes back to the
+            # caller (a withdrawal, WBNB).
+            return _is_caller(_receiver_before(op_match.start()))
+        return False
+    if op.startswith(".transfer") or op.startswith(".send"):
+        paren = head.find("(", op_match.start())
+        if paren < 0:
+            return False
+        args, _ = _balanced(head, paren)
+        arg_list = [a.strip() for a in _split_top(args)]
+        # Destination: first arg for (to, amount), else the
+        # receiver before the dot for (amount).
+        dest = arg_list[0] if len(arg_list) >= 2 else \
+            _receiver_before(op_match.start())
+        for a in arg_list:
+            norm = re.sub(r"\s+", "", a)
+            if norm in wrapped:
+                return True
+            if _refs_msgvalue(a):
+                return True
+            if _refs_funded(a):
+                if _is_caller(dest):
+                    return True
+        return False
+    return False
 
 
 def _brace_span(text: str, open_pos: int) -> int:
@@ -428,7 +673,8 @@ def _brace_span(text: str, open_pos: int) -> int:
 
 
 def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
-                spec: DetectorSpec, out: List[Dict[str, Any]]) -> None:
+                spec: DetectorSpec, out: List[Dict[str, Any]],
+                ctx: Optional[Dict[str, Any]] = None) -> None:
     """Walk one brace block, tracking guard dominance.
 
     require(guard) marks the rest of the current block guarded.
@@ -452,6 +698,8 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
         head = body[i:next_pos]
         for op in _SENSITIVE_OP_RE.finditer(head):
             if not cur_guarded:
+                if ctx is not None and _op_is_fp(head, op, ctx):
+                    continue
                 detail = spec.detail + (
                     f" Observed: '{fn['name']}' reaches "
                     f"'{op.group(0).strip()}' in a basic block "
@@ -470,7 +718,7 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
         if kind == "require":
             paren = body.index("(", m.start())
             cond, _ = _balanced(body, paren)
-            if _is_guard_cond(cond):
+            if _is_guard_cond(cond, ctx):
                 cur_guarded = True
             semi = body.find(";", m.start())
             i = semi + 1 if semi >= 0 else m.end()
@@ -500,8 +748,8 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
         if j < n and body[j] == "{":
             end = _brace_span(body, j)
             _scan_block(body[j + 1:end],
-                        cur_guarded or _is_guard_cond(cond),
-                        fn, spec, out)
+                        cur_guarded or _is_guard_cond(cond, ctx),
+                        fn, spec, out, ctx)
             i = end + 1
             # else branch after this if: unguarded by the if's guard.
             k = i
@@ -515,7 +763,7 @@ def _scan_block(body: str, guarded: bool, fn: Dict[str, Any],
                 if k < n and body[k] == "{":
                     eend = _brace_span(body, k)
                     _scan_block(body[k + 1:eend], cur_guarded,
-                                fn, spec, out)
+                                fn, spec, out, ctx)
                     i = eend + 1
             continue
         i = close + 1
@@ -541,7 +789,12 @@ def _analyze_cfg(src: str, spec: DetectorSpec, compiler: str = "",
         brace = text.find("{")
         if brace < 0:
             continue
-        _scan_block(text[brace + 1:-1], False, fn, spec, out)
+        try:
+            state_vars = cl.state_variables(scope.scoped_text)
+        except Exception:
+            state_vars = set()
+        ctx = _cfg_ctx(text, state_vars)
+        _scan_block(text[brace + 1:-1], False, fn, spec, out, ctx)
     return out
 
 

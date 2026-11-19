@@ -941,6 +941,9 @@ _GATE_RE = re.compile(
     r"only(Owner|Admin|Role|Minter|Pauser|Governance|Governor|Operator|"
     r"Manager|Controller|Keeper|Guardian|Timelock|Factory|Self|Authorized|"
     r"Whitelisted|Gov|DAO|Initializing)|"
+    # only(<ROLE>) modifier form: only(DEFAULT_ADMIN_ROLE),
+    # only(MINTER_ROLE) - a role constant, not a named modifier.
+    r"only\s*\([^)]*ROLE|"
     # OZ initializer guards - a function with these is NOT an open init.
     r"\binitializer\b|\breinitializer\b|"
     # OZ internal check helpers and role checks.

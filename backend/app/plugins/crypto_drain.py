@@ -354,6 +354,13 @@ def _is_gated(signature: str, text: str) -> bool:
         return True  # require(isMinter[msg.sender]) and kin
     if _ROLE_CALL_RE.search(text):
         return True  # require(isMinter(msg.sender)) and kin
+    if re.search(
+            r"(?:require|if)\s*\(\s*!?\s*[A-Za-z_]\w*[Rr]ole\w*\s*\(",
+            text):
+        return True  # require(isSenderInRole(ROLE_X)) and kin:
+        # the role check itself is the gate even when the
+        # caller is checked inside the role helper, not as
+        # an argument (AliERC20v2Base.mint FP, 2026-11-19)
     if _registry_gate_evidence(text):
         return True  # storage struct by caller + field check on it
     if _signature_gate_evidence(text, signature):

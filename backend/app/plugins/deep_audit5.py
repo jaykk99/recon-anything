@@ -510,6 +510,10 @@ def _analyze_721_mint(src: str, spec: DetectorSpec,
         text = fn["text"]
         if "_safeMint" in text or "onERC721Received" in text:
             continue
+        if cl._gated_deep(fn, scope):
+            continue  # gated mint (onlyAdmin / onlyMinter /
+            # role modifier): the receiver check is not the
+            # open-mint shape this detector hunts
         m = _MINT_CALL_RE.search(text)
         if not m:
             continue

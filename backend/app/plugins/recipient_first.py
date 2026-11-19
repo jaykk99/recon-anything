@@ -62,6 +62,7 @@ from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target
 from . import chain_data
 from . import contract_chain as cc
 from . import contract_logic as cl
+from . import crypto_drain as cd
 
 MAX_ADDRESSES = 4
 MAX_CHAIN_PAIRS = 4
@@ -177,6 +178,19 @@ _PAYOUT_RE = re.compile(
     r"\b(_mint|_safeMint|safeTransfer|transferFrom|safeTransferFrom)"
     r"\s*\(", re.I)
 _MINT_CALL_RE = re.compile(r"\b(_mint|_safeMint|mint)\s*\(", re.I)
+# A direct ledger credit is a mint even with no _mint call
+# (VulnMint: balanceOf[to] += amount).
+_DIRECT_CREDIT_RE = re.compile(
+    r"\b(?:balances?|balanceOf)\s*\[\s*[A-Za-z_]\w*\s*\]"
+    r"\s*\+=")
+_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+                        re.S)
+
+
+def _strip_strings(text: str) -> str:
+    """Remove string literals: their contents are data, not code
+    (revert("mint() is disabled") is not a mint call)."""
+    return _STRING_RE.sub('""', text)
 _ENT_READ_RE = re.compile(
     r"([A-Za-z_]\w*)\s*\[\s*(msg\.sender|_msgSender\(\))\s*\]|"
     r"\b(balanceOf|sharesOf|balance)\s*\(\s*(msg\.sender|"
@@ -244,7 +258,8 @@ def _caller_indexed_write(fn_text: str, names: List[str]) -> bool:
             if m.group(2) == "=" and re.match(
                     r"\s*(0\b|true\b|false\b)", rhs):
                 return True
-    if re.search(r"delete\s+\w+\s*\[\s*msg\.sender\s*\]", fn_text):
+    if re.search(r"delete\s+\w+\s*\[\s*(?:msg\.sender|"
+                 r"_msgSender\s*\(\s*\))\s*\]", fn_text):
         return True
     return False
 
@@ -308,9 +323,30 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
         if not re.search(r"mint", fn["name"], re.I):
             continue
         path_text, recipient, rdetail = _path(scope, fn)
-        if not _MINT_CALL_RE.search(path_text):
+        state = cl.state_variables(scope.scoped_text)
+        # A mint() inside a revert string is not a mint call
+        # (AtvWrappedBoosterTL: the override body is only
+        # revert("mint() is disabled")), and neither is the
+        # function's own declaration (function mint(...) in its
+        # signature) - only a mint call in a body counts. A
+        # direct ledger credit is a mint too (VulnMint:
+        # totalSupply += amount; balanceOf[to] += amount) even
+        # with no _mint call in the body.
+        body_text = re.sub(r"\bfunction\s+\w+\s*\(", "function (",
+                           _strip_strings(path_text))
+        if not _MINT_CALL_RE.search(body_text) and not \
+                _DIRECT_CREDIT_RE.search(body_text):
             continue
         if cl._gated_deep(fn, scope):
+            continue
+        # Live gates modelled on the bound path (role/minter
+        # membership, minter limits, caller-vs-authority,
+        # caller-balance bound, PoW, minter-allowance underflow).
+        if cl._live_gate_reason(path_text, state, compiler):
+            continue
+        # Proof / signature authorization (the claim detector
+        # already had this; mint never checked it).
+        if _proof_or_sig_backed(path_text, state):
             continue
         if "balanceOf(address(this))" in path_text:
             continue  # AMM pair mint: liquidity is metered
@@ -339,8 +375,18 @@ def _analyze_mint(src, spec_id, compiler, contract_name):
             # the contract's own balance deltas is bought /
             # authorized issuance, not unbacked printing.
             reason = cl._fp_downgrade_reason(
-                path_text, scope,
-                cl.state_variables(scope.scoped_text))
+                path_text, scope, state)
+            if not reason:
+                # Priced issuance (the caller pays msg.value
+                # against a non-zero price) or an
+                # entitlement-bounded mint (the amount derives
+                # from the caller/recipient's recorded position)
+                # is bought / backed issuance, not unbacked
+                # printing - trigger-only, never a candidate.
+                reason = cl._priced_mint_reason(path_text)
+                if not reason:
+                    reason = cl._entitlement_bounded_reason(
+                        path_text)
             if reason:
                 recipient = "HOLDER-SELF"
                 rdetail += f"; downgraded: {reason}"
@@ -364,7 +410,9 @@ _PTR_CALLER_RE = re.compile(
     r"\[\s*msg\.sender\s*\]")
 _PROOF_VERIFY_COND_RE = re.compile(
     r"(?:require|if)\s*\([^;]*?(?:verify|Verify|"
-    r"isValidSignature|processProof|MerkleProof)")
+    r"isValidSignature|processProof|MerkleProof|"
+    r"checkSignature|CheckSignature|verifyRequest|"
+    r"isAllowlisted|isWhitelisted)")
 
 
 def _burn_bounded(text: str) -> bool:
@@ -388,16 +436,90 @@ def _record_debit_bounded(text: str) -> bool:
     return False
 
 
-def _proof_or_sig_backed(text: str) -> bool:
+def _proof_or_sig_backed(text: str, state=None) -> bool:
     """The payout is authorized by evidence the caller must
     present: a proof / signature verification inside a
-    require or if condition, or a recovered signer compared
-    against a stored authority. A signature that is merely
-    recovered and zero-checked - never compared to any
-    authority - authorizes nothing and does NOT count."""
+    require or if condition, a recovered signer compared
+    against a stored authority or recorded in a signer set,
+    a verify-named call whose boolean result is required, or
+    a bare-statement library verify call (reverts on failure).
+    A signature that is merely recovered and zero-checked -
+    never compared to any authority - authorizes nothing and
+    does NOT count."""
     if _PROOF_VERIFY_COND_RE.search(text):
         return True
-    return bool(_STORED_SIGNER_CMP_RE.search(text))
+    if _STORED_SIGNER_CMP_RE.search(text):
+        return True
+    auth_names = {"owner", "authority", "signer", "_signer",
+                  "admin", "treasury", "validator",
+                  "verifyingSigner", "authorizedSigner",
+                  "trustedSigner", "feeSigner", "signerAddress",
+                  "operator", "_operator", "verifier", "minter"}
+    if state:
+        auth_names |= set(state)
+    auth_alt = r"(?:" + "|".join(
+        re.escape(a) for a in sorted(auth_names, key=len,
+                                      reverse=True)) + r")"
+    # Inline recover compared to a stored authority:
+    # require(ECDSA.recover(...) == _operator, ...)
+    if re.search(
+            r"(?:ECDSA\s*\.\s*recover|ecrecover|\.recover)\s*\("
+            r"[^;]*?\)\s*(==|!=)\s*" + auth_alt + r"\b|"
+            + auth_alt + r"\s*(==|!=)\s*(?:ECDSA\s*\.\s*recover|"
+            r"ecrecover|\.recover)\s*\(", text):
+        return True
+    # Recovered signer used as a key into a membership mapping
+    # (signers[recovered]) or compared inside a require/if.
+    recovered = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?(?:ECDSA\s*\.\s*recover|ecrecover|"
+            r"\.recover)\s*\(", text):
+        recovered.add(m.group(1))
+    for m in re.finditer(
+            r"\(\s*(?:\w+\s+)?(\w+)\s*,[^)]*\)\s*=\s*[^;]*?"
+            r"(?:ECDSA\s*\.\s*recover|ecrecover|\.recover)\s*\(",
+            text):
+        recovered.add(m.group(1))
+    for r in recovered:
+        if re.search(
+                r"(?:require|if)\s*\([^;]*?[A-Za-z_]\w*\s*\[\s*" +
+                re.escape(r) + r"\s*\]", text):
+            return True
+        # Compared to a stored authority in a require/if
+        # (require(recovered == owner)). A mere zero check
+        # (require(signer != address(0))) authorizes nothing:
+        # anyone's signature recovers to a non-zero address,
+        # so it does NOT count (self-signed claim shape).
+        if re.search(
+                r"(?:require|if)\s*\([^;]*?(?:" + auth_alt +
+                r"\b\s*(==|!=)\s*\b" + re.escape(r) + r"\b|\b" +
+                re.escape(r) + r"\b\s*(==|!=)\s*" + auth_alt +
+                r"\b)", text):
+            return True
+    # A verify-named call whose boolean result is required:
+    # (bool success, address signer) = verify(req, sig);
+    # require(success, "invalid signature").
+    verified = set()
+    for m in re.finditer(
+            r"(\w+)\s*=\s*[^;]*?\w*[Vv]erify\w*\s*\(", text):
+        verified.add(m.group(1))
+    for m in re.finditer(
+            r"\(\s*(?:\w+\s+)?(\w+)\s*,[^)]*\)\s*=\s*[^;]*?"
+            r"\w*[Vv]erify\w*\s*\(", text):
+        verified.add(m.group(1))
+    for v in verified:
+        if re.search(
+                r"(?:require|if)\s*\([^;]*?\b" + re.escape(v) +
+                r"\b", text):
+            return True
+    # Bare-statement library verify call: it reverts on failure,
+    # so the return value is not needed for it to gate.
+    # SignatureVerifier.verify(signer(), signature, data);
+    if re.search(
+            r"(?:^|[;\n])\s*[A-Za-z_]\w*\s*\.\s*verify\s*\("
+            r"[^;]*,[^;]*\)\s*;", text):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +549,40 @@ def _analyze_claim(src, spec_id, compiler, contract_name):
         # checks) still suppress.
         if _access_gated(fn, scope):
             continue
-        if _proof_or_sig_backed(path_text):
+        state = cl.state_variables(scope.scoped_text)
+        # Access gates modelled on the bound path (minter /
+        # whitelist membership, role-helper calls, caller vs a
+        # stored authority, ownership of the claimed item).
+        if cl._live_gate_reason(path_text, state, compiler,
+                                for_claim=True):
+            continue
+        if _proof_or_sig_backed(path_text, state):
             continue  # proof / authority-signed entitlement
+        if _burn_bounded(path_text) or \
+                _record_debit_bounded(path_text):
+            continue  # payout metered by the caller's own
+            # burned shares / debited recorded balance
+            # (storage-pointer consumption the
+            # _caller_indexed_write check misses)
         reads = _caller_indexed_reads(path_text)
         if reads and _caller_indexed_write(path_text, reads):
             continue  # entitlement read AND consumed: entitled
+        # Entitlement-bounded but not consumed: the payout
+        # derives from the caller/recipient's recorded position
+        # (a stranger with no record gets zero), but the record
+        # is not marked consumed, so the claim is repeatable -
+        # trigger-only, never a candidate. Only mint-shaped
+        # payouts downgrade here: a transfer of existing funds
+        # is bounded only by consumption, and an entitlement
+        # read with no debit is the double-claim shape, which
+        # must still fire.
+        if cl._entitlement_bounded_reason(path_text,
+                                         mint_only=True):
+            if recipient in ("CALLER", "CALLER-SUPPLIED"):
+                recipient = "HOLDER-SELF"
+                rdetail += ("; downgraded: entitlement-bounded "
+                            "payout (record not consumed - "
+                            "repeatable)")
         if reads:
             extra = (f"Observed: '{fn['name']}' reads the caller's "
                      f"entitlement ({', '.join(sorted(set(reads)))})"
@@ -598,6 +749,10 @@ def _sig_gated(fn: Dict[str, Any], scope) -> bool:
     if cc._GATE_RE.search(sig) or \
             re.search(r"\bonly[A-Z][A-Za-z0-9_]*\b", sig):
         return True
+    if cd._signature_gate_modifier(sig):
+        return True  # only(DEFAULT_ADMIN_ROLE) and kin: a role
+        # constant in an only() modifier is a gate even though
+        # it is not a named only* modifier
     stripped = re.sub(r"returns\s*\([^)]*\)", "", sig)
     i = stripped.find("(")
     if i >= 0:
@@ -608,10 +763,19 @@ def _sig_gated(fn: Dict[str, Any], scope) -> bool:
                     r"msg\.sender\s*(==|!=)|_checkOwner|hasRole",
                     body):
                 return True
+    # Caller compared against a stored authority: the authority
+    # need not be named owner/admin/authority/treasury - any
+    # state variable counts (USSD: msg.sender ==
+    # stakingContract || msg.sender == insuranceContract).
+    state = cl.state_variables(scope.scoped_text)
+    names = {"owner", "admin", "authority", "treasury"} | set(state)
+    alt = r"(?:" + "|".join(
+        re.escape(n) for n in sorted(names, key=len,
+                                      reverse=True)) + r")"
     return bool(re.search(
-        r"msg\.sender\s*(==|!=)\s*(owner|admin|authority|"
-        r"treasury)\b|(owner|admin|authority)\s*(==|!=)\s*"
-        r"msg\.sender", fn["text"]))
+        r"(?:msg\.sender|_msgSender\(\s*\))\s*(==|!=)\s*" +
+        alt + r"\b|" + alt + r"\s*(==|!=)\s*"
+        r"(?:msg\.sender|_msgSender\(\s*\))", fn["text"]))
 
 
 # The claim detector uses the same access-gate-only check.
