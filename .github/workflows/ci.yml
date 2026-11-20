@@ -13,6 +13,7 @@ on:
     branches: [master, main]
     paths:
       - "backend/**"
+      - "frontend/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -84,16 +85,37 @@ jobs:
       - name: Scanner resilience (RPC skip, durable checkpoints, batch lock)
         run: pytest tests/test_scanner_resilience.py -q
 
+      - name: URL scan continuation, first-finding pivots and queue efficiency
+        run: pytest tests/test_scan_order.py tests/test_url_runner_canary.py -q
+
+      - name: Real runner queue against a deterministic HTTPS URL fixture
+        env:
+          RECON_HUNTERS_ENABLED: "0"
+        run: |
+          python scripts/speed_bench.py --scenario alive --target https://fixture.test \
+            --mode passive --plugins headers,robots --latency-ms 5 \
+            --concurrency 4 --timeout-s 90 --out /tmp/recon-url-e2e.json
+          python - <<'PY'
+          import json
+          with open("/tmp/recon-url-e2e.json") as f:
+              data = json.load(f)
+          assert data["status"] == "done", data["status"]
+          assert data["jobs_total"] == 2, data["jobs_total"]
+          assert data["findings"] >= 2, data["findings"]
+          print("URL scan completed:", data["wall_s"], "seconds,",
+                data["findings"], "findings,",
+                data["requests_total"], "HTTP requests")
+          PY
+
       - name: NN triage scorer (MLP math, features, pipeline, viewer)
         run: pytest tests/test_nn_mlp.py tests/test_nn_features.py tests/test_nn_pipeline.py tests/test_nn_viewer.py tests/test_nn_train.py -q
         # test_nn_train skips itself on CI (no scanner data there); the
         # viewer test reads the metrics embedded at train time.
 
-  # The per-step gates above are the fast PR check. This runs the WHOLE
-  # backend suite (offline-safe: tool- and network-dependent tests skip
-  # themselves) so the rest of the suite cannot silently rot again.
+  # The fast gates above provide quick feedback. Also run the complete
+  # offline-safe backend suite on PRs so cross-module changes are checked
+  # before merging rather than only after a push to master.
   full-suite:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -116,3 +138,22 @@ jobs:
 
       - name: Full backend test suite
         run: pytest tests -q -p no:cacheprovider
+
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build production UI
+        run: npm run build

@@ -839,7 +839,10 @@ function RunPageInner({ params }: { params: { id: string } }) {
       const d = JSON.parse(e.data);
       if (d.source_type) setSourceType(d.source_type);
       if (d.estimated_s) setEstimatedS(d.estimated_s);
-      if (d.plugin_count) setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
+      if (typeof d.job_count === "number")
+        setProgress({ done: 0, total: d.job_count });
+      else if (d.plugin_count)
+        setProgress({ done: 0, total: d.plugin_count * (d.target_count || 1) });
       applyBounty(d.bounty);
     });
     on("progress", (e) => {
@@ -1411,7 +1414,7 @@ function RunPageInner({ params }: { params: { id: string } }) {
         {/* summary header: counts by severity AND by exploitability */}
         <div className="card p-4">
           <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="font-semibold text-sky-300">Findings <span className="text-slate-500 text-xs">({filtered.length})</span></h2>
+            <h2 className="font-semibold text-sky-300">Findings <span className="text-slate-500 text-xs">({filtered.length} visible of {findings.length} collected)</span></h2>
             <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("high")}`}>HIGH {sevCounts.high}</span>
             <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("medium")}`}>MEDIUM {sevCounts.medium}</span>
             <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${sevColor("low")}`}>LOW {sevCounts.low}</span>
@@ -1430,9 +1433,17 @@ function RunPageInner({ params }: { params: { id: string } }) {
               {highValueOnly ? "✓ High value only" : "High value only"}
             </button>
             <button
-              onClick={() => { setHighValueOnly(false); setNoiseOpen(true); }}
+              onClick={() => {
+                setHighValueOnly(false);
+                setNoiseOpen(true);
+                setShowWeak(true);
+                setBigOnly(false);
+                setCat("all");
+                setSev("all");
+                setQ("");
+              }}
               className="chip px-4 py-2.5 min-h-[44px] text-sm text-slate-300">
-              Show all
+              Show all findings
             </button>
             <button
               onClick={() => {

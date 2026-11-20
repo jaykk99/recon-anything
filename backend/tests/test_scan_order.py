@@ -258,3 +258,119 @@ def test_enqueue_uses_calibrated_estimates(session):
     assert n == 1
     job = session.query(PluginJob).filter_by(run_id="r-cal").first()
     assert job.estimate_s == 3
+
+
+# ---------------------------------------------------------------------------
+# Scan throughput and first-finding continuation regressions
+# ---------------------------------------------------------------------------
+
+def test_enqueue_only_jobs_applicable_to_each_target(session):
+    from app.models import Run, Target as TargetRow
+    from app.runner import _enqueue_jobs
+
+    run_id = "r-applicable"
+    session.add(Run(id=run_id, mode="passive", status="running"))
+    d = TargetRow(id="t-domain", run_id=run_id,
+                  raw="example.test", type="domain",
+                  normalized="example.test")
+    u = TargetRow(id="t-url", run_id=run_id,
+                  raw="https://example.test/path", type="url",
+                  normalized="https://example.test/path")
+    session.add_all([d, u])
+    session.commit()
+
+    class DomainOnly:
+        id = "domain_only"
+        phase = 1
+        accepts = ["domain"]
+
+    class UrlOnly:
+        id = "url_only"
+        phase = 1
+        accepts = ["url"]
+
+    class Universal:
+        id = "universal"
+        phase = 1
+        accepts = []
+
+    count = _enqueue_jobs(session, run_id,
+                          [DomainOnly(), UrlOnly(), Universal()], [d, u])
+    assert count == 4  # not six: two impossible jobs never queued
+    jobs = session.query(PluginJob).filter_by(run_id=run_id).all()
+    assert {(j.target_id, j.plugin_id) for j in jobs} == {
+        ("t-domain", "domain_only"), ("t-domain", "universal"),
+        ("t-url", "url_only"), ("t-url", "universal"),
+    }
+
+
+def test_first_finding_requests_hunter_pivot_then_batches(monkeypatch):
+    from app import runner
+
+    monkeypatch.setattr(runner, "HUNTER_MIN_NEW_FINDINGS", 8)
+    run_id = "r-single-finding"
+    runner._hunter_marks.pop(run_id, None)
+    try:
+        assert not runner._hunter_pass_due(run_id, 0)
+        assert runner._hunter_pass_due(run_id, 1)
+        runner._hunter_marks[run_id] = 1  # first pass handled it
+        assert not runner._hunter_pass_due(run_id, 2)
+        assert not runner._hunter_pass_due(run_id, 8)
+        assert runner._hunter_pass_due(run_id, 9)
+    finally:
+        runner._hunter_marks.pop(run_id, None)
+
+
+def test_phase2_waits_for_first_finding_pivot(session, monkeypatch):
+    from app import runner
+    from app.hunters import engine
+    from app.models import Finding as FindingRow, Run, Target as TargetRow
+
+    monkeypatch.setattr(engine, "ENABLED", True)
+    run_id = "r-pivot-gate"
+    session.add(Run(id=run_id, mode="passive", status="running"))
+    session.add(TargetRow(id="t-pivot", run_id=run_id, raw="example.test",
+                          type="domain", normalized="example.test"))
+    session.add(FindingRow(run_id=run_id, target_id="t-pivot",
+                           plugin_id="seed", category="web", key="endpoint",
+                           value="/docs", source="test"))
+    session.add(PluginJob(run_id=run_id, target_id="t-pivot",
+                          plugin_id="phase2_followup", phase=2,
+                          priority=2, estimate_s=10, status="queued"))
+    session.commit()
+    runner._hunter_swept.add(run_id)
+    runner._hunter_marks.pop(run_id, None)
+    try:
+        assert runner._claim_jobs(session, limit=10) == []
+        job = session.query(PluginJob).filter_by(
+            run_id=run_id, plugin_id="phase2_followup").one()
+        assert job.status == "queued"
+        runner._hunter_marks[run_id] = 1
+        claimed = runner._claim_jobs(session, limit=10)
+        assert [j.plugin_id for j in claimed] == ["phase2_followup"]
+    finally:
+        runner._hunter_swept.discard(run_id)
+        runner._hunter_marks.pop(run_id, None)
+
+
+def test_phase2_expansion_count_cached_once_per_claim_batch(session, monkeypatch):
+    from app import runner
+    from app.models import Run
+
+    run_id = "r-hunter-cache"
+    session.add(Run(id=run_id, mode="passive", status="running"))
+    for i in range(12):
+        session.add(PluginJob(run_id=run_id, target_id="t",
+                              plugin_id=f"followup_{i}", phase=2,
+                              priority=2, estimate_s=5, status="queued"))
+    session.commit()
+    calls = []
+
+    def fake_owed(s, rid):
+        calls.append(rid)
+        return False
+
+    monkeypatch.setattr(runner, "_hunter_expansion_owed", fake_owed)
+    claimed = runner._claim_jobs(session, limit=12)
+    assert len(claimed) == 12
+    assert calls == [run_id]  # not one COUNT query per plugin
