@@ -2700,6 +2700,10 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty,
                                estimates=estimates,
                                boost_ids=set(key_hunters) or None)
+        if n_jobs == 0:
+            raise RuntimeError(
+                "no selected plugins accept the supplied target type(s); "
+                "choose URL/domain-compatible plugins or change the target")
 
         await _emit(run_id, "run_start",
                     {"run_id": run_id,
