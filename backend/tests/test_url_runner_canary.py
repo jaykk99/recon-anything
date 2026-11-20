@@ -122,3 +122,50 @@ def test_timeout_keeps_first_url_finding_and_other_checks_continue(monkeypatch):
     assert len(next_result.findings) == 1
     assert [payload["partial_findings"] for name, payload in events
             if name == "plugin_timeout"] == [1]
+
+
+def test_loopback_http_url_continues_after_first_finding(monkeypatch):
+    """Real local TCP/HTTP, not a mocked transport or an external scan."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"local canary"
+            self.send_response(200 if self.path in ("/", "/one", "/two") else 404)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    async def capture(*_args):
+        pass
+
+    monkeypatch.setattr(runner, "_emit", capture)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+
+    async def scan():
+        async with httpx.AsyncClient(timeout=3, trust_env=False) as http:
+            ctx = Ctx(run_id="canary-loopback", mode="passive",
+                      http=http, cache=None, keys={})
+            target = Target(raw=url, type="url", normalized=url)
+            first = await runner._run_plugin(UrlCanary(("/",)), target, ctx)
+            second = await runner._run_plugin(
+                UrlCanary(("/one", "/two")), target, ctx)
+            return first, second
+
+    try:
+        first, second = asyncio.run(scan())
+        assert [len(first.findings), len(second.findings)] == [1, 2]
+        assert {f.source_url for f in first.findings + second.findings} == {
+            url + "/", url + "/one", url + "/two"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
