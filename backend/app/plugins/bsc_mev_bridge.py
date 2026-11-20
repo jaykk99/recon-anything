@@ -130,7 +130,7 @@ SPECS = [
             r"transfer\s*\(\s*(to|recipient|_to|receiver)\s*,|"
             r"call\{value",),
       need_any=(r"address\s+(to|recipient|_to)",),
-      forbid=(r"depositId|depositHash|messageHash|"
+      forbid=(r"depositId|depositHash|messageHash|messageId|"
               r"deposits\s*\[",),
       recipient=True,
       detail="Withdrawer identity spoof: the bridge release "
