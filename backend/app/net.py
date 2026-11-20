@@ -11,6 +11,13 @@ client in the app behaves the same:
   precedence over the proxy in httpx). Without this, targets like
   127.0.0.1 get blackholed by the egress proxy and every plugin silently
   degrades to zero findings - a false negative.
+- NO_PROXY entries are normalized before any httpx client is built
+  (sanitize_no_proxy_env): httpx's own env-proxy parser crashes at
+  client construction on bracketed IPv6 entries ("[::1]") and on
+  IPv6 CIDR ("::1/128") with InvalidURL, which killed the Solana
+  program-account fetch outright (2026-11-20, Wrapped SOL scan).
+  Brackets/CIDR are rewritten into the form httpx accepts; no host
+  is ever dropped by the rewrite.
 - TLS: uses the system CA bundle when present (the sandbox egress proxy
   re-signs TLS and certifi lacks its CA); otherwise default verification.
 - trust_env=False is deliberate: proxy handling is explicit through
@@ -24,6 +31,7 @@ egress limitation.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Optional
 from urllib.parse import urlparse
@@ -76,6 +84,75 @@ def no_proxy_hosts() -> list:
     return hosts
 
 
+def _normalize_no_proxy_entry(entry: str) -> str | None:
+    """Rewrite one NO_PROXY entry into a form httpx can parse, or None.
+
+    httpx's env-proxy parser (get_environment_proxies) crashes at
+    client construction on two shapes this sandbox's environment
+    actually contains:
+    - bracketed IPv6: "[::1]" -> it builds "all://*[::1]" and dies
+      with InvalidURL "Invalid port: ':1]'".
+    - IPv6 CIDR: "::1/128" -> same InvalidURL failure.
+    Unbracketed IPv6 ("::1") and IPv4 CIDR ("192.168.0.0/16") parse
+    fine and are left alone. Returns None only for entries that
+    cannot be a host at all (empty, or a non-IP with a slash).
+    """
+    e = (entry or "").strip()
+    if not e:
+        return None
+    # Strip one pair of surrounding brackets: "[::1]" -> "::1".
+    if len(e) >= 2 and e.startswith("[") and e.endswith("]"):
+        e = e[1:-1].strip()
+        if not e:
+            return None
+    if "/" in e:
+        host_part, _, _prefix = e.partition("/")
+        try:
+            ip = ipaddress.ip_address(host_part)
+        except ValueError:
+            return None
+        if isinstance(ip, ipaddress.IPv6Address):
+            # A /128 is a single host; any other IPv6 prefix cannot
+            # be expressed as a mount or a no_proxy host, so keep the
+            # bare address (bypassing that host beats crashing).
+            e = host_part
+        # IPv4 CIDR: keep "a.b.c.d/nn" as-is — httpx understands it.
+    return e or None
+
+
+def sanitize_no_proxy_env() -> bool:
+    """Rewrite NO_PROXY / no_proxy in-process so httpx can parse them.
+
+    Fixes the exact crash from the 2026-11-20 Wrapped SOL scan: the
+    sandbox sets NO_PROXY to
+    "localhost,127.0.0.1,::1,[::1],198.19.0.1,198.19.0.2,
+    fd8b:4f84:7d32:99::1,[fd8b:4f84:7d32:99::1],..." and any
+    httpx client built with the default trust_env=True dies in
+    get_environment_proxies before the first request. Normalizing
+    here protects every httpx client in the process, including bare
+    httpx.AsyncClient(...) calls that never go through net.async_client.
+    Idempotent; returns True when either variable changed. No host
+    is dropped except entries that cannot be a host at all.
+    """
+    changed = False
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key)
+        if not raw:
+            continue
+        seen: set = set()
+        cleaned = []
+        for entry in raw.split(","):
+            norm = _normalize_no_proxy_entry(entry)
+            if norm and norm.lower() not in seen:
+                seen.add(norm.lower())
+                cleaned.append(norm)
+        val = ",".join(cleaned)
+        if val != raw:
+            os.environ[key] = val
+            changed = True
+    return changed
+
+
 def _mount_host(host: str) -> str | None:
     """Normalize a NO_PROXY entry into an httpx-mountable host, or None."""
     if host == "*":
@@ -84,6 +161,15 @@ def _mount_host(host: str) -> str | None:
     # is what httpx mounts provide.
     key_host = host[1:] if host.startswith(".") else host
     if not key_host or "/" in key_host or " " in key_host:
+        return None
+    # host:port (exactly one colon, numeric port): mounts are per-host,
+    # the port is meaningless here, so mount the bare host. Do NOT
+    # bracket it — "[localhost:8080]" is not a valid IPv6 literal and
+    # httpx dies building the mount (InvalidURL, seen 2026-11-20).
+    if key_host.count(":") == 1:
+        h, _, port = key_host.partition(":")
+        if h and port.isdigit():
+            return h
         return None
     if ":" in key_host and not key_host.startswith("["):
         key_host = f"[{key_host}]"  # IPv6 literal needs brackets in a URL
@@ -156,6 +242,7 @@ async def web_base(ctx, target, domain: str) -> str:
 
 def async_client(**kwargs) -> httpx.AsyncClient:
     """httpx.AsyncClient with full, unrestricted egress configured."""
+    sanitize_no_proxy_env()
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
@@ -171,6 +258,7 @@ def async_client(**kwargs) -> httpx.AsyncClient:
 
 def sync_client(**kwargs) -> httpx.Client:
     """httpx.Client with full, unrestricted egress configured."""
+    sanitize_no_proxy_env()
     kwargs.setdefault("proxy", egress_proxy())
     kwargs.setdefault("trust_env", False)
     kwargs.setdefault("verify", ca_bundle())
@@ -182,3 +270,15 @@ def sync_client(**kwargs) -> httpx.Client:
         if direct:
             kwargs["mounts"] = direct
     return httpx.Client(**kwargs)
+
+
+# Normalize NO_PROXY at import: any httpx client built in this process
+# (including bare httpx.AsyncClient(...) in plugins) reads these vars
+# through httpx's trust_env path, and bracketed IPv6 / IPv6-CIDR
+# entries crash its parser before the first request (2026-11-20,
+# Wrapped SOL scan). Runs once, is idempotent, and never drops a
+# host — brackets/CIDR are only rewritten into the form httpx accepts.
+try:
+    sanitize_no_proxy_env()
+except Exception:
+    pass

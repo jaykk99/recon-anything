@@ -1511,8 +1511,10 @@ async def api_breachwatch_check(body: BreachCheckIn):
     email = (body.email or "").strip().lower()
     if "@" not in email:
         raise HTTPException(status_code=400, detail="not a valid email")
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as http:
+    # Scanner's own client: a bare httpx.AsyncClient reads NO_PROXY via
+    # trust_env and crashes at construction on bracketed-IPv6 entries
+    # (InvalidURL, 2026-11-20 Wrapped SOL scan).
+    async with net.async_client(timeout=30) as http:
         status, breaches, note = await check_email_breaches(email, http)
     result = {
         "email": email,
