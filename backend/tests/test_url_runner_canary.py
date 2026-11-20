@@ -184,12 +184,12 @@ def test_real_header_and_robots_plugins_on_loopback(monkeypatch):
         def do_GET(self):
             paths = {
                 "/": ("text/html", "<title>Canary</title>"),
-                "/robots.txt": ("text/plain", "User-agent: *\\nDisallow: /private\\n"),
+                "/robots.txt": ("text/plain", "User-agent: *\nDisallow: /private\n"),
                 "/sitemap.xml": ("application/xml",
                                  "<urlset><url><loc>http://127.0.0.1/api</loc></url>"
                                  "</urlset>"),
                 "/.well-known/security.txt": ("text/plain",
-                                              "Contact: mailto:security@example.test\\n"),
+                                              "Contact: mailto:security@example.test\n"),
             }
             content_type, body = paths.get(
                 self.path, ("text/plain", "not found"))
