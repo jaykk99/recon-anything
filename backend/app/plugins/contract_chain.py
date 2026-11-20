@@ -89,11 +89,15 @@ CHAINS: Dict[str, ChainConfig] = {
         native="BNB"),
     "polygon": ChainConfig(
         id="polygon", name="Polygon", chain_id=137,
-        rpc_urls=("https://polygon-rpc.com",
-                  "https://polygon-bor-rpc.publicnode.com"),
+        # polygon-rpc.com started answering 401 "API key disabled"
+        # (tenant disabled) on 2026-11-14; it led every Polygon scan
+        # into a dead endpoint before failover. publicnode + dRPC both
+        # answered eth_chainId 0x89 keyless.
+        rpc_urls=("https://polygon-bor-rpc.publicnode.com",
+                  "https://polygon.drpc.org"),
         blockscout_api="https://polygon.blockscout.com/api",
         explorer_address="https://polygonscan.com/address/{addr}",
-        native="MATIC"),
+        native="POL"),
     "arbitrum": ChainConfig(
         id="arbitrum", name="Arbitrum One", chain_id=42161,
         rpc_urls=("https://arb1.arbitrum.io/rpc",
@@ -115,6 +119,16 @@ CHAINS: Dict[str, ChainConfig] = {
         blockscout_api="https://optimism.blockscout.com/api",
         explorer_address="https://optimistic.etherscan.io/address/{addr}",
         native="ETH"),
+    "avalanche": ChainConfig(
+        id="avalanche", name="Avalanche C-Chain", chain_id=43114,
+        # No public Blockscout for Avalanche (avax.blockscout.com is
+        # 404), so verified source comes from Sourcify, which carries
+        # chain 43114 (verified live 2026-11-14).
+        rpc_urls=("https://api.avax.network/ext/bc/C/rpc",
+                  "https://avalanche-c-chain-rpc.publicnode.com"),
+        blockscout_api=None,
+        explorer_address="https://snowtrace.io/address/{addr}",
+        native="AVAX"),
 }
 
 # Target prefixes Jay can type: "bsc:0x...", "eth:0x...", ...
@@ -125,12 +139,14 @@ CHAIN_ALIASES = {
     "arbitrum": "arbitrum", "arb": "arbitrum",
     "base": "base",
     "optimism": "optimism", "op": "optimism", "optimistic": "optimism",
+    "avalanche": "avalanche", "avax": "avalanche",
+    "avaxc": "avalanche", "avalanche-c": "avalanche",
 }
 
 # Order used when a bare address target does not name a chain: probe
 # each chain's eth_getCode and recon the contract where code exists.
 DEFAULT_CHAIN_ORDER = ("ethereum", "bsc", "polygon", "arbitrum",
-                       "base", "optimism")
+                       "base", "optimism", "avalanche")
 
 
 def parse_target_address(raw: str) -> Tuple[Optional[str], Optional[str]]:

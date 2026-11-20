@@ -10,7 +10,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.chaindata import (
-    CHAINS, parse_blockchair, parse_tron, parse_xrp, parse_solana_balance,
+    CHAINS, parse_aptos, parse_blockchair, parse_dash_insight,
+    parse_dogechain, parse_esplora, parse_koios, parse_solana_balance,
+    parse_sui, parse_ton, parse_tron, parse_trongrid, parse_xrp,
 )
 from app.cryptolabels import labels_for, summarize_label, LABELS
 
@@ -59,12 +61,77 @@ def test_parse_solana():
     assert parse_solana_balance({}) == {}
 
 
+def test_parse_esplora():
+    data = {"address": "bc1x", "chain_stats": {
+        "funded_txo_sum": 250000000, "spent_txo_sum": 50000000,
+        "tx_count": 9}, "mempool_stats": {"tx_count": 1}}
+    p = parse_esplora(data, "bc1x")
+    assert p["balance"] == 2.0 and p["received"] == 2.5
+    assert p["tx_count"] == 10
+    assert parse_esplora({}, "x") == {}
+
+
+def test_parse_dogechain():
+    assert parse_dogechain({"success": 1, "balance": "12.5"})["balance"] == 12.5
+    assert parse_dogechain({"success": 0}) == {}
+
+
+def test_parse_dash_insight():
+    p = parse_dash_insight({"balanceSat": 150000000, "txApperances": 4,
+                            "totalReceivedSat": 300000000})
+    assert p["balance"] == 1.5 and p["tx_count"] == 4
+    assert parse_dash_insight({}) == {}
+
+
+def test_parse_trongrid():
+    p = parse_trongrid({"data": [{"balance": 2500000,
+                                   "totalTransactionCount": 3}]})
+    assert p["balance"] == 2.5 and p["tx_count"] == 3
+    assert parse_trongrid({"data": []}) == {}
+
+
+def test_parse_koios():
+    assert parse_koios([{"balance": "2500000"}])["balance"] == 2.5
+    assert parse_koios([]) == {}
+
+
+def test_parse_ton():
+    assert parse_ton({"ok": True, "result": {"balance": "2000000000"}})["balance"] == 2.0
+    assert parse_ton({"ok": False}) == {}
+
+
+def test_parse_sui():
+    p = parse_sui({"data": {"address": {"balance": {"totalBalance": "2400000000"}}}})
+    assert p["balance"] == 2.4
+    assert parse_sui({"errors": []}) == {}
+
+
+def test_parse_aptos():
+    rows = [{"type": "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
+             "data": {"coin": {"value": "150000000"}}}]
+    assert parse_aptos(rows)["balance"] == 1.5
+    # A live account with resources but no native coin store holds 0 APT.
+    assert parse_aptos([{"type": "0x1::other::Thing"}]) == {"balance": 0.0}
+    assert parse_aptos({"error_code": "resource_not_found"}) == {}
+
+
 def test_chain_registry():
-    assert CHAINS["btc"]["kind"] == "blockchair" and CHAINS["btc"]["slug"] == "bitcoin"
-    assert CHAINS["doge"]["slug"] == "dogecoin"
+    # Keyless-first sources: Blockchair now 430s without a key, so
+    # BTC/LTC route to Esplora and DOGE to dogechain.info.
+    assert CHAINS["btc"]["kind"] == "esplora"
+    assert "mempool.space" in CHAINS["btc"]["base"]
+    assert CHAINS["ltc"]["kind"] == "esplora"
+    assert CHAINS["doge"]["kind"] == "dogechain"
+    assert CHAINS["dash"]["kind"] == "dash"
+    assert CHAINS["bch"]["kind"] == "blockchair"  # no keyless source left
     assert CHAINS["sol"]["kind"] == "solana"
     assert CHAINS["trx"]["kind"] == "tron"
+    assert CHAINS["ada"]["kind"] == "cardano"
+    assert CHAINS["ton"]["kind"] == "ton"
+    assert CHAINS["sui"]["kind"] == "sui"
+    assert CHAINS["aptos"]["kind"] == "aptos"
     assert CHAINS["xmr"]["kind"] == "label_only"
+    assert CHAINS["dot"]["kind"] == "label_only"  # Subscan is key-gated
     assert CHAINS["eth"]["kind"] == "label_only"  # chain_osint owns ETH balance
 
 

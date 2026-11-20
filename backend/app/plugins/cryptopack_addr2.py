@@ -16,7 +16,7 @@ beats breadth - see the wave-2 notes.
 from __future__ import annotations
 
 from .cryptopack_util import (
-    PackPlugin, b58check_prefix, b58decode, segwit_verify,
+    AddressPackPlugin, b58check_prefix, b58decode, segwit_verify,
 )
 from .cryptopack_util2 import (
     avax_verify, bech32_hrp_verify, eos_key_verify, ergo_verify,
@@ -32,7 +32,7 @@ B32 = r"qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 # Wave-1 gap fills
 # ---------------------------------------------------------------------------
 
-class CpTonRawAddr(PackPlugin):
+class CpTonRawAddr(AddressPackPlugin):
     id = "cp_ton_raw_addr"
     label = "TON Raw Address (workchain:hash form)"
     description = ("TON raw-form addresses (0:<64 hex> / -1:<64 hex>) "
@@ -43,7 +43,7 @@ class CpTonRawAddr(PackPlugin):
                  "TON raw address", 85, ton_raw_verify)]
 
 
-class CpNearImplicitAddr(PackPlugin):
+class CpNearImplicitAddr(AddressPackPlugin):
     id = "cp_near_implicit_addr"
     label = "NEAR Implicit Account (64-hex)"
     description = ("NEAR implicit accounts are a bare 64-char "
@@ -59,7 +59,7 @@ class CpNearImplicitAddr(PackPlugin):
 # New chains with real checksums
 # ---------------------------------------------------------------------------
 
-class CpXdcAddr(PackPlugin):
+class CpXdcAddr(AddressPackPlugin):
     id = "cp_xdc_addr"
     label = "XDC Network Address (EIP-55 verified)"
     description = ("xdc-prefixed addresses; the hex part carries an "
@@ -73,7 +73,7 @@ class CpXdcAddr(PackPlugin):
     ]
 
 
-class CpEosKey(PackPlugin):
+class CpEosKey(AddressPackPlugin):
     id = "cp_eos_key"
     label = "EOSIO Public Key (RIPEMD-160 verified)"
     description = ("EOSIO account public keys (legacy EOS... and "
@@ -88,7 +88,7 @@ class CpEosKey(PackPlugin):
     ]
 
 
-class CpErgoAddr(PackPlugin):
+class CpErgoAddr(AddressPackPlugin):
     id = "cp_ergo_addr"
     label = "Ergo Address (Blake2b checksum-verified)"
     description = ("Ergo P2PK addresses verified against their "
@@ -97,7 +97,7 @@ class CpErgoAddr(PackPlugin):
                  "Ergo address", 88, ergo_verify)]
 
 
-class CpHnsAddr(PackPlugin):
+class CpHnsAddr(AddressPackPlugin):
     id = "cp_hns_addr"
     label = "Handshake Address (Bech32-verified)"
     description = "Handshake (hs1) SegWit-style Bech32 addresses."
@@ -105,7 +105,7 @@ class CpHnsAddr(PackPlugin):
                  "Handshake address", 88, lambda s: hns_verify(s))]
 
 
-class CpZenAddr(PackPlugin):
+class CpZenAddr(AddressPackPlugin):
     id = "cp_zen_addr"
     label = "Horizen Address (checksum-verified)"
     description = ("Horizen transparent addresses (zn...) with "
@@ -116,7 +116,7 @@ class CpZenAddr(PackPlugin):
                      s, (b"\x20\x89", b"\x20\x92"), 26))]
 
 
-class CpDgbAddr(PackPlugin):
+class CpDgbAddr(AddressPackPlugin):
     id = "cp_dgb_addr"
     label = "DigiByte SegWit Address (BIP-173 verified)"
     description = ("dgb1 native SegWit addresses. (DigiByte legacy "
@@ -127,7 +127,7 @@ class CpDgbAddr(PackPlugin):
                  lambda s: segwit_verify(s, "dgb", 0))]
 
 
-class CpVtcAddr(PackPlugin):
+class CpVtcAddr(AddressPackPlugin):
     id = "cp_vtc_addr"
     label = "Vertcoin SegWit Address (BIP-173 verified)"
     description = "vtc1 native SegWit addresses, checksum-verified."
@@ -136,7 +136,7 @@ class CpVtcAddr(PackPlugin):
                  lambda s: segwit_verify(s, "vtc", 0))]
 
 
-class CpViaAddr(PackPlugin):
+class CpViaAddr(AddressPackPlugin):
     id = "cp_via_addr"
     label = "Viacoin SegWit Address (BIP-173 verified)"
     description = ("via1 native SegWit addresses. (Viacoin legacy "
@@ -147,7 +147,7 @@ class CpViaAddr(PackPlugin):
                  lambda s: segwit_verify(s, "via", 0))]
 
 
-class CpKasTestnetAddr(PackPlugin):
+class CpKasTestnetAddr(AddressPackPlugin):
     id = "cp_kas_testnet_addr"
     label = "Kaspa Testnet Address (checksum-verified)"
     description = ("kaspatest: addresses on a production site - a "
@@ -168,7 +168,7 @@ def _cosmos2(hrp, coin):
 
 
 def _cosmos_cls(id_, hrp, coin):
-    return type(id_, (PackPlugin,), {
+    return type(id_, (AddressPackPlugin,), {
         "id": id_,
         "label": f"{coin} Address (Bech32-verified)",
         "description": f"{hrp}1 Bech32 addresses with verified checksum.",
@@ -194,7 +194,7 @@ CpFetchAddr = _cosmos_cls("cp_fetch_addr", "fetch", "Fetch.ai (FET)")
 CpSeiAddr = _cosmos_cls("cp_sei_addr", "sei", "Sei (SEI)")
 
 
-class CpAvaxAddr(PackPlugin):
+class CpAvaxAddr(AddressPackPlugin):
     id = "cp_avax_addr"
     label = "Avalanche X-Chain Address (Bech32-verified)"
     description = "avax1 Bech32 addresses with verified checksum."
@@ -207,7 +207,7 @@ class CpAvaxAddr(PackPlugin):
 # ---------------------------------------------------------------------------
 
 def _evm_ctx(id_, chain, ctx_re):
-    return type(id_, (PackPlugin,), {
+    return type(id_, (AddressPackPlugin,), {
         "id": id_,
         "label": f"{chain} Address (context-anchored)",
         "description": (f"0x addresses anchored to {chain} context - "
@@ -226,7 +226,7 @@ CpFtmAddr = _evm_ctx("cp_ftm_addr", "Fantom (FTM)", r"fantom|opera chain|\bftm\b
 CpCeloAddr = _evm_ctx("cp_celo_addr", "Celo (CELO)", r"celo")
 
 
-class CpHbarAddr(PackPlugin):
+class CpHbarAddr(AddressPackPlugin):
     id = "cp_hbar_addr"
     label = "Hedera Account ID (context-anchored)"
     description = ("Hedera account IDs (0.0.NNNN) - the dotted form "
@@ -237,7 +237,7 @@ class CpHbarAddr(PackPlugin):
                  "Hedera account ID", 78, None)]
 
 
-class CpSplMint(PackPlugin):
+class CpSplMint(AddressPackPlugin):
     id = "cp_spl_mint"
     label = "SPL Token Mint (context-anchored, 32-byte verified)"
     description = ("Solana addresses anchored to mint/SPL-token "
@@ -254,7 +254,7 @@ class CpSplMint(PackPlugin):
 # Contract inventories, wave 2
 # ---------------------------------------------------------------------------
 
-class CpErc721Contracts(PackPlugin):
+class CpErc721Contracts(AddressPackPlugin):
     id = "cp_erc721_contracts"
     label = "ERC-721 Contract Inventory"
     description = ("Contract addresses anchored specifically to "
@@ -265,7 +265,7 @@ class CpErc721Contracts(PackPlugin):
                  "ERC-721 contract address", 78, None)]
 
 
-class CpErc1155Contracts(PackPlugin):
+class CpErc1155Contracts(AddressPackPlugin):
     id = "cp_erc1155_contracts"
     label = "ERC-1155 Contract Inventory"
     description = "Contract addresses anchored specifically to ERC-1155 context."
@@ -275,13 +275,15 @@ class CpErc1155Contracts(PackPlugin):
                  "ERC-1155 contract address", 78, None)]
 
 
-class CpWeb3CanonicalContracts(PackPlugin):
+class CpWeb3CanonicalContracts(AddressPackPlugin):
     id = "cp_web3_canonical_contracts"
     label = "Canonical Contract References (WETH, stablecoins, Permit2)"
-    description = ("The canonical mainnet contracts every Web3 "
-                   "security review checks for: WETH, the big "
-                   "stablecoins, the Beacon deposit contract, "
-                   "Permit2, Seaport, the ENS registry.")
+    description = ("The canonical contracts every Web3 security "
+                   "review checks for: WETH, the stablecoins on the "
+                   "chains where they dominate flow (Ethereum, BNB "
+                   "Chain, TRON, Polygon, Arbitrum, Base, Optimism, "
+                   "Solana), the Beacon deposit contract, Permit2, "
+                   "Seaport, the ENS registry.")
     PATTERNS = [
         (r"\b0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\b",
          "contract_weth", "WETH contract", 85, None),
@@ -303,6 +305,28 @@ class CpWeb3CanonicalContracts(PackPlugin):
         (r"\b0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\b",
          "contract_universal_router", "Uniswap Universal Router",
          85, None),
+        # Stablecoins on the chains where they actually dominate flow.
+        # Coverage used to stop at Ethereum mainnet; a page publishing
+        # its USDT-TRON or Circle-native USDC got no stablecoin
+        # attribution at all (chain-health fix 2026-11-14).
+        (r"\bTR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t\b",
+         "contract_usdt_tron", "USDT (TRON) contract", 85, None),
+        (r"\b0x55d398326f99059fF775485246999027B3197955\b",
+         "contract_usdt_bsc", "USDT (BNB Chain) contract", 85, None),
+        (r"\b0xc2132D05D31c914a87C6611C10748AEb04B58e8F\b",
+         "contract_usdt_polygon", "USDT (Polygon) contract", 85, None),
+        (r"\b0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359\b",
+         "contract_usdc_polygon", "USDC (Polygon) contract", 85, None),
+        (r"\b0xaf88d065e77c8cC2239327C5EDb3A432268e5831\b",
+         "contract_usdc_arbitrum", "USDC (Arbitrum) contract", 85, None),
+        (r"\b0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\b",
+         "contract_usdc_base", "USDC (Base) contract", 85, None),
+        (r"\b0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85\b",
+         "contract_usdc_optimism", "USDC (Optimism) contract", 85, None),
+        (r"\bEPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\b",
+         "contract_usdc_solana", "USDC (Solana) mint", 85, None),
+        (r"\bEs9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB\b",
+         "contract_usdt_solana", "USDT (Solana) mint", 85, None),
     ]
 
 
@@ -310,7 +334,7 @@ class CpWeb3CanonicalContracts(PackPlugin):
 # Ordinals / BRC-20
 # ---------------------------------------------------------------------------
 
-class CpOrdinalsInscriptions(PackPlugin):
+class CpOrdinalsInscriptions(AddressPackPlugin):
     id = "cp_ordinals_inscriptions"
     label = "Ordinals Inscription References"
     description = ("Bitcoin Ordinals inscription IDs (<txid>i<n>) "
@@ -324,7 +348,7 @@ class CpOrdinalsInscriptions(PackPlugin):
     ]
 
 
-class CpBrc20Refs(PackPlugin):
+class CpBrc20Refs(AddressPackPlugin):
     id = "cp_brc20_refs"
     label = "BRC-20 Token References"
     description = ("BRC-20 deploy/mint/transfer JSON blobs and "

@@ -451,7 +451,15 @@ async def collect_texts(ctx: Ctx, target: Target,
     all plugins in the run - the ~100 pack plugins together cost one
     homepage fetch plus one fetch per JS bundle, not 100x that.
     Never raises; returns [] when the site is unreachable.
+
+    When the target IS an address (a pasted wallet, not a website),
+    the address itself is the text to scan. Before this, every pack
+    detector skipped wallet targets entirely and the run reported a
+    clean-looking zero.
     """
+    if target.type == "crypto_wallet":
+        value = (target.normalized or target.raw or "").strip()
+        return [("scan target", value, "")] if value else []
     from ..classifier import domain_from_target
     domain = domain_from_target(target.type, target.normalized)
     if not domain:
@@ -640,3 +648,16 @@ class PackPlugin(Plugin):
     def _display(self, label: str, value: str) -> str:
         v = value if len(value) <= 44 else f"{value[:20]}...{value[-12:]}"
         return f"{label}: {v}"
+
+
+class AddressPackPlugin(PackPlugin):
+    """Pack detector that also fires when the TARGET is an address.
+
+    The checksum-verified address detectors used to accept only
+    domain/url, so a pasted wallet never scheduled the detector that
+    knows its chain (chain-health fix 2026-11-14). Address detector
+    modules subclass this; content-only packs (secrets, miners,
+    drainers) stay on PackPlugin and are not scheduled for wallets.
+    """
+
+    accepts = ["crypto_wallet", "domain", "url"]

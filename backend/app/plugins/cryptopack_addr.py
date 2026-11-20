@@ -13,7 +13,7 @@ target itself serves.
 from __future__ import annotations
 
 from .cryptopack_util import (
-    PackPlugin, algo_verify, b58check_prefix, b58check_verify, b58decode,
+    AddressPackPlugin, algo_verify, b58check_prefix, b58check_verify, b58decode,
     bech32_payload, cashaddr_verify, eip55_state, kaspa_verify,
     segwit_verify, ss58_verify, ton_friendly_verify, xlm_verify,
     xmr_verify, XRP_ALPHABET,
@@ -28,7 +28,7 @@ def _v_b58(s, versions, ln=21):
     return bool(p) and len(p) == ln and p[0] in versions
 
 
-class CpBtcLegacy(PackPlugin):
+class CpBtcLegacy(AddressPackPlugin):
     id = "cp_btc_legacy"
     label = "Bitcoin Legacy Address (checksum-verified)"
     description = ("Base58Check-verified Bitcoin P2PKH/P2SH addresses "
@@ -38,7 +38,7 @@ class CpBtcLegacy(PackPlugin):
                  lambda s: _v_b58(s, (0x00, 0x05)))]
 
 
-class CpBtcBech32(PackPlugin):
+class CpBtcBech32(AddressPackPlugin):
     id = "cp_btc_bech32"
     label = "Bitcoin SegWit Address (BIP-173 verified)"
     description = "Bech32 checksum-verified native SegWit (bc1q) addresses."
@@ -47,7 +47,7 @@ class CpBtcBech32(PackPlugin):
                  lambda s: segwit_verify(s, "bc", 0))]
 
 
-class CpBtcTaproot(PackPlugin):
+class CpBtcTaproot(AddressPackPlugin):
     id = "cp_btc_taproot"
     label = "Bitcoin Taproot Address (BIP-350 verified)"
     description = "Bech32m checksum-verified Taproot (bc1p) addresses."
@@ -56,7 +56,7 @@ class CpBtcTaproot(PackPlugin):
                  lambda s: segwit_verify(s, "bc", 1))]
 
 
-class CpBtcTestnet(PackPlugin):
+class CpBtcTestnet(AddressPackPlugin):
     id = "cp_btc_testnet"
     label = "Bitcoin Testnet Address"
     description = ("Testnet addresses (tb1/m/n/2) on a production site: "
@@ -71,7 +71,7 @@ class CpBtcTestnet(PackPlugin):
     ]
 
 
-class CpEthEip55(PackPlugin):
+class CpEthEip55(AddressPackPlugin):
     id = "cp_eth_eip55"
     label = "Ethereum Address (EIP-55 checksum state)"
     description = ("0x addresses with EIP-55 checksum classification: "
@@ -90,7 +90,7 @@ class CpEthEip55(PackPlugin):
     ]
 
 
-class CpSolanaAddr(PackPlugin):
+class CpSolanaAddr(AddressPackPlugin):
     id = "cp_solana_addr"
     label = "Solana Address (32-byte verified)"
     description = ("Base58 strings that decode to exactly 32 bytes "
@@ -101,7 +101,7 @@ class CpSolanaAddr(PackPlugin):
                      b58decode(s)))]
 
 
-class CpXmrStandard(PackPlugin):
+class CpXmrStandard(AddressPackPlugin):
     id = "cp_xmr_standard"
     label = "Monero Standard Address (Keccak-verified)"
     description = "Monero standard addresses with verified Keccak checksum."
@@ -110,7 +110,7 @@ class CpXmrStandard(PackPlugin):
                  lambda s: xmr_verify(s, (0x12, 0x35)))]
 
 
-class CpXmrIntegrated(PackPlugin):
+class CpXmrIntegrated(AddressPackPlugin):
     id = "cp_xmr_integrated"
     label = "Monero Integrated Address (payment ID embedded)"
     description = ("106-char Monero integrated addresses: they embed a "
@@ -121,7 +121,7 @@ class CpXmrIntegrated(PackPlugin):
                  lambda s: xmr_verify(s, (0x13, 0x36)))]
 
 
-class CpXmrSubaddress(PackPlugin):
+class CpXmrSubaddress(AddressPackPlugin):
     id = "cp_xmr_subaddress"
     label = "Monero Subaddress (Keccak-verified)"
     description = "Monero subaddresses (per-customer/per-purpose wallets)."
@@ -130,7 +130,7 @@ class CpXmrSubaddress(PackPlugin):
                  lambda s: xmr_verify(s, (0x2A, 0x45)))]
 
 
-class CpLtcValidated(PackPlugin):
+class CpLtcValidated(AddressPackPlugin):
     id = "cp_ltc_validated"
     label = "Litecoin Address (checksum-verified)"
     description = "Base58Check (L/M/ltc1) and Bech32-verified Litecoin addresses."
@@ -143,7 +143,7 @@ class CpLtcValidated(PackPlugin):
     ]
 
 
-class CpDogeValidated(PackPlugin):
+class CpDogeValidated(AddressPackPlugin):
     id = "cp_doge_validated"
     label = "Dogecoin Address (checksum-verified)"
     description = "Base58Check-verified Dogecoin addresses (D.../9.../A...)."
@@ -152,7 +152,7 @@ class CpDogeValidated(PackPlugin):
                  lambda s: _v_b58(s, (0x1E, 0x16)))]
 
 
-class CpBchAddr(PackPlugin):
+class CpBchAddr(AddressPackPlugin):
     id = "cp_bch_addr"
     label = "Bitcoin Cash Address (cashaddr-verified)"
     description = "Cashaddr-format BCH addresses with verified polymod checksum."
@@ -160,7 +160,7 @@ class CpBchAddr(PackPlugin):
                  "Bitcoin Cash address", 90, cashaddr_verify)]
 
 
-class CpXrpAddr(PackPlugin):
+class CpXrpAddr(AddressPackPlugin):
     id = "cp_xrp_addr"
     label = "XRP Address (checksum-verified)"
     description = ("XRP addresses verified with the XRP Base58 alphabet "
@@ -172,7 +172,7 @@ class CpXrpAddr(PackPlugin):
                      b58check_verify(s, XRP_ALPHABET)))]
 
 
-class CpAdaAddr(PackPlugin):
+class CpAdaAddr(AddressPackPlugin):
     id = "cp_ada_addr"
     label = "Cardano Address (Bech32-verified)"
     description = "Shelley-era Cardano addr1/stake1 Bech32 addresses."
@@ -188,7 +188,7 @@ class CpAdaAddr(PackPlugin):
     ]
 
 
-class CpDotAddr(PackPlugin):
+class CpDotAddr(AddressPackPlugin):
     id = "cp_dot_addr"
     label = "Polkadot/Kusama Address (SS58-verified)"
     description = "SS58 addresses with verified Blake2 checksum (formats 0/2)."
@@ -206,35 +206,35 @@ def _cosmos_plugin(hrp, coin):
              f"{coin} address", 88, _v)]
 
 
-class CpAtomAddr(PackPlugin):
+class CpAtomAddr(AddressPackPlugin):
     id = "cp_atom_addr"
     label = "Cosmos Hub Address (Bech32-verified)"
     description = "cosmos1 Bech32 addresses with verified checksum."
     PATTERNS = _cosmos_plugin("cosmos", "Cosmos (ATOM)")
 
 
-class CpOsmoAddr(PackPlugin):
+class CpOsmoAddr(AddressPackPlugin):
     id = "cp_osmo_addr"
     label = "Osmosis Address (Bech32-verified)"
     description = "osmo1 Bech32 addresses with verified checksum."
     PATTERNS = _cosmos_plugin("osmo", "Osmosis (OSMO)")
 
 
-class CpInjAddr(PackPlugin):
+class CpInjAddr(AddressPackPlugin):
     id = "cp_inj_addr"
     label = "Injective Address (Bech32-verified)"
     description = "inj1 Bech32 addresses with verified checksum."
     PATTERNS = _cosmos_plugin("inj", "Injective (INJ)")
 
 
-class CpBnbAddr(PackPlugin):
+class CpBnbAddr(AddressPackPlugin):
     id = "cp_bnb_addr"
     label = "BNB Beacon Chain Address (Bech32-verified)"
     description = "bnb1 Bech32 addresses with verified checksum."
     PATTERNS = _cosmos_plugin("bnb", "BNB Beacon Chain")
 
 
-class CpNearAddr(PackPlugin):
+class CpNearAddr(AddressPackPlugin):
     id = "cp_near_addr"
     label = "NEAR Account ID"
     description = "Named NEAR accounts (*.near / *.testnet) published by the target."
@@ -242,7 +242,7 @@ class CpNearAddr(PackPlugin):
                  "near_account", "NEAR account", 85, None)]
 
 
-class CpAlgoAddr(PackPlugin):
+class CpAlgoAddr(AddressPackPlugin):
     id = "cp_algo_addr"
     label = "Algorand Address (checksum-verified)"
     description = "Algorand addresses with verified SHA-512/256 checksum."
@@ -250,7 +250,7 @@ class CpAlgoAddr(PackPlugin):
                  "Algorand address", 92, algo_verify)]
 
 
-class CpXtzAddr(PackPlugin):
+class CpXtzAddr(AddressPackPlugin):
     id = "cp_xtz_addr"
     label = "Tezos Address (checksum-verified)"
     description = "tz1/tz2/tz3/KT1 addresses with verified Base58Check checksum."
@@ -261,7 +261,7 @@ class CpXtzAddr(PackPlugin):
                          b"\x02\x5a\x79"), 27))]
 
 
-class CpZecAddr(PackPlugin):
+class CpZecAddr(AddressPackPlugin):
     id = "cp_zec_addr"
     label = "Zcash Transparent Address (checksum-verified)"
     description = "t1/t3 Zcash addresses with verified Base58Check checksum."
@@ -271,7 +271,7 @@ class CpZecAddr(PackPlugin):
                      s, (b"\x1c\xb8", b"\x1c\xbd"), 26))]
 
 
-class CpDashAddr(PackPlugin):
+class CpDashAddr(AddressPackPlugin):
     id = "cp_dash_addr"
     label = "Dash Address (checksum-verified)"
     description = "Base58Check-verified Dash addresses (X.../7...)."
@@ -279,7 +279,7 @@ class CpDashAddr(PackPlugin):
                  "Dash address", 85, lambda s: _v_b58(s, (0x4C, 0x10)))]
 
 
-class CpXlmAddr(PackPlugin):
+class CpXlmAddr(AddressPackPlugin):
     id = "cp_xlm_addr"
     label = "Stellar Address (CRC16-verified)"
     description = "Stellar G... account IDs with verified CRC16-XMODEM checksum."
@@ -287,7 +287,7 @@ class CpXlmAddr(PackPlugin):
                  "Stellar address", 92, xlm_verify)]
 
 
-class CpTrxValidated(PackPlugin):
+class CpTrxValidated(AddressPackPlugin):
     id = "cp_trx_validated"
     label = "Tron Address (checksum-verified)"
     description = "Base58Check-verified Tron addresses (0x41 prefix)."
@@ -295,7 +295,7 @@ class CpTrxValidated(PackPlugin):
                  "Tron address", 90, lambda s: _v_b58(s, (0x41,)))]
 
 
-class CpKasAddr(PackPlugin):
+class CpKasAddr(AddressPackPlugin):
     id = "cp_kas_addr"
     label = "Kaspa Address (checksum-verified)"
     description = "kaspa: addresses with verified cashaddr-family checksum."
@@ -303,7 +303,7 @@ class CpKasAddr(PackPlugin):
                  "Kaspa address", 88, kaspa_verify)]
 
 
-class CpTonAddr(PackPlugin):
+class CpTonAddr(AddressPackPlugin):
     id = "cp_ton_addr"
     label = "TON Address (CRC16-verified)"
     description = "TON user-friendly addresses with verified CRC16 checksum."
@@ -311,7 +311,7 @@ class CpTonAddr(PackPlugin):
                  "TON address", 85, ton_friendly_verify)]
 
 
-class CpSuiAddr(PackPlugin):
+class CpSuiAddr(AddressPackPlugin):
     id = "cp_sui_addr"
     label = "Sui Address (context-anchored)"
     description = ("0x 64-hex Sui addresses anchored to Sui context "
@@ -322,7 +322,7 @@ class CpSuiAddr(PackPlugin):
                  "Sui address", 80, None)]
 
 
-class CpAptosAddr(PackPlugin):
+class CpAptosAddr(AddressPackPlugin):
     id = "cp_aptos_addr"
     label = "Aptos Address (context-anchored)"
     description = "0x 64-hex Aptos addresses anchored to Aptos context."

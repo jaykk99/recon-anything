@@ -23,9 +23,13 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..chaindata import (BLOCKCHAIR, CHAINS, SOLANA_RPC, TRONSCAN, XRPSCAN,
-                         explorer_url, parse_blockchair, parse_solana_balance,
-                         parse_tron, parse_xrp)
+from ..chaindata import (APTOS_ACCOUNTS, BLOCKCHAIR, CHAINS, DASH_INSIGHT,
+                         DOGECHAIN, KOIOS, SOLANA_RPC, SUI_COIN_TYPE,
+                         SUI_GRAPHQL, TONCENTER, TRONGRID, TRONSCAN, XRPSCAN,
+                         explorer_url, parse_aptos, parse_blockchair,
+                         parse_dash_insight, parse_dogechain, parse_esplora,
+                         parse_koios, parse_solana_balance, parse_sui,
+                         parse_ton, parse_tron, parse_trongrid, parse_xrp)
 from ..cryptolabels import labels_for, summarize_label
 from ..ratelimit import fetch
 from .base import Cost, Ctx, Finding, Plugin, PluginResult, Target, safe_json_dict
@@ -37,7 +41,11 @@ PER_ADDR_TIMEOUT = 15
 class ChainEnrichPlugin(Plugin):
     id = "chain_enrich"
     label = "Multi-chain OSINT"
-    accepts = ["domain", "url"]
+    # Also runs when the scan target IS an address: the checksum
+    # detectors publish it to crypto_addresses and this plugin is the
+    # phase-2 consumer, so a pasted wallet gets a real lookup instead
+    # of an empty run (chain-health fix 2026-11-14).
+    accepts = ["domain", "url", "crypto_wallet"]
     passive = True
     cost = Cost.FREE
     group = "web3"
@@ -62,8 +70,13 @@ class ChainEnrichPlugin(Plugin):
         findings: List[Finding] = []
         enriched = 0
         labeled = 0
+        attempts = 0
+        refused = 0
         for addr, chain, key in items[:MAX_ADDR]:
             cfg = CHAINS.get(chain, {"kind": "label_only", "name": chain})
+            enrichable = cfg.get("kind") not in (None, "label_only")
+            if enrichable:
+                attempts += 1
             # 1. labels on every address (keyless, local)
             try:
                 labs = labels_for(addr, chain)
@@ -78,14 +91,26 @@ class ChainEnrichPlugin(Plugin):
                 if prof:
                     findings.append(self._profile_finding(addr, chain, cfg, prof))
                     enriched += 1
+                elif enrichable:
+                    refused += 1
             except Exception:
+                if enrichable:
+                    refused += 1
                 continue
             self._checkpoint(findings)
 
         dur = int((time.monotonic() - t0) * 1000)
-        res = self._ok(findings,
-                       f"enriched {enriched}, labeled {labeled} of "
-                       f"{len(items)} non-ETH address(es), keyless")
+        note = (f"enriched {enriched}, labeled {labeled} of "
+                f"{len(items)} non-ETH address(es), keyless")
+        if refused:
+            note += (f"; {refused}/{attempts} chain lookup(s) refused "
+                     "upstream (no keyless source answered)")
+        # A run that found nothing AND reached no source is degraded,
+        # never a clean OK: silence must not read as "address is clean".
+        if attempts and enriched == 0 and labeled == 0:
+            res = self._degraded(f"DEGRADED: {note}")
+        else:
+            res = self._ok(findings, note)
         res.duration_ms = dur
         return res
 
@@ -113,11 +138,59 @@ class ChainEnrichPlugin(Plugin):
             r = await fetch(ctx.http, ctx.limiter, "GET", url,
                             timeout=PER_ADDR_TIMEOUT, max_retries=1)
             return parse_blockchair(safe_json_dict(r), addr)
+        if kind == "esplora":
+            url = f"{(cfg.get('base') or 'https://mempool.space/api').rstrip('/')}/address/{addr}"
+            r = await fetch(ctx.http, ctx.limiter, "GET", url,
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            return parse_esplora(safe_json_dict(r), addr)
+        if kind == "dogechain":
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            DOGECHAIN.format(addr=addr),
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            return parse_dogechain(safe_json_dict(r))
+        if kind == "dash":
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            DASH_INSIGHT.format(addr=addr),
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            return parse_dash_insight(safe_json_dict(r))
         if kind == "tron":
+            # TronGrid answers keyless; Tronscan is the fallback because
+            # its anonymous quota is 3 rps (HTTP 429) on 2026-11-14.
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            TRONGRID.format(addr=addr),
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            prof = parse_trongrid(safe_json_dict(r))
+            if prof:
+                return prof
             r = await fetch(ctx.http, ctx.limiter, "GET",
                             TRONSCAN.format(addr=addr),
                             timeout=PER_ADDR_TIMEOUT, max_retries=1)
             return parse_tron(safe_json_dict(r))
+        if kind == "cardano":
+            r = await fetch(ctx.http, ctx.limiter, "POST", KOIOS,
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1,
+                            headers={"Content-Type": "application/json"},
+                            content=json.dumps({"_addresses": [addr]}))
+            return parse_koios(safe_json_dict(r))
+        if kind == "ton":
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            TONCENTER.format(addr=addr),
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            return parse_ton(safe_json_dict(r))
+        if kind == "sui":
+            query = ("query { address(address: \"%s\") { balance("
+                     "coinType: \"%s\") { totalBalance } } }"
+                     % (addr, SUI_COIN_TYPE))
+            r = await fetch(ctx.http, ctx.limiter, "POST", SUI_GRAPHQL,
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1,
+                            headers={"Content-Type": "application/json"},
+                            content=json.dumps({"query": query}))
+            return parse_sui(safe_json_dict(r))
+        if kind == "aptos":
+            r = await fetch(ctx.http, ctx.limiter, "GET",
+                            APTOS_ACCOUNTS.format(addr=addr),
+                            timeout=PER_ADDR_TIMEOUT, max_retries=1)
+            return parse_aptos(safe_json_dict(r))
         if kind == "xrp":
             r = await fetch(ctx.http, ctx.limiter, "GET",
                             XRPSCAN.format(addr=addr),

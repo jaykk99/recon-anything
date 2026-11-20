@@ -188,7 +188,9 @@ def test_chain_config():
     for chain in cc.CHAINS.values():
         assert chain.rpc_urls, chain.id
         assert "{addr}" in chain.explorer_address
-        assert chain.blockscout_api, chain.id
+        # Blockscout is optional: Avalanche has no public instance and
+        # resolves verified source through Sourcify (chain 43114).
+        assert chain.blockscout_api or chain.id == "avalanche", chain.id
 
 
 def test_parse_target_address():

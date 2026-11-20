@@ -6,6 +6,7 @@ Order matters: more specific types are checked before generic ones.
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import re
@@ -60,13 +61,144 @@ def _hash_type(s: str) -> Optional[str]:
     return None
 
 
+# Base58 alphabet + Base58Check, for address SHAPE vs address TRUTH.
+# Shape matching alone mislabels SS58 (Polkadot) keys that happen to
+# start with 1/3 as Bitcoin, so the legacy check now verifies the
+# 4-byte double-SHA256 checksum and the version byte.
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
+
+
+def _b58decode_raw(s: str) -> Optional[bytes]:
+    try:
+        n = 0
+        for ch in s:
+            n = n * 58 + _B58_INDEX[ch]
+        body = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+        pad = len(s) - len(s.lstrip("1"))
+        return b"\x00" * pad + body
+    except (KeyError, OverflowError):
+        return None
+
+
+def _b58check_payload(s: str, alphabet: str = _B58_ALPHABET
+                      ) -> Optional[bytes]:
+    """Decoded payload for a Base58Check string, or None."""
+    idx = _B58_INDEX if alphabet == _B58_ALPHABET else (
+        {c: i for i, c in enumerate(alphabet)})
+    try:
+        n = 0
+        for ch in s:
+            n = n * 58 + idx[ch]
+        raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    except (KeyError, OverflowError):
+        return None
+    # Leading zero bytes are encoded as the alphabet's zero digit, which
+    # is "1" for Bitcoin-style Base58 and "r" for the XRP alphabet.
+    zero = alphabet[0]
+    pad = len(s) - len(s.lstrip(zero))
+    raw = b"\x00" * pad + raw
+    if len(raw) < 5:
+        return None
+    body, checksum = raw[:-4], raw[-4:]
+    if hashlib.sha256(hashlib.sha256(body).digest()).digest()[:4] != checksum:
+        return None
+    return body
+
+
 def _looks_like_btc(s: str) -> bool:
     s = s.strip()
-    return bool(re.fullmatch(r"(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}", s))
+    low = s.lower()
+    if re.fullmatch(r"bc1[02-9ac-hj-np-z]{11,71}", low):
+        return True
+    p = _b58check_payload(s)
+    return bool(p) and len(p) == 21 and p[0] in (0x00, 0x05)
 
 
 def _looks_like_eth(s: str) -> bool:
     return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", s.strip()))
+
+
+# Canonical chain tag for any other checksum-valid address shape the
+# pack detectors recognise. Lazy import: cryptopack_util is a plugin
+# helper and imports this module indirectly, so a module-level import
+# here would be circular.
+_XRP_ALPHABET = None
+
+
+def _address_chain(s: str) -> Optional[str]:
+    s = s.strip()
+    if not 8 <= len(s) <= 110:
+        return None
+    try:
+        from .plugins import cryptopack_util as U
+    except Exception:
+        return None
+    low = s.lower()
+    # CashAddr (Bitcoin Cash) carries its own prefix or a 42-char body.
+    if low.startswith("bitcoincash:") or low.startswith("bchtest:"):
+        return "bch" if U.cashaddr_verify(s) else None
+    dec = U.bech32_decode(s)
+    if dec:
+        hrp, data5, _enc = dec
+        payload = U._convertbits(data5, 5, 8, pad=False) or []
+        if hrp in ("addr", "addr_test") and len(payload) >= 29:
+            return "ada"
+        if hrp == "ltc":
+            return "ltc"
+        if hrp == "avax":
+            return "avax"
+        if hrp in ("bc", "tb"):
+            return "btc"
+    p = _b58check_payload(s)
+    if p and len(p) == 21:
+        v = p[0]
+        if v in (0x00, 0x05):
+            return "btc"
+        if v in (0x30, 0x32):
+            return "ltc"
+        if v in (0x1E, 0x16):
+            return "doge"
+        if v in (0x4C, 0x10):
+            return "dash"
+        if v == 0x41:
+            return "trx"
+    if p and len(p) == 22 and p[:2] in (b"\x1c\xb8", b"\x1c\xbd"):
+        return "zec"
+    global _XRP_ALPHABET
+    if _XRP_ALPHABET is None:
+        _XRP_ALPHABET = getattr(U, "XRP_ALPHABET", "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz")
+    xp = _b58check_payload(s, _XRP_ALPHABET)
+    if xp and len(xp) == 21 and xp[0] == 0:
+        return "xrp"
+    if len(s) in (95, 106):
+        for prefix in (0x12, 0x13, 0x2A):
+            if U.xmr_verify(s, (prefix,)):
+                return "xmr"
+    if len(s) == 48 and U.ton_friendly_verify(s):
+        return "ton"
+    ss = U.ss58_verify(s)
+    if ss and len(ss) in (32, 33):
+        return "dot"
+    return None
+
+
+def _crypto_address_chain(s: str) -> Optional[str]:
+    s = s.strip()
+    low = s.lower()
+    # Sui and Aptos share the 0x+64-hex shape with hashes and with each
+    # other; an explicit chain prefix disambiguates (and doubles as the
+    # context their detectors need).
+    for prefix, chain in (("sui:", "sui"), ("aptos:", "aptos"),
+                          ("apt:", "aptos")):
+        if low.startswith(prefix):
+            rest = s.split(":", 1)[1].strip()
+            return chain if re.fullmatch(r"0x[0-9a-fA-F]{64}", rest) else None
+    if _looks_like_eth(s):
+        return "eth"
+    if _looks_like_btc(s):
+        return "btc"
+    return _address_chain(s)
 
 
 # --- Solana -------------------------------------------------------------
@@ -291,7 +423,7 @@ def classify(raw: str) -> Dict:
         # Stacks contract ids before the dotted-name fallbacks
         # (domain / npm_package): SP....name is a chain address.
         ("stacks_contract", _looks_like_stacks_contract, 93),
-        ("crypto_wallet", lambda x: _looks_like_btc(x) or _looks_like_eth(x), 90),
+        ("crypto_wallet", lambda x: _crypto_address_chain(x) is not None, 90),
         ("phone", _is_phone, 80),
         ("github", _is_github, 80),
         ("domain", _is_domain, 90),
@@ -300,8 +432,14 @@ def classify(raw: str) -> Dict:
     for ttype, fn, conf in checks:
         try:
             if fn(s):
+                detail = None
+                if ttype == "file_hash":
+                    detail = _hash_type(s)
+                elif ttype == "crypto_wallet":
+                    detail = _crypto_address_chain(s)
                 return {"type": ttype, "normalized": s, "confidence": conf,
-                        "detail": _hash_type(s) if ttype == "file_hash" else None}
+                        "detail": detail,
+                        "chain": detail if ttype == "crypto_wallet" else None}
         except Exception:
             continue
     # person / company name fallback
