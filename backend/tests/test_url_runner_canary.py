@@ -169,3 +169,67 @@ def test_loopback_http_url_continues_after_first_finding(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_real_header_and_robots_plugins_on_loopback(monkeypatch):
+    """Exercise two production plugins against an owned local HTTP site."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    from app.plugins.headers import HeadersPlugin
+    from app.plugins.robots import RobotsPlugin
+    from app.ratelimit import RateLimiter
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            paths = {
+                "/": ("text/html", "<title>Canary</title>"),
+                "/robots.txt": ("text/plain", "User-agent: *\\nDisallow: /private\\n"),
+                "/sitemap.xml": ("application/xml",
+                                 "<urlset><url><loc>http://127.0.0.1/api</loc></url>"
+                                 "</urlset>"),
+                "/.well-known/security.txt": ("text/plain",
+                                              "Contact: mailto:security@example.test\\n"),
+            }
+            content_type, body = paths.get(
+                self.path, ("text/plain", "not found"))
+            payload = body.encode()
+            self.send_response(200 if self.path in paths else 404)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    async def capture(*_args):
+        pass
+
+    monkeypatch.setattr(runner, "_emit", capture)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+
+    async def scan():
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as http:
+            ctx = Ctx(run_id="real-url-canary", mode="passive",
+                      http=http, cache=None, keys={},
+                      limiter=RateLimiter(default_rps=100))
+            target = Target(raw=url, type="url", normalized=url)
+            headers = await runner._run_plugin(HeadersPlugin(), target, ctx)
+            robots = await runner._run_plugin(RobotsPlugin(), target, ctx)
+            return headers, robots
+
+    try:
+        headers, robots = asyncio.run(scan())
+        assert len(headers.findings) >= 5, [f.key for f in headers.findings]
+        keys = {f.key for f in robots.findings}
+        assert {"robots_txt", "robots_disallow", "sitemap",
+                "security_txt"}.issubset(keys), keys
+        assert len(headers.findings) + len(robots.findings) >= 9
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
