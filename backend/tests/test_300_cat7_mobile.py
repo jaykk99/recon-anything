@@ -748,7 +748,7 @@ def test_device_ids_vuln_clean():
 # ------------------------------------------------------------------
 
 def test_registry_count_1480():
-    assert len(REG) == 1490, f"registry size {len(REG)}, expected 1490"
+    assert len(REG) == 1494, f"registry size {len(REG)}, expected 1494"
     for pid in IDS:
         assert pid in REG, pid
         assert REG[pid].group == "mobile"

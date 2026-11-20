@@ -21,7 +21,7 @@ silent under the relevant neighbours
 eip712_digest_unbound_to_payload, fee_on_transfer_overcredit,
 recipient_overdraw_withdraw, recipient_unbacked_claim,
 access_control_arbitrary_call_injection, and the five batch-25
-detectors); the registry discovers exactly 1490 plugins
+detectors); the registry discovers exactly 1494 plugins
 including all five.
 """
 import os
@@ -72,8 +72,8 @@ def test_five_plugins_registered():
 
 def test_registry_count_1480():
     reg = discover()
-    assert len(reg) == 1490, \
-        f"registry size {len(reg)}, expected 1490"
+    assert len(reg) == 1494, \
+        f"registry size {len(reg)}, expected 1494"
 
 
 def test_vuln_fires_candidate_with_evidence():
