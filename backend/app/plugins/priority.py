@@ -154,6 +154,9 @@ CONTRACT_BOOST = {
     # deep_audit28 (5)
     "period_exit_writes_new_period_exposure_snapshot", "share_price_excludes_subthreshold_collateral",
     "snapshot_position_sync_caller_writable", "voucher_redeem_recipient_unbound", "withdraw_pays_other_account_balance",
+    # deep_audit29 (5)
+    "duplicate_reward_overwrite_desync", "governance_zero_quorum_executes",
+    "relay_arbitrary_call_trusted_identity", "swap_helper_caller_supplied_pool_hook_no_allowlist", "v4_hook_callback_no_poolmanager_check",
     # deep_lowlevel (12)
     "circom_r1cs_underconstrained_wire_checker", "diamond_erc2535_facet_selector_tree", "eof_container_code_section_verifier", "erc4337_entrypoint_paymaster_simulator",
     "erc7579_modular_account_hook_inspector", "evm_cfg_basic_block_reconstructor", "gnosis_safe_fallback_handler_mutator_check", "halo2_lookup_table_range_profiler",
