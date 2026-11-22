@@ -76,7 +76,7 @@ def keys_of(res):
 def test_registry_size_and_ids():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 1490  # 945 master + 22 Cat-1 (300-expansion) plugins + 1 cache_control_audit plugin
+    assert len(reg) == 1494  # 945 master + 22 Cat-1 (300-expansion) plugins + 1 cache_control_audit plugin + 4 deep-audit batch-31 detectors (deep_audit31)
     for pid in IDS:
         assert pid in reg, pid
 

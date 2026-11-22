@@ -104,14 +104,14 @@ def test_registry_vocab_gives_every_plugin_a_block():
                             "..", "app", "nn", "registry-plugin-ids.json")
     with open(reg_path, encoding="utf-8") as fh:
         registry = json.load(fh)
-    assert len(registry) == 1490
+    assert len(registry) == 1494
     spec = build_vocab([f for f, _ in ROWS], registry_plugins=registry)
-    # (1490 plugins + OTHER) x 8 inputs, plus keys from the fixture
+    # (1494 plugins + OTHER) x 8 inputs, plus keys from the fixture
     # rows, 35 other v2 inputs, and the 41 v3 context inputs.
     names = spec.feature_names()
     assert spec.dim == len(names)
-    assert sum(1 for n in names if n.startswith("plugin:")) == 1491 * 8
-    assert spec.dim == 1491 * 8 + (len(spec.keys) + 1) + 35 + 41
+    assert sum(1 for n in names if n.startswith("plugin:")) == 1495 * 8
+    assert spec.dim == 1495 * 8 + (len(spec.keys) + 1) + 35 + 41
     assert len(spec.keys) == 6  # fixtures only carry 6 distinct keys
     v = extract(ROWS[2][0], spec)
     assert len(v) == spec.dim
