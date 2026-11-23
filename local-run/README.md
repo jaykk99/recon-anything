@@ -93,6 +93,37 @@ and a full real scan). The Termux scripts are syntax-checked and mirror
 the verified Linux steps, but have not yet been run on a physical phone;
 treat the first phone run as the device test and keep the setup output.
 
+## Allow a Termux agent on another device (optional)
+
+The local API normally binds only to `127.0.0.1:8000`. This is the
+safer default when ReconAnything and the Termux agent run on the same Android
+phone or Linux machine.
+
+To allow a second device on a **trusted private LAN** (for example, Android
+connected to the Linux host's hotspot), use this on the Linux host:
+
+```bash
+RECON_BIND_HOST=0.0.0.0 bash local-run/linux-start.sh
+```
+
+The launcher requires a configured `RECON_ACCESS_CODE` when binding outside
+loopback, and the setup script writes one to `.local-env`. On the Android
+phone, inside `termux-code`, configure the Linux host's private LAN IP and
+the generated access code:
+
+```text
+/recon url http://192.168.1.30:8000
+/recon code <contents-of-Linux-recon-anything/.local-access-code>
+/recon
+```
+
+Replace the example IP. Keep port 8000 firewalled from the public Internet;
+LAN HTTP does not encrypt the access code. Do not forward it publicly. Use
+HTTPS and an appropriate authenticated reverse proxy for remote access.
+The phone must be able to reach the Linux host over the same network;
+a Linux process listening only on `127.0.0.1` is not accessible directly
+from Android.
+
 ## MCP server (use ReconAnything from Claude)
 
 `mcp_server.py` is a stdio [MCP](https://modelcontextprotocol.io) server that

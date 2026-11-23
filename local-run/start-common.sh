@@ -2,7 +2,7 @@
 # Shared launcher for ReconAnything local runs (Linux + Termux).
 # Starts the three processes the production container runs:
 #   1. scan worker   (python -m app.worker_main, health on its own port 10000)
-#   2. API backend   (uvicorn on 127.0.0.1:8000)
+#   2. API backend   (uvicorn on RECON_BIND_HOST:8000, loopback by default)
 #   3. web frontend  (Next.js standalone on $PORT, default 3000, serves the UI
 #                     and proxies /api/* to the backend)
 # Run linux-setup.sh or termux-setup.sh first.
@@ -19,6 +19,13 @@ set -a
 set +a
 export RECON_API_URL="${RECON_API_URL:-http://127.0.0.1:8000}"
 export PORT="${PORT:-3000}"
+# Opt-in LAN access for the Termux agent on another device. Public exposure
+# requires proper TLS/auth controls beyond this local launcher.
+export RECON_BIND_HOST="${RECON_BIND_HOST:-127.0.0.1}"
+if [ "$RECON_BIND_HOST" != '127.0.0.1' ] && [ "$RECON_BIND_HOST" != 'localhost' ] && [ "$RECON_BIND_HOST" != '::1' ] && [ -z "${RECON_ACCESS_CODE:-}" ]; then
+  echo 'Non-loopback Recon API binding requires RECON_ACCESS_CODE; run local-run/make-env.sh first.' >&2
+  exit 1
+fi
 
 PY="$ROOT/.venv/bin/python"
 if [ ! -x "$PY" ]; then
@@ -48,8 +55,8 @@ echo "Starting scan worker..."
  done) &
 PIDS="$PIDS $!"
 
-echo "Starting API backend on 127.0.0.1:8000..."
-(cd backend && "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8000) &
+echo "Starting API backend on $RECON_BIND_HOST:8000..."
+(cd backend && "$PY" -m uvicorn app.main:app --host "$RECON_BIND_HOST" --port 8000) &
 PIDS="$PIDS $!"
 
 # Give the backend a moment so the first page load can reach it.
