@@ -23,7 +23,7 @@ vesting_release_cancel_double_debit, push_payment_revert_dos,
 fee_on_transfer_overcredit, recipient_overdraw_withdraw,
 recipient_unbacked_claim,
 access_control_arbitrary_call_injection, and the five batch-26
-detectors); the registry discovers exactly 1495 plugins
+detectors); the registry discovers exactly 1500 plugins
 including all five.
 """
 import os
@@ -80,10 +80,10 @@ def test_five_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1495():
+def test_registry_count_1500():
     reg = discover()
-    assert len(reg) == 1495, \
-        f"registry size {len(reg)}, expected 1495"
+    assert len(reg) == 1500, \
+        f"registry size {len(reg)}, expected 1500"
 
 
 def test_vuln_fires_candidate_with_evidence():
