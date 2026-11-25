@@ -139,7 +139,7 @@ SPECS = [
              "compound/claim against the stale position "
              "repeatedly."),
     S("staking_total_shares_mismatch", FAMILY, severity="medium",
-      outcome="a", fn_re=r"deposit|stake",
+      outcome="a", fn_re=r"^(?:deposit|stake)",
       need_any=(r"shares\w*\s*\[\s*msg\.sender\s*\]\s*\+=",
                 r"totalShares\w*\s*\+=",
                 r"balanceOf\s*\[\s*msg\.sender\s*\]\s*\+=\s*_?\w*"
