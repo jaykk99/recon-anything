@@ -52,8 +52,8 @@ def test_twelve_plugins_registered():
 
 def test_registry_count_1480():
     reg = discover()
-    assert len(reg) == 1490, \
-        f"registry size {len(reg)}, expected 1490"
+    assert len(reg) == 1495, \
+        f"registry size {len(reg)}, expected 1495"
 
 
 def test_vuln_fires_candidate_with_evidence():
@@ -163,6 +163,28 @@ contract OzPermitShape {
         bytes32 digest = keccak256(abi.encodePacked(owner, _useNonce(owner)));
         address signer = ecrecover(digest, v, r, s);
         require(signer == owner, "bad signature");
+    }
+}
+"""
+    assert hits_for(src, "signature_nonce_unconsumed") == []
+
+
+def test_nonce_counters_alias_consumption_stays_silent():
+    # OZ Counters.Counter via a local alias: the permit reads
+    # the nonce through `Counters.Counter storage nonce =
+    # _nonces[owner]` and consumes it with nonce.increment().
+    # Must not fire signature_nonce_unconsumed (Aave DebtToken
+    # permit shape: false-fired on the Nov 20 live run, the
+    # state var is never written directly).
+    src = """
+contract CountersAliasPermit {
+    mapping(address => Counters.Counter) private _nonces;
+    function permit(address owner, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public {
+        Counters.Counter storage nonce = _nonces[owner];
+        bytes32 digest = keccak256(abi.encodePacked(owner, value, nonce.current(), deadline));
+        address signer = ecrecover(digest, v, r, s);
+        require(signer == owner, "bad signature");
+        nonce.increment();
     }
 }
 """

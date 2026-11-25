@@ -973,7 +973,20 @@ def _nonce_written(var: str, text_all: str) -> bool:
         # _nonces[owner].increment() / .decrement() / .reset()
         or re.search(r"\b" + v + r"\s*(\[[^\]]*\])?\s*\.\s*"
                      r"(increment|decrement|reset)\s*\(",
-                     text_all))
+                     text_all)
+        # OpenZeppelin Counters via a local alias:
+        # `Counters.Counter storage nonce = _nonces[owner];`
+        # consumes the state through `nonce.increment()` -
+        # the state var itself is never written directly
+        # (Aave DebtToken permit shape: false-fired before
+        # this branch existed).
+        or any(
+            re.search(r"\b" + re.escape(alias) +
+                      r"\s*\.\s*(increment|decrement|reset)"
+                      r"\s*\(", text_all)
+            for alias in re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*" + v +
+                r"\s*\[", text_all)))
 
 
 _NONCE_CONSUMER_RE = re.compile(
