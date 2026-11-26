@@ -317,14 +317,60 @@ def test_parallel_waves_run_intents_concurrently():
             Intent(kind="recon", action="surface",
                    target="https://b.lab.test"),
         ]
-        ran = engine._run_wave(intents, {}, ctx, scope, graph,
-                               time.time, lambda _s: None)
+        ran = engine._run_wave(intents, {}, ctx, scope, graph, time.time)
     finally:
         engine._execute = original
     assert ran == 2
     attempts = list(graph.attempts.values())
     assert len(attempts) == 2
     assert all(a["status"] == "ok" for a in attempts), attempts
+
+
+def test_per_host_pacing_spaces_parallel_waves():
+    """per_host_rps is a request boundary, not a wave boundary.
+
+    The last-hit map used to be local to one wave, so the first request of
+    the next round went out immediately after the previous round's last
+    one: a burst past 1 rps at every round boundary, even at
+    max_parallel 3. The fake clock only advances when the pacer sleeps, so
+    the recorded request times are exactly the enforced intervals.
+    """
+    now = [1000.0]
+
+    def clock():
+        return now[0]
+
+    def sleep(seconds):
+        now[0] += max(0.0, float(seconds))
+
+    hits = []
+
+    def fetch(url, method="GET", **_kw):
+        hits.append((now[0], url))
+        path = urlparse(url).path or "/"
+        body = DOCKER_ROUTES.get(path)
+        if body is None:
+            return FetchResponse(url=url, method=method, status=404,
+                                 headers={}, text="not found")
+        status, headers, text = body
+        return FetchResponse(url=url, method=method, status=status,
+                             headers=dict(headers), text=text)
+
+    result = run_campaign(
+        "find an exposed docker console",
+        _scope(max_parallel=3, per_host_rps=1.0, max_seconds=120),
+        seeds=["https://lab.test"], fetch=fetch, clock=clock, sleep=sleep)
+
+    assert result["scope"]["max_parallel"] == 3
+    assert result["scope"]["per_host_rps"] == 1.0
+    # Several rounds ran (surface first, then probes): the wave boundary
+    # is exactly where the old pacer reset.
+    assert len(hits) >= 3, hits
+    assert len({urlparse(u).hostname for _t, u in hits}) == 1
+    stamps = [t for t, _u in hits]
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    assert min(gaps) >= 1.0 - 1e-9, gaps
+    assert max(gaps) <= 1.0 + 1e-9, gaps
 
 
 def test_evidence_archive_redacts_and_exports_har():

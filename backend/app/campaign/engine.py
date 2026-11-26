@@ -20,12 +20,15 @@ plan; the clock is injectable, which is also how tests exercise the
 time budget. With a model configured, its proposals are validated but
 not reproducible, so the deterministic plan remains the fallback.
 
-Planning and graph writes stay on the calling thread; ``max_parallel``
-only overlaps the I/O inside workers, which is what keeps the budget
-and the write-back order deterministic.
+Planning, budget spending and graph writes stay on the calling thread;
+``max_parallel`` only overlaps the I/O inside workers, which keeps the
+budget and the write-back order deterministic. Per-host pacing is
+enforced where each request is issued (``HostPacer``), so it also holds
+across round boundaries and for the several requests one worker makes.
 """
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +64,76 @@ def _seed(graph: Graph, scope: Scope, seeds: Sequence[str]) -> List[Dict[str, st
     return refused
 
 
+class HostPacer:
+    """Per-host request spacing that survives wave boundaries.
+
+    Pacing sleeps used to live in the wave's dispatch loop with the
+    last-hit map local to that wave. A new round then started from an
+    empty map and could hit a host immediately after the previous
+    round's last request, and a queued job could issue its request later
+    than the slot measured at submission. Both are bursts past
+    ``per_host_rps``, so the gate is taken here instead: every request is
+    spaced from the last request actually issued to that host, on any
+    thread, for the whole campaign.
+
+    The clock and sleep are injectable so tests can prove the interval
+    without waiting for it.
+    """
+
+    def __init__(self, rps: float, *,
+                 clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        try:
+            rate = float(rps or 0)
+        except (TypeError, ValueError):
+            rate = 0.0
+        self.interval = 1.0 / max(0.1, rate) if rate > 0 else 0.0
+        self._clock = clock
+        self._sleep = sleep
+        self._guard = threading.Lock()
+        self._slots: Dict[str, Dict[str, Any]] = {}
+
+    def _slot(self, host: str) -> Dict[str, Any]:
+        with self._guard:
+            slot = self._slots.get(host)
+            if slot is None:
+                slot = self._slots[host] = {"lock": threading.Lock(),
+                                            "last": None}
+            return slot
+
+    def wait(self, target: str) -> None:
+        """Block until one more request to ``target``'s host is allowed."""
+        if self.interval <= 0:
+            return
+        host = host_of(target)
+        if not host:
+            return
+        slot = self._slot(host)
+        # One lock per host: waiting on one target never stalls another
+        # host's workers, and the slot is reserved before the request
+        # leaves, so concurrent callers cannot share one interval.
+        with slot["lock"]:
+            now = self._clock()
+            last = slot["last"]
+            if last is not None:
+                delay = self.interval - (now - last)
+                if delay > 0:
+                    self._sleep(delay)
+                    now = self._clock()
+            slot["last"] = now
+
+    def wrap(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
+        """Return ``fetch`` with the per-host gate in front of it."""
+        if self.interval <= 0:
+            return fetch
+
+        def paced(url: str, *args: Any, **kwargs: Any) -> Any:
+            self.wait(url)
+            return fetch(url, *args, **kwargs)
+
+        return paced
+
+
 def run_campaign(objective: str, scope: Scope, *,
                  seeds: Sequence[str] = (),
                  findings: Iterable[Dict[str, Any]] = (),
@@ -93,6 +166,9 @@ def run_campaign(objective: str, scope: Scope, *,
         fetch = default_fetch
     if evidence is not None:
         fetch = evidence.wrap(fetch)
+    # Pace every request, not every dispatch: the gate is shared by all
+    # waves of this campaign and by every thread in a wave.
+    fetch = HostPacer(scope.per_host_rps, clock=clock, sleep=sleep).wrap(fetch)
 
     budget = Budget(max_requests=scope.max_requests,
                     max_intents=scope.max_intents,
@@ -150,7 +226,7 @@ def run_campaign(objective: str, scope: Scope, *,
                     awaiting[intent.key] = intent.to_dict()
                 continue
             runnable.append(intent)
-        ran = _run_wave(runnable, work, ctx, scope, graph, clock, sleep)
+        ran = _run_wave(runnable, work, ctx, scope, graph, clock)
         executed += ran
         round_progress = ran > 0
 
@@ -237,37 +313,25 @@ def _execute(intent: Intent, workers: Dict[str, Callable],
 
 def _run_wave(intents: Sequence[Intent], workers: Dict[str, Callable],
               ctx: WorkerContext, scope: Scope, graph: Graph,
-              clock: Callable[[], float],
-              sleep: Callable[[float], None]) -> int:
+              clock: Callable[[], float]) -> int:
     """Execute one round's intents, up to ``scope.max_parallel`` at once.
 
-    Budget is spent and pacing is applied on the calling thread before a
-    job is dispatched, and attempts are recorded in submission order, so
-    concurrency cannot outspend the cap or reorder the graph.
+    Budget is spent on the calling thread before a job is dispatched and
+    attempts are recorded in submission order, so concurrency cannot
+    outspend the cap or reorder the graph. Per-host pacing happens in the
+    paced ``fetch`` (``HostPacer``) instead of here: pacing at dispatch
+    would reset at every round boundary and would measure a queued job's
+    slot before the job actually issued its request.
     """
     if not intents:
         return 0
     parallel = max(1, min(8, int(scope.max_parallel or 1)))
-    last_by_host: Dict[str, float] = {}
-
-    def pace(intent: Intent) -> None:
-        if not scope.per_host_rps:
-            return
-        host = host_of(intent.target)
-        last = last_by_host.get(host)
-        if last is not None:
-            wait = (1.0 / max(0.1, float(scope.per_host_rps))) \
-                - (clock() - last)
-            if wait > 0:
-                sleep(wait)
-        last_by_host[host] = clock()
 
     if parallel == 1:
         ran = 0
         for intent in intents:
             if ctx.budget.exhausted(clock()):
                 break
-            pace(intent)
             ctx.budget.spend(intent.cost, clock())
             graph.record_attempt(_execute(intent, workers, ctx))
             ran += 1
@@ -279,7 +343,6 @@ def _run_wave(intents: Sequence[Intent], workers: Dict[str, Callable],
         for intent in intents:
             if ctx.budget.exhausted(clock()):
                 break
-            pace(intent)
             ctx.budget.spend(intent.cost, clock())
             futures.append((intent, pool.submit(_execute, intent,
                                                 workers, ctx)))

@@ -175,9 +175,10 @@ login page, or a `401` is a clean negative, never a finding.
   to the deterministic plan. With no model configured, planning is
   exactly as before.
 - **Parallel workers.** `max_parallel` (default 3, clamped 1-8) overlaps
-  the I/O inside workers. Budget spending, per-host pacing and graph
-  write-back stay on the caller's thread, so the cap and the attempt
-  order remain deterministic.
+  the I/O inside workers. Budget spending and graph write-back stay on
+  the caller's thread, so the cap and the attempt order remain
+  deterministic; per-host pacing is enforced at each request, so waves
+  and rounds cannot burst past `per_host_rps`.
 - **Complete evidence.** Every exchange is archived to
   `data/campaigns/<id>.evidence.jsonl` with authorization/cookie headers
   redacted, a 64 KiB body cap and a sha256 per body;

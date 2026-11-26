@@ -100,8 +100,10 @@ archive (JSONL + HAR), and retest any finding to reproducible/fixed.
 - Per round: gate and budget-check intents in the main thread, submit up
   to `max_parallel` at a time, then record results in submission order.
   Budget is spent before submission, so concurrency cannot outspend it.
-- Per-host pacing is applied at submission, not completion, so parallel
-  work still respects `per_host_rps`.
+- Per-host pacing is enforced at the request itself: one shared
+  `HostPacer` wraps `fetch` for the whole campaign, so the interval holds
+  across round boundaries and for the several requests one worker makes,
+  not only at wave submission.
 - A worker failure still becomes a failed attempt; one failure never
   aborts the wave.
 - Determinism: the plan, the budget and the graph writes are decided in
