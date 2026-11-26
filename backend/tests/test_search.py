@@ -142,3 +142,24 @@ def test_ranking_unverified_above_false_positive():
     addrs = [h["address"] for h in r["results"]]
     assert addrs[0] == SOL_ADDR  # verdict-less ranks above FALSE_POSITIVE
     assert addrs[-1] == ADDR_B
+
+
+def test_no_source_filter():
+    result = search_index.search(has_source=False)
+    assert result["count"] == 2
+    assert {row["address"] for row in result["results"]} == {ADDR_B, SOL_ADDR}
+
+
+@pytest.mark.parametrize("filters", [
+    {"chain": "bsc"}, {"has_source": False}, {"min_value_usd": 5001},
+    {"recipient": "OTHER"}, {"plugin": "other"}, {"verdict": "UNVERIFIED"},
+])
+def test_exact_address_respects_filters(filters):
+    result = search_index.search(q=ADDR_A, **filters)
+    assert result["count"] == 0
+    assert result["results"] == []
+
+
+@pytest.mark.parametrize("filters", [{"plugin": "contract%"}, {"recipient": "CALL_R"}])
+def test_filter_names_are_literal(filters):
+    assert search_index.search(**filters)["count"] == 0

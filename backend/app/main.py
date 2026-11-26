@@ -2796,7 +2796,7 @@ collected</a> — any keyword, any filter, results in under a second.</p>
 def search_api(q: str = "", chain: str = "", plugin: str = "",
                verdict: str = "", recipient: str = "",
                min_value_usd: Optional[float] = None,
-               has_source: bool = False, limit: int = 100):
+               has_source: Optional[bool] = None, limit: int = 100):
     """One fast search over everything ReconAnything has collected
     (kwindex verified source, continuous scanner, real-hunt verdicts,
     FP audit, transition watch — one deduped corpus, app/search.py).
@@ -2805,7 +2805,7 @@ def search_api(q: str = "", chain: str = "", plugin: str = "",
         return search_index.search(
             q=q, chain=chain, plugin=plugin, verdict=verdict,
             recipient=recipient, min_value_usd=min_value_usd,
-            has_source=True if has_source else None, limit=limit)
+            has_source=has_source, limit=limit)
     except FileNotFoundError:
         raise HTTPException(503, "search corpus not built yet")
     except Exception as e:  # index build failure must not 500 the app

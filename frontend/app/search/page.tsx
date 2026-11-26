@@ -8,11 +8,11 @@ interface SearchResult {
   address: string;
   name: string | null;
   verdict: string | null;
-  recipient: string | null;
+  recipients: string[];
   value_usd: number | null;
   has_source: boolean;
   plugins: string[];
-  finding_kinds: string[];
+  kinds: string[];
   functions: string[];
   snippet: string;
   sources: string[];
@@ -118,7 +118,7 @@ function SearchPageInner() {
           </select>
           <input
             className="input px-2 py-1 text-sm w-48"
-            placeholder="plugin id contains"
+            placeholder="exact plugin id"
             value={plugin}
             onChange={(e) => setPlugin(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
@@ -187,7 +187,7 @@ function SearchPageInner() {
                     </td>
                     <td className={`text-xs ${r.verdict ? VERDICT_STYLE[r.verdict] || "" : "text-slate-500"}`}>
                       {r.verdict || "-"}
-                      {r.recipient && <div className="text-[11px] text-slate-500">{r.recipient}</div>}
+                      {r.recipients.length > 0 && <div className="text-[11px] text-slate-500">{r.recipients.join(", ")}</div>}
                     </td>
                     <td className="text-xs">{fmtUsd(r.value_usd)}</td>
                     <td className="text-xs">{r.has_source ? "yes" : "-"}</td>

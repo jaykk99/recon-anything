@@ -29,7 +29,6 @@ import json
 import os
 import re
 import sqlite3
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -89,9 +88,8 @@ def _ensure_db() -> sqlite3.Connection:
             return _db
         path = corpus_path()
         rows = _read_corpus(path)
-        fd, tmp = tempfile.mkstemp(prefix="recon-search-", suffix=".db")
-        os.close(fd)
-        con = sqlite3.connect(tmp, check_same_thread=False)
+        # An unnamed temporary database is removed when the connection closes.
+        con = sqlite3.connect("", check_same_thread=False)
         con.execute("PRAGMA journal_mode=OFF")
         con.execute(
             "CREATE TABLE contracts(chain TEXT, address TEXT, "
@@ -243,38 +241,28 @@ def search(q: str = "", chain: str = "", plugin: str = "",
             where.append("c.chain IN (%s)" % ",".join("?" * len(chains)))
             params += chains
     if plugin:
-        where.append("c.plugins LIKE ?")
-        params.append(f"%\"{plugin.strip().lower()}\"%")
+        where.append("EXISTS (SELECT 1 FROM json_each(c.plugins) "
+                     "WHERE value = ? COLLATE NOCASE)")
+        params.append(plugin.strip())
     if verdict:
         where.append("c.verdict = ?")
         params.append(verdict.strip().upper())
     if recipient:
-        where.append("c.recipients LIKE ?")
-        params.append(f"%\"{recipient.strip().upper()}\"%")
+        where.append("EXISTS (SELECT 1 FROM json_each(c.recipients) "
+                     "WHERE value = ? COLLATE NOCASE)")
+        params.append(recipient.strip())
     if min_value_usd is not None:
         where.append("c.value_usd >= ?")
         params.append(float(min_value_usd))
-    if has_source:
-        where.append("c.has_source = 1")
+    if has_source is not None:
+        where.append("c.has_source = ?")
+        params.append(int(has_source))
 
-    pinned: List[dict] = []
-    if len(terms) == 1 and _ADDR_RE.match(terms[0]):
-        addr = terms[0].lower()
-        if not addr.startswith("0x"):
-            addr = "0x" + addr
-        rows = con.execute(
-            f"SELECT {_COLS} FROM contracts c WHERE c.address = ?",
-            (addr,)).fetchall()
-        pinned = [_row_out(r, terms) for r in rows]
-        if pinned:
-            # an exact-address query means "this contract": the pin
-            # is the whole answer, not page 1 of a full browse.
-            return {"query": q, "count": len(pinned),
-                    "took_ms": round((time.time() - t0) * 1000, 1),
-                    "index": {"contracts":
-                              _meta.get("contracts_indexed", 0),
-                              "built_at": _meta.get("built_at")},
-                    "results": pinned[:limit]}
+    if len(terms) == 1 and _ADDR_RE.fullmatch(terms[0]):
+        addr = terms[0]
+        where.append("c.address = ?")
+        params.append(addr if addr.startswith("0x") else "0x" + addr)
+        terms = []
 
     if terms:
         # Fetch the FTS match set (rowid + bm25) in ONE scan, then do
@@ -315,8 +303,8 @@ def search(q: str = "", chain: str = "", plugin: str = "",
             "ELSE 3 END, c.value_usd DESC LIMIT ?",
             params + [limit]).fetchall()
 
-    results = pinned + [_row_out(r, _terms(q)) for r in rows]
-    return {"query": q, "count": total + len(pinned),
+    results = [_row_out(r, terms) for r in rows]
+    return {"query": q, "count": total,
             "took_ms": round((time.time() - t0) * 1000, 1),
             "index": {"contracts": _meta.get("contracts_indexed", 0),
                       "built_at": _meta.get("built_at")},

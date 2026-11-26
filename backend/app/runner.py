@@ -794,6 +794,19 @@ def _dispatch_order(jobs):
     return ordered
 
 
+def _hunter_pass_due(run_id: str, n_findings: int) -> bool:
+    """Run the first hunter pivot on a single finding, then batch later pivots.
+
+    Requiring eight findings before the FIRST pass meant sparse but
+    valuable discoveries could sit idle until the entire scan finished.
+    Keep the existing batching threshold once an initial pass happened.
+    """
+    previous = _hunter_marks.get(run_id)
+    if previous is None:
+        return n_findings > 0
+    return n_findings - previous >= max(1, HUNTER_MIN_NEW_FINDINGS)
+
+
 def _hunter_expansion_owed(session, run_id: str) -> bool:
     """True while the mid-run hunter sweep still owes this run an
     expansion pass for findings it has already produced.
@@ -826,7 +839,7 @@ def _hunter_expansion_owed(session, run_id: str) -> bool:
              .filter_by(run_id=run_id).count())
     except Exception:
         return False
-    return (n - _hunter_marks.get(run_id, 0)) >= HUNTER_MIN_NEW_FINDINGS
+    return _hunter_pass_due(run_id, n)
 
 
 def _claim_jobs(session, limit: int):
@@ -915,6 +928,15 @@ def _claim_jobs(session, limit: int):
                 PluginJob.status.in_(("queued", "running")))
         .group_by(PluginJob.run_id).all())
     claimed = []
+    # The expansion check counts persisted findings. A claim batch may
+    # contain hundreds of phase-2 jobs from the same run: query once per
+    # run, not once per job (and refresh on the next claim batch).
+    expansion_due: Dict[str, bool] = {}
+
+    def hunter_expansion_due(run_id: str) -> bool:
+        if run_id not in expansion_due:
+            expansion_due[run_id] = _hunter_expansion_owed(session, run_id)
+        return expansion_due[run_id]
 
     def gate(job) -> str:
         """Per-job claim gates, shared by both passes. Returns
@@ -954,7 +976,7 @@ def _claim_jobs(session, limit: int):
             return "skip"
         if job.phase == 2 and phase1_pending.get(job.run_id, 0) > 0:
             return "defer"  # phase 1 still producing bus signals
-        if job.phase == 2 and _hunter_expansion_owed(session, job.run_id):
+        if job.phase == 2 and hunter_expansion_due(job.run_id):
             return "defer"  # hunter expansion still owes the bus signals
         return "claim"
 
@@ -1548,8 +1570,7 @@ async def _sweep_hunter_expand() -> None:
             pass
     _hunter_swept.update(counts.keys())
     for rid, n_findings in counts.items():
-        if (n_findings - _hunter_marks.get(rid, 0)
-                >= HUNTER_MIN_NEW_FINDINGS):
+        if _hunter_pass_due(rid, n_findings):
             await asyncio.to_thread(_incremental_hunter_pass_sync, rid)
             _hunter_marks[rid] = n_findings
     for rid in list(_hunter_marks):
@@ -2201,7 +2222,8 @@ def _enqueue_jobs(session, run_id: str, plugins, trobj,
                           p.id, PLUGIN_TIME_ESTIMATES.get(
                               p.id, DEFAULT_PLUGIN_ESTIMATE_S)),
                       status="queued")
-            for t in trobj for p in plugins]
+            for t in trobj for p in plugins
+            if not getattr(p, "accepts", None) or t.type in p.accepts]
     if jobs:
         session.bulk_save_objects(jobs)
         session.commit()
@@ -2640,9 +2662,14 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         # falling back to the hardcoded table for plugins without history.
         estimates = _calibrated_estimates(session)
         n_targets = max(len(trobj), 1)
-        total_plugin_s = sum(estimates.get(
-            p.id, PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S))
-            for p in plugins) * n_targets
+        # Only applicable (target, plugin) pairs become queued jobs.
+        # Incompatible plugins would have returned an immediate skip
+        # from _run_one_job, wasting queue slots and progress counts.
+        total_plugin_s = sum(
+            estimates.get(
+                p.id, PLUGIN_TIME_ESTIMATES.get(p.id, DEFAULT_PLUGIN_ESTIMATE_S))
+            for t in trobj for p in plugins
+            if not getattr(p, "accepts", None) or t.type in p.accepts)
         concurrency = max(getattr(config, "MAX_CONCURRENCY", 5), 1)
         estimated_s = max(int(total_plugin_s / concurrency), 10)
 
@@ -2673,6 +2700,10 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
         n_jobs = _enqueue_jobs(session, run_id, plugins, trobj, bounty,
                                estimates=estimates,
                                boost_ids=set(key_hunters) or None)
+        if n_jobs == 0:
+            raise RuntimeError(
+                "no selected plugins accept the supplied target type(s); "
+                "choose URL/domain-compatible plugins or change the target")
 
         await _emit(run_id, "run_start",
                     {"run_id": run_id,
@@ -2683,6 +2714,7 @@ async def execute_run(run_id: str, targets_raw: str, mode: str,
                      "estimated_s": estimated_s,
                      "plugin_count": len(plugins),
                      "target_count": n_targets,
+                     "job_count": n_jobs,
                      "queued": True,
                      "note": ((selection_note + "; " if selection_note else "")
                               + f"{n_jobs} jobs queued in Postgres; "
