@@ -49,7 +49,7 @@ SPECS = [
              "Lenders that pull repayment via transferFrom or "
              "track an initiator-bound debt record do not flag."),
     S("flash_loan_callback_auth_bypass", FAMILY, severity="high",
-      outcome="b",
+      outcome="b", public_only=True, gated_suppresses=True,
       fn_re=r"onFlashLoan|executeOperation|receiveFlashLoan|"
             r"onFlashloan",
       need_any=(r"\.transfer\s*\(", r"\.call\s*\{",
@@ -157,7 +157,8 @@ SPECS = [
              "collateral than the incentive allows or zeroing "
              "it and breaking liquidation entirely."),
     S("lending_pool_collateral_seizure_gap", FAMILY,
-      severity="high", outcome="a", fn_re=r"liquidat|seize",
+      severity="high", outcome="a", public_only=True,
+      gated_suppresses=True, fn_re=r"liquidat|seize",
       need_any=(r"seize\w*\s*\(", r"transfer\w*\s*\([^)]*collateral",
                 r"_seize|liquidateCalculateSeize"),
       forbid=(r"getAccountLiquidity|healthFactor|shortfall|"

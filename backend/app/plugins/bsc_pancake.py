@@ -46,7 +46,7 @@ SPECS = [
              "redirected to an attacker-controlled contract that "
              "keeps the input tokens."),
     S("pancake_pool_skimming_vulnerability", FAMILY,
-      severity="medium", outcome="a",
+      severity="medium", outcome="a", public_only=True,
       need=(r"\.skim\s*\(",), gated_suppresses=True,
       recipient=True,
       detail="Pool skimming: a PancakeSwap pair's skim() is "
@@ -100,7 +100,7 @@ SPECS = [
              "balance wraps the swap amount to a huge number "
              "instead of reverting."),
     S("pancake_lp_token_burn_logic", FAMILY, severity="medium",
-      outcome="a",
+      outcome="a", public_only=True,
       need=(r"\.burn\s*\(",),
       need_any=(r"msg\.sender", r"\bto\b", r"recipient"),
       gated_suppresses=True, recipient=True,
@@ -111,7 +111,8 @@ SPECS = [
              "by this contract can be redeemed by anyone, to "
              "themselves."),
     S("pancake_flash_swap_reentrancy", FAMILY, severity="high",
-      outcome="b", fn_re=r"pancakeCall|uniswapV2Call|Call$",
+      outcome="b", public_only=True, gated_suppresses=True,
+      fn_re=r"pancakeCall|uniswapV2Call|Call$",
       need_any=(r"\.transfer\s*\(", r"\.call\s*\{",
                 r"\]\s*(\+|-)?="),
       forbid=(r"msg\.sender\s*==|require\s*\([^)]*msg\.sender",

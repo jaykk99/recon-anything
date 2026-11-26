@@ -34,7 +34,8 @@ FAMILY = "governance"
 
 SPECS = [
     S("timelock_delay_bypass", FAMILY, severity="high",
-      outcome="a", fn_re=r"queue|execute",
+      outcome="a", public_only=True, gated_suppresses=True,
+      fn_re=r"queue|execute",
       need_any=(r"eta", r"queuedTransactions|queueTransaction"),
       forbid=(r"minDelay|delay\s*\)|eta\s*>=\s*block\.timestamp"
               r"|block\.timestamp\s*>=\s*[\w.]*eta|"
@@ -108,7 +109,8 @@ SPECS = [
              "same tokens vote twice - once through each "
              "delegatee."),
     S("governance_cancel_privilege_abuse", FAMILY,
-      severity="medium", outcome="c", fn_re=r"cancel",
+      severity="medium", outcome="c", public_only=True,
+      fn_re=r"cancel",
       need_any=(r"canceled\s*=\s*true|cancelled\s*=\s*true",
                 r"\.canceled\s*=|state\s*="),
       gated_suppresses=True,

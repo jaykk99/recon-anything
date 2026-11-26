@@ -39,7 +39,8 @@ FAMILY = "proxy"
 
 SPECS = [
     S("proxy_implementation_uninitialized", FAMILY,
-      severity="high", outcome="c", fn_re=r"^initialize$|^init$",
+      severity="high", outcome="c", public_only=True,
+      gated_suppresses=True, fn_re=r"^initialize$|^init$",
       contract_need=(r"implementation|delegatecall|proxy",),
       contract_forbid=(r"_disableInitializers",),
       need_any=(r"\]\s*(\+|-)?=", r"\w+\s*=\s*msg\.sender",
@@ -129,6 +130,7 @@ SPECS = [
              "prevent."),
     S("proxy_deterministic_deployment_collision", FAMILY,
       severity="medium", outcome="a",
+      public_only=True, gated_suppresses=True,
       fn_re=r"deploy|create",
       need_any=(r"create2", r"\{\s*salt\s*:"),
       forbid=(r"msg\.sender",),

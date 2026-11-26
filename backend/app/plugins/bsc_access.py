@@ -98,7 +98,7 @@ SPECS = [
              "unlimited times - the signer signs once, the "
              "bearer replays forever."),
     S("access_control_unprotected_initializer", FAMILY,
-      severity="high", outcome="c",
+      severity="high", outcome="c", public_only=True,
       fn_re=r"^initialize$|^init$|^setup$",
       contract_forbid=(r"delegatecall",),
       need_any=(r"\]\s*(\+|-)?=", r"owner\s*=", r"\w+\s*=\s*"

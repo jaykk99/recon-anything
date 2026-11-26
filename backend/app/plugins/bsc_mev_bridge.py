@@ -58,7 +58,8 @@ SPECS = [
              "for a sandwich (frontrun + backrun) on BNB "
              "Chain's public mempool."),
     S("bridge_deposit_event_spoofing", FAMILY, severity="high",
-      outcome="a", fn_re=r"unlock|release|claim|mint|deposit",
+      outcome="a", public_only=True, gated_suppresses=True,
+      fn_re=r"unlock|release|claim|mint|deposit",
       contract_need=(r"bridge|Bridge",),
       need_any=(r"_mint\s*\(", r"\.transfer\s*\(",
                 r"call\{value"),
@@ -73,6 +74,7 @@ SPECS = [
              "credited for it."),
     S("bridge_validator_quorum_manipulation", FAMILY,
       severity="high", outcome="a",
+      public_only=True, gated_suppresses=True,
       fn_re=r"execute|processMessage|submit|verify",
       need=(r"ecrecover",),
       need_any=(r"count\s*\+=|count\s*\+\+|signatures\.length",
@@ -101,6 +103,7 @@ SPECS = [
              "instant unbacked supply."),
     S("bridge_message_payload_injection", FAMILY,
       severity="high", outcome="b", custom="arbitrary_call",
+      public_only=True, gated_suppresses=True,
       fn_re=r"executeMessage|processMessage|receiveMessage|"
             r"handleMessage",
       contract_need=(r"bridge|Bridge|message",),
@@ -125,6 +128,7 @@ SPECS = [
              "other path."),
     S("bridge_withdrawer_identity_spoof", FAMILY,
       severity="high", outcome="a",
+      public_only=True, gated_suppresses=True,
       fn_re=r"withdraw|release|unlock",
       need=(r"payable\s*\(\s*(to|recipient|_to|receiver)\s*\)|"
             r"transfer\s*\(\s*(to|recipient|_to|receiver)\s*,|"
@@ -141,9 +145,9 @@ SPECS = [
              "the payee, so a watcher can redirect other "
              "users' releases to themselves."),
     S("bridge_emergency_pause_lockup", FAMILY, severity="medium",
-      outcome="a", fn_re=r"^pause$|pause",
+      outcome="a", public_only=True, gated_suppresses=True,
+      fn_re=r"^pause$|pause",
       need=(r"paused\s*=\s*true|_pause\s*\(",),
-      gated_suppresses=True,
       detail="Emergency pause lockup: pause() flips the "
              "paused state with NO access gate while user "
              "funds exit through whenNotPaused paths - any "
@@ -151,7 +155,8 @@ SPECS = [
              "contract at any time, for as long as they keep "
              "re-pausing after an unpause."),
     S("mev_arbitrary_liquidation_frontrun", FAMILY,
-      severity="high", outcome="a", fn_re=r"liquidat",
+      severity="high", outcome="a", public_only=True,
+      gated_suppresses=True, fn_re=r"liquidat",
       need=(r"collateral",),
       need_any=(r"price|rate|discount"),
       forbid=(r"getAccountLiquidity|healthFactor|oracle|"
@@ -165,7 +170,8 @@ SPECS = [
              "any position - healthy or not - at terms they "
              "dictate."),
     S("bridge_native_gas_drain", FAMILY, severity="medium",
-      outcome="a", fn_re=r"refund|claimGas|processMessage|relay",
+      outcome="a", public_only=True, gated_suppresses=True,
+      fn_re=r"refund|claimGas|processMessage|relay",
       need_any=(r"msg\.sender\.transfer\s*\(",
                 r"payable\s*\(\s*msg\.sender\s*\)\.transfer",
                 r"msg\.sender\.call\{value"),

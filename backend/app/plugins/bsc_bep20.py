@@ -47,7 +47,8 @@ SPECS = [
              "transfer (BNB Chain fee tokens are the classic "
              "carrier of this bug)."),
     S("bep20_blacklist_authority_check", FAMILY, severity="high",
-      outcome="b", fn_re=r"blacklist|black_list|botlist|blocklist",
+      outcome="b", public_only=True,
+      fn_re=r"blacklist|black_list|botlist|blocklist",
       need=(r"(?i)blacklist|black_list|blocklist|isBot",
             r"\]\s*=\s*true|\]\s*=\s*1\b|push\s*\("),
       gated_suppresses=True,

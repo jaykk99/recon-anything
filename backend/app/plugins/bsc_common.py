@@ -117,6 +117,12 @@ class DetectorSpec:
     contract_need: Tuple[str, ...] = ()
     contract_need_any: Tuple[str, ...] = ()
     contract_forbid: Tuple[str, ...] = ()
+    # Public-surface discipline: a spec that claims a stranger can
+    # trigger the bug MUST set both flags, so the hole is one a live
+    # public call from an unfunded caller can prove. That drops
+    # internal/private helpers and access-gated entry points from the
+    # check. Detectors that are deliberately about privileged code
+    # (owner-abuse lanes) opt out explicitly.
     gated_suppresses: bool = False
     include_view: bool = False
     public_only: bool = False
@@ -579,6 +585,9 @@ def _custom_arbitrary_call(src, spec, compiler, contract_name):
     out = []
     for fn in fns:
         if re.search(r"\b(view|pure)\b", fn["signature"]):
+            continue
+        if spec.public_only and not re.search(
+                r"\b(public|external)\b", fn["signature"]):
             continue
         if spec.fn_re and not re.search(spec.fn_re, fn["name"],
                                         re.I):
