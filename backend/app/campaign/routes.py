@@ -17,7 +17,10 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import render, resume_campaign, run_campaign
+from .evidence import EvidenceRecorder, to_har
+from .llm_planner import default_llm
 from .policy import build_scope
+from .retest import retest_finding
 from .store import CampaignStore
 
 router = APIRouter(tags=["campaigns"])
@@ -37,6 +40,7 @@ class CampaignStartIn(BaseModel):
     max_requests: int = 60
     max_intents: int = 24
     max_rounds: int = 3
+    max_parallel: int = 3
     max_seconds: float = 120.0
     per_host_rps: float = 2.0
 
@@ -44,6 +48,10 @@ class CampaignStartIn(BaseModel):
 class ApproveIn(BaseModel):
     intent_key: str = ""
     approve_all: bool = False
+
+
+class RetestIn(BaseModel):
+    finding_id: str = ""
 
 
 class ExploitScanIn(BaseModel):
@@ -97,17 +105,21 @@ def _placeholder(campaign_id: str, objective: str, scope) -> Dict[str, Any]:
 def _start_thread(campaign_id: str, objective: str, scope, seeds,
                   findings, approved=()) -> None:
     def work() -> None:
+        recorder = EvidenceRecorder()
         try:
             result = run_campaign(objective, scope, seeds=seeds,
                                   findings=findings, campaign_id=campaign_id,
-                                  approved=approved)
+                                  approved=approved, llm=default_llm(),
+                                  evidence=recorder)
         except Exception as exc:  # never leave a "running" ghost
             data = STORE.load(campaign_id) or {"id": campaign_id}
             data.update(status="failed", updated=time.time(),
                         reason=f"campaign failed: {str(exc)[:400]}")
             STORE.save(data)
+            STORE.save_evidence(campaign_id, recorder)
             return
         STORE.save(result)
+        STORE.save_evidence(campaign_id, recorder)
 
     threading.Thread(target=work, daemon=True, name=f"campaign-{campaign_id}").start()
 
@@ -130,6 +142,7 @@ def start_campaign(body: CampaignStartIn, request: Request) -> Dict[str, Any]:
         allow_auth_replay=body.allow_auth_replay,
         exclude=body.exclude, max_requests=body.max_requests,
         max_intents=body.max_intents, max_rounds=body.max_rounds,
+        max_parallel=body.max_parallel,
         max_seconds=body.max_seconds, per_host_rps=body.per_host_rps,
     )
     if not scope.roots:
@@ -191,12 +204,37 @@ def approve_campaign(campaign_id: str, body: ApproveIn) -> Dict[str, Any]:
     STORE.save(data)
 
     def work() -> None:
-        resumed = resume_campaign(data, approve=keys)
+        resumed = resume_campaign(data, approve=keys, llm=default_llm())
         STORE.save(resumed)
 
     threading.Thread(target=work, daemon=True,
                      name=f"campaign-resume-{campaign_id}").start()
     return {"id": campaign_id, "status": "running", "approved": keys}
+
+
+@router.get("/api/campaigns/{campaign_id}/evidence.har")
+def campaign_evidence(campaign_id: str) -> Dict[str, Any]:
+    if STORE.load(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="unknown campaign")
+    entries = STORE.load_evidence(campaign_id)
+    if not entries:
+        raise HTTPException(status_code=404, detail="no evidence archive")
+    return to_har(entries, campaign_id=campaign_id)
+
+
+@router.post("/api/campaigns/{campaign_id}/retest")
+def retest_campaign(campaign_id: str, body: RetestIn) -> Dict[str, Any]:
+    data = STORE.load(campaign_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="unknown campaign")
+    if not body.finding_id:
+        raise HTTPException(status_code=400, detail="finding_id is required")
+    try:
+        record = retest_finding(data, body.finding_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    STORE.save(data)
+    return record
 
 
 # -- standalone exploit probe pack -----------------------------------------

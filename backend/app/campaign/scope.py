@@ -77,6 +77,7 @@ class Scope:
     max_requests: int = 80
     max_intents: int = 30
     max_rounds: int = 4
+    max_parallel: int = 3
     max_seconds: float = 90.0
     per_host_rps: float = 1.0
 
@@ -85,6 +86,7 @@ class Scope:
             r.strip() for r in self.roots if r and r.strip()))
         self.exclude = tuple(dict.fromkeys(
             r.strip() for r in self.exclude if r and r.strip()))
+        self.max_parallel = max(1, min(8, int(self.max_parallel or 1)))
 
     # -- target authorization -------------------------------------------
     def allows(self, target: str) -> Tuple[bool, str]:
@@ -137,6 +139,7 @@ class Scope:
             "max_requests": self.max_requests,
             "max_intents": self.max_intents,
             "max_rounds": self.max_rounds,
+            "max_parallel": self.max_parallel,
             "max_seconds": self.max_seconds,
             "per_host_rps": self.per_host_rps,
         }
@@ -152,6 +155,7 @@ class Scope:
             max_requests=int(d.get("max_requests") or 80),
             max_intents=int(d.get("max_intents") or 30),
             max_rounds=int(d.get("max_rounds") or 4),
+            max_parallel=int(d.get("max_parallel") or 3),
             max_seconds=float(d.get("max_seconds") or 90),
             per_host_rps=float(d.get("per_host_rps") or 1.0),
         )

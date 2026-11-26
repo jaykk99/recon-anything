@@ -43,6 +43,34 @@ class CampaignStore:
         tmp.replace(path)
         return path
 
+    def evidence_path(self, campaign_id: str) -> Path:
+        self._path(campaign_id)  # validate the id before composing a path
+        return self.root / f"{campaign_id}.evidence.jsonl"
+
+    def save_evidence(self, campaign_id: str, recorder: Any) -> Path:
+        return recorder.save(self.evidence_path(campaign_id))
+
+    def load_evidence(self, campaign_id: str) -> List[Dict[str, Any]]:
+        try:
+            path = self.evidence_path(campaign_id)
+        except ValueError:
+            return []
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        try:
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        except OSError:
+            return []
+        return rows
+
     def load(self, campaign_id: str) -> Optional[Dict[str, Any]]:
         try:
             path = self._path(campaign_id)

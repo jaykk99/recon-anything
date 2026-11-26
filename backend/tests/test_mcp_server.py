@@ -64,7 +64,7 @@ EXPECTED_TOOLS = {
     # v2.4: autonomous campaigns (ARTEX-shaped)
     "recon_campaign_start", "recon_campaign_status",
     "recon_campaign_approve", "recon_campaign_list",
-    "recon_exploit_scan",
+    "recon_campaign_retest", "recon_exploit_scan",
 }
 
 

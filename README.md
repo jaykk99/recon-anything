@@ -122,7 +122,8 @@ curl -s "$API/api/campaigns/<id>/report"            # Markdown handoff
 
 MCP: `recon_campaign_start` (dry-run unless `allow_active=true`),
 `recon_campaign_status`, `recon_campaign_approve`,
-`recon_campaign_list`, plus `recon_exploit_scan` for a single target.
+`recon_campaign_list`, `recon_campaign_retest`, plus
+`recon_exploit_scan` for a single target.
 
 ### What the loop actually does
 
@@ -162,6 +163,30 @@ one-shot scanner was missing, all GET/OPTIONS and all receipt-bearing:
 one target and returns only what it proved, each with
 `request`/`status`/`body_sha256`/`body_excerpt`. A 404, a redirect to a
 login page, or a `401` is a clean negative, never a finding.
+
+### Engine-first upgrades
+
+- **Model-assisted planning (optional).** Set `RECON_CAMPAIGN_LLM_URL`
+  (an OpenAI-compatible chat-completions endpoint),
+  `RECON_CAMPAIGN_LLM_MODEL` and `RECON_CAMPAIGN_LLM_API_KEY`. Every
+  proposed intent is validated against the action catalog, campaign
+  scope, attempt ledger and approval rules; invalid proposals are
+  dropped with a reason, and a model/transport/JSON failure falls back
+  to the deterministic plan. With no model configured, planning is
+  exactly as before.
+- **Parallel workers.** `max_parallel` (default 3, clamped 1-8) overlaps
+  the I/O inside workers. Budget spending, per-host pacing and graph
+  write-back stay on the caller's thread, so the cap and the attempt
+  order remain deterministic.
+- **Complete evidence.** Every exchange is archived to
+  `data/campaigns/<id>.evidence.jsonl` with authorization/cookie headers
+  redacted, a 64 KiB body cap and a sha256 per body;
+  `GET /api/campaigns/<id>/evidence.har` exports HAR 1.2. No proxy and no
+  certificate authority are involved.
+- **Retest.** `POST /api/campaigns/<id>/retest` (MCP
+  `recon_campaign_retest`) re-runs the check behind a finding and records
+  `reproducible`, `fixed` or `unconfirmed`. A transport failure is never
+  `fixed`, and an impact retest still needs the original approval.
 
 Boundary: a campaign is still detection and read-only confirmation. It
 never guesses credentials, never replays an identity, never sends a

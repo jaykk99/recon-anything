@@ -18,15 +18,19 @@ read-only query, impact enumeration needs an explicit approval, and the
 report labels each finding with the exact request that decided it.
 """
 from .engine import preview, resume_campaign, run_campaign
+from .evidence import EvidenceRecorder, to_har
 from .graph import Graph
+from .llm_planner import default_llm, propose_intents
 from .models import Attempt, Budget, Intent
 from .planner import goal_proven, goals_for, next_intents
 from .report import render
+from .retest import retest_finding
 from .scope import Scope
 from .store import CampaignStore
 
 __all__ = [
-    "Attempt", "Budget", "CampaignStore", "Graph", "Intent", "Scope",
-    "goal_proven", "goals_for", "next_intents", "preview", "render",
-    "resume_campaign", "run_campaign",
+    "Attempt", "Budget", "CampaignStore", "EvidenceRecorder", "Graph",
+    "Intent", "Scope", "default_llm", "goal_proven", "goals_for",
+    "next_intents", "preview", "propose_intents", "render",
+    "resume_campaign", "retest_finding", "run_campaign", "to_har",
 ]

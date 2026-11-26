@@ -15,19 +15,27 @@ The loop ends when a goal is proven by evidence, the scope has nothing
 left to try, a human approval is outstanding, or the budget is spent -
 and the result says which one it was. It never ends ambiguously.
 
-Determinism: no wall-clock or randomness enters the plan. The clock is
-injectable, which is also how tests exercise the time budget.
+Determinism: without a model, no wall-clock or randomness enters the
+plan; the clock is injectable, which is also how tests exercise the
+time budget. With a model configured, its proposals are validated but
+not reproducible, so the deterministic plan remains the fallback.
+
+Planning and graph writes stay on the calling thread; ``max_parallel``
+only overlaps the I/O inside workers, which is what keeps the budget
+and the write-back order deterministic.
 """
 from __future__ import annotations
 
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
-from . import planner
+from . import llm_planner, planner
+from .evidence import EvidenceRecorder
 from .graph import Graph, import_findings
 from .models import Attempt, Budget, Intent
-from .scope import Scope
+from .scope import Scope, host_of
 from .workers import DEFAULT_WORKERS, WorkerContext
 
 
@@ -60,6 +68,8 @@ def run_campaign(objective: str, scope: Scope, *,
                  workers: Optional[Dict[str, Callable]] = None,
                  approved: Iterable[str] = (),
                  fetch: Optional[Callable] = None,
+                 llm: Optional[Callable[[str], str]] = None,
+                 evidence: Optional[EvidenceRecorder] = None,
                  campaign_id: Optional[str] = None,
                  created: Optional[float] = None,
                  spent_requests: int = 0,
@@ -81,6 +91,8 @@ def run_campaign(objective: str, scope: Scope, *,
     if fetch is None:
         from ..exploit_probes import default_fetch
         fetch = default_fetch
+    if evidence is not None:
+        fetch = evidence.wrap(fetch)
 
     budget = Budget(max_requests=scope.max_requests,
                     max_intents=scope.max_intents,
@@ -93,6 +105,7 @@ def run_campaign(objective: str, scope: Scope, *,
     awaiting: Dict[str, Dict[str, Any]] = {}
     executed = 0
     stop_reason = ""
+    llm_rounds: List[Dict[str, Any]] = []
 
     for round_no in range(max(1, int(scope.max_rounds))):
         if budget.exhausted(clock()):
@@ -109,12 +122,21 @@ def run_campaign(objective: str, scope: Scope, *,
         intents = planner.next_intents(
             graph, scope, goals,
             pending=set(awaiting.keys()))
+        if llm is not None:
+            proposed, llm_meta = llm_planner.propose_intents(
+                llm, graph, scope, goals,
+                limit=planner.MAX_INTENTS_DEFAULT,
+                pending=set(awaiting.keys()))
+            llm_rounds.append(llm_meta)
+            if proposed:
+                intents = llm_planner.merge(
+                    intents, proposed, limit=planner.MAX_INTENTS_DEFAULT)
         if not intents:
             stop_reason = ("awaiting approval" if awaiting
                            else "no untried in-scope actions remain")
             break
 
-        round_progress = False
+        runnable: List[Intent] = []
         for intent in intents:
             if budget.exhausted(clock()):
                 stop_reason = budget.stop_reason or "budget exhausted"
@@ -127,13 +149,10 @@ def run_campaign(objective: str, scope: Scope, *,
                 if intent.key not in awaiting:
                     awaiting[intent.key] = intent.to_dict()
                 continue
-            budget.spend(intent.cost, clock())
-            attempt = _execute(intent, work, ctx)
-            graph.record_attempt(attempt)
-            executed += 1
-            round_progress = True
-            if scope.per_host_rps and intent.kind in ("recon", "probe", "impact"):
-                sleep(1.0 / max(0.1, float(scope.per_host_rps)))
+            runnable.append(intent)
+        ran = _run_wave(runnable, work, ctx, scope, graph, clock, sleep)
+        executed += ran
+        round_progress = ran > 0
 
         if not round_progress and not awaiting:
             stop_reason = "no untried in-scope actions remain"
@@ -183,6 +202,8 @@ def run_campaign(objective: str, scope: Scope, *,
         "approved": sorted(approvals),
         "refused_seeds": refused,
         "executed": executed,
+        "evidence": evidence.summary() if evidence is not None else {},
+        "llm": {"enabled": llm is not None, "rounds": llm_rounds},
         "next_actions": planner.next_actions(graph, scope, goals),
         "graph": graph.to_snapshot(),
         "boundary": (
@@ -214,6 +235,59 @@ def _execute(intent: Intent, workers: Dict[str, Callable],
     return attempt
 
 
+def _run_wave(intents: Sequence[Intent], workers: Dict[str, Callable],
+              ctx: WorkerContext, scope: Scope, graph: Graph,
+              clock: Callable[[], float],
+              sleep: Callable[[float], None]) -> int:
+    """Execute one round's intents, up to ``scope.max_parallel`` at once.
+
+    Budget is spent and pacing is applied on the calling thread before a
+    job is dispatched, and attempts are recorded in submission order, so
+    concurrency cannot outspend the cap or reorder the graph.
+    """
+    if not intents:
+        return 0
+    parallel = max(1, min(8, int(scope.max_parallel or 1)))
+    last_by_host: Dict[str, float] = {}
+
+    def pace(intent: Intent) -> None:
+        if not scope.per_host_rps:
+            return
+        host = host_of(intent.target)
+        last = last_by_host.get(host)
+        if last is not None:
+            wait = (1.0 / max(0.1, float(scope.per_host_rps))) \
+                - (clock() - last)
+            if wait > 0:
+                sleep(wait)
+        last_by_host[host] = clock()
+
+    if parallel == 1:
+        ran = 0
+        for intent in intents:
+            if ctx.budget.exhausted(clock()):
+                break
+            pace(intent)
+            ctx.budget.spend(intent.cost, clock())
+            graph.record_attempt(_execute(intent, workers, ctx))
+            ran += 1
+        return ran
+
+    with ThreadPoolExecutor(max_workers=parallel,
+                            thread_name_prefix="campaign") as pool:
+        futures = []
+        for intent in intents:
+            if ctx.budget.exhausted(clock()):
+                break
+            pace(intent)
+            ctx.budget.spend(intent.cost, clock())
+            futures.append((intent, pool.submit(_execute, intent,
+                                                workers, ctx)))
+        for _intent, future in futures:
+            graph.record_attempt(future.result())
+        return len(futures)
+
+
 def _record_blocked(graph: Graph, intent: Intent, reason: str) -> None:
     graph.record_attempt(Attempt(
         key=intent.key, kind=intent.kind, action=intent.action,
@@ -223,6 +297,8 @@ def _record_blocked(graph: Graph, intent: Intent, reason: str) -> None:
 
 def resume_campaign(result: Dict[str, Any], approve: Iterable[str] = (), *,
                     fetch: Optional[Callable] = None,
+                    llm: Optional[Callable[[str], str]] = None,
+                    evidence: Optional[EvidenceRecorder] = None,
                     workers: Optional[Dict[str, Callable]] = None,
                     clock: Callable[[], float] = time.time,
                     sleep: Callable[[float], None] = time.sleep,
@@ -242,6 +318,8 @@ def resume_campaign(result: Dict[str, Any], approve: Iterable[str] = (), *,
         graph=graph,
         approved=approved,
         fetch=fetch,
+        llm=llm,
+        evidence=evidence,
         workers=workers,
         campaign_id=result.get("id"),
         created=result.get("created"),
@@ -249,6 +327,10 @@ def resume_campaign(result: Dict[str, Any], approve: Iterable[str] = (), *,
         spent_intents=int(prior_budget.get("intents_used") or 0),
         clock=clock, sleep=sleep, log=log,
     )
+    if result.get("retests"):
+        resumed["retests"] = list(result["retests"])
+    if not resumed.get("evidence") and result.get("evidence"):
+        resumed["evidence"] = dict(result["evidence"])
     return resumed
 
 

@@ -36,6 +36,18 @@ def render(result: Dict[str, Any]) -> str:
         f"{budget.get('max_requests')} requests, "
         f"{budget.get('intents_used', 0)}/{budget.get('max_intents')} intents, "
         f"{budget.get('elapsed_s', 0)}s of {budget.get('max_seconds')}s")
+    ev = result.get("evidence") or {}
+    if ev.get("entries"):
+        add(f"- Evidence archive: {ev['entries']} exchange(s), "
+            f"{ev.get('bytes', 0)} bytes captured (body cap "
+            f"{ev.get('body_cap', 0)} bytes)")
+    llm = result.get("llm") or {}
+    if llm.get("enabled"):
+        rounds = llm.get("rounds") or []
+        accepted = sum(int(r.get("accepted") or 0) for r in rounds)
+        dropped = sum(len(r.get("dropped") or []) for r in rounds)
+        add(f"- Planner: model-assisted ({accepted} accepted, "
+            f"{dropped} dropped by validation)")
     add("")
 
     summary = result.get("summary") or {}
@@ -89,6 +101,15 @@ def render(result: Dict[str, Any]) -> str:
             excerpt = (ev.get("body_excerpt") or "").strip().replace("\n", " ")
             if excerpt:
                 add(f"- Captured: `{excerpt[:240]}`")
+        add("")
+
+    retests = result.get("retests") or []
+    if retests:
+        add("## Retests")
+        add("")
+        for r in retests:
+            add(f"- `{r.get('finding_id', '')}` — **{r.get('verdict', '?')}** "
+                f"({r.get('reason', '')})")
         add("")
 
     add("## Evidence receipts")

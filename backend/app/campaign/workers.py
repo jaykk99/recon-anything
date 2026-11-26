@@ -200,6 +200,11 @@ def worker_probe(intent, ctx: WorkerContext) -> Attempt:
         if res.evidence:
             attempt.evidence.append(res.evidence)
         attempt.assets.extend(res.assets)
+        if res.meta.get("transport_failed"):
+            attempt.status = "failed"
+            attempt.error = str(res.meta.get("transport_error")
+                                or "target did not answer")[:300]
+            return attempt
         if res.works:
             attempt.findings.append(finding(
                 action=intent.action, title=res.title or intent.action,
@@ -272,6 +277,11 @@ def worker_impact(intent, ctx: WorkerContext) -> Attempt:
     attempt.evidence.extend((res.get("meta") or {}).get("receipts") or [])
     if res.get("evidence"):
         attempt.evidence.append(res["evidence"])
+    if (res.get("meta") or {}).get("transport_failed"):
+        attempt.status = "failed"
+        attempt.error = str((res.get("meta") or {}).get("transport_error")
+                            or "target did not answer")[:300]
+        return attempt
     if not res.get("works"):
         return attempt
     items = res.get("items") or []
@@ -343,6 +353,10 @@ def worker_verify(intent, ctx: WorkerContext) -> Attempt:
         resp = _get(ctx, url)
         receipt = _receipt(resp, "object-storage bucket listing")
         attempt.evidence.append(receipt)
+        if resp.status is None:
+            attempt.status = "failed"
+            attempt.error = getattr(resp, "error", "") or "no response"
+            return attempt
         keys = re.findall(r"<Key>([^<]+)</Key>", getattr(resp, "text", "") or "")
         attempt.detail = (f"{getattr(resp, 'status', None)} bucket listing, "
                           f"{len(keys)} key(s)")

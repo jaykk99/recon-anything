@@ -2261,13 +2261,15 @@ def _campaign_public(result: Dict) -> Dict:
     return {k: result.get(k) for k in (
         "id", "objective", "status", "reason", "goals", "summary",
         "kill_chain", "pending_approval", "approved", "budget", "scope",
-        "refused_seeds", "next_actions")}
+        "refused_seeds", "next_actions", "evidence", "llm", "retests")}
 
 
 def _tool_campaign_start(args: Dict) -> Dict:
     """Start an autonomous campaign. Without allow_active=true it is a
     dry run: it returns the plan and sends zero requests."""
     from .campaign import preview, render, run_campaign
+    from .campaign.evidence import EvidenceRecorder
+    from .campaign.llm_planner import default_llm
     from .campaign.policy import build_scope
     from .campaign.store import CampaignStore
 
@@ -2291,12 +2293,17 @@ def _tool_campaign_start(args: Dict) -> Dict:
         max_requests=int(args.get("max_requests") or 40),
         max_intents=int(args.get("max_intents") or 16),
         max_rounds=int(args.get("max_rounds") or 3),
+        max_parallel=int(args.get("max_parallel") or 3),
         max_seconds=float(args.get("max_seconds") or 60),
     )
     if not scope.roots:
         raise ToolError(f"no in-scope targets: {refusals}")
-    result = run_campaign(objective, scope, seeds=targets)
-    CampaignStore().save(result)
+    recorder = EvidenceRecorder()
+    result = run_campaign(objective, scope, seeds=targets,
+                          llm=default_llm(), evidence=recorder)
+    store = CampaignStore()
+    store.save(result)
+    store.save_evidence(result["id"], recorder)
     out = _campaign_public(result)
     out["refusals"] = refusals
     out["report"] = render(result)[:8000]
@@ -2320,6 +2327,7 @@ def _tool_campaign_status(args: Dict) -> Dict:
 def _tool_campaign_approve(args: Dict) -> Dict:
     """Approve gated intents (impact enumeration) and resume the loop."""
     from .campaign import render, resume_campaign
+    from .campaign.llm_planner import default_llm
     from .campaign.store import CampaignStore
 
     store = CampaignStore()
@@ -2337,7 +2345,7 @@ def _tool_campaign_approve(args: Dict) -> Dict:
                         "approve_all=true)")
     for k in keys:
         data = store.approve(campaign_id, k)
-    result = resume_campaign(data or {}, approve=keys)
+    result = resume_campaign(data or {}, approve=keys, llm=default_llm())
     store.save(result)
     out = _campaign_public(result)
     out["approved_now"] = keys
@@ -2350,6 +2358,28 @@ def _tool_campaign_list(args: Dict) -> Dict:
 
     return {"campaigns": CampaignStore().list(
         int(args.get("limit") or 20))}
+
+
+def _tool_campaign_retest(args: Dict) -> Dict:
+    """Re-run the check behind a stored finding and record the verdict."""
+    from .campaign.retest import retest_finding
+    from .campaign.store import CampaignStore
+
+    store = CampaignStore()
+    campaign_id = str(args.get("campaign_id") or "")
+    data = store.load(campaign_id)
+    if not data:
+        raise ToolError(f"unknown campaign {campaign_id!r}")
+    finding_id = str(args.get("finding_id") or "")
+    if not finding_id:
+        raise ToolError("finding_id is required")
+    try:
+        record = retest_finding(data, finding_id)
+    except KeyError as exc:
+        raise ToolError(str(exc))
+    store.save(data)
+    return {"retest": record, "status": data.get("status"),
+            "summary": data.get("summary")}
 
 
 def _tool_exploit_scan(args: Dict) -> Dict:
@@ -3564,6 +3594,9 @@ TOOLS: List[Dict[str, Any]] = [
                 "max_requests": {"type": "integer", "default": 40},
                 "max_intents": {"type": "integer", "default": 16},
                 "max_rounds": {"type": "integer", "default": 3},
+                "max_parallel": {"type": "integer", "default": 3,
+                                 "description": "concurrent workers "
+                                                "(1-8)"},
                 "max_seconds": {"type": "number", "default": 60},
             },
             "required": ["targets"],
@@ -3610,6 +3643,23 @@ TOOLS: List[Dict[str, Any]] = [
             "properties": {"limit": {"type": "integer", "default": 20}},
         },
         "handler": _tool_campaign_list,
+    },
+    {
+        "name": "recon_campaign_retest",
+        "description": ("Re-run the check behind a stored finding and record "
+                        "a verdict: reproducible, fixed, or unconfirmed. "
+                        "A transport failure is unconfirmed, never fixed. "
+                        "Impact retests still need the original approval."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string"},
+                "finding_id": {"type": "string",
+                               "description": "id from the campaign graph"},
+            },
+            "required": ["campaign_id", "finding_id"],
+        },
+        "handler": _tool_campaign_retest,
     },
     {
         "name": "recon_exploit_scan",

@@ -13,9 +13,12 @@ Checks the ARTEX-shaped contract:
   * the budget stops the campaign, and
   * every confirmed finding ships the request that decided it.
 """
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,8 +28,11 @@ from app.campaign import (  # noqa: E402
     Attempt, CampaignStore, Graph, Scope, goals_for, next_intents, render,
     resume_campaign, run_campaign,
 )
+from app.campaign.evidence import EvidenceRecorder, to_har  # noqa: E402
 from app.campaign.graph import import_findings  # noqa: E402
+from app.campaign.llm_planner import propose_intents  # noqa: E402
 from app.campaign.models import finding  # noqa: E402
+from app.campaign.retest import retest_finding  # noqa: E402
 from app.exploit_probes import FetchResponse  # noqa: E402
 
 
@@ -275,6 +281,170 @@ def test_report_contains_kill_chain_and_receipts():
     assert "## Kill chain" in text
     assert "sha256" in text
     assert "Read-only by construction" in text
+
+
+# ---------------------------------------------------------------------------
+# Engine-first additions: parallel waves, evidence, model plan, retest
+# ---------------------------------------------------------------------------
+def test_parallel_waves_run_intents_concurrently():
+    from app.campaign import engine
+    from app.campaign.models import Budget, Intent
+    from app.campaign.workers import WorkerContext
+
+    barrier = threading.Barrier(2, timeout=1.0)
+
+    def fake_execute(intent, workers, ctx):
+        try:
+            barrier.wait()
+            return Attempt(key=intent.key, kind=intent.kind,
+                           action=intent.action, target=intent.target)
+        except threading.BrokenBarrierError:
+            return Attempt(key=intent.key, kind=intent.kind,
+                           action=intent.action, target=intent.target,
+                           status="failed", error="not concurrent")
+
+    original = engine._execute
+    engine._execute = fake_execute
+    try:
+        graph = Graph()
+        scope = _scope(max_parallel=2, max_requests=10, max_intents=10)
+        budget = Budget(max_requests=10, max_intents=10, max_seconds=30)
+        ctx = WorkerContext(scope=scope, budget=budget, graph=graph,
+                            fetch=lambda *a, **k: None)
+        intents = [
+            Intent(kind="recon", action="surface",
+                   target="https://a.lab.test"),
+            Intent(kind="recon", action="surface",
+                   target="https://b.lab.test"),
+        ]
+        ran = engine._run_wave(intents, {}, ctx, scope, graph,
+                               time.time, lambda _s: None)
+    finally:
+        engine._execute = original
+    assert ran == 2
+    attempts = list(graph.attempts.values())
+    assert len(attempts) == 2
+    assert all(a["status"] == "ok" for a in attempts), attempts
+
+
+def test_evidence_archive_redacts_and_exports_har():
+    rec = EvidenceRecorder()
+    resp = FetchResponse(
+        url="https://lab.test/private", status=200,
+        headers={"set-cookie": "sid=abc", "server": "lab",
+                 "content-type": "text/plain"},
+        text="hello")
+    rec.record("https://lab.test/private", resp,
+               {"method": "GET",
+                "headers": {"Authorization": "Bearer top-secret",
+                            "Accept": "*/*"}})
+    entry = rec.entries[0]
+    assert entry["request"]["headers"]["Authorization"] == "[redacted]"
+    assert entry["response"]["headers"]["set-cookie"] == "[redacted]"
+    assert entry["response"]["body"] == "hello"
+    assert len(entry["response"]["body_sha256"]) == 64
+
+    har = to_har(rec.entries, campaign_id="cmp_test")
+    har_entry = har["log"]["entries"][0]
+    assert har_entry["request"]["url"] == "https://lab.test/private"
+    assert har_entry["response"]["content"]["text"] == "hello"
+    assert har["log"]["creator"]["comment"] == "cmp_test"
+
+    fake = FakeTarget(DOCKER_ROUTES)
+    result = run_campaign("exposed docker console", _scope(),
+                          seeds=["https://lab.test"], fetch=fake,
+                          evidence=rec, sleep=lambda _s: None)
+    assert result["evidence"]["entries"] >= 1
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CampaignStore(Path(tmp))
+        store.save(result)
+        store.save_evidence(result["id"], rec)
+        rows = store.load_evidence(result["id"])
+        assert len(rows) == len(rec.entries)
+        assert store.load_evidence("../../etc/passwd") == []
+
+
+def test_llm_planner_validates_and_falls_back():
+    graph = _graph_with_host()
+    scope = _scope(allow_exploit_confirm=True)
+
+    def llm(_prompt):
+        return json.dumps({"intents": [
+            {"kind": "probe", "action": "docker-api",
+             "target": "https://lab.test"},
+            {"kind": "probe", "action": "metasploit",
+             "target": "https://lab.test"},
+            {"kind": "probe", "action": "docker-api",
+             "target": "https://evil.test"},
+            {"kind": "impact", "action": "enumerate:docker",
+             "target": "https://lab.test"},
+        ]})
+
+    intents, meta = propose_intents(llm, graph, scope, ["secrets"])
+    assert [i.action for i in intents] == ["docker-api", "enumerate:docker"]
+    assert intents[1].requires_approval is True
+    assert meta["accepted"] == 2 and len(meta["dropped"]) == 2
+
+    def broken(_prompt):
+        raise RuntimeError("model offline")
+
+    intents, meta = propose_intents(broken, graph, scope, ["secrets"])
+    assert intents == [] and "model offline" in meta["error"]
+
+    intents, meta = propose_intents(lambda _p: "not json", graph, scope,
+                                    ["secrets"])
+    assert intents == [] and "invalid JSON" in meta["error"]
+
+
+def test_campaign_reports_model_rounds():
+    fake = FakeTarget(DOCKER_ROUTES)
+    prompts = []
+
+    def llm(prompt):
+        prompts.append(prompt)
+        return json.dumps({"intents": [
+            {"kind": "probe", "action": "metasploit",
+             "target": "https://lab.test"}]})
+
+    result = run_campaign("find an exposed docker console",
+                          _scope(max_rounds=1), seeds=["https://lab.test"],
+                          fetch=fake, llm=llm, sleep=lambda _s: None)
+    assert prompts and "allowed_actions" in prompts[0]
+    assert result["llm"]["enabled"] is True
+    assert result["llm"]["rounds"][0]["accepted"] == 0
+    assert result["llm"]["rounds"][0]["dropped"]
+
+
+def test_retest_reproducible_then_fixed():
+    fake = FakeTarget(DOCKER_ROUTES)
+    result = run_campaign("find an exposed docker console", _scope(),
+                          seeds=["https://lab.test"], fetch=fake,
+                          sleep=lambda _s: None)
+    docker = next(f for f in result["graph"]["findings"].values()
+                  if "Docker" in f["title"])
+
+    rec = retest_finding(result, docker["id"], fetch=fake)
+    assert rec["verdict"] == "reproducible"
+    assert result["retests"][-1]["verdict"] == "reproducible"
+
+    closed = FakeTarget({"/": (200, {}, LAB_HTML),
+                         "/version": (401, {}, "unauthorized")})
+    rec = retest_finding(result, docker["id"], fetch=closed)
+    assert rec["verdict"] == "fixed"
+
+    def unreachable(_url, **_kw):
+        raise OSError("dns failure")
+
+    rec = retest_finding(result, docker["id"], fetch=unreachable)
+    assert rec["verdict"] == "unconfirmed", rec
+    assert "dns failure" in rec["reason"]
+
+    try:
+        retest_finding(result, "nope")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("unknown finding must raise")
 
 
 # ---------------------------------------------------------------------------
