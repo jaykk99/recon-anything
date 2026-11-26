@@ -24,6 +24,18 @@ export default function PricingPage() {
 
   async function buy(planId: string) {
     setMsg("");
+    // Buying needs a GitHub sign-in. Send a signed-out visitor to
+    // sign in instead of firing an order that can only fail — the
+    // old code surfaced the raw API error verbatim:
+    // `HTTP 401: {"detail":"sign in with GitHub required"}`.
+    if (me && !me.signed_in && !owner) {
+      if (me.github_enabled) {
+        window.location.href = "/api/auth/github";
+        return;
+      }
+      setMsg("Sign in with GitHub to buy a plan. GitHub sign-in opens soon.");
+      return;
+    }
     try {
       const d = await api<any>("/api/orders", {
         method: "POST",
@@ -35,7 +47,18 @@ export default function PricingPage() {
       }
       window.location.href = d.checkout_path || `/checkout?order=${d.order.id}`;
     } catch (e: any) {
-      setMsg(String(e?.message || e).slice(0, 200));
+      const raw = String(e?.message || e);
+      // A 401 here means the session lapsed mid-click: send them to
+      // sign in. Never dump the raw API error text to the page.
+      if (/^HTTP 401/.test(raw)) {
+        if (me?.github_enabled) {
+          window.location.href = "/api/auth/github";
+          return;
+        }
+        setMsg("Your sign-in expired. Sign in with GitHub, then try again.");
+        return;
+      }
+      setMsg("Checkout failed. Please try again.");
     }
   }
 
