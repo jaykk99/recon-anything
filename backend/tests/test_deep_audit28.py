@@ -28,7 +28,7 @@ by the VICTIM's), which is the hole from the boundedness
 angle; the new detector adds the authorization dimension the
 overdraw detector cannot express. That co-fire is asserted
 explicitly, not pretended silent. The registry discovers
-exactly 1495 plugins including all five.
+exactly 1500 plugins including all five.
 """
 import os
 import sys
@@ -79,10 +79,10 @@ def test_five_plugins_registered():
         assert pid in reg, f"{pid} missing from registry"
 
 
-def test_registry_count_1495():
+def test_registry_count_1500():
     reg = discover()
-    assert len(reg) == 1495, \
-        f"registry size {len(reg)}, expected 1495"
+    assert len(reg) == 1500, \
+        f"registry size {len(reg)}, expected 1500"
 
 
 def test_vuln_fires_candidate_with_evidence():

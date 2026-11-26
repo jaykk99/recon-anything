@@ -131,8 +131,8 @@ def keys_of(res):
 def test_registry_size_and_ids():
     from app.plugins.registry import discover
     reg = discover()
-    assert len(reg) == 1495, (
-        f"registry size {len(reg)}, expected 1495 "
+    assert len(reg) == 1500, (
+        f"registry size {len(reg)}, expected 1500 "
         f"(1339 master + 2 bytecode structural plugins)")
     for pid in IDS:
         assert pid in reg, pid
