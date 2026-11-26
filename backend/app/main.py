@@ -2884,3 +2884,10 @@ $('f').addEventListener('submit',run);
 # would be a circular import. -------------------------------------------
 from .agent.routes import router as _agent_router
 app.include_router(_agent_router, dependencies=[Depends(gate)])
+
+# --- autonomous campaigns (ARTEX-shaped planner/worker loop) ----------
+# Scope-gated, budget-capped, read-only. Mounted behind the same gate as
+# the rest of /api; a campaign may only touch the targets the caller
+# declared (see app/campaign/scope.py).
+from .campaign.routes import router as _campaign_router
+app.include_router(_campaign_router, dependencies=[Depends(gate)])

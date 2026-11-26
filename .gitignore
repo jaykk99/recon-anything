@@ -22,3 +22,6 @@ backend/app/breachwatch_cache.json
 # signatures.db is required by Mythril and must not be dropped by *.db above.
 !.venv-mythril/**/signatures.db
 .venv-mythril/**/__pycache__/
+
+# runtime campaign state
+data/campaigns/

@@ -2244,6 +2244,140 @@ def _tool_lineage(args: Dict) -> Dict:
     return report
 
 
+# -- v2.4: autonomous campaigns (ARTEX-shaped) -------------------------------
+
+def _campaign_targets(args: Dict) -> List[str]:
+    raw = args.get("targets")
+    if isinstance(raw, str):
+        raw = [raw]
+    out = [str(x).strip() for x in (raw or []) if str(x).strip()]
+    single = args.get("target") or args.get("base")
+    if single and str(single).strip() not in out:
+        out.append(str(single).strip())
+    return out
+
+
+def _campaign_public(result: Dict) -> Dict:
+    return {k: result.get(k) for k in (
+        "id", "objective", "status", "reason", "goals", "summary",
+        "kill_chain", "pending_approval", "approved", "budget", "scope",
+        "refused_seeds", "next_actions")}
+
+
+def _tool_campaign_start(args: Dict) -> Dict:
+    """Start an autonomous campaign. Without allow_active=true it is a
+    dry run: it returns the plan and sends zero requests."""
+    from .campaign import preview, render, run_campaign
+    from .campaign.policy import build_scope
+    from .campaign.store import CampaignStore
+
+    targets = _campaign_targets(args)
+    if not targets:
+        raise ToolError("targets (or target) is required")
+    objective = str(args.get("objective")
+                    or "find exposed secrets and access paths")
+    allow_active = _bool_arg(args, "allow_active", False)
+    allow_confirm = _bool_arg(args, "allow_exploit_confirm", False)
+    if not allow_active:
+        out = preview(objective, targets,
+                      allow_exploit_confirm=allow_confirm)
+        out["note"] = ("Dry run: zero requests sent. Pass allow_active=true "
+                       "to execute this plan against the declared targets.")
+        return out
+    scope, refusals = build_scope(
+        targets, allow_active=True,
+        allow_exploit_confirm=allow_confirm,
+        allow_auth_replay=_bool_arg(args, "allow_auth_replay", False),
+        max_requests=int(args.get("max_requests") or 40),
+        max_intents=int(args.get("max_intents") or 16),
+        max_rounds=int(args.get("max_rounds") or 3),
+        max_seconds=float(args.get("max_seconds") or 60),
+    )
+    if not scope.roots:
+        raise ToolError(f"no in-scope targets: {refusals}")
+    result = run_campaign(objective, scope, seeds=targets)
+    CampaignStore().save(result)
+    out = _campaign_public(result)
+    out["refusals"] = refusals
+    out["report"] = render(result)[:8000]
+    return out
+
+
+def _tool_campaign_status(args: Dict) -> Dict:
+    from .campaign.store import CampaignStore
+
+    campaign_id = str(args.get("campaign_id") or "")
+    data = CampaignStore().load(campaign_id)
+    if not data:
+        raise ToolError(f"unknown campaign {campaign_id!r}")
+    out = _campaign_public(data)
+    if _bool_arg(args, "include_findings", False):
+        out["findings"] = list(
+            ((data.get("graph") or {}).get("findings") or {}).values())
+    return out
+
+
+def _tool_campaign_approve(args: Dict) -> Dict:
+    """Approve gated intents (impact enumeration) and resume the loop."""
+    from .campaign import render, resume_campaign
+    from .campaign.store import CampaignStore
+
+    store = CampaignStore()
+    campaign_id = str(args.get("campaign_id") or "")
+    data = store.load(campaign_id)
+    if not data:
+        raise ToolError(f"unknown campaign {campaign_id!r}")
+    pending = [p.get("key") for p in data.get("pending_approval") or []
+               if p.get("key")]
+    key = str(args.get("intent_key") or "")
+    keys = pending if _bool_arg(args, "approve_all", False) \
+        else ([key] if key else [])
+    if not keys:
+        raise ToolError("nothing to approve (pass intent_key or "
+                        "approve_all=true)")
+    for k in keys:
+        data = store.approve(campaign_id, k)
+    result = resume_campaign(data or {}, approve=keys)
+    store.save(result)
+    out = _campaign_public(result)
+    out["approved_now"] = keys
+    out["report"] = render(result)[:8000]
+    return out
+
+
+def _tool_campaign_list(args: Dict) -> Dict:
+    from .campaign.store import CampaignStore
+
+    return {"campaigns": CampaignStore().list(
+        int(args.get("limit") or 20))}
+
+
+def _tool_exploit_scan(args: Dict) -> Dict:
+    """Read-only exploit-confirmation probe pack against one target."""
+    from .campaign.policy import build_scope
+    from .exploit_probes import PROBES, scan_pack
+
+    targets = _campaign_targets(args)
+    if not targets:
+        raise ToolError("base (or target) is required")
+    base = targets[0]
+    scope, refusals = build_scope([base], allow_active=True,
+                                  max_requests=60)
+    ok, reason = scope.allows(base)
+    if not ok:
+        raise ToolError(f"{reason}; refusals: {refusals}")
+    probes = args.get("probes")
+    if isinstance(probes, str):
+        probes = [p.strip() for p in probes.split(",") if p.strip()]
+    unknown = [p for p in (probes or []) if p not in PROBES]
+    if unknown:
+        raise ToolError(f"unknown probes: {unknown}")
+    import time as _time
+    out = scan_pack(base, probes or None, pace=_time.sleep, pace_s=0.5)
+    out["scope"] = scope.to_dict()
+    return out
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "recon_health",
@@ -3392,6 +3526,115 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
         "handler": _tool_lineage,
+    },
+    {
+        "name": "recon_campaign_start",
+        "description": ("Start an autonomous planner/worker campaign "
+                        "(scope-gated, budget-capped, with a dual asset + "
+                        "exploration graph). dry by default: without "
+                        "allow_active=true it returns the plan and sends "
+                        "zero requests. With it, runs read-only recon and "
+                        "exploit-confirmation probes on the declared "
+                        "targets; impact enumeration still needs an "
+                        "explicit approval."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "objective": {"type": "string",
+                              "description": "natural-language goal, e.g. "
+                                             "'find exposed secrets and "
+                                             "unauthenticated consoles'"},
+                "targets": {"type": "array",
+                            "items": {"type": "string"},
+                            "description": "hosts or URLs; these become "
+                                           "the campaign's authorized scope"},
+                "target": {"type": "string",
+                           "description": "single-target shorthand"},
+                "allow_active": {"type": "boolean", "default": False,
+                                 "description": "execute the plan "
+                                                "(read-only requests)"},
+                "allow_exploit_confirm": {"type": "boolean",
+                                          "default": False,
+                                          "description": "allow read-only "
+                                                         "enumeration of an "
+                                                         "exposed console "
+                                                         "(still approval-"
+                                                         "gated)"},
+                "allow_auth_replay": {"type": "boolean", "default": False},
+                "max_requests": {"type": "integer", "default": 40},
+                "max_intents": {"type": "integer", "default": 16},
+                "max_rounds": {"type": "integer", "default": 3},
+                "max_seconds": {"type": "number", "default": 60},
+            },
+            "required": ["targets"],
+        },
+        "handler": _tool_campaign_start,
+    },
+    {
+        "name": "recon_campaign_status",
+        "description": ("A campaign's state: status, goal proof, kill "
+                        "chain, budget, pending approvals, and "
+                        "optionally its findings."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string"},
+                "include_findings": {"type": "boolean", "default": False},
+            },
+            "required": ["campaign_id"],
+        },
+        "handler": _tool_campaign_status,
+    },
+    {
+        "name": "recon_campaign_approve",
+        "description": ("Approve one gated intent (or approve_all) and "
+                        "resume the campaign. The graph and spent budget "
+                        "carry forward, so finished work is not repeated."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string"},
+                "intent_key": {"type": "string",
+                               "description": "key from pending_approval"},
+                "approve_all": {"type": "boolean", "default": False},
+            },
+            "required": ["campaign_id"],
+        },
+        "handler": _tool_campaign_approve,
+    },
+    {
+        "name": "recon_campaign_list",
+        "description": "List stored campaigns (id, objective, status).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 20}},
+        },
+        "handler": _tool_campaign_list,
+    },
+    {
+        "name": "recon_exploit_scan",
+        "description": ("Run the read-only exploit-confirmation probe pack "
+                        "against one authorized target: unauthenticated "
+                        "Docker/Kubernetes/Jupyter/Jenkins/CouchDB/"
+                        "Elasticsearch/MinIO/RabbitMQ/Grafana/Prometheus, "
+                        "public API descriptions, anonymous GraphQL, "
+                        "object-storage listings, injection differentials. "
+                        "GET/OPTIONS only; every confirmed result carries "
+                        "the request/status/body-hash receipt that proved "
+                        "it. Nothing is modified."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "base": {"type": "string",
+                         "description": "target URL, e.g. "
+                                        "https://host.example"},
+                "probes": {"type": "array",
+                           "items": {"type": "string"},
+                           "description": "optional probe id subset"},
+            },
+            "required": ["base"],
+        },
+        "handler": _tool_exploit_scan,
     },
 ]
 

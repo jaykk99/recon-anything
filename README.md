@@ -97,6 +97,78 @@ no MCP tools. The SANDBOX/LIVE mode gate still applies to scan
 starts, and `recon_test_vulns` defaults to `dry_run=true` (zero
 requests sent).
 
+## Autonomous campaigns (ARTEX-shaped planner/worker loop)
+
+`backend/app/campaign/` is the autonomous lane. Give it an objective
+and a target list; it plans intents over a dual graph, executes them
+with capped workers, writes the results back, and replans until a goal
+is **proven by evidence**, an approval is outstanding, or the budget
+is spent. Same shape as ARTEX and friends - planner, intents, workers,
+write-back, replan - with the one difference that matters here: every
+worker action is read-only, and every confirmed finding carries the
+exact request/response that decided it.
+
+```bash
+# start a campaign behind the normal access gate
+curl -s -X POST "$API/api/campaigns" \
+  -H 'content-type: application/json' \
+  -d '{"objective": "find exposed secrets and unauthenticated consoles",
+       "targets": ["https://app.example.com"],
+       "allow_active": true, "allow_exploit_confirm": true}' | jq
+
+curl -s "$API/api/campaigns/<id>" | jq '.status, .kill_chain, .summary'
+curl -s "$API/api/campaigns/<id>/report"            # Markdown handoff
+```
+
+MCP: `recon_campaign_start` (dry-run unless `allow_active=true`),
+`recon_campaign_status`, `recon_campaign_approve`,
+`recon_campaign_list`, plus `recon_exploit_scan` for a single target.
+
+### What the loop actually does
+
+| piece | module | behaviour |
+|---|---|---|
+| scope | `campaign/scope.py` | hard allowlist of declared roots (subdomains included), exclusions, never-targets, and per-capability gates. Denied intents never reach a worker. |
+| dual graph | `campaign/graph.py` | asset graph (hosts, URLs, endpoints, params, services, consoles, findings) + exploration graph (every attempt, why it ran, what it produced). Deterministic ids: replans and resumes merge instead of duplicating. |
+| planner | `campaign/planner.py` | objective -> goal classes -> the next highest-value untried intents. Surfaces a target before probing it, drips probes so each round's evidence shapes the next, and chains from confirmed findings. |
+| workers | `campaign/workers.py` | recon (`surface`), `probe`, `impact` (read-only console enumeration, approval-gated), `verify` (bucket listing, offline JWT forgery). |
+| budget | `campaign/engine.py` | request, intent, round and wall-clock caps. A campaign stops with an explicit status: `proven`, `awaiting_approval`, `budget_exhausted`, `exhausted`. |
+| store | `campaign/store.py` | one JSON document per campaign under `data/campaigns/`; resume needs no database. |
+
+Every confirmed finding is one of: observed directly (a console answered
+anonymously, a bucket listed keys, a security header is absent), a
+labelled response differential (`needs_manual_verification`), or an
+offline proof (a captured JWT's HMAC matched a weak secret). A lead is
+never printed as a verdict, and impact enumeration always needs a human
+`approve` step - the engine records it as `pending_approval` and resumes
+from the same graph once approved.
+
+### Read-only exploit-confirmation probe pack
+
+`backend/app/exploit_probes.py` adds the pentest-shaped checks the
+one-shot scanner was missing, all GET/OPTIONS and all receipt-bearing:
+
+- **unauthenticated consoles**: Docker Engine, Kubernetes API, Jupyter,
+  Jenkins, CouchDB, Elasticsearch, MinIO, RabbitMQ management, Grafana,
+  Prometheus;
+- **data exposure**: anonymous S3-style bucket listings, public
+  OpenAPI/Swagger documents, anonymous GraphQL introspection;
+- **application**: SQL/NoSQL/LDAP/XPath response differentials and
+  advertised write methods (TRACE/PUT/DELETE);
+- **offline**: JWT weak-secret and `alg:none` forgery check on a token
+  the scan already captured.
+
+`POST /api/exploit/scan` (MCP `recon_exploit_scan`) runs the pack against
+one target and returns only what it proved, each with
+`request`/`status`/`body_sha256`/`body_excerpt`. A 404, a redirect to a
+login page, or a `401` is a clean negative, never a finding.
+
+Boundary: a campaign is still detection and read-only confirmation. It
+never guesses credentials, never replays an identity, never sends a
+write, and never runs an exploit payload. `allow_auth_replay` exists as
+a capability flag but no worker uses it; the flag is refused unless set,
+so a future replay worker cannot be enabled by accident.
+
 ## How it works
 
 ```

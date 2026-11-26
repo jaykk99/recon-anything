@@ -61,6 +61,10 @@ EXPECTED_TOOLS = {
     # v2.3: investigator loop (Wave 1.1)
     "investigate", "investigation_status", "validate_candidate",
     "bounty_pack",
+    # v2.4: autonomous campaigns (ARTEX-shaped)
+    "recon_campaign_start", "recon_campaign_status",
+    "recon_campaign_approve", "recon_campaign_list",
+    "recon_exploit_scan",
 }
 
 
